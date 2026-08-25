@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# newbee AppImage 入口模板
+# 由 bin/appimage/build.sh 复制到 AppDir/AppRun
+# 设计：只读 AppImage（工具链+源码） + 可写用户工作区（~/.local/share/newbee）
+set -e
+
+SELF="$(readlink -f "$0")"
+APPDIR="$(dirname "$SELF")"
+
+TOOLCHAIN="$APPDIR/usr/lib/toolchain"
+OTP="$TOOLCHAIN/otp"
+ELIXIR="$TOOLCHAIN/elixir"
+NEWBEE_SRC="$APPDIR/usr/lib/newbee"
+LIBS="$APPDIR/usr/lib/libraries"
+
+# 1. toolchain env
+export ERL_ROOTDIR="$OTP"
+export PATH="$ELIXIR/bin:$OTP/bin:$PATH"
+export LD_LIBRARY_PATH="$LIBS:${LD_LIBRARY_PATH:-}"
+export MIX_ARCHIVES="$TOOLCHAIN/mix-archives"
+
+# 2. user workspace (AppImage is read-only -> copy to writable area)
+USER_ROOT="${NEWBEE_HOME:-$HOME/.local/share/newbee}"
+
+if [ ! -f "$USER_ROOT/mix.exs" ]; then
+  echo "[newbee] First run: initializing workspace at $USER_ROOT"
+  echo "[newbee] (one-time compile of deps + source, a few minutes on slow machines)"
+  mkdir -p "$USER_ROOT"
+  cp -a "$NEWBEE_SRC/." "$USER_ROOT/" 2>/dev/null || true
+  chmod -R u+w "$USER_ROOT" 2>/dev/null || true
+  (cd "$USER_ROOT" && MIX_ENV=dev mix deps.compile 2>&1 && mix compile 2>&1) || true
+  echo "[newbee] Initialized. Launching..."
+elif [ ! -d "$USER_ROOT/_build/dev" ]; then
+  echo "[newbee] Workspace found; running one-time compile..."
+  (cd "$USER_ROOT" && MIX_ENV=dev mix deps.compile 2>&1 && mix compile 2>&1) || true
+fi
+
+# 3. working dir for user data (.newbee/ lands here)
+export NEWBEE_CWD="${NEWBEE_CWD:-$PWD}"
+mkdir -p "$NEWBEE_CWD"
+
+# 4. run
+cd "$USER_ROOT"
+if [ $# -eq 0 ]; then
+  exec mix newbee
+else
+  exec mix newbee "$@"
+fi

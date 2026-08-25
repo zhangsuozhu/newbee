@@ -11,9 +11,10 @@ newbee-*.tar
 /.newbee/
 .env
 .env.*
-<<<<<<< HEAD
 
 # runtime logs
-=======
->>>>>>> feat(web): clickable file paths + current operation indicator
 nohup.out
+
+# AppImage 构建产物
+/.appimage-cache/
+/dist/

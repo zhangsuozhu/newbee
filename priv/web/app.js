@@ -485,6 +485,16 @@ case "goal_round": break;
   }
 
 
+    // 文本块边界定稿：reasoning/tool/shell/diff 等非 text 事件到来时，
+    // 把当前流式文本块渲染定稿并清空 residue，避免下一段 text 到来时
+    // 把上一段残留的 streamAcc 连同新 delta 一起渲染（旧文本重复出现）。
+    function flushTextBlock() {
+      if (!state.currentAssistant) { streamAcc = ""; return; }
+      state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+      bindCopyButtons(state.currentAssistant);
+      state.currentAssistant = null;
+      streamAcc = "";
+    }
   let streamAcc = "";
   let streamRaf = 0;
   function appendStream(delta) {
@@ -555,7 +565,7 @@ case "goal_round": break;
       state.currentReasoning = el("msg-reasoning running", "");
       state.currentReasoning.dataset.thinkText = "";
       state.currentReasoning.dataset.open = "0";
-      state.currentAssistant = null;
+    flushTextBlock();
     }
     state.currentReasoning.dataset.thinkText += delta || "";
     if (!reasoningRaf) {
@@ -617,7 +627,7 @@ case "goal_round": break;
     card.dataset.startedAt = Date.now();
     state.currentTool = result;
     state.currentToolCard = card;
-    state.currentAssistant = null;
+    flushTextBlock();
   }
 
   function toolResult(text, ok, durationMs) {
@@ -674,7 +684,7 @@ case "goal_round": break;
     out.textContent = (p.output || "").split("\n").slice(0, 40).join("\n");
     card.append(head, out);
     flow.appendChild(card);
-    state.currentAssistant = null;
+    flushTextBlock();
   }
   // dsh 文件 diff 卡片：+/- 行内联着色
   function fileDiff(p) {
@@ -696,7 +706,7 @@ case "goal_round": break;
     });
     card.append(head, body);
     flow.appendChild(card);
-    state.currentAssistant = null;
+    flushTextBlock();
     mcOnFileChange(p.path);
   }
 
