@@ -300,6 +300,7 @@ defmodule Newbee.ArchiveTest do
       Archive.compact(s, retain: 4, base: base, client: capture_client(self()))
 
     assert_received {:digest_request, request}
+
     assert request ==
              [%{"role" => "system", "content" => base}] ++
                before ++

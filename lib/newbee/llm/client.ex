@@ -657,13 +657,12 @@ defmodule Newbee.LLM.Client do
   end
 
   defp maybe_put_usage(usage, _key, nil), do: usage
+  defp maybe_put_usage(usage, key, value), do: Map.put(usage, key, value)
 
   # Req 默认 decode_body: true——真实 HTTP 响应 body 已被解码为 map；
   # decode_body: false（或插桩）时是二进制。两态都兼容。
   defp decode_body(b) when is_binary(b), do: Jason.decode(b)
   defp decode_body(m) when is_map(m), do: {:ok, m}
-
-  defp maybe_put_usage(usage, key, value), do: Map.put(usage, key, value)
 
   defp apply_delta(acc, delta, on_text, on_reasoning) do
     # 注意：OpenRouter 等在 reasoning 阶段常带 "content": ""——空串也是 binary，
