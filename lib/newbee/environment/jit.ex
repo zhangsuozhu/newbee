@@ -23,7 +23,7 @@ defmodule Newbee.Environment.Jit do
   """
 
   # 默认阈值：编译收益（token）> 编译成本（token）才晋升（§16 校准项）
-  @default_compile_cost 5_000
+  @default_compile_cost 100_000
   # deopt：L3 工具成功率跌破阈值且样本足够 → 降级
   @deopt_success_rate 0.5
   @deopt_min_samples 5

@@ -9,9 +9,9 @@ defmodule Newbee.Environment.TceDecisionTest do
 
   @tag :tce
   test "tce_hot_needs: 热模式按 LCB 排序且携带后验证据 [D10][D14]" do
-    events = hot_events(30, 2000)
+    events = hot_events(120, 3000)
     stats = PatternStore.project(events)
-    needs = Jit.tce_hot_needs(stats: stats)
+    needs = Jit.tce_hot_needs(stats: stats, compile_cost: 50_000)
 
     assert length(needs) >= 1
     top = hd(needs)
@@ -68,7 +68,7 @@ defmodule Newbee.Environment.TceDecisionTest do
     stats = PatternStore.project(events)
     assert is_atom(PatternStore.persist(stats))
     restored = PatternStore.restore()
-    needs = Jit.tce_hot_needs(stats: restored)
+    needs = Jit.tce_hot_needs(stats: restored, compile_cost: 50_000)
     assert needs |> Enum.any?(&(&1.evidence[:pattern] == {:tool_use, "Edit"} or get_in(&1.evidence, [:pattern]) == {:tool_use, "Edit"}))
   end
 end

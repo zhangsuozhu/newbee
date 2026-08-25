@@ -40,6 +40,10 @@ defmodule Newbee.Environment.PatternStore do
     {{:tool_use, name}, task_type_of(ev)}
   end
 
+  def key_of(%{topic: t, payload: [_t2, name | _]} = ev)
+      when t in [:tool_start, :tool_error, :tool_result] and is_binary(name) do
+    {{:tool_use, name}, task_type_of(ev)}
+  end
   def key_of(ev) when is_map(ev) do
     case JitStrategy.pattern_key(ev) do
       nil -> nil
@@ -70,19 +74,24 @@ defmodule Newbee.Environment.PatternStore do
   end
 
   defp apply_event(%PatternStats{} = s, ev) do
+    # token 归因优先级: 显式字段 > Collector 归因(usage) > 无(不估计,宁缺毋滥 R6)
     tokens =
       ev[:tokens] || ev["tokens"] ||
         case ev do
           %{data: %{tokens: t}} when is_number(t) -> t
           %{"data" => %{"tokens" => t}} when is_number(t) -> t
+          %{payload: [_t, _n, _x, tk]} when is_number(tk) -> tk
           _ -> estimate_tokens()
         end
 
-    PatternStats.observe(s, %{
-      success: success_of(ev),
-      saved_tokens: tokens * 1.0,
-      count: count_of(ev)
-    })
+    obs =
+      if is_number(tokens) do
+        %{success: success_of(ev), saved_tokens: tokens * 1.0, count: count_of(ev)}
+      else
+        %{success: success_of(ev), count: count_of(ev)}
+      end
+
+    PatternStats.observe(s, obs)
     |> maybe_decay()
   end
 
@@ -103,7 +112,8 @@ defmodule Newbee.Environment.PatternStore do
 
   defp maybe_decay(s), do: s
 
-  defp estimate_tokens, do: 500.0
+  # 无真实 token 观测时不做默认估计——宁缺毋滥（R6 反思）
+  defp estimate_tokens, do: nil
 
   # ── 持久化 ──
 
