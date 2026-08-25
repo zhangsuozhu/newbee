@@ -3075,6 +3075,8 @@ case "goal_round": break;
     if (!isMobile() || app.classList.contains("sidebar-collapsed")) return;
     var t = e.target;
     if (!t.closest || t.closest("#sidebar") || t.closest("#sidebar-expand")) return;
+    // 输入区/思考强度等是操作区，点击不应收起侧栏
+    if (t.closest("#composer") || t.closest(".composer-effort")) return;
     applySidebar(true, true);
   });
 

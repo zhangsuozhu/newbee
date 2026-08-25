@@ -1625,4 +1625,25 @@ svg.ico {
   #to-bottom { width: 40px; height: 40px; font-size: 18px; }
   .modal-box, .modal-box-wide { min-width: 0; width: 94vw; max-width: 94vw; padding: 16px; max-height: 85vh; overflow-y: auto; }
   .wc-grid { grid-template-columns: 1fr 1fr; }
+}/* 手机端：思考强度控件可发现 + 紧凑可滚动 */
+@media (max-width: 768px) {
+  #base .effort-label { /* 若 label 无文字则加伪元素文字 */
+    font-size: 12px; color: var(--nb-label-2); white-space: nowrap;
+  }
+  #base .effort-label svg { margin-right: 4px; }
+  .composer-effort {
+    gap: 6px; padding: 0 10px; margin-bottom: 4px;
+  }
+  .effort-segments {
+    flex: 1; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none; padding: 2px 0;
+  }
+  .effort-segments::-webkit-scrollbar { display: none; }
+  .effort-text { margin-left: 4px; font-size: 12px; white-space: nowrap; }
+  .effort-label { flex: none; }
+  .effort-seg {
+    font-size: 12px; padding: 4px 10px; min-height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: none; touch-action: manipulation;
+  }
 }
