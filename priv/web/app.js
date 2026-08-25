@@ -416,6 +416,7 @@ case "goal_round": break;
     state.busy = false;
     if (state.currentAssistant) {
       state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+      addAssistantChrome(state.currentAssistant);
       bindCopyButtons(state.currentAssistant);
     }
     archiveReasoning();
@@ -437,6 +438,27 @@ case "goal_round": break;
     d.className = `msg ${cls}`;
     if (text) { if (md) d.innerHTML = renderMarkdown(text); else d.textContent = text; }
     flow.appendChild(d);
+    return d;
+  }
+
+  // ── assistant 输出框：包边框 + 右上角"复制"按钮 ──
+  // 复制内容优先原始 markdown（dataset.raw），否则取 innerText。
+  function addAssistantChrome(d) {
+    d.classList.add("msg-boxed");
+    if (d.querySelector(".msg-copy")) return d;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "msg-copy";
+    btn.title = "复制整条回复";
+    btn.textContent = "复制";
+    btn.onclick = () => {
+      const raw = d.dataset.raw || d.innerText || "";
+      navigator.clipboard.writeText(raw).then(() => {
+        btn.textContent = "已复制";
+        setTimeout(() => (btn.textContent = "复制"), 1500);
+      });
+    };
+    d.appendChild(btn);
     return d;
   }
 
@@ -491,6 +513,7 @@ case "goal_round": break;
     function flushTextBlock() {
       if (!state.currentAssistant) { streamAcc = ""; return; }
       state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+      addAssistantChrome(state.currentAssistant);
       bindCopyButtons(state.currentAssistant);
       state.currentAssistant = null;
       streamAcc = "";
@@ -503,7 +526,7 @@ case "goal_round": break;
     if (!state.currentAssistant) {
       state.busy = true; setBusy(true);
       clearTurnStatus();
-      state.currentAssistant = el("msg-assistant", "");
+      state.currentAssistant = addAssistantChrome(el("msg-assistant", ""));
     }
     const d = delta || "";
     // 流式去重：同一回合若 delta 已连续出现在 streamAcc 尾部（网络/服务端偶发双发），
@@ -518,6 +541,7 @@ case "goal_round": break;
         streamRaf = 0;
         if (state.currentAssistant) {
           state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+          addAssistantChrome(state.currentAssistant);
           bindCopyButtons(state.currentAssistant);
           scrollBottom();
         }
@@ -1337,7 +1361,7 @@ case "goal_round": break;
         d.dataset.open = "0";
         renderReasoningBody(d);
       }
-      if (m.content) { const d = el("msg-assistant", m.content, true); bindCopyButtons(d); }
+      if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); }
       (m.toolCalls || []).forEach((tc) => toolStart({ name: tc.name, title: tc.title, code: tc.code }));
     } else if (m.role === "tool") {
       const ok = !(m.content || "").startsWith("✗");
@@ -1424,7 +1448,7 @@ case "goal_round": break;
         d.dataset.open = "0";
         renderReasoningBody(d);
       }
-      if (m.content) { const d = el("msg-assistant", m.content, true); bindCopyButtons(d); }
+      if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); }
       (m.toolCalls || []).forEach((tc) => toolStart({ name: tc.name, title: tc.title, code: tc.code }));
     } else if (m.role === "tool") {
       const ok = !(m.content || "").startsWith("✗");

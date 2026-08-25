@@ -232,6 +232,26 @@ body {
 .msg-assistant { color: var(--nb-label-1); font-size: 15px; line-height: 26px;
   white-space: pre-wrap; word-break: break-word; }
 
+/* assistant 输出框：包边框 + 右上角复制按钮 */
+.msg-boxed {
+  position: relative;
+  border: 1px solid var(--nb-border);
+  border-radius: var(--nb-radius);
+  background: var(--nb-bg-panel);
+  padding: 12px 16px;
+  margin: 6px 0;
+}
+.msg-copy {
+  position: absolute; top: 6px; right: 8px;
+  background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
+  border-radius: 5px; color: var(--nb-label-3);
+  font-size: 11px; padding: 2px 10px; cursor: pointer;
+  font-family: var(--nb-font);
+  opacity: 0.55; transition: opacity 0.15s ease, color 0.15s ease;
+  z-index: 2;
+}
+.msg-copy:hover { opacity: 1; color: var(--nb-label-1); border-color: var(--nb-label-caption); }
+
 /* reasoning 行 */
 .msg-reasoning {
   color: var(--nb-label-3); font-size: 14px; line-height: 24px;
@@ -1667,6 +1687,15 @@ svg.ico {
   .effort-seg:active { transform: scale(0.94); transition: transform 0.1s; }
 }
 /* 手机端：顶栏状态栏不挤压、不截断 */
+/* 手机端：输出框复制按钮常显 + 触控放大 */
+@media (max-width: 768px) {
+  .msg-copy {
+    opacity: 1;
+    font-size: 12px; padding: 5px 12px; min-height: 32px; min-width: 52px;
+  }
+  .msg-boxed { padding: 12px 14px; margin: 4px 0; }
+}
+
 @media (max-width: 768px) {
   #topbar { gap: 6px; }
   #topbar .session-title { font-size: 13px; max-width: 30vw; flex: 0 1 auto; }
