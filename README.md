@@ -137,6 +137,25 @@
 
 ---
 
+## 📦 免安装分发 — AppImage（带去任何 Linux 直接跑）
+
+把 newbee 连同 OTP/Elixir/全部依赖打进单个可执行文件（约 86MB），
+目标机器无需安装任何工具链：
+
+```bash
+# 构建（在开发机）
+bin/appimage/build.sh
+
+# 产物 dist/newbee-x86_64.AppImage 拷到目标机器
+./newbee-x86_64.AppImage            # 首次运行自动初始化 + 编译，之后秒启
+APPIMAGE_EXTRACT_AND_RUN=1 ./newbee-x86_64.AppImage   # 无 FUSE 环境
+```
+
+> 完整说明：构建原理、参数、模板、故障排查见
+> [`docs/appimage-packaging.md`](docs/appimage-packaging.md)
+
+---
+
 ## ⚡ 快速开始 / Quick Start
 
 ```bash
