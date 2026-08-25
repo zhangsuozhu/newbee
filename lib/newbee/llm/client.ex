@@ -244,6 +244,12 @@ defmodule Newbee.LLM.Client do
       |> maybe_put_body(:reasoning_effort, client.reasoning_effort)
       |> Map.merge(Keyword.get(opts, :extra, %{}))
 
+    body =
+      case Keyword.get(opts, :tools) do
+        tools when is_list(tools) and tools != [] -> Map.put(body, :tools, tools)
+        _ -> body
+      end
+
     t0 = System.monotonic_time(:millisecond)
 
     req =
@@ -266,10 +272,10 @@ defmodule Newbee.LLM.Client do
       case complete_req(req, @overload_retries) do
         {:ok, %{status: 200} = resp} ->
           case decode_body(resp.body) do
-            {:ok, %{"choices" => [choice | _]}} ->
+            {:ok, %{"choices" => [choice | _]} = body_map} ->
               content = get_in(choice, ["message", "content"]) || ""
               logprobs = choice["logprobs"]
-              usage = normalize_usage(choice["usage"] || %{})
+              usage = normalize_usage(choice["usage"] || body_map["usage"] || %{})
               {:ok, content, %{usage: usage, logprobs: logprobs}}
 
             {:ok, %{"error" => err}} ->

@@ -291,42 +291,95 @@ defmodule Newbee.ArchiveTest do
     assert Archive.recall(s, "继续") == []
   end
 
-  test "前缀缓存友好摘要：压缩前完整视图 + 尾部指令", %{session: s} do
+  test "命中路径：摘要请求 == envelope 消息逐字回放 + 尾部指令", %{session: s} do
     feed(s, conv(6))
-    base = Newbee.Environment.Projection.build(%{root: File.cwd!()}).prompt
-    before = Archive.view(s)
+    env_msgs = [%{"role" => "system", "content" => "BASE-SYS"}] ++ List.flatten(conv(6))
+
+    env = %{
+      "version" => 1,
+      "base_url" => "http://localhost",
+      "model" => "test/digest-model",
+      "tools" => Newbee.Codec.tools(),
+      "messages" => env_msgs,
+      "message_count" => length(env_msgs),
+      "sha256" => "x"
+    }
 
     {:ok, %{segment: seg}} =
-      Archive.compact(s, retain: 4, base: base, client: capture_client(self()))
+      Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env)
 
     assert_received {:digest_request, request}
-
-    assert request ==
-             [%{"role" => "system", "content" => base}] ++
-               before ++
-               [List.last(request)]
-
+    assert request == env_msgs ++ [List.last(request)]
     assert List.last(request)["role"] == "user"
     assert List.last(request)["content"] =~ "压缩引擎"
     assert List.last(request)["content"] =~ "不要调用工具"
+    assert_received {:digest_tools, tools}
+    assert tools == Jason.decode!(Jason.encode!(Newbee.Codec.tools()))
     assert Archive.digests(s)[seg] =~ "回放摘要"
   end
 
-  test "二次压缩回放旧摘要与当前原文，仍是上一请求的 append-extension", %{session: s} do
-    base = "stable system"
+  test "无 envelope → 抽取路径（单 user 消息）", %{session: s} do
     feed(s, conv(6))
-    {:ok, _} = Archive.compact(s, retain: 4, base: base, client: capture_client(self()))
+    {:ok, %{segment: _seg}} = Archive.compact(s, retain: 4, client: capture_client(self()))
+    assert_received {:digest_request, request}
+    assert length(request) == 1
+    assert hd(request)["role"] == "user"
+    assert hd(request)["content"] =~ "结构化抽取"
+  end
+
+  test "envelope route 失配 → 抽取路径", %{session: s} do
+    feed(s, conv(6))
+
+    env = %{
+      "version" => 1,
+      "base_url" => "http://localhost",
+      "model" => "other-model",
+      "tools" => [],
+      "messages" => [%{"role" => "user", "content" => "x"}],
+      "message_count" => 1,
+      "sha256" => "x"
+    }
+
+    {:ok, %{segment: _seg}} = Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env)
+    assert_received {:digest_request, request}
+    assert length(request) == 1
+  end
+
+  test "二次压缩回放含旧摘要的 envelope（旧摘要前缀）", %{session: s} do
+    feed(s, conv(6))
+
+    env1 = %{
+      "version" => 1,
+      "base_url" => "http://localhost",
+      "model" => "test/digest-model",
+      "tools" => [],
+      "messages" => [%{"role" => "system", "content" => "BASE"}] ++ List.flatten(conv(6)),
+      "message_count" => 19,
+      "sha256" => "x"
+    }
+
+    {:ok, _} = Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env1)
     assert_received {:digest_request, _first}
 
     feed(s, conv(4))
-    before_second = Archive.view(s)
-    assert hd(before_second)["role"] == "system"
-    assert hd(before_second)["content"] =~ "回放摘要"
+    summary_view = Archive.view(s)
+    summary_msg = hd(summary_view)
+    assert summary_msg["role"] == "system"
+    assert summary_msg["content"] =~ "回放摘要"
 
-    {:ok, _} = Archive.compact(s, retain: 4, base: base, client: capture_client(self()))
+    env2 = %{
+      "version" => 1,
+      "base_url" => "http://localhost",
+      "model" => "test/digest-model",
+      "tools" => [],
+      "messages" => [%{"role" => "system", "content" => "BASE"}] ++ summary_view,
+      "message_count" => length(summary_view) + 1,
+      "sha256" => "x"
+    }
+
+    {:ok, _} = Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env2)
     assert_received {:digest_request, second}
-
-    assert Enum.drop(second, 1) |> Enum.drop(-1) == before_second
+    assert Enum.drop(second, -1) == env2["messages"]
   end
 
   test "无 base 时退回确定性抽取路径（兼容旧行为）", %{session: s} do
@@ -342,7 +395,9 @@ defmodule Newbee.ArchiveTest do
   defp capture_client(test_pid) do
     plug = fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
-      send(test_pid, {:digest_request, Jason.decode!(body)["messages"]})
+      req = Jason.decode!(body)
+      send(test_pid, {:digest_request, req["messages"]})
+      send(test_pid, {:digest_tools, req["tools"]})
 
       Req.Test.json(conn, %{
         "choices" => [

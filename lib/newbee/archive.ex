@@ -71,7 +71,6 @@ defmodule Newbee.Archive do
     prev_cut = cut_of(session, raw)
 
     {new_cut, seg} = plan_cut(raw, prev_cut, retain)
-    warm_prefix = view(session)
 
     if new_cut <= prev_cut or seg == [] do
       :noop
@@ -100,11 +99,10 @@ defmodule Newbee.Archive do
       write_segment(session, seg_id, seg_bin)
       append_ledger(session, event)
 
-      # :base 可选传入本会话 system 基底（Loop 持有，不进 transcript）：
-      # 给定后摘要请求走前缀缓存友好路径（见 llm_digest/5）。
+      # :envelope = 上次路由请求快照（Loop 记录，Archive 只消费不猜测）。
+      # 命中资格 + 请求形状见 digest_segment/4。
       if client = Keyword.get(opts, :client) do
-        base = Keyword.get(opts, :base)
-        digest_segment(session, seg_id, client, base, warm_prefix)
+        digest_segment(session, seg_id, client, envelope: Keyword.get(opts, :envelope))
         backfill_digests(session, client)
       end
 
@@ -173,22 +171,31 @@ defmodule Newbee.Archive do
   @doc """
   为一段生成 digest（LLM 一次）。成功追加 `digest` 事件；失败不写事件。
 
-  `base` 与 `warm_prefix` 仅供实时压缩路径：请求按
-  `[system base] ++ warm_prefix ++ [尾部压缩指令]` 组装。`warm_prefix` 必须是
-  压缩前模型实际看到的物化消息视图，确保请求逐字成为上一 routed request 的
-  append-extension。手工补写或函数注入没有可证明的暖前缀，走确定性抽取路径。
+  `envelope`（可选）= 上次路由请求快照（Newbee.RequestEnvelope）。命中条件：
+  快照存在且 route（base_url + model）与当前 client 一致——此时摘要请求 =
+  快照 messages 逐字回放 ++ 尾部压缩指令，成为上次请求的严格前缀，provider
+  前缀缓存命中。无快照 / route 失配 / client 为注入函数 → 走有界抽取路径
+  （build_extract），不伪装命中。
   """
-  def digest_segment(session, seg_id, client, base \\ nil, warm_prefix \\ nil)
+  def digest_segment(session, seg_id, client, opts \\ [])
 
-  def digest_segment(%Session{} = session, seg_id, client, base, warm_prefix)
-      when is_binary(base) and base != "" and is_list(warm_prefix) and
-             not is_function(client, 2) do
-    with {:ok, text} <- llm_digest_replay(client, base, warm_prefix, seg_id) do
-      record_digest(session, seg_id, text)
+  def digest_segment(%Session{} = session, seg_id, client, opts) when is_list(opts) do
+    case Keyword.get(opts, :envelope) do
+      env when is_map(env) ->
+        if Newbee.RequestEnvelope.hit_eligible?(env, client) do
+          with {:ok, text} <- llm_digest_replay(client, env, seg_id) do
+            record_digest(session, seg_id, text)
+          end
+        else
+          extract_digest(session, seg_id, client)
+        end
+
+      _ ->
+        extract_digest(session, seg_id, client)
     end
   end
 
-  def digest_segment(%Session{} = session, seg_id, client, _base, _warm_prefix) do
+  defp extract_digest(%Session{} = session, seg_id, client) do
     with {:ok, msgs} <- segment_messages(session, seg_id),
          extract = build_extract(msgs),
          {:ok, text} <- llm_digest(client, extract, seg_id) do
@@ -789,19 +796,25 @@ defmodule Newbee.Archive do
 
   # ── 前缀缓存友好摘要路径（deepseek-harness 2026-07-21 note 同构）──
   # warm_prefix 是压缩前 view(session)；消息对象完全原样，不截断、不降维。
-  # 请求 = 上一 routed request 的逐字前缀 + 尾部压缩指令。
-  defp llm_digest_replay(client, base, warm_prefix, seg_id) do
+  # ── 前缀回放摘要（envelope 命中路径）──
+  # 回放上次路由请求快照的消息 + tools，尾部追加压缩指令。
+  # 消息与 tools 与快照逐字节一致（不截断/不降维），是严格前缀。
+  defp llm_digest_replay(client, env, seg_id) do
+    prefix = env["messages"] || []
+    tools = env["tools"] || []
+
     request =
-      [%{"role" => "system", "content" => base}] ++
-        warm_prefix ++
+      prefix ++
         [%{"role" => "user", "content" => @compaction_instruction}]
 
     Newbee.DebugLog.log(
       :compact,
-      "digest seg=#{seg_id} replay messages=#{length(request)} (prefix-cache friendly)"
+      "digest seg=" <>
+        seg_id <>
+        " hit-path messages=" <> Integer.to_string(length(request)) <> " tools=" <> Integer.to_string(length(tools))
     )
 
-    case Newbee.LLM.Client.complete(client, request, extra: %{max_tokens: 500}) do
+    case Newbee.LLM.Client.complete(client, request, tools: tools, extra: %{max_tokens: 500}) do
       {:ok, content, _} ->
         text = content |> String.trim() |> String.slice(0, @digest_max_chars)
         if text == "", do: {:error, :empty_digest}, else: {:ok, text}
