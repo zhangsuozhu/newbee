@@ -23,7 +23,8 @@ defmodule Newbee.Environment.TceEndToEndTest do
   @tag :e2e
   test "E2E: tool_start+usage 事件经 Bus 流入 Collector，flush 后 tce 可见" do
     # 模拟 loop.ex: 30 次工具调用，每次 LLM 消耗 900 tokens
-    for _ <- 1..30 do
+    # 200 次 x 900 = 180k > 校准后的默认 compile_cost 100k [R6]
+    for _ <- 1..200 do
       Newbee.Bus.emit(:tool_start, {:tool_start, "run_elixir", "demo title", "1+1"})
       Newbee.Bus.emit_sync(:usage, {:usage, %{"prompt_tokens" => 800, "completion_tokens" => 100}})
     end

@@ -29,9 +29,10 @@ defmodule Newbee.Environment.TceIntegrationTest do
   @tag :tce_wiring
   test "C2 adapter.collect_signals 无事件参数时走 tce_hot_needs" do
     # 构造一个明确的热点并持久化
+    # Collector 归因后的形状: tokens 已知; 120x2500=300k > 100k [R6]
     events =
-      for _ <- 1..30 do
-        %{"topic" => "tool_start", "payload" => ["tool_start", "HotTool", "", "x"]}
+      for _ <- 1..120 do
+        %{"topic" => "tool_start", "payload" => ["tool_start", "HotTool", "", "x"], "tokens" => 2500}
       end
 
     stats = PatternStore.project(events)
