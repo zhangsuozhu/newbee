@@ -177,6 +177,27 @@ defmodule Newbee.Environment.PatternStats do
     end
   end
 
+  @doc """
+  Beta 分位数（bisection，保收敛）[U-数值]：给 q 求使 I_x(alpha,beta)=q 的 x。80 次二分达 1e-12 区间宽。
+  """
+  def beta_quantile(q, {a, b}) when q > 0.0 and q < 1.0 do
+    bisect_beta(0.0, 1.0, q, a, b, 80)
+  end
+
+  defp bisect_beta(lo, hi, _q, _a, _b, iter) when iter <= 0 or hi - lo < 1.0e-12 do
+    (lo + hi) / 2.0
+  end
+
+  defp bisect_beta(lo, hi, q, a, b, iter) do
+    mid = (lo + hi) / 2.0
+
+    if betai(mid, a, b) < q do
+      bisect_beta(mid, hi, q, a, b, iter - 1)
+    else
+      bisect_beta(lo, mid, q, a, b, iter - 1)
+    end
+  end
+
   # ═══════════════ 统计更新 ═══════════════
 
   @doc "新 stats：可指定先验。默认弱信息先验 Gamma(1,1)、Beta(1,1)。"
@@ -205,8 +226,12 @@ defmodule Newbee.Environment.PatternStats do
 
     save =
       case obs[:saved_tokens] do
-        v when is_number(v) -> update_save(s.save, v * 1.0)
-        _ -> s.save
+        v when is_number(v) ->
+          # count 次观测同一幅度（事件级聚合），有效样本数同步增长
+          Enum.reduce(1..count, s.save, fn _, acc -> update_save(acc, v * 1.0) end)
+
+        _ ->
+          s.save
       end
 
     %__MODULE__{
@@ -291,13 +316,33 @@ defmodule Newbee.Environment.PatternStats do
     sd_l = freq_sd(s)
     e_s = max(save_mean(s), 0.0)
     n_s = max(save_n(s), 1.0)
-    sd_s = max(e_s * 0.5 / :math.sqrt(n_s), e_s * 0.25)
+    sd_s = e_s * 0.5 / :math.sqrt(n_s)
     mean_net = e_l * e_s
     var_net = e_l * e_l * sd_s * sd_s + e_s * e_s * sd_l * sd_l
     mean_net - kappa * :math.sqrt(var_net) - compile_cost
   end
 
   defp save_n(%__MODULE__{save: {_m, k, _s2}}), do: k
+
+  @doc """
+  非对称区间净收益 [U3, omega-UCB 启发]：
+  benefit 端取 LCB（保守收益），compile_cost 端取 UCB（悲观成本）。
+  排序分 = LCB(benefit) - UCB(C)。比对称 kappa*sigma 更贴合预算语义 (P4)。
+  z 为单侧分位倍数（默认 1.645 约 95%）。
+  """
+  def net_asym(%__MODULE__{} = s, compile_cost, opts \\ []) do
+    z = Keyword.get(opts, :z, 1.645)
+    cost_cv = Keyword.get(opts, :cost_cv, 0.5)
+    e_l = freq_mean(s)
+    sd_l = freq_sd(s)
+    e_s = max(save_mean(s), 0.0)
+    n_s = max(save_n(s), 1.0)
+    sd_s = e_s * 0.5 / :math.sqrt(n_s)
+
+    benefit_lcb = e_l * e_s - z * :math.sqrt(e_l * e_l * sd_s * sd_s + e_s * e_s * sd_l * sd_l)
+    c_ucb = compile_cost * (1.0 + z * cost_cv / :math.sqrt(n_s))
+    benefit_lcb - min(c_ucb, compile_cost * 2.0)
+  end
 
   @doc "编译建议：样本足够且 net_lcb > 0。"
   def compile_worthy?(%__MODULE__{} = s, compile_cost, opts \\ []) do
