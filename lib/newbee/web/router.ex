@@ -63,7 +63,9 @@ defmodule Newbee.Web.Router do
 
   defp bearer_token(conn) do
     case get_req_header(conn, "authorization") do
-      ["Bearer " <> tok | _] -> {:ok, String.trim(tok)}
+      ["Bearer " <> tok | _] ->
+        {:ok, String.trim(tok)}
+
       _ ->
         conn = fetch_query_params(conn)
 

@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Newbee.Web do
   ## 选项
     --host HOST         绑定地址（默认 127.0.0.1；0.0.0.0 暴露到局域网/公网）
     --port PORT         端口（默认 4173）
-    --https             启用 HTTPS（自签 Ed25519 证书，首启自动生成于 ~/.newbee/web/）
+    --https             启用 HTTPS（自签 RSA 2048 证书，首启自动生成于 ~/.newbee/web/）
     --certfile PATH     使用自己的证书（与 --https 同用；需配 --keyfile）
     --keyfile PATH      自己的私钥
     --redirect          另起 HTTP→HTTPS 308 重定向（需配 --https）
@@ -101,7 +101,10 @@ defmodule Mix.Tasks.Newbee.Web do
     end
   end
 
-  defp host_str({a, b, c, d}), do: Integer.to_string(a) <> "." <> Integer.to_string(b) <> "." <> Integer.to_string(c) <> "." <> Integer.to_string(d)
+  defp host_str({a, b, c, d}),
+    do:
+      Integer.to_string(a) <> "." <> Integer.to_string(b) <> "." <> Integer.to_string(c) <> "." <> Integer.to_string(d)
+
   defp host_str(ip) when is_tuple(ip), do: ip |> :inet.ntoa() |> to_string()
 
   defp maybe_set_password(opts) do
