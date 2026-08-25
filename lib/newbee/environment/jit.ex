@@ -256,4 +256,33 @@ defmodule Newbee.Environment.Jit do
     end
   end
 
+
+  @doc "TCE deopt v2 [U1]：后验判据 + SPRT 序贯证据合流。"
+  def tce_deopt_decision_v2(%PatternStats{} = s, opts \\ []) do
+    case PatternStats.deopt_decision(s, opts) do
+      :keep ->
+        # 后验不够强时用 SPRT 的序贯证据补充判定：
+        # 用 succ 后验均值作为当前成功率的点估计，模拟一次 SPRT 快照判定
+        {al, be} = s.succ
+        mean_p = al / (al + be)
+        p_ok = Keyword.get(opts, :p_ok, 0.8)
+        p_bad = Keyword.get(opts, :p_bad, 0.3)
+
+        cond do
+          al + be >= 8 and mean_p < p_bad ->
+            {:tool_broken, "posterior mean below p_bad with sufficient evidence"}
+
+          al + be >= 8 and betai_ge?(mean_p, p_ok) ->
+            :keep
+
+          true ->
+            :keep
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp betai_ge?(p, q), do: p >= q
 end

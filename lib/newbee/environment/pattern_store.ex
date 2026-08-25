@@ -23,10 +23,16 @@ defmodule Newbee.Environment.PatternStore do
   @decay_factor 0.98
 
   # ── 键 ──
-
   @doc "pattern × task_type 复合键 [D16]。"
-  def key_of(%{"topic" => topic, "data" => %{"name" => name}} = ev) when topic in ["tool_start", "tool_error"] do
-    # tool_start/tool_error 统一按工具名归因（成功与失败同桶，供 deopt 判据）
+  def key_of(%{"topic" => topic, "payload" => [_, name | _]} = ev)
+      when is_binary(name) and topic in ["tool_start", "tool_error", "tool_result"] do
+    # 真实事件流形状（Events.append_durable 落盘）:
+    #   {:tool_start, name, title, code} -> payload=[topic,name,title,code]
+    {{:tool_use, name}, task_type_of(ev)}
+  end
+
+  def key_of(%{"topic" => topic, "data" => %{"name" => name}} = ev)
+      when topic in ["tool_start", "tool_error"] do
     {{:tool_use, name}, task_type_of(ev)}
   end
 
@@ -34,16 +40,19 @@ defmodule Newbee.Environment.PatternStore do
     {{:tool_use, name}, task_type_of(ev)}
   end
 
-  def key_of(ev) do
+  def key_of(ev) when is_map(ev) do
     case JitStrategy.pattern_key(ev) do
       nil -> nil
       key -> {key, task_type_of(ev)}
     end
   end
 
+  def key_of(_), do: nil
+
   defp task_type_of(%{"data" => %{"task_type" => t}}) when is_binary(t), do: t
   defp task_type_of(%{data: %{task_type: t}}) when is_binary(t), do: t
   defp task_type_of(_), do: "general"
+
 
   # ── 投影：事件流 → stats ──
 

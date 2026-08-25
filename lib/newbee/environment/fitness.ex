@@ -43,6 +43,25 @@ defmodule Newbee.Environment.Fitness do
     Store.append_jsonl!(Path.join(dir, "#{safe(release_id)}.jsonl"), entry)
 
     Newbee.Bus.emit(:release_observation, entry)
+
+    # TCE [F2]: 同一事件双投影（总纲 F 节）
+    try do
+      stats_map = Newbee.Environment.PatternStore.restore()
+      key = {{:tool_use, entry["task_type"]}, entry["task_type"]}
+      cur = Map.get(stats_map, key, Newbee.Environment.PatternStats.new())
+
+      updated =
+        Newbee.Environment.PatternStats.observe(cur, %{
+          success: entry["success"],
+          saved_tokens: (entry["tokens"] || 0) * 1.0,
+          count: 1
+        })
+
+      Newbee.Environment.PatternStore.persist(Map.put(stats_map, key, updated))
+    rescue
+      e -> Newbee.DebugLog.log(:event, "pattern projection failed: " <> Exception.message(e))
+    end
+
     :ok
   end
 

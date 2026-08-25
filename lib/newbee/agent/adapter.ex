@@ -56,7 +56,6 @@ defmodule Newbee.Agent.Adapter do
 
   # ── 信号收集：事件流 + JIT 热度 + need 消息 ──
 
-  @doc "收集进化信号（need 消息 + JIT 热项 + 停滞线索）。"
   def collect_signals(opts \\ []) do
     needs =
       Protocol.messages(kind: :need)
@@ -67,14 +66,28 @@ defmodule Newbee.Agent.Adapter do
     jit_hot =
       (case Keyword.get(opts, :events) do
          nil ->
-           # 默认从近期事件流拉取（不走 opts 传入），避免热度恒空
-           events = try do
-             Newbee.EventStore.replay(Newbee.Environment.Store.path(:events), 0)
-           rescue _ -> []
-           catch _, _ -> []
+           # TCE v2 [F3]: 默认走 PatternStore 后验（LCB 排序 + 校准成本调整），
+           # PatternStore 为空时回退旧事件流点估计
+           case Jit.tce_hot_needs() do
+             [] ->
+               events =
+                 try do
+                   Newbee.EventStore.replay(Newbee.Environment.Store.path(:events), 0)
+                 rescue
+                   _ -> []
+                 catch
+                   _, _ -> []
+                 end
+
+               Jit.hot_needs(events, Keyword.get(opts, :jit_opts, []))
+
+             needs_tce ->
+               needs_tce
            end
+
+         events ->
+           # 显式传事件流时保持旧行为（测试兼容）
            Jit.hot_needs(events, Keyword.get(opts, :jit_opts, []))
-         events -> Jit.hot_needs(events, Keyword.get(opts, :jit_opts, []))
        end)
       |> Enum.map(fn n -> %{type: :jit_hot, capability: n.capability, evidence: n.evidence, urgency: n.urgency} end)
 
@@ -82,6 +95,7 @@ defmodule Newbee.Agent.Adapter do
 
     needs ++ jit_hot ++ hints
   end
+
 
   # ── 合成（贵的事：诊断 + 候选生成，独立上下文与预算）──
 
