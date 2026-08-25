@@ -1642,11 +1642,11 @@ svg.ico {
     gap: 8px; padding: 2px 10px; margin-bottom: 6px;
     align-items: center; justify-content: flex-start;
   }
-  #base .effort-label {
+  .composer-effort .effort-label {
     font-size: 12px; color: var(--nb-label-2); white-space: nowrap;
     flex: none;
   }
-  #base .effort-label svg { margin-right: 4px; }
+  .composer-effort .effort-label svg { margin-right: 4px; }
   .effort-text { margin-left: 4px; font-size: 12px; white-space: nowrap; }
   /* 档位横向滚动，触控友好 */
   .effort-segments {
