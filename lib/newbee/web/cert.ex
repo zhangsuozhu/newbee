@@ -12,8 +12,8 @@ defmodule Newbee.Web.Cert do
 
   require Logger
 
-  @rsa_encryption {1, 2, 840, 113549, 1, 1, 1}
-  @sha256_with_rsa {1, 2, 840, 113549, 1, 1, 11}
+  @rsa_encryption {1, 2, 840, 113_549, 1, 1, 1}
+  @sha256_with_rsa {1, 2, 840, 113_549, 1, 1, 11}
   @ext_basic_constraints {2, 5, 29, 19}
   @ext_key_usage {2, 5, 29, 15}
   @ext_ext_key_usage {2, 5, 29, 37}
@@ -89,16 +89,28 @@ defmodule Newbee.Web.Cert do
     spki = {:SubjectPublicKeyInfo, key_alg, :public_key.der_encode(:RSAPublicKey, pub)}
 
     extensions = [
-      ext(@ext_basic_constraints, true, :public_key.der_encode(:BasicConstraints, {:BasicConstraints, false, :asn1_NOVALUE})),
+      ext(
+        @ext_basic_constraints,
+        true,
+        :public_key.der_encode(:BasicConstraints, {:BasicConstraints, false, :asn1_NOVALUE})
+      ),
       ext(@ext_key_usage, true, :public_key.der_encode(:KeyUsage, [:digitalSignature, :keyEncipherment])),
       ext(@ext_ext_key_usage, :asn1_DEFAULT, :public_key.der_encode(:ExtKeyUsageSyntax, [@eku_server_auth])),
-      ext(@ext_san, :asn1_DEFAULT, :public_key.der_encode(:SubjectAltName, [dNSName: "newbee.local", dNSName: "localhost", iPAddress: <<127, 0, 0, 1>>]))
+      ext(
+        @ext_san,
+        :asn1_DEFAULT,
+        :public_key.der_encode(:SubjectAltName,
+          dNSName: "newbee.local",
+          dNSName: "localhost",
+          iPAddress: <<127, 0, 0, 1>>
+        )
+      )
     ]
 
     tbs =
       {:TBSCertificate, :v3, :rand.uniform(0xFFFFFFFFFFFF), sig_alg, name,
-       {:Validity, utc(now - 60), utc(now + @validity_days * 86400)}, name, spki,
-       :asn1_NOVALUE, :asn1_NOVALUE, extensions}
+       {:Validity, utc(now - 60), utc(now + @validity_days * 86400)}, name, spki, :asn1_NOVALUE, :asn1_NOVALUE,
+       extensions}
 
     tbs_der = :public_key.der_encode(:TBSCertificate, tbs)
     sig = :public_key.sign(tbs_der, :sha256, key)
@@ -106,6 +118,7 @@ defmodule Newbee.Web.Cert do
   end
 
   defp ext(oid, critical, der), do: {:Extension, oid, critical, der}
-  defp utc(ts), do: {:utcTime, ts |> DateTime.from_unix!() |> Calendar.strftime("%y%m%d%H%M%SZ") |> String.to_charlist()}
 
+  defp utc(ts),
+    do: {:utcTime, ts |> DateTime.from_unix!() |> Calendar.strftime("%y%m%d%H%M%SZ") |> String.to_charlist()}
 end

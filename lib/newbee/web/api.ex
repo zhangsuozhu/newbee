@@ -52,8 +52,7 @@ defmodule Newbee.Web.Api do
     :exit, reason ->
       Logger.error("rpc #{method} exit: #{Exception.format_exit(reason)}")
 
-      {:error, "internal_exit",
-       "内部调用超时或进程退出（服务繁忙/会话进程卡死）: #{Exception.format_exit(reason)}"}
+      {:error, "internal_exit", "内部调用超时或进程退出（服务繁忙/会话进程卡死）: #{Exception.format_exit(reason)}"}
   end
 
   # 便捷 GET：会话列表 / 健康检查（不进 RPC 信封，等价 dsh downloads 的 GET 面）
@@ -148,6 +147,7 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("session.create", p) do
     sid = p["sessionId"]
+
     case Newbee.Web.Session.ensure(blank_to_nil(sid), blank_to_nil(p["cwd"])) do
       {:ok, _pid, sid} -> {:ok, %{sessionId: sid, cwd: Newbee.Session.cwd(sid)}}
       {:error, r} -> {:error, "session_error", inspect(r)}

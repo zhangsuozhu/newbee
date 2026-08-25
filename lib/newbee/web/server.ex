@@ -75,7 +75,7 @@ defmodule Newbee.Web.Server do
         case Newbee.Web.Cert.ensure() do
           {:ok, %{cert: cert, key_der: key_der}} ->
             # 内存传 key 绕开 :ssl 对无密码 PEM 的 wrong_password 误判
-            base ++ [certfile: String.to_charlist(cert), key: {:"RSAPrivateKey", key_der}]
+            base ++ [certfile: String.to_charlist(cert), key: {:RSAPrivateKey, key_der}]
 
           {:error, reason} ->
             raise "无法准备 HTTPS 证书: " <> inspect(reason)

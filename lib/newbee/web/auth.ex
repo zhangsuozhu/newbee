@@ -100,7 +100,11 @@ defmodule Newbee.Web.Auth do
   defp loopback?(_), do: false
 
   defp parse_ip(str) do
-    str |> String.trim() |> String.to_charlist() |> :inet.parse_address() |> case do
+    str
+    |> String.trim()
+    |> String.to_charlist()
+    |> :inet.parse_address()
+    |> case do
       {:ok, tuple} -> {:ok, tuple}
       _ -> :error
     end
@@ -120,13 +124,24 @@ defmodule Newbee.Web.Auth do
     now = System.system_time(:millisecond)
 
     case get({:token, token}) do
-      nil -> {:error, :invalid}
+      nil ->
+        {:error, :invalid}
 
       %{created: created, last_seen: last} ->
         cond do
-          now - created > @absolute_ttl_ms -> delete({:token, token}); persist_sessions(); {:error, :expired}
-          now - last > @sliding_ttl_ms -> delete({:token, token}); persist_sessions(); {:error, :expired}
-          true -> put({:token, token}, %{created: created, last_seen: now}); :ok
+          now - created > @absolute_ttl_ms ->
+            delete({:token, token})
+            persist_sessions()
+            {:error, :expired}
+
+          now - last > @sliding_ttl_ms ->
+            delete({:token, token})
+            persist_sessions()
+            {:error, :expired}
+
+          true ->
+            put({:token, token}, %{created: created, last_seen: now})
+            :ok
         end
     end
   end
@@ -141,10 +156,14 @@ defmodule Newbee.Web.Auth do
 
   defp revoke_all_tokens do
     ensure_table()
-    @table |> :ets.tab2list() |> Enum.each(fn
+
+    @table
+    |> :ets.tab2list()
+    |> Enum.each(fn
       {{:token, _} = k, _} -> :ets.delete(@table, k)
       _ -> :ok
     end)
+
     persist_sessions()
   end
 
@@ -152,7 +171,9 @@ defmodule Newbee.Web.Auth do
     ensure_table()
 
     sessions =
-      @table |> :ets.tab2list() |> Enum.flat_map(fn
+      @table
+      |> :ets.tab2list()
+      |> Enum.flat_map(fn
         {{:token, tok}, %{created: c, last_seen: l}} -> [%{"token" => tok, "created" => c, "last_seen" => l}]
         _ -> []
       end)
@@ -173,15 +194,21 @@ defmodule Newbee.Web.Auth do
             now = System.system_time(:millisecond)
 
             Enum.each(list, fn
-              %{"token" => tok, "created" => c, "last_seen" => l} when is_binary(tok) and is_number(c) and is_number(l) ->
-                if now - c <= @absolute_ttl_ms and now - l <= @sliding_ttl_ms, do: put({:token, tok}, %{created: c, last_seen: l})
-              _ -> :ok
+              %{"token" => tok, "created" => c, "last_seen" => l}
+              when is_binary(tok) and is_number(c) and is_number(l) ->
+                if now - c <= @absolute_ttl_ms and now - l <= @sliding_ttl_ms,
+                  do: put({:token, tok}, %{created: c, last_seen: l})
+
+              _ ->
+                :ok
             end)
 
-          _ -> :ok
+          _ ->
+            :ok
         end
 
-      _ -> :ok
+      _ ->
+        :ok
     end
 
     :ok
@@ -255,7 +282,9 @@ defmodule Newbee.Web.Auth do
 
       %{text: text, expires: exp} ->
         delete({:captcha, id})
-        System.system_time(:millisecond) <= exp and Plug.Crypto.secure_compare(text, String.downcase(String.trim(answer)))
+
+        System.system_time(:millisecond) <= exp and
+          Plug.Crypto.secure_compare(text, String.downcase(String.trim(answer)))
     end
   end
 
@@ -329,31 +358,61 @@ defmodule Newbee.Web.Auth do
         y = 30 + :rand.uniform(6) - 3
         rot = :rand.uniform(50) - 25
         size = 22 + :rand.uniform(6)
-        "<text x=\"" <> Integer.to_string(x) <> "\" y=\"" <> Integer.to_string(y) <>
-          "\" transform=\"rotate(" <> Integer.to_string(rot) <> " " <> Integer.to_string(x) <>
-          " " <> Integer.to_string(y) <> ")\" font-family=\"monospace\" font-size=\"" <>
-          Integer.to_string(size) <> "\" font-weight=\"700\" fill=\"" <> svg_color(60, 150) <>
+
+        "<text x=\"" <>
+          Integer.to_string(x) <>
+          "\" y=\"" <>
+          Integer.to_string(y) <>
+          "\" transform=\"rotate(" <>
+          Integer.to_string(rot) <>
+          " " <>
+          Integer.to_string(x) <>
+          " " <>
+          Integer.to_string(y) <>
+          ")\" font-family=\"monospace\" font-size=\"" <>
+          Integer.to_string(size) <>
+          "\" font-weight=\"700\" fill=\"" <>
+          svg_color(60, 150) <>
           "\">" <> ch <> "</text>"
       end)
 
     noise_lines =
       for _ <- 1..4 do
-        "<line x1=\"" <> Integer.to_string(:rand.uniform(width)) <> "\" y1=\"" <>
-          Integer.to_string(:rand.uniform(height)) <> "\" x2=\"" <> Integer.to_string(:rand.uniform(width)) <>
-          "\" y2=\"" <> Integer.to_string(:rand.uniform(height)) <> "\" stroke=\"" <> svg_color(120, 200) <>
+        "<line x1=\"" <>
+          Integer.to_string(:rand.uniform(width)) <>
+          "\" y1=\"" <>
+          Integer.to_string(:rand.uniform(height)) <>
+          "\" x2=\"" <>
+          Integer.to_string(:rand.uniform(width)) <>
+          "\" y2=\"" <>
+          Integer.to_string(:rand.uniform(height)) <>
+          "\" stroke=\"" <>
+          svg_color(120, 200) <>
           "\" stroke-width=\"1.4\"/>"
       end
 
     noise_dots =
       for _ <- 1..25 do
-        "<circle cx=\"" <> Integer.to_string(:rand.uniform(width)) <> "\" cy=\"" <>
-          Integer.to_string(:rand.uniform(height)) <> "\" r=\"" <> Float.to_string((:rand.uniform(15) + 5) / 10) <>
+        "<circle cx=\"" <>
+          Integer.to_string(:rand.uniform(width)) <>
+          "\" cy=\"" <>
+          Integer.to_string(:rand.uniform(height)) <>
+          "\" r=\"" <>
+          Float.to_string((:rand.uniform(15) + 5) / 10) <>
           "\" fill=\"" <> svg_color(100, 190) <> "\"/>"
       end
 
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" <> Integer.to_string(width) <> "\" height=\"" <>
-      Integer.to_string(height) <> "\" viewBox=\"0 0 " <> Integer.to_string(width) <> " " <> Integer.to_string(height) <>
-      "\"><rect width=\"100%\" height=\"100%\" fill=\"" <> svg_color(230, 245) <> "\"/>" <>
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" <>
+      Integer.to_string(width) <>
+      "\" height=\"" <>
+      Integer.to_string(height) <>
+      "\" viewBox=\"0 0 " <>
+      Integer.to_string(width) <>
+      " " <>
+      Integer.to_string(height) <>
+      "\"><rect width=\"100%\" height=\"100%\" fill=\"" <>
+      svg_color(230, 245) <>
+      "\"/>" <>
       Enum.join(noise_lines) <> Enum.join(noise_dots) <> Enum.join(glyphs) <> "</svg>"
   end
 
@@ -374,7 +433,8 @@ defmodule Newbee.Web.Auth do
           _ -> %{}
         end
 
-      _ -> %{}
+      _ ->
+        %{}
     end
   rescue
     _ -> %{}
@@ -396,7 +456,8 @@ defmodule Newbee.Web.Auth do
           ArgumentError -> @table
         end
 
-      _ -> @table
+      _ ->
+        @table
     end
   end
 
