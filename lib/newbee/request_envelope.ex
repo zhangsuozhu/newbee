@@ -72,12 +72,46 @@ defmodule Newbee.RequestEnvelope do
     _ -> nil
   end
 
-  @doc "命中资格：快照存在且 route（base_url + model）与当前 client 一致。"
+  @doc """
+  命中资格：快照存在且 route（base_url + model + tools）与当前 client 一致。
+
+  tools 一致性保证摘要请求与路由请求落在同一 provider 缓存条目：工具 schema
+  升级后旧快照的 tools 与当前请求不同，回放旧 tools 命不中新缓存域，故视为
+  失配走抽取路径（下一轮真实请求 record 新快照后恢复命中）。
+  """
   def hit_eligible?(env, %Newbee.LLM.Client{} = client) when is_map(env) do
-    env["base_url"] == client.base_url and env["model"] == client.model
+    env["base_url"] == client.base_url and
+      env["model"] == client.model and
+      tools_current?(env["tools"])
   end
 
   def hit_eligible?(_env, _client), do: false
+
+  # 用键序无关指纹比较：快照 tools 可能来自 JSON 解码（字符串键）或直接构造
+  # （原子键），map 键序与列表顺序都不可靠，递归排序键后按编码字节比较。
+
+  defp canon_tools(tools) do
+    tools |> Enum.map(&canon_json/1) |> Enum.sort() |> Enum.join("|")
+  end
+
+  # 键序无关指纹：map → 排序键的 JSON 片段（内嵌值用 JSON 编码），list → 元素指纹连接。
+  defp canon_json(%{} = m) do
+    m
+    |> Map.to_list()
+    |> Enum.sort_by(fn {k, _} -> to_string(k) end)
+    |> Enum.map(fn {k, v} -> to_string(k) <> "=" <> canon_json(v) end)
+    |> Enum.join(",")
+  end
+
+  defp canon_json(v) when is_list(v), do: Enum.map(v, &canon_json/1) |> Enum.join(";")
+
+  defp canon_json(v), do: Jason.encode!(v)
+
+  defp tools_current?(tools) when is_list(tools) do
+    canon_tools(tools) == canon_tools(Newbee.Codec.tools())
+  end
+
+  defp tools_current?(_), do: false
 
   @doc "快照文件路径（测试/诊断用）。"
   def path(%Newbee.Session{} = session), do: path_for(session)

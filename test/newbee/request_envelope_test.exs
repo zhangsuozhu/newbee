@@ -25,7 +25,7 @@ defmodule Newbee.RequestEnvelopeTest do
   end
 
   defp msgs, do: [%{"role" => "system", "content" => "S"}, %{"role" => "user", "content" => "U"}]
-  defp tools, do: [%{"type" => "function", "function" => %{"name" => "run_elixir"}}]
+  defp tools, do: Newbee.Codec.tools()
 
   test "record → load 往返，字段齐全且消息深比较一致", %{session: s} do
     assert :ok = RequestEnvelope.record(s, client(), msgs(), tools())
@@ -34,7 +34,8 @@ defmodule Newbee.RequestEnvelopeTest do
     assert env["version"] == 1
     assert env["base_url"] == "http://localhost"
     assert env["model"] == "test/model"
-    assert env["tools"] == tools()
+    assert length(env["tools"]) == length(tools())
+    assert RequestEnvelope.hit_eligible?(env, client())
     assert env["messages"] == msgs()
     assert env["message_count"] == 2
     assert is_binary(env["sha256"])
@@ -67,6 +68,9 @@ defmodule Newbee.RequestEnvelopeTest do
     assert RequestEnvelope.hit_eligible?(env, client())
     refute RequestEnvelope.hit_eligible?(env, client(model: "other"))
     refute RequestEnvelope.hit_eligible?(env, client(base_url: "http://other"))
+    # tools 失配（工具 schema 升级）：回放旧 tools 命不中新缓存域 → 失配
+    stale_env = %{env | "tools" => [%{"type" => "function", "function" => %{"name" => "run_elixir"}}]}
+    refute RequestEnvelope.hit_eligible?(stale_env, client())
   end
 
   test "record no-op：非 LLM client 或不落文件", %{session: s} do

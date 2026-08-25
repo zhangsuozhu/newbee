@@ -801,7 +801,9 @@ defmodule Newbee.Archive do
   # 消息与 tools 与快照逐字节一致（不截断/不降维），是严格前缀。
   defp llm_digest_replay(client, env, seg_id) do
     prefix = env["messages"] || []
-    tools = env["tools"] || []
+    # tools 固定用当前 Codec（与路由请求 stream_chat 同源），保证请求体与路由一致；
+    # env["tools"] 仅用于 hit_eligible? 一致性校验（A3），不用作请求体来源。
+    tools = Newbee.Codec.tools()
 
     request =
       prefix ++
@@ -814,7 +816,7 @@ defmodule Newbee.Archive do
         " hit-path messages=" <> Integer.to_string(length(request)) <> " tools=" <> Integer.to_string(length(tools))
     )
 
-    case Newbee.LLM.Client.complete(client, request, tools: tools, extra: %{max_tokens: 500}) do
+    case Newbee.LLM.Client.complete(client, request, tools: tools, temperature: nil, extra: %{max_tokens: 500}) do
       {:ok, content, _} ->
         text = content |> String.trim() |> String.slice(0, @digest_max_chars)
         if text == "", do: {:error, :empty_digest}, else: {:ok, text}

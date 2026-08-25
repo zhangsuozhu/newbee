@@ -315,6 +315,8 @@ defmodule Newbee.ArchiveTest do
     assert List.last(request)["content"] =~ "不要调用工具"
     assert_received {:digest_tools, tools}
     assert tools == Jason.decode!(Jason.encode!(Newbee.Codec.tools()))
+    # A26 修复：摘要请求与路由请求参数对齐——不写 temperature（stream_chat 也不写）
+    assert_received {:digest_has_temperature, false}
     assert Archive.digests(s)[seg] =~ "回放摘要"
   end
 
@@ -352,7 +354,7 @@ defmodule Newbee.ArchiveTest do
       "version" => 1,
       "base_url" => "http://localhost",
       "model" => "test/digest-model",
-      "tools" => [],
+      "tools" => Newbee.Codec.tools(),
       "messages" => [%{"role" => "system", "content" => "BASE"}] ++ List.flatten(conv(6)),
       "message_count" => 19,
       "sha256" => "x"
@@ -371,7 +373,7 @@ defmodule Newbee.ArchiveTest do
       "version" => 1,
       "base_url" => "http://localhost",
       "model" => "test/digest-model",
-      "tools" => [],
+      "tools" => Newbee.Codec.tools(),
       "messages" => [%{"role" => "system", "content" => "BASE"}] ++ summary_view,
       "message_count" => length(summary_view) + 1,
       "sha256" => "x"
@@ -398,6 +400,7 @@ defmodule Newbee.ArchiveTest do
       req = Jason.decode!(body)
       send(test_pid, {:digest_request, req["messages"]})
       send(test_pid, {:digest_tools, req["tools"]})
+      send(test_pid, {:digest_has_temperature, Map.has_key?(req, "temperature")})
 
       Req.Test.json(conn, %{
         "choices" => [
