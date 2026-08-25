@@ -1,17 +1,17 @@
 defmodule Newbee.Web.Router do
   @moduledoc """
-  WebUI 顶层路由（等价 dsh webserver 的路由分派 + frontend-static 的 fallback）：
+  WebUI 顶层路由：API(RPC) + WebSocket + 静态资源(SPA fallback)。
 
-  - `POST /api/*`、`GET /api/sessions|health` → Newbee.Web.Api（RPC 面）
-  - `GET /ws`（upgrade）→ Newbee.Web.Socket（事件下行）
-  - 其余 → priv/web 静态资源，SPA fallback 到 index.html
+  ## 认证（远程强制 / 本地免）
+  pipeline 顶部 require_auth：绑定回环地址（本地）时全放行；绑定非回环地址
+  （远程暴露）时，除 auth.login/auth.setup/auth.captcha/auth.status 与静态资源外，
+  一律要求 Authorization: Bearer <token>（WebSocket 用 ?token=），否则 401。
   """
   use Plug.Router
 
   plug(Plug.Logger)
-  # The web UI is frequently exposed through a local reverse proxy. Keep the
-  # browser-facing surface safe even when the proxy does not add these headers.
   plug(:security_headers)
+  plug(:require_auth)
   plug(:match)
   plug(:dispatch)
 
@@ -24,19 +24,70 @@ defmodule Newbee.Web.Router do
     |> halt()
   end
 
-  # API 子路由
   forward("/api", to: Newbee.Web.Api)
 
-  # 静态资源 + SPA fallback
   match _ do
     serve_static(conn)
   end
 
-  # Static assets live in source tree (lib/newbee/web/router.ex -> ../../priv/web).
-  # Using __DIR__ avoids :code.priv_dir failures when _build is missing/unsynced.
   @priv_web Path.expand("../../../priv/web", __DIR__)
+  @index Path.join(@priv_web, "index.html")
 
-    @index Path.join(@priv_web, "index.html")
+  # ── 认证 gate ──
+
+  @auth_free_prefixes ["/api/auth.", "/api/health"]
+
+  defp require_auth(conn, _opts) do
+    if Newbee.Web.Auth.auth_required?(bind_ip()) and not auth_free?(conn) do
+      case bearer_token(conn) do
+        {:ok, token} ->
+          case Newbee.Web.Auth.check_token(token) do
+            :ok -> conn
+            {:error, _} -> unauthorized(conn)
+          end
+
+        :error ->
+          unauthorized(conn)
+      end
+    else
+      conn
+    end
+  end
+
+  defp auth_free?(conn) do
+    path = conn.request_path
+
+    Enum.any?(@auth_free_prefixes, &String.starts_with?(path, &1)) or
+      not String.starts_with?(path, "/api")
+  end
+
+  defp bearer_token(conn) do
+    case get_req_header(conn, "authorization") do
+      ["Bearer " <> tok | _] -> {:ok, String.trim(tok)}
+      _ ->
+        conn = fetch_query_params(conn)
+
+        case conn.query_params["token"] do
+          t when is_binary(t) and byte_size(t) > 0 -> {:ok, t}
+          _ -> :error
+        end
+    end
+  end
+
+  defp unauthorized(conn) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(401, Jason.encode!(%{error: %{code: "unauthorized", message: "未登录或会话已过期"}}))
+    |> halt()
+  end
+
+  @doc "Server 启动时记录绑定 IP，供 require_auth 判断本地/远程。"
+  def set_bind_ip(ip), do: :persistent_term.put({__MODULE__, :bind_ip}, ip)
+
+  @doc "读取绑定 IP（供 API/require_auth 判断本地/远程）。"
+  def bind_ip, do: :persistent_term.get({__MODULE__, :bind_ip}, {127, 0, 0, 1})
+
+  # ── 静态资源 + SPA fallback ──
 
   defp serve_static(conn) do
     path = conn.request_path |> String.trim_leading("/")
@@ -44,7 +95,6 @@ defmodule Newbee.Web.Router do
     file = Path.join(@priv_web, path)
 
     cond do
-      # 目录穿越防护
       not inside_root?(Path.expand(file), Path.expand(@priv_web)) ->
         send_resp(conn, 403, "forbidden")
 
@@ -63,8 +113,6 @@ defmodule Newbee.Web.Router do
     end
   end
 
-  # A plain prefix check would treat /priv/web-evil as a child of
-  # /priv/web. Compare a path segment boundary instead.
   defp inside_root?(path, root) do
     path == root or String.starts_with?(path, root <> "/")
   end

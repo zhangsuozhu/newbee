@@ -238,6 +238,26 @@
   <button data-act="delete" class="danger"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> 删除</button>
 </div>
 
+<div id="login-overlay" class="login-overlay hidden">
+  <div class="login-box">
+    <div class="login-brand">
+      <svg class="ico" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8.5 5v8L12 21l-8.5-5V8L12 3z"/><path d="M8.5 10.5h7M8.5 13.5h7"/></svg>
+      <span>newbee</span>
+    </div>
+    <div id="login-title" class="login-title">登录</div>
+    <div class="login-field">
+      <input id="login-password" type="password" placeholder="密码" autocomplete="current-password" />
+    </div>
+    <div class="login-field login-captcha-row">
+      <input id="login-captcha" type="text" placeholder="验证码" autocomplete="off" spellcheck="false" />
+      <img id="login-captcha-img" class="login-captcha-img" title="点击刷新验证码" alt="验证码" />
+    </div>
+    <div id="login-error" class="login-error hidden"></div>
+    <button id="login-submit" class="btn-primary login-submit">登 录</button>
+    <div class="login-hint">远程访问已启用安全认证</div>
+  </div>
+</div>
+
 <script src="/app.js?v=lazy-session-1"></script>
 </body>
 </html>

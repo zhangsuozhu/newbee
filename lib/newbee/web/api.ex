@@ -72,6 +72,48 @@ defmodule Newbee.Web.Api do
 
   # ── method 分派 ──
 
+  # ── 认证域（远程暴露时强制；本地回环免认证）──
+
+  defp dispatch_rpc("auth.status", _p) do
+    {:ok, %{password_set: Newbee.Web.Auth.password_set?()}}
+  end
+
+  defp dispatch_rpc("auth.captcha", _p) do
+    cap = Newbee.Web.Auth.gen_captcha()
+    {:ok, %{captchaId: cap.id, svg: cap.svg}}
+  end
+
+  defp dispatch_rpc("auth.setup", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        case Newbee.Web.Auth.setup(p) do
+          {:ok, token} -> {:ok, %{token: token}}
+          {:error, code, msg} -> {:error, code, msg}
+        end
+
+      {:error, _ms} ->
+        {:error, "locked", "操作过于频繁，请稍后重试"}
+    end
+  end
+
+  defp dispatch_rpc("auth.setup", p), do: dispatch_rpc("auth.setup", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  defp dispatch_rpc("auth.login", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.login(p, ip) do
+      {:ok, token} -> {:ok, %{token: token}}
+      {:error, code, msg} -> {:error, code, msg}
+    end
+  end
+
+  defp dispatch_rpc("auth.login", p), do: dispatch_rpc("auth.login", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  defp dispatch_rpc("auth.logout", %{"__token__" => tok}) do
+    Newbee.Web.Auth.revoke_token(tok)
+    {:ok, %{logged_out: true}}
+  end
+
+  defp dispatch_rpc("auth.logout", _p), do: {:ok, %{logged_out: true}}
+
   # 会话域
   defp dispatch_rpc("session.list", p) do
     # 分页：limit 默认 50（上限 200），offset 默认 0；total 供前端算“加载更多”
@@ -419,6 +461,8 @@ defmodule Newbee.Web.Api do
        cwd: File.cwd!(),
        model: current_model_label(),
        policy: Newbee.Environment.Autonomy.get(),
+       auth_required: Newbee.Web.Auth.auth_required?(Newbee.Web.Router.bind_ip()),
+       password_set: Newbee.Web.Auth.password_set?(),
        version: "0.1.0"
      }}
   end

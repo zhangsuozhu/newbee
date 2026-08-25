@@ -1537,3 +1537,40 @@ svg.ico {
 }
 .ctx-editor button:hover { background: var(--nb-bg-panel); color: var(--nb-label-1); }
 .ctx-editor .ctx-save { color: var(--nb-accent-soft); border-color: var(--nb-accent); }
+
+/* ── 登录遮罩（远程认证）── */
+.login-overlay {
+  position: fixed; inset: 0; z-index: 2000;
+  background: var(--bg, #0f1115);
+  display: flex; align-items: center; justify-content: center;
+}
+.login-overlay.hidden { display: none; }
+.login-box {
+  width: 320px; padding: 32px 28px; border-radius: 14px;
+  background: var(--panel, #171a21); border: 1px solid var(--border, #2a2e3a);
+  box-shadow: 0 8px 40px rgba(0,0,0,.4);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.login-brand {
+  display: flex; align-items: center; gap: 10px; justify-content: center;
+  font-size: 20px; font-weight: 700; color: var(--fg, #e6e8ee);
+}
+.login-title { text-align: center; font-size: 15px; color: var(--fg-dim, #9aa0ae); }
+.login-field input {
+  width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border, #2a2e3a); background: var(--bg, #0f1115);
+  color: var(--fg, #e6e8ee); font-size: 14px; outline: none;
+}
+.login-field input:focus { border-color: var(--accent, #4f8cff); }
+.login-captcha-row { display: flex; gap: 8px; }
+.login-captcha-row input { flex: 1; }
+.login-captcha-img {
+  width: 110px; height: 40px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border, #2a2e3a); background: #fff; flex-shrink: 0;
+}
+.login-error {
+  color: #ff6b6b; font-size: 13px; text-align: center; min-height: 18px;
+}
+.login-error.hidden { display: none; }
+.login-submit { width: 100%; padding: 10px; border-radius: 8px; font-size: 15px; letter-spacing: 4px; }
+.login-hint { text-align: center; font-size: 12px; color: var(--fg-dim, #9aa0ae); }

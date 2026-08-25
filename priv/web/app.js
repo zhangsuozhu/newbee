@@ -199,6 +199,7 @@ const flow = $("flow");
 
   const state = {
     sid: localStorage.getItem("newbee.sid") || null,
+    token: localStorage.getItem("newbee.token") || null,
     ws: null,
     busy: false,
     creatingSession: false,  // 新建会话防重入：点击后立即切换 UI，后台完成 RPC
@@ -238,11 +239,19 @@ const flow = $("flow");
   let rpcSeq = 0;
   async function rpc(method, payload) {
     const rpcId = `web-${Date.now()}-${rpcSeq++}`;
+    const headers = { "content-type": "application/json" };
+    if (state.token) headers["authorization"] = "Bearer " + state.token;
     const res = await fetch(`/api/${method}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify({ rpcId, method, payload }),
     });
+    if (res.status === 401) {
+      // 未登录/会话过期：清 token，弹登录遮罩，后续由登录流程接管
+      setToken(null);
+      showLogin();
+      throw new Error("未登录或会话已过期");
+    }
     const text = await res.text();
     if (!text) throw new Error(`服务返回空响应 (HTTP ${res.status})`);
     let body;
@@ -282,7 +291,9 @@ const flow = $("flow");
     }
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const boundSid = state.sid;          // 本连接绑定的会话（闭包固定，防切换后旧帧串入）
-    const ws = new WebSocket(`${proto}://${location.host}/ws?session=${encodeURIComponent(state.sid)}`);
+    let wsUrl = `${proto}://${location.host}/ws?session=${encodeURIComponent(state.sid)}`;
+    if (state.token) wsUrl += `&token=${encodeURIComponent(state.token)}`;
+    const ws = new WebSocket(wsUrl);
     state.ws = ws;
     ws.onmessage = (e) => {
       if (ws !== state.ws) return; // 过期连接的事件直接丢
@@ -2918,8 +2929,80 @@ case "goal_round": break;
     }
   }
 
-  // ── 启动 ──
-  (async () => {
+
+  // ── 登录认证（远程模式）──
+  function setToken(tok) {
+    state.token = tok;
+    try {
+      if (tok) localStorage.setItem("newbee.token", tok);
+      else localStorage.removeItem("newbee.token");
+    } catch (e) {}
+  }
+  function showLogin() {
+    const ov = $("login-overlay");
+    if (ov) ov.classList.remove("hidden");
+    refreshCaptcha();
+    const pw = $("login-password");
+    if (pw) setTimeout(() => pw.focus(), 50);
+  }
+  function hideLogin() {
+    const ov = $("login-overlay");
+    if (ov) ov.classList.add("hidden");
+    loginError("");
+  }
+  function loginError(msg) {
+    const el = $("login-error");
+    if (!el) return;
+    if (msg) { el.textContent = msg; el.classList.remove("hidden"); }
+    else { el.textContent = ""; el.classList.add("hidden"); }
+  }
+  async function refreshCaptcha() {
+    try {
+      const r = await rpc("auth.captcha", {});
+      const img = $("login-captcha-img");
+      if (img && r.svg) {
+        img.dataset.captchaId = r.captchaId;
+        img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(r.svg)));
+      }
+    } catch (e) { /* 后端可能未要求认证 */ }
+  }
+  async function submitLogin() {
+    const pw = ($("login-password") || {}).value || "";
+    const cap = ($("login-captcha") || {}).value || "";
+    const capId = (($("login-captcha-img") || {}).dataset || {}).captchaId || "";
+    loginError("");
+    if (!pw) { loginError("请输入密码"); return; }
+    try {
+      const st = await rpc("auth.status", {});
+      let r;
+      if (!st.password_set) {
+        r = await rpc("auth.setup", { password: pw });
+      } else {
+        r = await rpc("auth.login", { password: pw, captchaId: capId, captcha: cap });
+      }
+      setToken(r.token);
+      hideLogin();
+      bootApp();
+    } catch (e) {
+      loginError(e.message || "登录失败");
+      refreshCaptcha();
+      const capEl = $("login-captcha");
+      if (capEl) capEl.value = "";
+    }
+  }
+  function initLogin() {
+    const sub = $("login-submit");
+    if (sub) sub.addEventListener("click", submitLogin);
+    const capImg = $("login-captcha-img");
+    if (capImg) capImg.addEventListener("click", refreshCaptcha);
+    for (const id of ["login-password", "login-captcha"]) {
+      const el = $(id);
+      if (el) el.addEventListener("keydown", (e) => { if (e.key === "Enter") submitLogin(); });
+    }
+  }
+
+  // 实际启动逻辑（登录成功后或免认证时调用）
+  async function bootApp() {
     initTheme();
     initSidebar();
     initEvolution();
@@ -2936,5 +3019,28 @@ case "goal_round": break;
     }
     loadSessions();
     startStats();
+  }
+
+  // ── 启动 ──
+  (async () => {
+    initLogin();
+    let needAuth = false;
+    try {
+      const host = await rpc("host.describe", {});
+      needAuth = !!host.auth_required;
+      if (needAuth && state.token) {
+        hideLogin();
+        await bootApp();
+        return;
+      }
+    } catch (e) {
+      if (String(e.message).includes("未登录")) { needAuth = true; }
+    }
+    if (needAuth) {
+      showLogin();
+    } else {
+      hideLogin();
+      await bootApp();
+    }
   })().catch((e) => line("error", `启动失败: ${e.message}`));
 })();

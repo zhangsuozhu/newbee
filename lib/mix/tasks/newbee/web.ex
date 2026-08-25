@@ -1,9 +1,25 @@
 defmodule Mix.Tasks.Newbee.Web do
   @shortdoc "启动 newbee WebUI（浏览器界面）"
   @moduledoc """
-  启动 newbee WebUI：`mix newbee.web [port]`（默认 127.0.0.1:4173）。
+  启动 newbee WebUI：`mix newbee.web [options]`。
 
-  浏览器打开 http://127.0.0.1:4173 即可使用。等价 dsh 的 `dsh web`。
+  ## 选项
+    --host HOST         绑定地址（默认 127.0.0.1；0.0.0.0 暴露到局域网/公网）
+    --port PORT         端口（默认 4173）
+    --https             启用 HTTPS（自签 Ed25519 证书，首启自动生成于 ~/.newbee/web/）
+    --certfile PATH     使用自己的证书（与 --https 同用；需配 --keyfile）
+    --keyfile PATH      自己的私钥
+    --redirect          另起 HTTP→HTTPS 308 重定向（需配 --https）
+    --redirect-port N   重定向用的 HTTP 端口（默认 80）
+    --set-password      交互式设置/修改登录密码（远程访问的凭证）
+    --password PW       直接设置密码（脚本/测试用）
+
+  ## 安全模型
+  - 绑定回环地址（默认 127.0.0.1）：本地零摩擦，无需登录，HTTP 即可。
+  - 绑定非回环地址（如 0.0.0.0，远程暴露）：强制登录 + 图形验证码防暴破，
+    强烈建议配 --https（或用反代终止 TLS）。
+
+  浏览器打开 http(s)://HOST:PORT 即可使用。
   """
   use Mix.Task
 
@@ -11,27 +27,118 @@ defmodule Mix.Tasks.Newbee.Web do
   def run(args) do
     Newbee.Cwd.apply!()
 
-    port =
-      case args do
-        [p | _] -> String.to_integer(p)
-        [] -> 4173
-      end
+    {opts, _argv, _} =
+      OptionParser.parse(args,
+        strict: [
+          host: :string,
+          port: :integer,
+          https: :boolean,
+          certfile: :string,
+          keyfile: :string,
+          redirect: :boolean,
+          redirect_port: :integer,
+          set_password: :boolean,
+          password: :string
+        ]
+      )
+
+    port = Keyword.get(opts, :port, 4173)
+    host = parse_host(Keyword.get(opts, :host, "127.0.0.1"))
+
+    maybe_set_password(opts)
 
     ensure_distributed!(port)
     Mix.Task.run("app.start")
 
-    {:ok, _} = Newbee.Web.Server.start_link(port: port, host: {127, 0, 0, 1})
+    https? = Keyword.get(opts, :https, false)
+    redirect? = Keyword.get(opts, :redirect, false)
 
-    IO.puts("\e[1mnewbee webui\e[0m 已启动：")
-    IO.puts("  \e[36mhttp://127.0.0.1:#{port}\e[0m")
-    IO.puts("\e[2mCtrl+C 退出\e[0m")
+    server_opts =
+      [port: port, host: host, https: https?]
+      |> maybe_put(:certfile, Keyword.get(opts, :certfile))
+      |> maybe_put(:keyfile, Keyword.get(opts, :keyfile))
 
-    # 前台挂起（mix task 语义：像 TUI 一样占住终端）
+    {:ok, _} = Newbee.Web.Server.start_link(server_opts)
+
+    if redirect? and https? do
+      rport = Keyword.get(opts, :redirect_port, 80)
+      {:ok, _} = Newbee.Web.Server.start_redirect(rport, port, host)
+      IO.puts("  http://" <> host_str(host) <> ":" <> Integer.to_string(rport) <> " → 重定向到 https")
+    end
+
+    scheme = if https?, do: "https", else: "http"
+    remote? = Newbee.Web.Auth.auth_required?(host)
+
+    IO.puts("\nnewbee webui 已启动：")
+    IO.puts("  " <> scheme <> "://" <> host_str(host) <> ":" <> Integer.to_string(port))
+
+    if remote? do
+      pw = if Newbee.Web.Auth.password_set?(), do: "（密码已设）", else: "（尚未设密码，请用 --set-password）"
+      IO.puts("  远程模式：已启用登录认证" <> pw)
+      unless https?, do: IO.puts("  警告：远程访问未启用 HTTPS，密码/数据明文传输！")
+    else
+      IO.puts("  本地模式（回环），免登录")
+    end
+
+    IO.puts("Ctrl+C 退出")
+
     Process.sleep(:infinity)
   end
 
-  # 启用分布式节点（OTP 热更/远程 RPC 的前提）。若未以 -sname/--name 启动，
-  # 用 Node.start 动态起分布式——节点名按端口派生避免冲突。
+  defp maybe_put(kw, _k, nil), do: kw
+  defp maybe_put(kw, k, v), do: Keyword.put(kw, k, v)
+
+  defp parse_host(str) do
+    case str |> String.to_charlist() |> :inet.parse_address() do
+      {:ok, ip} ->
+        ip
+
+      _ ->
+        case :inet.getaddr(String.to_charlist(str), :inet) do
+          {:ok, ip} -> ip
+          _ -> Mix.raise("无法解析 --host " <> str)
+        end
+    end
+  end
+
+  defp host_str({a, b, c, d}), do: Integer.to_string(a) <> "." <> Integer.to_string(b) <> "." <> Integer.to_string(c) <> "." <> Integer.to_string(d)
+  defp host_str(ip) when is_tuple(ip), do: ip |> :inet.ntoa() |> to_string()
+
+  defp maybe_set_password(opts) do
+    cond do
+      pw = Keyword.get(opts, :password) ->
+        case Newbee.Web.Auth.set_password(pw) do
+          :ok -> Mix.shell().info("[newbee.web] 登录密码已设置/更新")
+          {:error, msg} -> Mix.raise("设置密码失败: " <> msg)
+        end
+
+      Keyword.get(opts, :set_password, false) ->
+        pw1 = prompt_password("设置登录密码（≥6 位）: ")
+        pw2 = prompt_password("再次输入确认: ")
+
+        if pw1 == pw2 do
+          case Newbee.Web.Auth.set_password(pw1) do
+            :ok -> Mix.shell().info("[newbee.web] 登录密码已设置")
+            {:error, msg} -> Mix.raise("设置密码失败: " <> msg)
+          end
+        else
+          Mix.raise("两次输入不一致")
+        end
+
+      true ->
+        :ok
+    end
+  end
+
+  defp prompt_password(prompt) do
+    IO.write(:standard_error, prompt)
+    :io.setopts(:standard_io, echo: false)
+    line = IO.gets("")
+    :io.setopts(:standard_io, echo: true)
+    IO.puts(:standard_error, "")
+    String.trim(line || "")
+  end
+
   defp ensure_distributed!(port) do
     unless Node.alive?() do
       port_for_name = System.get_env("NEWBEE_WEB_PORT") || Integer.to_string(port)
