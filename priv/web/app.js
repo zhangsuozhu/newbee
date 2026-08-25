@@ -3054,3 +3054,34 @@ case "goal_round": break;
     }
   })().catch((e) => line("error", `启动失败: ${e.message}`));
 })();
+
+
+// ── 手机端适配增强 ──
+(function() {
+  function isMobile() { return window.matchMedia("(max-width: 768px)").matches; }
+
+  // 手机端默认收起侧栏（避免每次打开都占屏）
+  var prevSidebar = localStorage.getItem("newbee.sidebar");
+  if (isMobile() && prevSidebar === null) {
+    document.getElementById("app").classList.add("sidebar-collapsed");
+    var ex = document.getElementById("sidebar-expand");
+    if (ex) ex.classList.remove("hidden");
+  }
+
+  // 遮罩/侧栏外点击关闭（手机端）：
+  // 点在任何 #sidebar 外的内容区时收起；但排除侧栏内 toggle 触发（它本来就会收起）
+  document.addEventListener("click", function(e) {
+    var app = document.getElementById("app");
+    if (!isMobile() || app.classList.contains("sidebar-collapsed")) return;
+    var t = e.target;
+    if (!t.closest || t.closest("#sidebar") || t.closest("#sidebar-expand")) return;
+    applySidebar(true, true);
+  });
+
+  // 播放时旋转到横屏提醒（可选，轻量）
+  window.addEventListener("resize", function() {
+    if (isMobile()) {
+      // no-op: 保持 CSS 响应
+    }
+  });
+})();
