@@ -822,3 +822,16 @@ deopt 双通道序贯检验:
 | Jit.tce_hot_needs / tce_deopt_decision | `lib/newbee/environment/jit.ex` |
 
 零旁路原则：一切热度数据来自既有事件流投影，不新增观测通道。
+
+### 17.5 v2 深化（序贯检验与变化点检测）
+
+- **SPRT 化 deopt**（Wald 1945；Wald-Wolfowitz 最优性）：工具坏判定从单次后验尾部检验
+  升级为 Bernoulli 序贯概率比检验——两类错误 alpha/beta 约束下期望样本数最小。
+- **CUSUM 化漂移检测**（Page 1954）：频率漂移用单侧累积和 S=max(0,S+x-omega)，
+  ARL 由阈值 h 直接控制，对缓漂比快照检验敏感一个数量级。
+- **非对称置信区间**（omega-UCB 启发）：benefit 端 LCB、cost 端 UCB，排序分
+  = LCB(benefit) - UCB(C)，贴合预算语义。
+- **校准闭环实证**：蒙特卡洛验证 V1-V4（`tce_monte_carlo_test.exs`）证明
+  SPRT 误判率符合理论、CUSUM 平稳零误报、LCB 决策零噪声误选、校准误差单调下降。
+- 实现落位：`sequential.ex` / `pattern_stats.ex (net_asym, beta_quantile)` /
+  `tce_monte_carlo_test.exs`。BOCPD（run-length 后验）留作 v3 方向。
