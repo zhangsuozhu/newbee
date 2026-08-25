@@ -192,6 +192,33 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 
 ---
 
+## 🌐 WebUI（浏览器控制台，支持 HTTPS + 登录）
+
+浏览器里的工作台：文件浏览、git 操作（diff/checkpoint/PR）、agent 会话管理，走 JSON-RPC over HTTP/WebSocket。
+
+```bash
+# 本地（零摩擦，免登录）
+./bin/newbee web
+
+# 远程安全访问（HTTPS + 登录 + 图形验证码防暴破）
+./bin/newbee web --https --host 0.0.0.0 --set-password
+# 设置后每次访问：密码 + SVG 验证码登录拿 token → Bearer 认证
+```
+
+**安全模型：**
+- **本地（回环地址）免认证** —— 绑定 `127.0.0.1` 时全放行，开发零摩擦
+- **远程（非回环）强制认证** —— 除登录接口外一律要求 `Authorization: Bearer <token>`（WebSocket 用 `?token=`），未登录 `401`
+- **图形验证码防暴破** —— SVG 验证码 + 登录失败限流
+- **HTTPS 自签证书** —— RSA 2048，首启自动生成于 `~/.newbee/web/{cert,key}.pem`（私钥 `chmod 600`），零外部依赖
+- **自定义证书** —— `--certfile/--keyfile` 挂 mkcert/CA 证书；或反代（nginx/caddy）终止 TLS
+- **HTTP→HTTPS 重定向** —— `--redirect` 起一个只做 308 跳转的 HTTP server
+
+> ⚠️ 远程暴露**必须**配 `--https`（或反代 TLS），否则密码与 token 明文传输。浏览器首访自签证书会提示警告，点继续即可；要绿锁用 CA 签发证书或反代。
+
+---
+
+## 📦 项目结构 / Project Structure
+
 ## 📦 项目结构 / Project Structure
 
 ```

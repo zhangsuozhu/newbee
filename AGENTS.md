@@ -9,7 +9,7 @@
 
 ### main 分支保护规则（origin）
 - `required_approving_review_count = 1`：合并 PR 需要 1 个 approve
-- `required_linear_history = true`：线性历史，merge 用 rebase 方式
+- `required_linear_history = true`：线性历史；仓库禁 merge commit（405），实际 merge 用 **squash**
 - `enforce_admins = true`：admin 也不能绕过
 - `required_conversation_resolution = true`
 - `allow_force_pushes = false` / `allow_deletions = false`
@@ -23,10 +23,13 @@
    body 中 `required_pull_request_reviews.required_approving_review_count = 0`，
    其余字段保持原值（enforce_admins=true, required_linear_history=true, dismiss_stale_reviews=true, required_conversation_resolution=true, allow_force_pushes=false, allow_deletions=false)
 2. 确认 PR `mergeable_state == "clean"` 后：
-   PUT `/repos/zhangsuozhu/newbee/pulls/<n>/merge` body `{"merge_method":"rebase"}`
+   PUT `/repos/zhangsuozhu/newbee/pulls/<n>/merge` body `{"merge_method":"squash"}`
+   - 实测（PR #1/#2 都验证）：仓库禁 merge commit（405 "Merge commits are not allowed"）；
+     多分支共用旧 commit 时 rebase 会失败（"can't be rebased"，因 head 含 base 已在 main 的 sha）；
+     **squash 最稳**——净变更合成 1 个 commit，不与远端历史冲突
 3. **务必立刻恢复**：再 PUT 一次 protection，把 review count 改回 1
    （保护机制是安全基线，恢复后才能防住未来误推）
-4. 合并后 main 即更新，本地 `git pull` 拉取
+4. 合并后 main 即更新，本地 `git pull` 拉取（远端 sha 可能与本地不同——squash/rebase 重写历史，属正常）
 
 替代方案（未采用）：加第二个协作者账号用于 approve；或直接改规则长期为 0。
 
