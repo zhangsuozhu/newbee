@@ -777,3 +777,48 @@ lib/newbee/
 ---
 
 > **融合宣言**：DESIGN 回答"环境为什么能越用越聪明"，NEW_DESING 回答"环境的每次改变为什么可信"。统一之后，newbee 是**一台有版本、有质检、有记忆的认知 JIT 编译器**——它编译的不是代码，是它自己的智能。
+
+---
+
+## 17. 附录：认知 JIT 的分级编译经济学（TCE，2026-08 落地）
+
+> 设计文档：`docs/design-jit-economics/`（10 轮"设计→查证"闭环产物，证据链 r1–r10 + 总纲）。
+
+### 17.1 核心命题
+
+把 §8.5 认知 JIT 从"点估计启发式"升级为**不确定性下的在线投资决策系统**：
+
+- 每个模式维护三组共轭后验（`PatternStats`）：频率 Gamma(a,b)、成功率 Beta(α,β)、
+  节省幅度正态——全部充分统计量持久化，重启可恢复（`evaluations/pattern_stats.jsonl`）；
+- 群体先验经经验贝叶斯（EB）收缩个体小样本估计；
+- 时间衰减：有效样本量指数遗忘，均值保持、方差增大（近期分布权重更高）。
+
+### 17.2 决策判据
+
+```text
+编译: LCB(net) = E[λ]·E[save] − κ·σ(net) − C(pattern 复杂度) > 0 且 n ≥ min_samples
+      （LCB = 置信下界；κ 风险厌恶系数；小样本自然不决策）
+排序: 候选按 LCB/C 降序进 adapter 预算队列
+级联: E[save] = P(l3)·C_infer + P(l2_only)·(C_infer − C_l2)   （运行时便宜优先级联）
+deopt 双通道序贯检验:
+  工具坏: P(p < p_min | α,β) > conf 且频率未显著下降 → deopt 到 L2 候选（知识不丢）
+  分布漂移: E[λ] 相对编译时快照跌落 > hσ → dormant 冷层级，工具不降级
+```
+
+### 17.3 校准闭环（元学习）
+
+编译 Change 记录预测快照；实测回流结算相对平方误差（proper scoring rule，
+系统性高报无利可图）；滑窗内分数收敛性检查；偏差驱动编译成本估计上调
+（学习率 α 封顶 ×3）——环境对自身预测的预测越用越准。
+
+### 17.4 实现落位
+
+| 组件 | 文件 |
+|---|---|
+| PatternStats 纯函数库 | `lib/newbee/environment/pattern_stats.ex` |
+| PatternStore 投影/持久化 | `lib/newbee/environment/pattern_store.ex` |
+| Cascade 级联收益模型 | `lib/newbee/environment/cascade.ex` |
+| Calibration 校准投影 | `lib/newbee/environment/calibration.ex` |
+| Jit.tce_hot_needs / tce_deopt_decision | `lib/newbee/environment/jit.ex` |
+
+零旁路原则：一切热度数据来自既有事件流投影，不新增观测通道。
