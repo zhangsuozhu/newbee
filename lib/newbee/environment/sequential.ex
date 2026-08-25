@@ -49,9 +49,19 @@ defmodule Newbee.Environment.Sequential do
 
     %{state | s: s, decided: decided}
   end
+  @doc """
+  SPRT 决定后的滚动重置 [R8]：生产中一次判定不是终点——h0 后世界可能变坏、
+  h1 后修复可能恢复。重置清零证据，开启新一轮监控，rounds 记录已完成轮数。
+  """
+  def sprt_roll(%{decided: nil} = state), do: state
+
+  def sprt_roll(state) do
+    %{state | s: 0.0, decided: nil, n: 0, rounds: (state[:rounds] || 0) + 1}
+  end
+
 
   @doc "SPRT 初始状态。"
-  def sprt_init, do: %{s: 0.0, decided: nil, n: 0}
+  def sprt_init, do: %{s: 0.0, decided: nil, n: 0, rounds: 0}
 
   @doc "带计数的单步（n 记录已消耗样本数，供审计）。"
   def sprt_step_counted(state, ok?, opts \\ [])
