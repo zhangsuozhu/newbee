@@ -219,8 +219,6 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 
 ## 📦 项目结构 / Project Structure
 
-## 📦 项目结构 / Project Structure
-
 ```
 lib/newbee/
 ├── agent/          # Worker / Adapter / Explorer / Loop / Protocol / Progress
