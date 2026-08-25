@@ -256,11 +256,21 @@ defmodule Newbee.Environment.PatternStats do
   defp update_succ({alpha, beta}, true), do: {alpha + 1.0, beta}
   defp update_succ({alpha, beta}, false), do: {alpha, beta + 1.0}
 
-  @doc "节省幅度观测更新：均值增量式，k 计数，方差保守下界 1.0。"
+  @doc """
+  节省幅度观测更新 v2.2 (R7 Welford 在线方差)：s2 存真实样本方差而非常数下界，
+  使 LCB 的不确定性惩罚反映实际波动。否定之否定第二次否定的核心修正。
+  """
   def update_save({m, k, s2}, v) do
     k2 = k + 1.0
-    m2 = (v + k * m) / k2
-    {m2, k2, max(s2, 1.0)}
+    delta = v - m
+    m2 = m + delta / k2
+
+    if k < 1.0 do
+      {v * 1.0, k2, s2}
+    else
+      new_s2 = ((k - 1.0) * s2 + delta * (v - m2)) / k
+      {m2, k2, max(new_s2, 0.0)}
+    end
   end
 
   @doc "指数时间衰减 [D6]：充分统计量乘 gamma∈(0,1]，缩放后仍是合法共轭形态。"
@@ -316,13 +326,15 @@ defmodule Newbee.Environment.PatternStats do
     sd_l = freq_sd(s)
     e_s = max(save_mean(s), 0.0)
     n_s = max(save_n(s), 1.0)
-    sd_s = e_s * 0.5 / :math.sqrt(n_s)
+    sd_s = :math.sqrt(max(s2_of(s), 0.0))
     mean_net = e_l * e_s
     var_net = e_l * e_l * sd_s * sd_s + e_s * e_s * sd_l * sd_l
     mean_net - kappa * :math.sqrt(var_net) - compile_cost
   end
 
   defp save_n(%__MODULE__{save: {_m, k, _s2}}), do: k
+
+  defp s2_of(%__MODULE__{save: {_m, _k, s2}}), do: s2
 
   @doc """
   非对称区间净收益 [U3, omega-UCB 启发]：
@@ -337,7 +349,7 @@ defmodule Newbee.Environment.PatternStats do
     sd_l = freq_sd(s)
     e_s = max(save_mean(s), 0.0)
     n_s = max(save_n(s), 1.0)
-    sd_s = e_s * 0.5 / :math.sqrt(n_s)
+    sd_s = :math.sqrt(max(s2_of(s), 0.0))
 
     benefit_lcb = e_l * e_s - z * :math.sqrt(e_l * e_l * sd_s * sd_s + e_s * e_s * sd_l * sd_l)
     c_ucb = compile_cost * (1.0 + z * cost_cv / :math.sqrt(n_s))
