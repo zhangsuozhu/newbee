@@ -18,7 +18,8 @@ defmodule Newbee.Environment.PatternStoreTest do
 
     s = stats[key]
     assert s.n == 3
-    assert_in_delta PatternStats.succ_mean(s), 3.0 / 5.0, 1.0e-9
+    # 新语义[R3]: start 只记频率，result 才是成功，error 是失败
+    assert_in_delta PatternStats.succ_mean(s), 1.0 / 3.0, 1.0e-9
     assert PatternStats.save_mean(s) > 500.0
   end
 

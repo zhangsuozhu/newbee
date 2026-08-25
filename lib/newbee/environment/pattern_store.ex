@@ -88,8 +88,9 @@ defmodule Newbee.Environment.PatternStore do
 
   defp success_of(%{topic: :tool_error}), do: false
   defp success_of(%{"topic" => "tool_error"}), do: false
-  defp success_of(%{topic: :tool_start}), do: true
-  defp success_of(%{"topic" => "tool_start"}), do: true
+  # tool_start 只记频率不判成败；tool_result(完成)才是成功信号
+  defp success_of(%{topic: :tool_result}), do: true
+  defp success_of(%{"topic" => "tool_result"}), do: true
   defp success_of(_), do: nil
 
   defp count_of(%{count: c}) when is_number(c), do: c

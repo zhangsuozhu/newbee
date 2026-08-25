@@ -405,10 +405,14 @@ defmodule Newbee.Environment.PatternStats do
 
   # ═══════════════ Empirical Bayes 收缩 [D12] ═══════════════
 
-  @doc """
-  EB 收缩：个体小样本向群体均值收缩。
-  stats_list 为群体样本（用于矩估计群体均值与方差），target 为待收缩个体，
-  shrink ∈ [0,1]。群体样本 < 5 时不动 target。
+@doc """
+  EB 收缩（v2.1 James-Stein 标准形式 [R4]）：
+  shrunk_mu = w*m_bar + (1-w)*mu_i, 其中 w = var_m/(var_m+var_i)
+  （个体方差相对群体方差越小，越信任个体）。
+  收缩后方差同步折减（信息增加 → 不确定性下降）：
+    shrunk_var = (1-shrink*w) * var_i
+  Gamma(a,b) 重参数化: 给定目标 mu/var 反解 a=mu²/var, b=mu/var。
+  群体样本 < 5 时不动 target（EB 无群体信息可用）。
   """
   def eb_shrink(stats_list, %__MODULE__{} = target, shrink)
       when shrink >= 0.0 and shrink <= 1.0 do
@@ -424,10 +428,22 @@ defmodule Newbee.Environment.PatternStats do
         Enum.reduce(means, 0.0, fn m, acc -> acc + (m - m_bar) * (m - m_bar) end) /
           max(n - 1, 1)
 
-      w = var_m / (var_m + gamma_var(target.freq) + 1.0e-12)
-      shrunk_lambda = shrink * m_bar + (1.0 - shrink * w) * freq_mean(target)
-      {_a, b} = target.freq
-      %{target | freq: {shrunk_lambda * b, b}}
+      var_i = gamma_var(target.freq)
+      mu_i = freq_mean(target)
+
+      # James-Stein 权重: 个体方差越大(越不可信) → 越向群体收缩
+      w = var_i / (var_m + var_i + 1.0e-12)
+
+      eff = shrink * w
+      shrunk_mu = eff * m_bar + (1.0 - eff) * mu_i
+      shrunk_var = max((1.0 - eff), 0.05) * var_i
+
+      # Gamma 重参数化（mu>0 守卫）
+      mu_safe = max(shrunk_mu, 1.0e-6)
+      b_new = mu_safe / max(shrunk_var, 1.0e-12)
+      a_new = mu_safe * b_new
+
+      %{target | freq: {a_new, b_new}}
     end
   end
 end

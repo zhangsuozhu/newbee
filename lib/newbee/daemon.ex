@@ -37,7 +37,7 @@ defmodule Newbee.Daemon do
     end
 
     Process.send_after(self(), :evolve_tick, @evolve_interval)
-    {:ok, %{evolve_timer: nil, adapter_ref: nil, cycle_pending: false}}
+    {:ok, %{evolve_timer: nil, adapter_ref: nil, cycle_pending: false, error_times: []}}
   end
 
   @impl true
@@ -72,6 +72,25 @@ defmodule Newbee.Daemon do
     else
       timer = Process.send_after(self(), :evolve_debounced, @evolve_debounce)
       {:noreply, %{state | evolve_timer: timer}}
+    end
+  end
+
+  def handle_info({:newbee_event, :tool_error, _event}, state) do
+    # TCE [G2]: tool_error 风暴即时触发——10min heartbeat 对"坏工具持续烧钱"太慢。
+    # 滑窗计数: 60s 内 >=3 次错误 → debounce 触发进化（deopt/修复 need）。
+    now = System.monotonic_time(:millisecond)
+    window = [now | Map.get(state, :error_times, [])]
+              |> Enum.filter(fn t -> now - t < 60_000 end)
+
+    if length(window) >= 3 do
+      if state.evolve_timer do
+        {:noreply, %{state | error_times: window}}
+      else
+        timer = Process.send_after(self(), :evolve_debounced, @evolve_debounce)
+        {:noreply, %{state | evolve_timer: timer, error_times: []}}
+      end
+    else
+      {:noreply, %{state | error_times: window}}
     end
   end
 
