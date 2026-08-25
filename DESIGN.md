@@ -835,3 +835,23 @@ deopt 双通道序贯检验:
   SPRT 误判率符合理论、CUSUM 平稳零误报、LCB 决策零噪声误选、校准误差单调下降。
 - 实现落位：`sequential.ex` / `pattern_stats.ex (net_asym, beta_quantile)` /
   `tce_monte_carlo_test.exs`。BOCPD（run-length 后验）留作 v3 方向。
+
+### 17.6 v2.1（第三轮：场景界定、统计校准、端到端验证）
+
+- **应用场景界定**（docs/design-jit-economics/R1-scenarios.md）：TCE 在
+  周期进化/手动 /evolve 中是过滤器+排序器；worker need 只排序不过滤；
+  prompt_injection 安全域不参与。
+- **Token 归因收集器**（G1）：tool_start 无 token 字段、usage 在 LLM 层且无关联 ID——
+  PatternStore.Collector 订阅 Bus 维护工具名游标，usage 归因给最近工具，批量 flush。
+- **错误风暴即时触发**（G2）：60s 内 >=3 次 tool_error 即 debounce 进化，
+  弥补 10min heartbeat 对坏工具持续烧钱响应太慢。
+- **成功语义修正**（R3）：tool_start 只记频率不判成败（发起不等于成功）；
+  tool_result 才是成功信号——权限拒绝等不污染 deopt 判据。
+- **EB 收缩修正为 James-Stein 标准形式**（R4）：权重 w=var_i/(var_m+var_i)，
+  收缩后方差同步折减并重参数化 Gamma。
+- **SPRT 滚动重置**（R8）：一次判定不是终点，h0/h1 后重置证据继续监控；
+  400 步生命周期仿真验证缓慢劣化->检出->修复->恢复清白全链路。
+- **编译成本实证校准**（R6）：10k 事件基准下 compile_cost 从 5000 校准到 100_000
+  （46 候选 42 噪声 -> 5 热点 0 噪声）；移除 estimate_tokens=500 捏造默认。
+- **SPRT alpha 校准测量**（2000 trials）：健康误判率实测 2.5% < 标称 5%，
+  Wald 保守不等式成立。
