@@ -1637,23 +1637,48 @@ svg.ico {
   .wc-grid { grid-template-columns: 1fr 1fr; }
 }/* 手机端：思考强度控件可发现 + 紧凑可滚动 */
 @media (max-width: 768px) {
-  #base .effort-label { /* 若 label 无文字则加伪元素文字 */
+  /* 思考强度控件：可发现 + 紧凑可滚动 + 触控友好 */
+  .composer-effort {
+    gap: 8px; padding: 2px 10px; margin-bottom: 6px;
+    align-items: center; justify-content: flex-start;
+  }
+  #base .effort-label {
     font-size: 12px; color: var(--nb-label-2); white-space: nowrap;
+    flex: none;
   }
   #base .effort-label svg { margin-right: 4px; }
-  .composer-effort {
-    gap: 6px; padding: 0 10px; margin-bottom: 4px;
-  }
+  .effort-text { margin-left: 4px; font-size: 12px; white-space: nowrap; }
+  /* 档位横向滚动，触控友好 */
   .effort-segments {
     flex: 1; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch;
-    scrollbar-width: none; padding: 2px 0;
+    scrollbar-width: none; padding: 2px 0; gap: 6px;
   }
   .effort-segments::-webkit-scrollbar { display: none; }
-  .effort-text { margin-left: 4px; font-size: 12px; white-space: nowrap; }
   .effort-label { flex: none; }
+  /* 按钮放大，44px 触控标准，圆角药丸 */
   .effort-seg {
-    font-size: 12px; padding: 4px 10px; min-height: 32px;
+    font-size: 13px; font-weight: 600; padding: 8px 14px; min-height: 36px; min-width: 44px;
     display: inline-flex; align-items: center; justify-content: center;
-    flex: none; touch-action: manipulation;
+    flex: none; touch-action: manipulation; border-radius: 10px;
+    border: 1px solid transparent;
   }
+  .effort-seg.active { border-color: var(--nb-accent); }
+  .effort-seg:active { transform: scale(0.94); transition: transform 0.1s; }
+}
+/* 手机端：顶栏状态栏不挤压、不截断 */
+@media (max-width: 768px) {
+  #topbar { gap: 6px; }
+  #topbar .session-title { font-size: 13px; max-width: 30vw; flex: 0 1 auto; }
+  #topbar .usage { font-size: 10px; max-width: 28vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #topbar .current-op { font-size: 11px; max-width: 24vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #status-dot { width: 10px; height: 10px; }
+}
+/* 手机端：侧栏模型/路径标签截断 */
+@media (max-width: 768px) {
+  .sidebar-foot { gap: 4px; padding: 0 10px 8px; }
+  #cwd-label, #model-label {
+    max-width: 70vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #model-label { font-size: 11px; }
+  #cwd-label { font-size: 10px; }
 }

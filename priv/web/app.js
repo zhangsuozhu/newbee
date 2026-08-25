@@ -1873,33 +1873,35 @@ case "goal_round": break;
   };
 
   // ── 思考强度段选器（7 档，输入框旁）──
-  const EFFORT_LEVELS = ["off", "auto", "low", "medium", "high", "xhigh", "max"];
-  const effortWrap = $("effort-segments");
-  if (effortWrap) {
-    const renderSegs = (active) => {
-      effortWrap.innerHTML = "";
-      EFFORT_LEVELS.forEach((lv) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "effort-seg" + (lv === active ? " active" : "");
-        b.textContent = lv;
-        b.dataset.level = lv;
-        b.onclick = async () => {
-          renderSegs(lv);
-          if (!state.sid) return;
-          try {
-            await rpc("session.setEffort", { sessionId: state.sid, effort: lv });
-          } catch (err) {
-            line("error", "设置思考强度失败: " + err.message);
-          }
-        };
-        effortWrap.appendChild(b);
-      });
-    };
-    // resume 时按会话恢复选中档（nil → auto）
-    window.__restoreEffort = (effort) => renderSegs(effort || "auto");
-    renderSegs("auto");
-  }
+   const EFFORT_LEVELS = ["off", "auto", "low", "medium", "high", "xhigh", "max"];
+   const EFFORT_LABELS = {off:"关", auto:"自动", low:"低", medium:"中", high:"高", xhigh:"很高", max:"最高"};
+   const effortWrap = $("effort-segments");
+   if (effortWrap) {
+     const renderSegs = (active) => {
+       effortWrap.innerHTML = "";
+       EFFORT_LEVELS.forEach((lv) => {
+         const b = document.createElement("button");
+         b.type = "button";
+         b.className = "effort-seg" + (lv === active ? " active" : "");
+         b.textContent = EFFORT_LABELS[lv] || lv;
+         b.title = lv;
+         b.dataset.level = lv;
+         b.onclick = async () => {
+           renderSegs(lv);
+           if (!state.sid) return;
+           try {
+             await rpc("session.setEffort", { sessionId: state.sid, effort: lv });
+           } catch (err) {
+             line("error", "设置思考强度失败: " + err.message);
+           }
+         };
+         effortWrap.appendChild(b);
+       });
+     };
+     // resume 时按会话恢复选中档（nil → auto）
+     window.__restoreEffort = (effort) => renderSegs(effort || "auto");
+     renderSegs("auto");
+   }
 
   $("send").onclick = send;
   $("attach-btn").onclick = () => $("file-input").click();
