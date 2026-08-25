@@ -3060,9 +3060,10 @@ case "goal_round": break;
 (function() {
   function isMobile() { return window.matchMedia("(max-width: 768px)").matches; }
 
-  // 手机端默认收起侧栏（避免每次打开都占屏）
-  var prevSidebar = localStorage.getItem("newbee.sidebar");
-  if (isMobile() && prevSidebar === null) {
+  // 手机端每次加载都强制收起侧栏：
+  // 避免延续桌面/上次的"展开态"，否则全屏遮罩(z-index:35)会常驻盖住 composer，
+  // 导致按钮可见但点不了（点击全被遮罩拦截）。
+  if (isMobile()) {
     document.getElementById("app").classList.add("sidebar-collapsed");
     var ex = document.getElementById("sidebar-expand");
     if (ex) ex.classList.remove("hidden");

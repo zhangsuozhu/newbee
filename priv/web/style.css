@@ -65,7 +65,7 @@ body {
   font: 14px/1.55 var(--nb-font);
   -webkit-font-smoothing: antialiased;
 }
-#app { display: flex; height: 100vh; position: relative; }
+#app { display: flex; height: 100vh; height: 100dvh; position: relative; }
 
 /* 通用 icon 按钮 */
 .icon-btn {
@@ -909,7 +909,7 @@ body {
   font: 14px/1.55 var(--nb-font);
   -webkit-font-smoothing: antialiased;
 }
-#app { display: flex; height: 100vh; position: relative; }
+#app { display: flex; height: 100vh; height: 100dvh; position: relative; }
 
 /* 通用 icon 按钮 */
 .icon-btn {
@@ -1587,8 +1587,9 @@ svg.ico {
   #app.sidebar-collapsed #sidebar { margin-left: 0; transform: translateX(-105%); }
   #app:not(.sidebar-collapsed) #sidebar { transform: translateX(0); }
   #app:not(.sidebar-collapsed)::after {
-    content: ''; position: fixed; inset: 0;
+    content: ''; position: fixed; inset: 0 0 70px 0;
     background: rgba(0,0,0,0.35); z-index: 35;
+    pointer-events: auto;
   }
 
   /* 2. 顶栏紧凑 */
@@ -1596,19 +1597,28 @@ svg.ico {
   #topbar .session-title { font-size: 13px; max-width: 45vw; }
 
   /* 3. 触控目标放大 */
-  .icon-btn { width: 40px; height: 40px; font-size: 17px; border-radius: 10px; }
-  #sidebar-toggle, #sidebar-expand { width: 40px; height: 40px; }
+  .icon-btn { width: 32px; height: 32px; font-size: 15px; border-radius: 8px; }
+  #sidebar-toggle, #sidebar-expand { width: 34px; height: 34px; }
   .btn-primary, .btn-ghost, .btn-allow, .btn-deny {
-    min-height: 44px; font-size: 15px; padding: 10px 16px; border-radius: 12px;
+    min-height: 40px; font-size: 14px; padding: 8px 14px; border-radius: 10px;
   }
-  .composer-actions .icon-btn, .composer-attach .icon-btn { width: 42px; height: 42px; }
-  .permission-bar button { min-height: 44px; }
+  /* 侧栏头部操作按钮紧凑(新建会话/选目录) */
+  #new-session, #new-session-dir {
+    min-height: 32px; padding: 4px 12px; font-size: 13px; border-radius: 9px;
+  }
+  .session-actions { gap: 6px; }
+  .composer-actions .icon-btn, .composer-attach .icon-btn { width: 40px; height: 40px; }
+  .permission-bar button { min-height: 40px; }
 
   /* 4. 消息宽度 */
   .msg { max-width: 92%; }
   .msg-user { max-width: 92%; }
   .msg-assistant { max-width: 100%; }
   .msg-content { font-size: 15px; line-height: 1.55; }
+
+  /* 布局保障: composer 不被压缩, transcript 占剩余空间 */
+  #composer { flex-shrink: 0; }
+  .transcript { min-height: 0; }
 
   /* 5. composer 贴底 + 安全区 */
   #composer { padding: 8px 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
