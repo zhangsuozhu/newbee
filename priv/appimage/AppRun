@@ -15,8 +15,9 @@ LIBS="$APPDIR/usr/lib/libraries"
 
 # 1. toolchain env
 export ERL_ROOTDIR="$OTP"
-export PATH="$ELIXIR/bin:$OTP/bin:$PATH"
+export PATH="$ELIXIR/bin:$OTP/bin:$OTP/bin/x86_64-pc-linux-gnu:$PATH"
 export LD_LIBRARY_PATH="$LIBS:${LD_LIBRARY_PATH:-}"
+export ERL_EPMD_ADDRESS=127.0.0.1
 export MIX_ARCHIVES="$TOOLCHAIN/mix-archives"
 
 # 2. user workspace (AppImage is read-only -> copy to writable area)
@@ -39,10 +40,21 @@ fi
 export NEWBEE_CWD="${NEWBEE_CWD:-$PWD}"
 mkdir -p "$NEWBEE_CWD"
 
-# 4. run
+# 4. run — web/tui/daemon 等子命令映射到对应的 mix task
 cd "$USER_ROOT"
-if [ $# -eq 0 ]; then
-  exec mix newbee
-else
-  exec mix newbee "$@"
-fi
+case "$1" in
+  web)
+    "$OTP/bin/x86_64-pc-linux-gnu/epmd" -daemon
+    exec mix newbee.web "${@:2}"
+    ;;
+  tui|daemon|bench|doctor|attach)
+    exec mix "newbee.$1" "${@:2}"
+    ;;
+  *)
+    if [ $# -eq 0 ]; then
+      exec mix newbee
+    else
+      exec mix newbee "$@"
+    fi
+    ;;
+esac

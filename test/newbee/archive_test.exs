@@ -253,7 +253,7 @@ defmodule Newbee.ArchiveTest do
     {:ok, %{segment: seg1}} = Archive.compact(s, retain: 4, client: fake_client(long))
 
     feed(s, conv(6))
-    {:ok, %{segment: seg2}} = Archive.compact(s, retain: 4, client: fake_client("短摘要"))
+    {:ok, %{segment: _seg2}} = Archive.compact(s, retain: 4, client: fake_client("短摘要"))
 
     summary = s |> Archive.view() |> hd() |> Map.get("content")
     # 新段（短）完整保留；旧段（长）折叠并带可拉取指针
@@ -291,7 +291,132 @@ defmodule Newbee.ArchiveTest do
     assert Archive.recall(s, "继续") == []
   end
 
+  test "命中路径：摘要请求 == envelope 消息逐字回放 + 尾部指令", %{session: s} do
+    feed(s, conv(6))
+    env_msgs = [%{"role" => "system", "content" => "BASE-SYS"}] ++ List.flatten(conv(6))
+
+    env = %{
+      "version" => 1,
+      "base_url" => "http://localhost",
+      "model" => "test/digest-model",
+      "tools" => Newbee.Codec.tools(),
+      "messages" => env_msgs,
+      "message_count" => length(env_msgs),
+      "sha256" => "x"
+    }
+
+    {:ok, %{segment: seg}} =
+      Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env)
+
+    assert_received {:digest_request, request}
+    assert request == env_msgs ++ [List.last(request)]
+    assert List.last(request)["role"] == "user"
+    assert List.last(request)["content"] =~ "压缩引擎"
+    assert List.last(request)["content"] =~ "不要调用工具"
+    assert_received {:digest_tools, tools}
+    assert tools == Jason.decode!(Jason.encode!(Newbee.Codec.tools()))
+    # A26 修复：摘要请求与路由请求参数对齐——不写 temperature（stream_chat 也不写）
+    assert_received {:digest_has_temperature, false}
+    assert Archive.digests(s)[seg] =~ "回放摘要"
+  end
+
+  test "无 envelope → 抽取路径（单 user 消息）", %{session: s} do
+    feed(s, conv(6))
+    {:ok, %{segment: _seg}} = Archive.compact(s, retain: 4, client: capture_client(self()))
+    assert_received {:digest_request, request}
+    assert length(request) == 1
+    assert hd(request)["role"] == "user"
+    assert hd(request)["content"] =~ "结构化抽取"
+  end
+
+  test "envelope route 失配 → 抽取路径", %{session: s} do
+    feed(s, conv(6))
+
+    env = %{
+      "version" => 1,
+      "base_url" => "http://localhost",
+      "model" => "other-model",
+      "tools" => [],
+      "messages" => [%{"role" => "user", "content" => "x"}],
+      "message_count" => 1,
+      "sha256" => "x"
+    }
+
+    {:ok, %{segment: _seg}} = Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env)
+    assert_received {:digest_request, request}
+    assert length(request) == 1
+  end
+
+  test "二次压缩回放含旧摘要的 envelope（旧摘要前缀）", %{session: s} do
+    feed(s, conv(6))
+
+    env1 = %{
+      "version" => 1,
+      "base_url" => "http://localhost",
+      "model" => "test/digest-model",
+      "tools" => Newbee.Codec.tools(),
+      "messages" => [%{"role" => "system", "content" => "BASE"}] ++ List.flatten(conv(6)),
+      "message_count" => 19,
+      "sha256" => "x"
+    }
+
+    {:ok, _} = Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env1)
+    assert_received {:digest_request, _first}
+
+    feed(s, conv(4))
+    summary_view = Archive.view(s)
+    summary_msg = hd(summary_view)
+    assert summary_msg["role"] == "system"
+    assert summary_msg["content"] =~ "回放摘要"
+
+    env2 = %{
+      "version" => 1,
+      "base_url" => "http://localhost",
+      "model" => "test/digest-model",
+      "tools" => Newbee.Codec.tools(),
+      "messages" => [%{"role" => "system", "content" => "BASE"}] ++ summary_view,
+      "message_count" => length(summary_view) + 1,
+      "sha256" => "x"
+    }
+
+    {:ok, _} = Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env2)
+    assert_received {:digest_request, second}
+    assert Enum.drop(second, -1) == env2["messages"]
+  end
+
+  test "无 base 时退回确定性抽取路径（兼容旧行为）", %{session: s} do
+    feed(s, conv(6))
+    {:ok, %{segment: seg}} = Archive.compact(s, retain: 4, client: fake_client("旧路径摘要"))
+    # 函数注入路径不产生 HTTP 请求，直接写 digest
+    assert Archive.digests(s)[seg] == "旧路径摘要"
+  end
+
   # ── fakes ──
+  # 真 client 形状的 fake：Req.Test plug 截获请求体发回测试进程，返回最小
+  # OpenAI 兼容响应。验证 digest 请求形状（前缀缓存友好路径）不经真实网络。
+  defp capture_client(test_pid) do
+    plug = fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      req = Jason.decode!(body)
+      send(test_pid, {:digest_request, req["messages"]})
+      send(test_pid, {:digest_tools, req["tools"]})
+      send(test_pid, {:digest_has_temperature, Map.has_key?(req, "temperature")})
+
+      Req.Test.json(conn, %{
+        "choices" => [
+          %{"message" => %{"role" => "assistant", "content" => "回放摘要：任务与改动要点"}}
+        ],
+        "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 5}
+      })
+    end
+
+    Newbee.LLM.Client.new(
+      model: "test/digest-model",
+      api_key: "test",
+      base_url: "http://localhost",
+      req_options: [plug: plug, retry: false]
+    )
+  end
 
   defp fake_client(text) when is_binary(text), do: fn _extract, _seg -> {:ok, text} end
   defp fake_client(other), do: fn _extract, _seg -> other end

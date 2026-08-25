@@ -13,7 +13,6 @@ defmodule Newbee.LLM.ClientTest do
              }
 
     assert Client.normalize_usage(%{"prompt_tokens" => 100, "prompt_cache_hit_tokens" => 64})["cache_read_tokens"] == 64
-
     # 无缓存字段：uncached = prompt_tokens
     assert Client.normalize_usage(%{"prompt_tokens" => 50, "completion_tokens" => 9})["uncached_prompt_tokens"] == 50
   end
@@ -46,7 +45,6 @@ defmodule Newbee.LLM.ClientTest do
     c = Client.new()
     assert c.api_key == "sk-test-123"
     assert c.model == "deepseek/deepseek-v4-flash-0731"
-
     if old, do: System.put_env("OPENROUTER_API_KEY", old), else: System.delete_env("OPENROUTER_API_KEY")
   end
 
@@ -62,5 +60,96 @@ defmodule Newbee.LLM.ClientTest do
     out = Client.format_error({:http_error, 429, "rate limited"})
     assert out =~ "HTTP 429"
     assert out =~ "自动重试"
+  end
+
+  test "complete 带 tools：请求体含 tools（前缀缓存命中要求）" do
+    test_pid = self()
+
+    plug = fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:req_body, Jason.decode!(body)})
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"role" => "assistant", "content" => "ok"}}]})
+    end
+
+    client =
+      Newbee.LLM.Client.new(
+        model: "test/m",
+        api_key: "t",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    tools = Newbee.Codec.tools()
+    {:ok, "ok", _} = Client.complete(client, [%{"role" => "user", "content" => "hi"}], tools: tools)
+    assert_received {:req_body, body}
+    assert body["tools"] == Jason.decode!(Jason.encode!(tools))
+    assert body["messages"] == [%{"role" => "user", "content" => "hi"}]
+  end
+
+  test "complete 不带 tools：请求体无 tools 键（I5 兼容）" do
+    test_pid = self()
+
+    plug = fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:req_body, Jason.decode!(body)})
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"role" => "assistant", "content" => "ok"}}]})
+    end
+
+    client =
+      Newbee.LLM.Client.new(
+        model: "test/m",
+        api_key: "t",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    {:ok, "ok", _} = Client.complete(client, [%{"role" => "user", "content" => "hi"}])
+    assert_received {:req_body, body}
+    refute Map.has_key?(body, "tools")
+  end
+
+  test "complete 读取顶层 usage（OpenAI 兼容：usage 常在响应顶层）" do
+    plug = fn conn ->
+      Req.Test.json(conn, %{
+        "choices" => [%{"message" => %{"role" => "assistant", "content" => "ok"}}],
+        "usage" => %{"prompt_tokens" => 100, "prompt_cache_hit_tokens" => 64}
+      })
+    end
+
+    client =
+      Newbee.LLM.Client.new(
+        model: "test/m",
+        api_key: "t",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    {:ok, "ok", %{usage: usage}} = Client.complete(client, [%{"role" => "user", "content" => "hi"}])
+    assert usage["cache_read_tokens"] == 64
+  end
+
+  test "complete 顶层与 choice 内 usage 并存：choice 内优先" do
+    plug = fn conn ->
+      Req.Test.json(conn, %{
+        "choices" => [
+          %{
+            "message" => %{"role" => "assistant", "content" => "ok"},
+            "usage" => %{"prompt_tokens" => 10, "prompt_cache_hit_tokens" => 9}
+          }
+        ],
+        "usage" => %{"prompt_tokens" => 100, "prompt_cache_hit_tokens" => 64}
+      })
+    end
+
+    client =
+      Newbee.LLM.Client.new(
+        model: "test/m",
+        api_key: "t",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    {:ok, "ok", %{usage: usage}} = Client.complete(client, [%{"role" => "user", "content" => "hi"}])
+    assert usage["cache_read_tokens"] == 9
   end
 end

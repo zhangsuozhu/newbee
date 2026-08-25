@@ -42,6 +42,14 @@ defmodule Newbee.Archive do
   @search_hits 60
   @raw_msg_slice 1_600
   @raw_total_bytes 512 * 1024
+  # 尾部压缩指令：放最后一条 user 消息（deepseek-harness 2026-07-21 note）——
+  # 摘要请求 = 暖前缀回放 + 尾部指令，provider 前缀缓存可命中；
+  # 指令放头部（独立 system/首条消息）会让首 token 就偏离缓存前缀。
+  @compaction_instruction """
+  你现在扮演压缩引擎。上面的对话是编程 agent 会话的一段（含 system 基底与原始消息）。\
+  用 ≤300 字中文写要点摘要：任务目标、关键决策、改动、踩过的坑与解法、未完成事项。\
+  规则：不要提及本压缩请求本身；不要调用工具；只输出摘要正文。
+  """
 
   # ── 对外 API ──
 
@@ -91,8 +99,10 @@ defmodule Newbee.Archive do
       write_segment(session, seg_id, seg_bin)
       append_ledger(session, event)
 
+      # :envelope = 上次路由请求快照（Loop 记录，Archive 只消费不猜测）。
+      # 命中资格 + 请求形状见 digest_segment/4。
       if client = Keyword.get(opts, :client) do
-        digest_segment(session, seg_id, client)
+        digest_segment(session, seg_id, client, envelope: Keyword.get(opts, :envelope))
         backfill_digests(session, client)
       end
 
@@ -159,22 +169,49 @@ defmodule Newbee.Archive do
   end
 
   @doc """
-  为一段生成 digest（LLM 一次，全保真抽取物输入）。成功追加 `digest` 事件；
-  失败返回 {:error, reason}（不写事件——下次 compact 仍可补写）。
+  为一段生成 digest（LLM 一次）。成功追加 `digest` 事件；失败不写事件。
+
+  `envelope`（可选）= 上次路由请求快照（Newbee.RequestEnvelope）。命中条件：
+  快照存在且 route（base_url + model）与当前 client 一致——此时摘要请求 =
+  快照 messages 逐字回放 ++ 尾部压缩指令，成为上次请求的严格前缀，provider
+  前缀缓存命中。无快照 / route 失配 / client 为注入函数 → 走有界抽取路径
+  （build_extract），不伪装命中。
   """
-  def digest_segment(%Session{} = session, seg_id, client) do
+  def digest_segment(session, seg_id, client, opts \\ [])
+
+  def digest_segment(%Session{} = session, seg_id, client, opts) when is_list(opts) do
+    case Keyword.get(opts, :envelope) do
+      env when is_map(env) ->
+        if Newbee.RequestEnvelope.hit_eligible?(env, client) do
+          with {:ok, text} <- llm_digest_replay(client, env, seg_id) do
+            record_digest(session, seg_id, text)
+          end
+        else
+          extract_digest(session, seg_id, client)
+        end
+
+      _ ->
+        extract_digest(session, seg_id, client)
+    end
+  end
+
+  defp extract_digest(%Session{} = session, seg_id, client) do
     with {:ok, msgs} <- segment_messages(session, seg_id),
          extract = build_extract(msgs),
          {:ok, text} <- llm_digest(client, extract, seg_id) do
-      append_ledger(session, %{
-        "id" => next_event_id(session),
-        "topic" => "digest",
-        "at" => iso_now(),
-        "data" => %{"segment" => seg_id, "text" => text, "tokens" => div(byte_size(text) + 2, 3)}
-      })
-
-      :ok
+      record_digest(session, seg_id, text)
     end
+  end
+
+  defp record_digest(%Session{} = session, seg_id, text) do
+    append_ledger(session, %{
+      "id" => next_event_id(session),
+      "topic" => "digest",
+      "at" => iso_now(),
+      "data" => %{"segment" => seg_id, "text" => text, "tokens" => div(byte_size(text) + 2, 3)}
+    })
+
+    :ok
   end
 
   @doc "读段原始消息（sha 校验失败 → {:error, :checksum_mismatch}；无此段 → {:error, :segment_not_found}）。"
@@ -757,7 +794,41 @@ defmodule Newbee.Archive do
     e -> {:error, {:digest_raised, e}}
   end
 
-  # 补写历史缺失的 digest（每次压缩最多补 @backfill_segments 段；事件追加，幂等）
+  # ── 前缀缓存友好摘要路径（deepseek-harness 2026-07-21 note 同构）──
+  # warm_prefix 是压缩前 view(session)；消息对象完全原样，不截断、不降维。
+  # ── 前缀回放摘要（envelope 命中路径）──
+  # 回放上次路由请求快照的消息 + tools，尾部追加压缩指令。
+  # 消息与 tools 与快照逐字节一致（不截断/不降维），是严格前缀。
+  defp llm_digest_replay(client, env, seg_id) do
+    prefix = env["messages"] || []
+    # tools 固定用当前 Codec（与路由请求 stream_chat 同源），保证请求体与路由一致；
+    # env["tools"] 仅用于 hit_eligible? 一致性校验（A3），不用作请求体来源。
+    tools = Newbee.Codec.tools()
+
+    request =
+      prefix ++
+        [%{"role" => "user", "content" => @compaction_instruction}]
+
+    Newbee.DebugLog.log(
+      :compact,
+      "digest seg=" <>
+        seg_id <>
+        " hit-path messages=" <> Integer.to_string(length(request)) <> " tools=" <> Integer.to_string(length(tools))
+    )
+
+    case Newbee.LLM.Client.complete(client, request, tools: tools, temperature: nil, extra: %{max_tokens: 500}) do
+      {:ok, content, _} ->
+        text = content |> String.trim() |> String.slice(0, @digest_max_chars)
+        if text == "", do: {:error, :empty_digest}, else: {:ok, text}
+
+      other ->
+        {:error, {:digest_failed, other}}
+    end
+  rescue
+    e -> {:error, {:digest_raised, e}}
+  end
+
+  # 历史补写没有与其对应的暖 routed request；走抽取路径保证正确性，不伪装命中。
   defp backfill_digests(%Session{} = session, client) do
     have = digests(session)
 

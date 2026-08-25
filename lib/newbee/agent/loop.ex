@@ -581,6 +581,10 @@ defmodule Newbee.Agent.Loop do
     on_text = fn delta -> emit(state, {:text, delta}) end
     on_reasoning = fn delta -> emit(state, {:reasoning, delta}) end
 
+    # I1：记录本次路由请求的可缓存前缀快照（Archive 摘要路径消费）。
+    # 标准 LLM client + 会话才写；注入函数/无会话 no-op。
+    Newbee.RequestEnvelope.record(state.session, state.client, state.messages)
+
     case call_client(state.client_fun, state.messages, on_text, on_reasoning) do
       {:ok, msg, usage} ->
         Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
@@ -1319,16 +1323,20 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp compact_state(state, retain_target) do
+    # base = 本会话 system 基底（messages 头部，不进 transcript）。
+    # 传给 Archive：摘要请求走 envelope 重放真实请求前缀（详见 prefix-cache 方案）。
+    base = hd(state.messages)
+
     opts = [
       retain: retain_target,
       client: state.client,
+      envelope: Newbee.RequestEnvelope.load(state.session),
       trigger: if(retain_target <= 64, do: "manual", else: "auto")
     ]
 
     case Newbee.Archive.compact(state.session, opts) do
       {:ok, %{view: view, archived: n}} ->
         # view = [汇总消息 | 近期原文]；头部补回本会话 system 基底（不进 transcript）
-        base = hd(state.messages)
         messages = [base | view] |> repair_history()
 
         messages =

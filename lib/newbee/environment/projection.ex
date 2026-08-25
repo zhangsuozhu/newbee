@@ -23,7 +23,10 @@ defmodule Newbee.Environment.Projection do
 
   @doc """
   构建 worker 视图。context: root / bindings_summary / session_id。
-  返回 map（供 prompt 组装）+ prompt 文本。
+  返回 map（含 `:prompt` 渲染文本，以及各成分字段供诊断/测试）。
+  注意：本函数**每次调用都重新读取**项目记忆、RepoMap、价签、绑定与通知——
+  它每步渲染当前实况；Loop 只在会话首建时取一次 `:prompt` 并持久化复用（前缀缓存），
+  不会每步重build。
   """
   def build(context \\ %{}) do
     root = context[:root] || File.cwd!()
@@ -38,15 +41,17 @@ defmodule Newbee.Environment.Projection do
       bindings: bindings_summary(context),
       notices: drain_notices(),
       rules: mount_rules(),
-      built_at: DateTime.utc_now() |> DateTime.to_iso8601()
+      built_at: nil
     }
 
     result = Map.put(view, :prompt, render(view))
+
     Newbee.Environment.UsageTracker.observe_plugin("projection.repomap", %{
       success: view.repomap != "",
       output_bytes: byte_size(view.repomap),
       task_type: "projection_build"
     })
+
     result
   end
 

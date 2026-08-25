@@ -19,7 +19,8 @@ defmodule Newbee.LLM.Client do
             reasoning_effort: nil,
             vision: true,
             context_window: nil,
-            interrupt_scope: nil
+            interrupt_scope: nil,
+            req_options: []
 
   def new(opts \\ []) do
     %__MODULE__{
@@ -29,7 +30,8 @@ defmodule Newbee.LLM.Client do
       reasoning_effort: Keyword.get(opts, :reasoning_effort),
       vision: Keyword.get(opts, :vision, true),
       context_window: Keyword.get(opts, :context_window),
-      interrupt_scope: Keyword.get(opts, :interrupt_scope)
+      interrupt_scope: Keyword.get(opts, :interrupt_scope),
+      req_options: Keyword.get(opts, :req_options, [])
     }
   end
 
@@ -133,7 +135,7 @@ defmodule Newbee.LLM.Client do
     # receive_timeout 是"相邻两块数据的间隔"。serverless 端点冷启动（唤醒实例）
     # 实测 ~38s 才出首 token，30s 必然误超时再重试（等待翻倍）；120s 覆盖冷启动。
     build_req = fn body ->
-      Req.new(
+      [
         url: client.base_url <> "/chat/completions",
         method: :post,
         headers: [
@@ -146,7 +148,9 @@ defmodule Newbee.LLM.Client do
         finch: [pool_timeout: 30_000, conn_max_idle_time: 300_000, conn_opts: [transport_opts: [timeout: 30_000]]],
         retry: false,
         into: :self
-      )
+      ]
+      |> Keyword.merge(client.req_options)
+      |> Req.new()
     end
 
     result =
@@ -232,18 +236,24 @@ defmodule Newbee.LLM.Client do
       %{
         model: client.model,
         messages: messages,
-        stream: false,
-        temperature: Keyword.get(opts, :temperature, 0.2)
+        stream: false
       }
+      |> maybe_put_body(:temperature, Keyword.get(opts, :temperature, 0.2))
       |> maybe_put_body(:logprobs, Keyword.get(opts, :logprobs))
       |> maybe_put_body(:top_logprobs, Keyword.get(opts, :top_logprobs, 20))
       |> maybe_put_body(:reasoning_effort, client.reasoning_effort)
       |> Map.merge(Keyword.get(opts, :extra, %{}))
 
+    body =
+      case Keyword.get(opts, :tools) do
+        tools when is_list(tools) and tools != [] -> Map.put(body, :tools, tools)
+        _ -> body
+      end
+
     t0 = System.monotonic_time(:millisecond)
 
     req =
-      Req.new(
+      [
         url: client.base_url <> "/chat/completions",
         method: :post,
         headers: [
@@ -254,16 +264,18 @@ defmodule Newbee.LLM.Client do
         json: body,
         receive_timeout: 120_000,
         retry: false
-      )
+      ]
+      |> Keyword.merge(client.req_options)
+      |> Req.new()
 
     result =
       case complete_req(req, @overload_retries) do
         {:ok, %{status: 200} = resp} ->
-          case Jason.decode(resp.body) do
-            {:ok, %{"choices" => [choice | _]}} ->
+          case decode_body(resp.body) do
+            {:ok, %{"choices" => [choice | _]} = body_map} ->
               content = get_in(choice, ["message", "content"]) || ""
               logprobs = choice["logprobs"]
-              usage = normalize_usage(choice["usage"] || %{})
+              usage = normalize_usage(choice["usage"] || body_map["usage"] || %{})
               {:ok, content, %{usage: usage, logprobs: logprobs}}
 
             {:ok, %{"error" => err}} ->
@@ -293,6 +305,14 @@ defmodule Newbee.LLM.Client do
   defp maybe_put_body(body, k, v), do: Map.put(body, k, v)
 
   defp observe_provider(result, client, started_at, task_type) do
+    usage =
+      case result do
+        {:ok, _msg, usage} when is_map(usage) -> usage
+        _ -> %{}
+      end
+
+    log_cache_hit(usage, task_type)
+
     {success, tokens, output_bytes} =
       case result do
         {:ok, message, usage} when is_map(message) ->
@@ -324,6 +344,28 @@ defmodule Newbee.LLM.Client do
   end
 
   defp usage_tokens(_), do: 0
+
+  # ── 缓存命中诊断（临时功能：每请求后台打印一次，验证/调优后移除）──
+  # 打印：task_type / prompt_tokens / cache_read / 命中率（cache_read / prompt）
+  defp log_cache_hit(usage, task_type) when is_map(usage) do
+    prompt = usage["prompt_tokens"] || usage[:prompt_tokens] || 0
+    cache_read = usage["cache_read_tokens"] || usage[:cache_read_tokens] || 0
+    cache_write = usage["cache_write_tokens"] || usage[:cache_write_tokens] || 0
+
+    hit_rate =
+      if is_number(prompt) and prompt > 0 do
+        Float.round(100 * (cache_read / prompt), 1)
+      else
+        0.0
+      end
+
+    Newbee.DebugLog.log(
+      :llm,
+      "cache-hit task=#{task_type} prompt=#{prompt} read=#{cache_read} write=#{cache_write} rate=#{hit_rate}%"
+    )
+  rescue
+    _ -> :ok
+  end
 
   # 429/5xx 过载重试（非流式版，无 SSE drain 需求）
   defp complete_req(req, 0), do: Req.request(req)
@@ -652,6 +694,11 @@ defmodule Newbee.LLM.Client do
 
   defp maybe_put_usage(usage, _key, nil), do: usage
   defp maybe_put_usage(usage, key, value), do: Map.put(usage, key, value)
+
+  # Req 默认 decode_body: true——真实 HTTP 响应 body 已被解码为 map；
+  # decode_body: false（或插桩）时是二进制。两态都兼容。
+  defp decode_body(b) when is_binary(b), do: Jason.decode(b)
+  defp decode_body(m) when is_map(m), do: {:ok, m}
 
   defp apply_delta(acc, delta, on_text, on_reasoning) do
     # 注意：OpenRouter 等在 reasoning 阶段常带 "content": ""——空串也是 binary，
