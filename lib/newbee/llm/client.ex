@@ -19,7 +19,8 @@ defmodule Newbee.LLM.Client do
             reasoning_effort: nil,
             vision: true,
             context_window: nil,
-            interrupt_scope: nil
+            interrupt_scope: nil,
+            req_options: []
 
   def new(opts \\ []) do
     %__MODULE__{
@@ -29,7 +30,8 @@ defmodule Newbee.LLM.Client do
       reasoning_effort: Keyword.get(opts, :reasoning_effort),
       vision: Keyword.get(opts, :vision, true),
       context_window: Keyword.get(opts, :context_window),
-      interrupt_scope: Keyword.get(opts, :interrupt_scope)
+      interrupt_scope: Keyword.get(opts, :interrupt_scope),
+      req_options: Keyword.get(opts, :req_options, [])
     }
   end
 
@@ -133,7 +135,7 @@ defmodule Newbee.LLM.Client do
     # receive_timeout 是"相邻两块数据的间隔"。serverless 端点冷启动（唤醒实例）
     # 实测 ~38s 才出首 token，30s 必然误超时再重试（等待翻倍）；120s 覆盖冷启动。
     build_req = fn body ->
-      Req.new(
+      [
         url: client.base_url <> "/chat/completions",
         method: :post,
         headers: [
@@ -146,7 +148,9 @@ defmodule Newbee.LLM.Client do
         finch: [pool_timeout: 30_000, conn_max_idle_time: 300_000, conn_opts: [transport_opts: [timeout: 30_000]]],
         retry: false,
         into: :self
-      )
+      ]
+      |> Keyword.merge(client.req_options)
+      |> Req.new()
     end
 
     result =
@@ -243,7 +247,7 @@ defmodule Newbee.LLM.Client do
     t0 = System.monotonic_time(:millisecond)
 
     req =
-      Req.new(
+      [
         url: client.base_url <> "/chat/completions",
         method: :post,
         headers: [
@@ -254,12 +258,14 @@ defmodule Newbee.LLM.Client do
         json: body,
         receive_timeout: 120_000,
         retry: false
-      )
+      ]
+      |> Keyword.merge(client.req_options)
+      |> Req.new()
 
     result =
       case complete_req(req, @overload_retries) do
         {:ok, %{status: 200} = resp} ->
-          case Jason.decode(resp.body) do
+          case decode_body(resp.body) do
             {:ok, %{"choices" => [choice | _]}} ->
               content = get_in(choice, ["message", "content"]) || ""
               logprobs = choice["logprobs"]
@@ -651,6 +657,12 @@ defmodule Newbee.LLM.Client do
   end
 
   defp maybe_put_usage(usage, _key, nil), do: usage
+
+  # Req 默认 decode_body: true——真实 HTTP 响应 body 已被解码为 map；
+  # decode_body: false（或插桩）时是二进制。两态都兼容。
+  defp decode_body(b) when is_binary(b), do: Jason.decode(b)
+  defp decode_body(m) when is_map(m), do: {:ok, m}
+
   defp maybe_put_usage(usage, key, value), do: Map.put(usage, key, value)
 
   defp apply_delta(acc, delta, on_text, on_reasoning) do

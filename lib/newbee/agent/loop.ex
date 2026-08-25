@@ -1319,16 +1319,21 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp compact_state(state, retain_target) do
+    # base = 本会话 system 基底（messages 头部，不进 transcript）。
+    # 传给 Archive：摘要请求按 [base] ++ [段原文] ++ [尾部压缩指令] 重放暖前缀，
+    # 让 provider KV 前缀缓存命中（deepseek-harness 2026-07-21 note 同构）。
+    base = hd(state.messages)
+
     opts = [
       retain: retain_target,
       client: state.client,
+      base: base["content"],
       trigger: if(retain_target <= 64, do: "manual", else: "auto")
     ]
 
     case Newbee.Archive.compact(state.session, opts) do
       {:ok, %{view: view, archived: n}} ->
         # view = [汇总消息 | 近期原文]；头部补回本会话 system 基底（不进 transcript）
-        base = hd(state.messages)
         messages = [base | view] |> repair_history()
 
         messages =
