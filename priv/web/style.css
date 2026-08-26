@@ -1942,3 +1942,23 @@ svg.ico {
   /* 消息更宽 */
   .msg, .msg-user { max-width: 96%; }
 }
+/* ── 浮动展开按钮不遮标题：侧栏收起时给 topbar 左侧让位（全端生效） ── */
+#app.sidebar-collapsed #topbar { padding-left: 52px; }
+/* ── 手机端：topbar 操作按钮右对齐 ── */
+@media (max-width: 768px) {
+  /* 标题恢复占满剩余空间（压过上面 flex:0 1 auto 的移动端覆盖），后续元素自然靠右 */
+  #topbar .session-title { flex: 1 1 auto; max-width: none; }
+  #topbar .icon-btn, #topbar .dot { flex: none; }
+  #topbar .usage, #topbar .current-op { flex: 0 1 auto; }
+  /* 手机端浮动展开按钮对齐 topbar 内边距 */
+  #sidebar-expand { top: 8px; left: 8px; }
+}
+/* ── 手机端：topbar 操作按钮右对齐 + 浮动展开按钮不遮标题 ── */
+@media (max-width: 768px) {
+  /* 标题恢复占满剩余空间（压过上面 flex:0 1 auto 的移动端覆盖），后续元素自然靠右 */
+  #topbar .session-title { flex: 1 1 auto; max-width: none; }
+  #topbar .icon-btn, #topbar .dot { flex: none; }
+  #topbar .usage, #topbar .current-op { flex: 0 1 auto; }
+  /* 侧栏收起（手机端默认态）时给左上角浮动展开按钮让位，标题不再被盖住 */
+  #app.sidebar-collapsed #topbar { padding-left: 52px; }
+}
