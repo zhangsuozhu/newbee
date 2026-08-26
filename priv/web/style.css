@@ -222,9 +222,9 @@ body {
 
 /* 用户气泡：右对齐 r22 */
 .msg-user {
-  align-self: flex-end; max-width: min(680px, 78%);
+  position: relative; align-self: flex-end; max-width: min(680px, 78%);
   background: var(--nb-bubble); border-radius: var(--nb-radius-bubble);
-  padding: 10px 16px; font-size: 15px; line-height: 24px; color: var(--nb-label-1);
+  padding: 10px 40px 10px 16px; font-size: 15px; line-height: 24px; color: var(--nb-label-1);
   white-space: pre-wrap; word-break: break-word;
 }
 
@@ -1961,4 +1961,15 @@ svg.ico {
   #topbar .usage, #topbar .current-op { flex: 0 1 auto; }
   /* 侧栏收起（手机端默认态）时给左上角浮动展开按钮让位，标题不再被盖住 */
   #app.sidebar-collapsed #topbar { padding-left: 52px; }
+}
+/* ── 用户消息复制按钮：手机端更紧凑 ── */
+@media (max-width: 768px) {
+  .msg-user .msg-copy {
+    opacity: 0.6;
+    font-size: 11px;
+    padding: 1px 6px;
+    min-height: 22px;
+    min-width: 24px;
+  }
+  .msg-user .msg-copy:hover { opacity: 1; }
 }
