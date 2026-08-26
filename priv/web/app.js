@@ -111,6 +111,8 @@
     t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     t = t.replace(/\*([^*\s][^*]*)\*/g, "<em>$1</em>");
     t = t.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+    // 图片：![alt](url) —— 渲染为可点击放大的缩略图
+    t = t.replace(/!\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<img class="md-img" src="$2" alt="$1" loading="lazy" />');
     t = t.replace(/\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noopener">$1</a>');
     // 文件路径可点击（lib/xxx.ex 等）
     t = t.replace(/\b((?:lib|test|config|docs|priv|bench)\/[\w\/.\-]+\.(?:ex|exs|js|css|html|md|json|toml|yml|yaml))\b/g, '<span class="file-ref" data-path="$1" title="点击查看 diff">$1</span>');
@@ -350,7 +352,8 @@ const flow = $("flow");
   }
   function fmtDur(ms) {
     const s = ms / 1000;
-    if (ms > 0 && s < 0.05) return "<0.1s";
+    if (ms < 1000) return Math.max(1, Math.round(ms)) + "ms";
+    if (s < 10) return s.toFixed(2) + "s";
     if (s < 60) return (Math.round(s * 10) / 10) + "s";
     const w = Math.round(s);
     return Math.floor(w / 60) + "m" + (w % 60) + "s";
@@ -451,12 +454,12 @@ case "goal_round": break;
     btn.type = "button";
     btn.className = "msg-copy";
     btn.title = "复制整条回复";
-    btn.textContent = "复制";
+    btn.textContent = "⧉";
     btn.onclick = () => {
       const raw = d.dataset.raw || d.innerText || "";
       navigator.clipboard.writeText(raw).then(() => {
         btn.textContent = "已复制";
-        setTimeout(() => (btn.textContent = "复制"), 1500);
+        setTimeout(() => (btn.textContent = "⧉"), 1500);
       });
     };
     d.appendChild(btn);
@@ -656,13 +659,16 @@ case "goal_round": break;
   }
 
   function toolResult(text, ok, durationMs) {
-    if (!state.currentTool) return;
+    const card = state.currentToolCard;
+    if (!state.currentTool || !card) return;
     state.currentTool.classList.add(ok ? "ok" : "err");
+    addToolStatus(card, ok);
     state.currentTool.textContent = (text || "").split("\n").slice(0, 30).join("\n");
     if (!ok && lastUserPrompt) {
-      addRetryButton(state.currentToolCard);
+      addRetryButton(card);
     }
-    stampDuration(state.currentToolCard, durationMs);
+    stampDuration(card, durationMs);
+    addToolCopyButton(card, text);
     mcToolResult(ok, durationMs);
     state.currentTool = null;
     state.currentToolCard = null;
@@ -683,7 +689,8 @@ case "goal_round": break;
   // 工具用时（对齐 TUI ⏱ format_duration）：<60s → X.Xs，否则 Xm Y.Ys
   function formatDur(ms) {
     const secs = ms / 1000;
-    if (ms > 0 && secs < 0.05) return "<0.1s";
+    if (ms < 1000) return Math.max(1, Math.round(ms)) + "ms";
+    if (secs < 10) return secs.toFixed(2) + "s";
     if (secs < 60) return (Math.round(secs * 10) / 10) + "s";
     const m = Math.floor(secs / 60);
     const s = Math.round((secs - m * 60) * 10) / 10;
@@ -698,15 +705,50 @@ case "goal_round": break;
     slot.textContent = " ⏱ " + formatDur(ms);
   }
 
+  // 工具卡：⏱ 旁的成功/失败标识 + 输出复制按钮（live 与回放共用）
+  function addToolStatus(card, ok) {
+    if (!card) return;
+    card.querySelectorAll(".tool-status").forEach((n) => n.remove());
+    const sp = document.createElement("span");
+    sp.className = "tool-status " + (ok ? "tool-ok" : "tool-bad");
+    sp.textContent = ok ? "✓" : "✗";
+    const dur = card.querySelector(".tool-dur");
+    if (dur && dur.parentNode) dur.parentNode.insertBefore(sp, dur.nextSibling);
+    else card.querySelector(".tool-head")?.appendChild(sp);
+  }
+  function makeToolCopyBtn() {
+    const btn = document.createElement("button");
+    btn.className = "tool-copy btn-tool-copy";
+    btn.title = "复制输出";
+    btn.textContent = "⧉";
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      navigator.clipboard.writeText(btn.dataset.text || "").then(() => {
+        btn.textContent = "已复制";
+        setTimeout(() => (btn.textContent = "⧉"), 1200);
+      });
+    });
+    return btn;
+  }
+  function addToolCopyButton(card, rawText) {
+    if (!card) return;
+    const head = card.querySelector(".tool-head");
+    if (!head) return;
+    let btn = head.querySelector(".btn-tool-copy");
+    if (!btn) { btn = makeToolCopyBtn(); head.appendChild(btn); }
+    btn.dataset.text = rawText || "";
+  }
   function shellResult(p) {
     const card = document.createElement("div");
     card.className = "msg msg-tool";
     const head = document.createElement("div");
     head.className = "tool-head";
-    head.innerHTML = `<b>$</b> ${escapeHtml(p.cmd || "")}`;
+    head.innerHTML = `<b>$</b> ${escapeHtml(p.cmd || "")}<span class="tool-dur">${p.duration_ms != null ? " ⏱ " + formatDur(p.duration_ms) : ""}</span>`;
     const out = document.createElement("div");
     out.className = "tool-result " + (p.exit === 0 ? "ok" : "err");
     out.textContent = (p.output || "").split("\n").slice(0, 40).join("\n");
+    addToolStatus(card, p.exit === 0);
+    addToolCopyButton(card, p.output);
     card.append(head, out);
     flow.appendChild(card);
     flushTextBlock();
@@ -1134,7 +1176,7 @@ case "goal_round": break;
   function updateCwdLabel(cwd) {
     const label = $("cwd-label");
     if (!label) return;
-     label.textContent = cwd ? ICO_FOLDER + " " + cwd : "";
+     label.innerHTML = cwd ? ICO_FOLDER + " " + escapeHtml(cwd) : "";
     label.title = cwd ? "当前会话工作目录: " + cwd : "";
   }
 
@@ -1565,6 +1607,8 @@ case "goal_round": break;
       images.forEach(url => {
         const img = document.createElement("img");
         img.src = url;
+        img.className = "nb-zoomable";
+        img.addEventListener("click", (e) => { e.stopPropagation(); openLightbox(img.src, img.alt || "图片"); });
         wrap.appendChild(img);
       });
       d.appendChild(wrap);
@@ -1676,9 +1720,21 @@ case "goal_round": break;
       return "auto";
     };
 
-    function renderModels(p) {
+    function renderModels(p, filter) {
       mbox.innerHTML = "";
-      (p.models || []).forEach((m) => {
+      const q = (filter == null ? "" : String(filter)).trim().toLowerCase();
+      const list = (p.models || []).filter((m) => {
+        if (!q) return true;
+        return String(m).toLowerCase().includes(q);
+      });
+      if (!list.length) {
+        const empty = document.createElement("div");
+        empty.className = "model-empty";
+        empty.textContent = q ? ("没有匹配 \"" + q + "\" 的模型") : "暂无可用模型";
+        mbox.appendChild(empty);
+        return;
+      }
+      list.forEach((m) => {
         const o = document.createElement("div");
         const isSel = (p.name === pending.provider) && (m === pending.model);
         o.className = "model-opt" + (isSel ? " current" : "");
@@ -1751,6 +1807,23 @@ case "goal_round": break;
       };
     }
 
+    // ── 模型模糊搜索：本地过滤，不请求后端 ──
+    const searchInput = $("model-search");
+    if (searchInput) {
+      searchInput.value = "";
+      // 输入即过滤当前厂商的模型列表
+      searchInput.oninput = () => {
+        const p = providerData.get(currentProvider)
+          || providers.find((x) => x && x.name === currentProvider);
+        if (p) renderModels(p, searchInput.value);
+      };
+      // Esc 清空并失焦；Enter 选中第一个高亮
+      searchInput.onkeydown = (e) => {
+        if (e.key === "Escape") { searchInput.value = ""; searchInput.blur(); const p = providerData.get(currentProvider) || providers.find((x) => x && x.name === currentProvider); if (p) renderModels(p); }
+        if (e.key === "Enter") { const first = mbox.querySelector(".model-opt"); if (first) first.click(); }
+      };
+    }
+
     const def = providers.find((p) => p.name === curProvider) || providers[0];
     if (def) renderModels(def);
 
@@ -1805,8 +1878,10 @@ case "goal_round": break;
     $("interrupt").classList.toggle("hidden", !b);
     const sendBtn = $("send");
     sendBtn.disabled = false;
-    sendBtn.textContent = b ? "排队" : "发送";
+    // 图标按钮：不动 innerHTML，只用 class/title 表达状态
+    sendBtn.classList.toggle("queuing", b);
     sendBtn.title = b ? "加入队列：当前任务完成后自动执行" : "发送";
+    sendBtn.setAttribute("aria-label", sendBtn.title);
     if (b) {
       showTurnStatus();
       // AI 开始工作时，自动展开 MC 步骤 tab（如果 MC 已打开）
@@ -1874,8 +1949,38 @@ case "goal_round": break;
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
+  // ── 图片点击放大（lightbox）──
+  let lightboxEl = null;
+  function openLightbox(src, alt) {
+    closeLightbox();
+    const mask = document.createElement("div");
+    mask.className = "nb-lightbox";
+    const img = document.createElement("img");
+    img.src = src; img.alt = alt || "";
+    mask.appendChild(img);
+    mask.addEventListener("click", closeLightbox);
+    document.body.appendChild(mask);
+    lightboxEl = mask;
+  }
+  function closeLightbox() {
+    if (lightboxEl) { lightboxEl.remove(); lightboxEl = null; }
+  }
+  function bindZoomable(root) {
+    if (!root) return;
+    root.querySelectorAll("img").forEach((img) => {
+      if (img.dataset.zoomBound) return;
+      img.dataset.zoomBound = "1";
+      img.classList.add("nb-zoomable");
+      img.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openLightbox(img.src, img.alt || "图片");
+      });
+    });
+  }
+
   // 代码块复制按钮（dsh MarkdownText codeLabels: copy/copied）
   function bindCopyButtons(root) {
+    bindZoomable(root);
     root.querySelectorAll(".md-copy").forEach((btn) => {
       if (btn.dataset.bound) return;
       btn.dataset.bound = "1";
@@ -2011,7 +2116,7 @@ case "goal_round": break;
     }
     const cwd0 = state.cwd || "";
     const left = [];
-    if (cwd0) left.push(`<span title="newbee 当前工作目录">📁 ${cwd0}</span>`);
+     if (cwd0) left.push(`<span title="newbee 当前工作目录">${ICO_FOLDER} ${escapeHtml(cwd0)}</span>`);
     else left.push('<span title="newbee 工作区">newbee</span>');
     const turns = st.turns || 0, steps = st.steps || 0;
     if (turns > 0 || steps > 0) left.push(`<span title="回合数（每发一条消息算 1 轮）· 步骤数（每次工具调用算 1 步）">${turns} 轮 · ${steps} 步</span>`);

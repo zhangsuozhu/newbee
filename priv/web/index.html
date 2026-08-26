@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="stylesheet" href="/style.css?v=1788000003" />
+  <link rel="stylesheet" href="/style.css?v=1787739196" />
 </head>
 <body>
 <div id="app">
@@ -53,12 +53,12 @@
     </div>
 
     <footer id="composer">
+      <div class="composer-card">
         <div class="composer-effort" id="effort-ctl" title="思考强度：模型推理深度（auto=跟随模型默认）">
           <span class="effort-label"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.9.8A3.5 3.5 0 0 0 4 9.5c0 .9.3 1.7.9 2.3A3.5 3.5 0 0 0 6 18h1"/><path d="M12 5a3 3 0 1 1 5.9.8A3.5 3.5 0 0 1 20 9.5c0 .9-.3 1.7-.9 2.3A3.5 3.5 0 0 1 18 18h-1"/><path d="M9 18v2a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2"/><path d="M12 5v17"/></svg><span class="effort-text">思考强度</span></span>
           <div id="effort-segments" class="effort-segments"></div>
         </div>
 
-      <div class="composer-card">
 
         <div class="composer-row">
         <div class="composer-attach">
@@ -66,8 +66,8 @@
           <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
         </div>        <textarea id="input" rows="1" placeholder="输入消息…"></textarea>
         <div class="composer-actions">
-          <button id="interrupt" class="btn-ghost hidden" title="中断当前 turn">■ 中断</button>
-          <button id="send" class="btn-primary">发送</button>
+          <button id="interrupt" class="btn-icon-round hidden" title="中断当前 turn" aria-label="中断"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
+          <button id="send" class="btn-icon-round btn-send" title="发送 (Enter)" aria-label="发送"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></button>
         </div>
         </div>
       </div>
@@ -190,6 +190,9 @@
     <div class="modal-title">
       选择模型
     </div>
+    <div class="model-search">
+      <input id="model-search" type="search" placeholder="搜索模型…（支持模糊匹配）" spellcheck="false" autocomplete="off" />
+    </div>
     <div class="model-picker">
       <div id="model-providers" class="model-providers"></div>
       <div id="model-options" class="model-options"></div>
@@ -258,6 +261,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=stats-v2"></script>
+<script src="/app.js?v=1787739196"></script>
 </body>
 </html>

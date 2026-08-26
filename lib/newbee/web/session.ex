@@ -688,12 +688,15 @@ defmodule Newbee.Web.Session do
   end
 
   defp run_shell_notice(st, cmd) do
+    t0 = System.monotonic_time(:millisecond)
     result = Newbee.Tools.Run.sh(cmd, timeout: 300_000)
+    duration_ms = System.monotonic_time(:millisecond) - t0
 
     broadcast(st.sid, :shell_result, %{
       cmd: cmd,
       output: String.slice(result.output, 0, 8000),
-      exit: result.exit
+      exit: result.exit,
+      duration_ms: duration_ms
     })
 
     st

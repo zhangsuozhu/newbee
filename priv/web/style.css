@@ -244,11 +244,13 @@ body {
 .msg-copy {
   position: absolute; top: 6px; right: 8px;
   background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
-  border-radius: 5px; color: var(--nb-label-3);
-  font-size: 11px; padding: 2px 10px; cursor: pointer;
-  font-family: var(--nb-font);
+  border-radius: 4px; color: var(--nb-label-3);
+  font-size: 11px; padding: 1px 7px; cursor: pointer;
+  font-family: var(--nb-font); line-height: 1.4;
   opacity: 0.55; transition: opacity 0.15s ease, color 0.15s ease;
   z-index: 2;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; min-height: 20px;
 }
 .msg-copy:hover { opacity: 1; color: var(--nb-label-1); border-color: var(--nb-label-caption); }
 
@@ -307,6 +309,17 @@ body {
   color: var(--nb-label-2); white-space: pre-wrap; word-break: break-all;
   overflow-wrap: anywhere; max-height: 220px; overflow-y: auto; overflow-x: hidden; }
 .tool-result.ok::before { content: '✓ '; color: var(--nb-green); }
+.tool-dur { color: var(--nb-label-caption); font-size: 11px; white-space: nowrap; }
+.tool-ok { color: var(--nb-green); font-weight: 700; }
+.tool-bad { color: var(--nb-red); font-weight: 700; }
+.btn-tool-copy {
+  margin-left: auto; background: none; border: 1px solid var(--nb-border);
+  border-radius: 4px; color: var(--nb-label-3); cursor: pointer;
+  padding: 1px 7px; font-size: 11px; line-height: 1.4;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; min-height: 20px;
+}
+.btn-tool-copy:hover { opacity: 1; color: var(--nb-label-1); border-color: var(--nb-label-caption); }
 .msg-archive {
   font-family: var(--nb-mono); font-size: 12px;
   border: 1px dashed var(--nb-border); border-radius: var(--nb-radius);
@@ -1442,6 +1455,9 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 .effort-seg:hover { color: var(--fg); background: rgba(128,128,128,.12); }
 .effort-seg.active { background: var(--accent); color: #fff; font-weight: 600; }
 
+.effort-label { display: inline-flex; align-items: center; color: var(--nb-label-3); font-size: 12px; }
+.effort-label svg.ico { width: 12px; height: 12px; }
+.effort-label .effort-text { margin-left: 4px; font-size: 12px; }
 /* ── SVG 图标对齐 ── */
 svg.ico {
   vertical-align: -0.2em;
@@ -1463,18 +1479,50 @@ svg.ico {
   color: var(--nb-accent);
 }
 
+/* ── 图片点击放大（lightbox）── */
+.nb-zoomable { cursor: zoom-in; }
+.md-img {
+  max-width: 100%; border-radius: 6px; cursor: zoom-in;
+  display: block; margin: 6px 0;
+}
+.nb-lightbox {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,0.85);
+  display: flex; align-items: center; justify-content: center;
+  cursor: zoom-out;
+}
+.nb-lightbox img {
+  max-width: 94vw; max-height: 94vh;
+  object-fit: contain; border-radius: 4px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+}
+
+/* ── 滚动条美化（WebKit：Chrome/Safari/Edge）── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128,138,158,0.35) transparent;
+}
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(128,138,158,0.35); border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(128,138,158,0.55); }
+*::-webkit-scrollbar-corner { background: transparent; }
+
 /* Think 展开内容与 assistant 正文共用 Markdown 渲染。 */
 .think-body { white-space: normal; }
 .think-body .md-p { margin: 0 0 8px; }
 .think-body .md-p:last-child { margin-bottom: 0; }
 .think-body ul, .think-body ol { margin: 4px 0 8px; padding-left: 24px; }
+/* 展开时保留完整标题行：▸/▾ Think | 摘要 照常显示，body 紧随其后 */
 .msg-reasoning[data-open="1"] .think-head {
-  position: absolute; top: 4px; left: 6px; z-index: 1; overflow: visible;
+  position: static; overflow: hidden;
 }
 .msg-reasoning[data-open="1"] .think-title,
 .msg-reasoning[data-open="1"] .think-sep,
-.msg-reasoning[data-open="1"] .think-summary { display: none; }
-.msg-reasoning[data-open="1"] .think-body { margin-top: 0; }
+.msg-reasoning[data-open="1"] .think-summary { display: inline; }
+.msg-reasoning[data-open="1"] .think-body { margin-top: 4px; }
 
 /* run_elixir 工具代码采用 Elixir 词法高亮。 */
 .tool-code-elixir {
@@ -1608,8 +1656,8 @@ svg.ico {
   .composer-actions .icon-btn, .composer-attach .icon-btn { width: 40px; height: 40px; }
   .permission-bar button { min-height: 40px; }
 
-  /* 4. 消息宽度 */
-  .msg { max-width: 92%; }
+  /* 4. 消息宽度：指令卡与输出内容统一 100%，两边对齐 */
+  .msg, .msg-tool, .msg-boxed { max-width: 100%; }
   .msg-user { max-width: 92%; }
   .msg-assistant { max-width: 100%; }
   .msg-content { font-size: 15px; line-height: 1.55; }
@@ -1669,7 +1717,7 @@ svg.ico {
 @media (max-width: 768px) {
   .msg-copy {
     opacity: 1;
-    font-size: 12px; padding: 5px 12px; min-height: 32px; min-width: 52px;
+    font-size: 13px; padding: 2px 9px; min-height: 28px; min-width: 32px;
   }
   .msg-boxed { padding: 12px 14px; margin: 4px 0; }
 }
@@ -1689,4 +1737,237 @@ svg.ico {
   }
   #model-label { font-size: 11px; }
   #cwd-label { font-size: 10px; }
+}
+
+/* ── 手机端：模型选择弹窗纵向布局 + 模型名允许换行不被截断 ── */
+@media (max-width: 768px) {
+  /* 弹窗整体占满屏宽，留出安全边距 */
+  #model-modal .modal-box-wide {
+    width: 96vw; max-width: 96vw;
+    max-height: 92vh; max-height: 92dvh;
+    padding: 14px;
+    display: flex; flex-direction: column;
+  }
+  #model-modal .modal-title { font-size: 15px; padding-right: 36px; }
+
+  /* picker 从横向改为纵向：厂商条在上、模型列表在下 */
+  #model-modal .model-picker {
+    flex-direction: column; gap: 8px;
+    height: auto; flex: 1; min-height: 0;
+  }
+  /* 厂商条：横向可滚动药丸，不再有右侧分隔线 */
+  #model-modal .model-providers {
+    flex: 0 0 auto;
+    display: flex; flex-direction: row; gap: 6px;
+    overflow-x: auto; overflow-y: hidden;
+    border-right: none; border-bottom: 1px solid var(--nb-border);
+    padding: 0 0 8px; margin: 0;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  #model-modal .model-providers::-webkit-scrollbar { display: none; }
+  #model-modal .model-provider {
+    flex: none; white-space: nowrap;
+    padding: 8px 12px; min-height: 36px;
+    border-radius: 999px;
+    font-size: 13px;
+    display: inline-flex; align-items: center;
+    touch-action: manipulation;
+  }
+  #model-modal .model-provider.current {
+    border: 1px solid var(--nb-accent);
+    background: var(--nb-bg-elev);
+  }
+
+  /* 模型列表占满剩余高度，可纵向滚动 */
+  #model-modal .model-options {
+    flex: 1; min-height: 0; overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    gap: 6px;
+  }
+  /* 模型项：从单行 flex 改为可换行的两行布局 */
+  #model-modal .model-opt {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 6px; padding: 10px 12px;
+    min-height: 44px;
+    border-radius: 10px;
+    touch-action: manipulation;
+  }
+  /* 关键修复：模型名允许换行（最多两行），不再 ellipsis 截断 */
+  #model-modal .model-opt .model-name {
+    flex: 1 1 100%; min-width: 0;
+    overflow: visible; text-overflow: clip;
+    white-space: normal; word-break: break-all;
+    font-family: var(--nb-mono); font-size: 13px; line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  /* ctx-chip 移到第二行，变小更不挤 */
+  #model-modal .model-opt .ctx-chip {
+    flex: 0 0 auto; margin-left: auto;
+    font-size: 10px; padding: 2px 8px; line-height: 18px;
+    min-height: 26px;
+  }
+
+  /* 底部按钮组：等宽三列，触控 44px */
+  #model-modal .modal-actions {
+    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+    padding-top: 10px; margin-top: 8px;
+    border-top: 1px solid var(--nb-border);
+  }
+  #model-modal .modal-actions button {
+    min-height: 44px; font-size: 14px; padding: 8px 10px;
+    justify-content: center;
+  }
+  /* 刷新按钮里的图标+文字别挤 */
+  #model-modal #model-refresh svg { flex: none; }
+}
+
+/* 超小屏（<=420px）进一步压缩 */
+@media (max-width: 420px) {
+  #model-modal .modal-box-wide { width: 100vw; max-width: 100vw; max-height: 100vh; max-height: 100dvh; border-radius: 0; padding: 12px; }
+  #model-modal .model-provider { font-size: 12px; padding: 7px 10px; }
+  #model-modal .model-opt { padding: 9px 10px; }
+  #model-modal .model-opt .model-name { font-size: 12px; }
+}
+
+/* ── 微调：模型弹窗底部按钮更紧凑，不再巨大 ── */
+@media (max-width: 768px) {
+  #model-modal .modal-actions {
+    display: flex; gap: 8px;
+    padding-top: 8px; margin-top: 6px;
+  }
+  #model-modal .modal-actions button {
+    flex: 0 0 auto; min-height: 36px;
+    font-size: 13px; padding: 6px 14px;
+    border-radius: 9px;
+  }
+  /* 确定按钮不靠右贴满，宽度随内容 */
+  #model-modal .modal-actions .btn-allow { margin-left: auto; }
+  #model-modal .modal-actions .btn-ghost { min-width: 64px; }
+  /* 刷新按钮图标小一点 */
+  #model-modal #model-refresh svg { width: 12px; height: 12px; }
+}
+@media (max-width: 420px) {
+  #model-modal .modal-actions button { min-height: 34px; font-size: 12px; padding: 5px 12px; }
+}
+
+/* 模型弹窗"确定"按钮在移动端改用主题 accent 色，避免亮绿太抢眼 */
+@media (max-width: 768px) {
+  #model-modal .modal-actions .btn-allow {
+    background: var(--nb-accent); color: #fff;
+  }
+  #model-modal .modal-actions .btn-allow:active { opacity: 0.85; }
+}
+
+/* ── 模型弹窗：模糊搜索框 ── */
+.model-search { margin-bottom: 10px; }
+#model-search {
+  width: 100%; box-sizing: border-box;
+  background: var(--nb-bg-panel); color: var(--nb-label-1);
+  border: 1px solid var(--nb-border); border-radius: 8px;
+  padding: 7px 12px; font-family: var(--nb-mono); font-size: 13px;
+  outline: none; transition: border-color var(--nb-dur);
+}
+#model-search:focus { border-color: var(--nb-accent); }
+#model-search::placeholder { color: var(--nb-label-3); }
+/* 空结果提示 */
+.model-empty {
+  padding: 24px 16px; text-align: center;
+  color: var(--nb-label-3); font-size: 13px;
+}
+
+/* 移动端：搜索框更大更易点 */
+@media (max-width: 768px) {
+  .model-search { margin-bottom: 8px; }
+  #model-search {
+    padding: 10px 14px; font-size: 16px; /* 16px 防 iOS 自动放大 */
+    border-radius: 10px; min-height: 44px;
+  }
+  .model-empty { padding: 32px 16px; font-size: 14px; }
+}
+
+/* ── 圆形图标按钮（发送/中断）：借鉴 DeepSeek ── */
+.btn-icon-round {
+  width: 38px; height: 38px; border-radius: 50%;
+  border: none; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--nb-accent); color: #fff;
+  transition: filter var(--nb-dur), transform 0.1s, background var(--nb-dur);
+  flex: none;
+}
+.btn-icon-round:hover { filter: brightness(1.12); }
+.btn-icon-round:active { transform: scale(0.92); }
+.btn-icon-round:disabled { opacity: 0.45; cursor: default; }
+.btn-icon-round svg { display: block; }
+#interrupt.btn-icon-round { background: var(--nb-bg-elev, rgba(128,128,128,.18)); color: var(--nb-label-2); border: 1px solid var(--nb-border); }
+#interrupt.btn-icon-round:hover { color: var(--nb-red, #e5534b); border-color: var(--nb-red, #e5534b); }
+
+/* 排队中：发送按钮微脉动 */
+#send.btn-send.queuing { animation: nb-send-pulse 1.2s ease-in-out infinite; }
+@keyframes nb-send-pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.3); } }
+
+/* ── 思考强度：收纳进 composer-card 顶部一行 ── */
+#composer .composer-card > .composer-effort {
+  margin: -2px -4px 2px;
+  padding: 0 2px 6px;
+  border-bottom: 1px solid var(--nb-border);
+  justify-content: flex-start;
+}
+
+@media (max-width: 768px) {
+  .btn-icon-round { width: 44px; height: 44px; }
+  .btn-icon-round svg { width: 20px; height: 20px; }
+  /* 思考强度始终显示， composer-card 内的第一行 */
+  #composer .composer-card > .composer-effort {
+    display: flex !important;
+    margin: 0 -2px 4px;
+    padding: 0 2px 8px;
+    gap: 6px;
+  }
+  /* 标签收缩只留 icon，给档位列留空间 */
+  #composer .composer-card > .composer-effort .effort-text { display: none; }
+  #composer .composer-card > .composer-effort .effort-label svg { margin-right: 0; }
+  .composer-actions { gap: 6px; }
+}
+
+@media (max-width: 420px) {
+  .btn-icon-round { width: 42px; height: 42px; }
+}
+
+/* ── 移动端：内容列全宽（竖屏 + 横屏） ── */
+@media (max-width: 768px) {
+  /* 压过 #app.sidebar-collapsed .flow 的 calc(100vw - 96px)（特异性 1-2-0） */
+  #app.sidebar-collapsed .flow,
+  #app.sidebar-collapsed .composer-card,
+  #app.sidebar-collapsed .statsbar,
+  .flow, .composer-card, .statsbar {
+    --nb-content-w: 100%;
+  }
+  /* 去掉消息区左右留白：transcript 是 20px 28px 的源头 */
+  .transcript { padding: 10px 8px; }
+  .flow { padding-left: 0; padding-right: 0; }
+  .composer-card, .statsbar { padding-left: 8px; padding-right: 8px; }
+  /* 用户气泡也几乎拉满 */
+  .msg-user { max-width: 96%; }
+}
+
+/* ── 手机横屏：全屏利用宽度，压缩垂直空间 ── */
+@media (max-height: 500px) and (orientation: landscape) {
+  /* 同样压过 #app.sidebar-collapsed 三连的高特异性规则 */
+  #app.sidebar-collapsed .flow,
+  #app.sidebar-collapsed .composer-card,
+  #app.sidebar-collapsed .statsbar,
+  .flow, .composer-card, .statsbar {
+    --nb-content-w: 100%;
+  }
+  /* 主列占满全宽（横屏时 320px 扣减不再生效） */
+  #main { padding: 0; }
+  .flow, .composer-card, .statsbar, #flow { padding-left: max(10px, env(safe-area-inset-left, 0px)); padding-right: max(10px, env(safe-area-inset-right, 0px)); }
+  /* 顶栏/输入区压缩，给内容让出高度 */
+  #topbar { padding: 4px 10px; min-height: 0; }
+  .composer-card { padding: 6px 10px; }
+  #input { min-height: 38px; max-height: 80px; }
+  .flow { gap: 10px; }
+  /* 消息更宽 */
+  .msg, .msg-user { max-width: 96%; }
 }
