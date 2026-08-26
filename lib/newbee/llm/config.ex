@@ -351,7 +351,7 @@ defmodule Newbee.LLM.Config do
 
     result =
       if URI.parse(url).host == "openrouter.ai" do
-        httpc_get(url, headers)
+        openrouter_get(url)
       else
         req_get(url, headers)
       end
@@ -364,6 +364,21 @@ defmodule Newbee.LLM.Config do
         Logger.warning("model_catalog: fetch failed for " <> url <> ": " <> inspect(other))
         :error
     end
+  end
+
+  defp openrouter_get(url) do
+    case System.cmd("curl", ["--silent", "--show-error", "--fail", "--max-time", "30", url], stderr_to_stdout: true) do
+      {body, 0} ->
+        case Jason.decode(body) do
+          {:ok, decoded} -> {:ok, decoded}
+          {:error, error} -> {:error, {:invalid_json, Exception.message(error)}}
+        end
+
+      {output, status} ->
+        {:error, {:curl_failed, status, String.slice(output, 0, 200)}}
+    end
+  rescue
+    error -> {:error, {:curl_exception, Exception.message(error)}}
   end
 
   # Finch can hang on OpenRouter under transparent-proxy/fake-IP setups.
