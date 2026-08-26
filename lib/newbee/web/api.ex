@@ -229,7 +229,7 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("media.list", %{"sessionId" => sid}) do
     case Newbee.Media.list(sid) do
       {:ok, items} -> {:ok, %{items: json_safe(items)}}
-      {:error, code, msg} -> {:error, code, msg}
+      other -> {:error, "media_error", inspect(other)}
     end
   end
 
