@@ -28,6 +28,14 @@ defmodule Newbee.LLM.ClientTest do
     assert u["cache_read_tokens"] == 40
   end
 
+  test "结果 usage 解包兼容流式裸 usage 与 complete 包装层" do
+    raw = %{"prompt_tokens" => 100, "cache_read_tokens" => 80}
+
+    assert Client.result_usage({:ok, %{"content" => "ok"}, raw}) == raw
+    assert Client.result_usage({:ok, "ok", %{usage: raw, logprobs: nil}}) == raw
+    assert Client.result_usage({:error, :timeout}) == %{}
+  end
+
   test "stream_chat 返回的 tool_calls 按 index 聚合" do
     # 不发起真实请求：直接验证 apply_delta 的聚合逻辑不可行（私有），
     # 因此验证消息组装路径：interrupt 标志可反复设置/清除。

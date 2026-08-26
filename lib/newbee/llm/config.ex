@@ -38,6 +38,7 @@ defmodule Newbee.LLM.Config do
 
     Newbee.LLM.Client.new(
       base_url: provider["baseUrl"],
+      api: get_in(provider, ["modelApis", model]) || provider["api"] || "openai-completions",
       model: model,
       api_key: expand_env(provider["apiKey"]),
       reasoning_effort: role_cfg["reasoningEffort"],
@@ -351,7 +352,7 @@ defmodule Newbee.LLM.Config do
 
     result =
       if URI.parse(url).host == "openrouter.ai" do
-        openrouter_get(url)
+        openrouter_get(url, headers)
       else
         req_get(url, headers)
       end
@@ -366,8 +367,11 @@ defmodule Newbee.LLM.Config do
     end
   end
 
-  defp openrouter_get(url) do
-    case System.cmd("curl", ["--silent", "--show-error", "--fail", "--max-time", "30", url], stderr_to_stdout: true) do
+  defp openrouter_get(url, headers) do
+    auth_args = Enum.flat_map(headers, fn {key, value} -> ["--header", key <> ": " <> value] end)
+    args = ["--silent", "--show-error", "--fail", "--max-time", "30"] ++ auth_args ++ [url]
+
+    case System.cmd("curl", args, stderr_to_stdout: true) do
       {body, 0} ->
         case Jason.decode(body) do
           {:ok, decoded} -> {:ok, decoded}

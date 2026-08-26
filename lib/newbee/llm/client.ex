@@ -16,6 +16,7 @@ defmodule Newbee.LLM.Client do
   defstruct model: @default_model,
             api_key: nil,
             base_url: @default_base_url,
+            api: "openai-completions",
             reasoning_effort: nil,
             vision: true,
             context_window: nil,
@@ -27,6 +28,7 @@ defmodule Newbee.LLM.Client do
       model: Keyword.get(opts, :model, @default_model),
       api_key: Keyword.get(opts, :api_key, System.get_env("OPENROUTER_API_KEY")),
       base_url: Keyword.get(opts, :base_url, @default_base_url),
+      api: Keyword.get(opts, :api, "openai-completions"),
       reasoning_effort: Keyword.get(opts, :reasoning_effort),
       vision: Keyword.get(opts, :vision, true),
       context_window: Keyword.get(opts, :context_window),
@@ -115,6 +117,17 @@ defmodule Newbee.LLM.Client do
 
   # Req.request/1 在收到首个响应前可能同步等待连接/首 token，
   # 所以整个请求放到可杀的 worker；调用方每 50ms 检查一次 Esc 标志。
+  defp stream_chat_request(%__MODULE__{api: "openai-responses"} = client, messages, on_text, _on_reasoning) do
+    case Newbee.LLM.Responses.request(client, messages, Newbee.Codec.tools()) do
+      {:ok, message, _usage} = ok ->
+        if message["content"] != "", do: on_text.(message["content"])
+        ok
+
+      error ->
+        error
+    end
+  end
+
   defp stream_chat_request(%__MODULE__{} = client, messages, on_text, on_reasoning) do
     Newbee.DebugLog.log(:llm, "start model=#{client.model} messages=#{length(messages)}")
     t0 = System.monotonic_time(:millisecond)
@@ -305,11 +318,7 @@ defmodule Newbee.LLM.Client do
   defp maybe_put_body(body, k, v), do: Map.put(body, k, v)
 
   defp observe_provider(result, client, started_at, task_type) do
-    usage =
-      case result do
-        {:ok, _msg, usage} when is_map(usage) -> usage
-        _ -> %{}
-      end
+    usage = result_usage(result)
 
     log_cache_hit(usage, task_type)
 
@@ -337,6 +346,11 @@ defmodule Newbee.LLM.Client do
     _ -> :ok
   end
 
+  @doc false
+  def result_usage({:ok, _value, %{usage: usage}}) when is_map(usage), do: usage
+  def result_usage({:ok, _value, usage}) when is_map(usage), do: usage
+  def result_usage(_), do: %{}
+
   defp usage_tokens(usage) when is_map(usage) do
     usage["total_tokens"] || usage[:total_tokens] ||
       (usage["prompt_tokens"] || usage[:prompt_tokens] || 0) +
@@ -354,14 +368,14 @@ defmodule Newbee.LLM.Client do
 
     hit_rate =
       if is_number(prompt) and prompt > 0 do
-        Float.round(100 * (cache_read / prompt), 1)
+        "#{Float.round(100 * (cache_read / prompt), 1)}%"
       else
-        0.0
+        "n/a"
       end
 
     Newbee.DebugLog.log(
       :llm,
-      "cache-hit task=#{task_type} prompt=#{prompt} read=#{cache_read} write=#{cache_write} rate=#{hit_rate}%"
+      "cache-hit task=#{task_type} prompt=#{prompt} read=#{cache_read} write=#{cache_write} rate=#{hit_rate}"
     )
   rescue
     _ -> :ok
@@ -631,7 +645,7 @@ defmodule Newbee.LLM.Client do
         |> maybe_usage(chunk)
 
       {:ok, %{"usage" => usage}} ->
-        %{acc | usage: usage || acc.usage}
+        %{acc | usage: if(is_map(usage), do: normalize_usage(usage), else: acc.usage)}
 
       {:ok, %{"error" => err}} ->
         %{acc | error: inspect(err)}
