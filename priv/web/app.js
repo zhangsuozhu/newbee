@@ -1613,6 +1613,17 @@ case "goal_round": break;
       });
       d.appendChild(wrap);
     }
+    // 用户消息复制按钮
+    if (text) {
+      const cBtn = document.createElement("button");
+      cBtn.type = "button";
+      cBtn.className = "msg-copy";
+      cBtn.title = "复制消息";
+      cBtn.textContent = "\u29C9";
+      cBtn.onclick = () => { navigator.clipboard.writeText(text).then(() => { cBtn.textContent = "已复制"; setTimeout(() => cBtn.textContent = "\u29C9", 1500); }); };
+      d.appendChild(cBtn);
+    }
+    scrollBottom();
     scrollBottom();
   }
 
