@@ -36,20 +36,20 @@ defmodule Newbee.LLM.ClientTest do
     assert Client.result_usage({:error, :timeout}) == %{}
   end
 
-  test "cache-hit 日志包含厂家和模型名" do
+  test "cache-hit 日志包含厂家模型与 token/条数拆分" do
     client = Client.new(provider: "guoyu", model: "gpt-5.6-sol", api_key: "test")
     usage = %{"prompt_tokens" => 4_392, "cache_read_tokens" => 3_840, "cache_write_tokens" => 0}
 
     assert Client.cache_hit_line(client, usage, "stream_chat") ==
              "cache-hit provider=guoyu model=gpt-5.6-sol task=stream_chat " <>
-               "prompt=4392 read=3840 write=0 rate=87.4%"
+               "prompt=4392 prompt_read=3840 rate=87.4%"
   end
 
   test "cache-hit 无 usage 时命中率显示 n/a" do
     client = Client.new(provider: "opencode", model: "ox-alpha-free", api_key: "test")
 
     assert Client.cache_hit_line(client, %{}, "complete") =~
-             "provider=opencode model=ox-alpha-free task=complete prompt=0 read=0 write=0 rate=n/a"
+             "provider=opencode model=ox-alpha-free task=complete prompt=0 prompt_read=0 rate=n/a"
   end
 
   test "stream_chat 返回的 tool_calls 按 index 聚合" do

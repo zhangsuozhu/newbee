@@ -1972,42 +1972,42 @@ case "goal_round": break;
     if (st.context_tokens > 0 && st.context_window > 0) {
       $("usage-label").textContent = `${fmtContext(st.context_tokens)}/${fmtContext(st.context_window)}`;
     }
+    // 左侧：目录 + 进度 + 耗时 + token（口径：服务端 usage 为会话累计值）
     const u = st.usage || {};
+    const promptTok = u.prompt_tokens || 0;
     const cacheRead = u.cache_read_tokens || u.cached_tokens
       || (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
-    const uncachedIn = u.uncached_prompt_tokens != null ? u.uncached_prompt_tokens
-      : ((u.prompt_tokens || 0) - cacheRead > 0 ? (u.prompt_tokens || 0) - cacheRead : 0);
     const outTok = u.completion_tokens || u.output_tokens || 0;
-    const inTok = cacheRead + uncachedIn + (u.cache_write_tokens || 0);
-    // 缓存命中率：累计 cache_read ÷ 累计 prompt_tokens（与 TUI 口径一致；服务端 usage 按 key 累加，prompt 含 cached）
-    const promptTok = u.prompt_tokens || 0;
     const cacheHit = promptTok > 0 ? Math.min(100, cacheRead * 100 / promptTok) : null;
     if (st && st.cwd !== undefined) {
       state.cwd = st.cwd || null;
       updateCwdLabel(state.cwd);
     }
     const cwd0 = state.cwd || "";
-     const left = [cwd0 ? (ICO_FOLDER + " " + cwd0) : "newbee"];
+    const left = [];
+    if (cwd0) left.push(`<span title="newbee 当前工作目录">📁 ${cwd0}</span>`);
+    else left.push('<span title="newbee 工作区">newbee</span>');
     const turns = st.turns || 0, steps = st.steps || 0;
-    if (turns > 0 || steps > 0) left.push(`${turns} 轮 · ${steps} 步`);
-    // LLM/工具耗时（dsh: LLM Xs · 工具 Ys）
+    if (turns > 0 || steps > 0) left.push(`<span title="回合数（每发一条消息算 1 轮）· 步骤数（每次工具调用算 1 步）">${turns} 轮 · ${steps} 步</span>`);
     const tm = state.timing;
     const llmMs = tm.llmMs + (tm.llmStart !== null ? Date.now() - tm.llmStart : 0);
     const toolMs = tm.toolMs + (tm.toolStart !== null ? Date.now() - tm.toolStart : 0);
-    if (llmMs > 0 || toolMs > 0) left.push(`LLM ${fmtDur(llmMs)} · 工具 ${fmtDur(toolMs)}`);
-    // 首 token · 速率（dsh: 首 token Zs · T tok/s）
+    if (llmMs > 0 || toolMs > 0) left.push(`<span title="模型生成累计耗时 · 工具执行累计耗时">LLM ${fmtDur(llmMs)} · 工具 ${fmtDur(toolMs)}</span>`);
     const spd = [];
-    if (tm.ftCount > 0) spd.push(`首 token ${fmtDur(tm.ftSum / tm.ftCount)}`);
-    if (llmMs > 0 && tm.outTok > 0) spd.push(`${(tm.outTok / (llmMs / 1000)).toFixed(1)} tok/s`);
+    if (tm.ftCount > 0) spd.push(`<span title="平均首 token 耗时（多次请求平均）">首 token ${fmtDur(tm.ftSum / tm.ftCount)}</span>`);
+    if (llmMs > 0 && tm.outTok > 0) spd.push(`<span title="输出 token 数 ÷ LLM 耗时">${(tm.outTok / (llmMs / 1000)).toFixed(1)} tok/s</span>`);
     if (spd.length) left.push(spd.join(" · "));
-    if (cacheHit !== null) left.push(`缓存 ${cacheHit.toFixed(1).replace(/\.0$/, "")}%`);
-    if (inTok > 0 || outTok > 0) left.push(`入 ${fmtTok(inTok)} · 出 ${fmtTok(outTok)}`);
+    if (cacheHit !== null) left.push(`<span title="缓存命中率 = 命中缓存的 token ÷ 总输入 token（会话累计）">缓存 ${cacheHit.toFixed(1).replace(/\.0$/, "")}%</span>`);
+    if (promptTok > 0 || outTok > 0) left.push(`<span title="累计输入 token（prompt_tokens）· 累计输出 token（completion_tokens）">输入 ${fmtTok(promptTok)} · 输出 ${fmtTok(outTok)}</span>`);
     $("stats-left").innerHTML = left.join(" | ");
-      const qn = st.queued || 0;
-      const stTxt = st.busy
-        ? `<span class="st-busy">● 运行中${qn > 0 ? " · 排队 " + qn : ""}</span>`
-        : '<span class="st-ok">● 空闲</span>';
-    $("stats-right").innerHTML = `${stTxt} bind:${st.bindings || 0} ${escapeHtml(st.policy || "")}`;
+    // 右侧：状态 + bind + 策略
+    const qn = st.queued || 0;
+    const stTxt = st.busy
+      ? `<span class="st-busy" title="Agent 正在运行">● 运行中${qn > 0 ? " · 排队 " + qn : ""}</span>`
+      : '<span class="st-ok" title="Agent 空闲">● 空闲</span>';
+    const bindTxt = st.bindings || 0;
+    const policyTxt = escapeHtml(st.policy || "");
+    $("stats-right").innerHTML = `${stTxt} <span title="会话绑定变量数">bind:${bindTxt}</span> <span title="权限策略：lenient=放行 / ask=询问 / deny=拒绝">${policyTxt}</span>`;
   }
 
   // ── 环境进化控制台 ──
