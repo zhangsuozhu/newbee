@@ -37,6 +37,7 @@ defmodule Newbee.LLM.Config do
     unless provider, do: raise("model.json: 未知 provider #{inspect(provider_name)}")
 
     Newbee.LLM.Client.new(
+      provider: provider_name,
       base_url: provider["baseUrl"],
       api: get_in(provider, ["modelApis", model]) || provider["api"] || "openai-completions",
       model: model,

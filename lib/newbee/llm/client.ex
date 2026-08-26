@@ -14,6 +14,7 @@ defmodule Newbee.LLM.Client do
 
   @derive {Inspect, except: [:api_key]}
   defstruct model: @default_model,
+            provider: "openrouter",
             api_key: nil,
             base_url: @default_base_url,
             api: "openai-completions",
@@ -26,6 +27,7 @@ defmodule Newbee.LLM.Client do
   def new(opts \\ []) do
     %__MODULE__{
       model: Keyword.get(opts, :model, @default_model),
+      provider: Keyword.get(opts, :provider, "openrouter"),
       api_key: Keyword.get(opts, :api_key, System.get_env("OPENROUTER_API_KEY")),
       base_url: Keyword.get(opts, :base_url, @default_base_url),
       api: Keyword.get(opts, :api, "openai-completions"),
@@ -320,7 +322,7 @@ defmodule Newbee.LLM.Client do
   defp observe_provider(result, client, started_at, task_type) do
     usage = result_usage(result)
 
-    log_cache_hit(usage, task_type)
+    log_cache_hit(client, usage, task_type)
 
     {success, tokens, output_bytes} =
       case result do
@@ -361,7 +363,14 @@ defmodule Newbee.LLM.Client do
 
   # ── 缓存命中诊断（临时功能：每请求后台打印一次，验证/调优后移除）──
   # 打印：task_type / prompt_tokens / cache_read / 命中率（cache_read / prompt）
-  defp log_cache_hit(usage, task_type) when is_map(usage) do
+  defp log_cache_hit(client, usage, task_type) when is_map(usage) do
+    Newbee.DebugLog.log(:llm, cache_hit_line(client, usage, task_type))
+  rescue
+    _ -> :ok
+  end
+
+  @doc false
+  def cache_hit_line(%__MODULE__{} = client, usage, task_type) when is_map(usage) do
     prompt = usage["prompt_tokens"] || usage[:prompt_tokens] || 0
     cache_read = usage["cache_read_tokens"] || usage[:cache_read_tokens] || 0
     cache_write = usage["cache_write_tokens"] || usage[:cache_write_tokens] || 0
@@ -373,12 +382,8 @@ defmodule Newbee.LLM.Client do
         "n/a"
       end
 
-    Newbee.DebugLog.log(
-      :llm,
-      "cache-hit task=#{task_type} prompt=#{prompt} read=#{cache_read} write=#{cache_write} rate=#{hit_rate}"
-    )
-  rescue
-    _ -> :ok
+    "cache-hit provider=#{client.provider} model=#{client.model} task=#{task_type} " <>
+      "prompt=#{prompt} read=#{cache_read} write=#{cache_write} rate=#{hit_rate}"
   end
 
   # 429/5xx 过载重试（非流式版，无 SSE drain 需求）
