@@ -30,6 +30,7 @@ defmodule Newbee.Environment.CapabilityGate do
     "Newbee.Tools.Search" => [:fs],
     "Newbee.Tools.Json" => [],
     "Newbee.Tools.Introspect" => [],
+    "Newbee.Tools.HotReload" => [],
     "Newbee.Tools.JSpace" => [:fs],
     "Newbee.Plugins.RepoMap" => [:fs]
   }

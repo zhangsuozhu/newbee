@@ -28,6 +28,30 @@ defmodule Newbee.LLM.ClientTest do
     assert u["cache_read_tokens"] == 40
   end
 
+  test "结果 usage 解包兼容流式裸 usage 与 complete 包装层" do
+    raw = %{"prompt_tokens" => 100, "cache_read_tokens" => 80}
+
+    assert Client.result_usage({:ok, %{"content" => "ok"}, raw}) == raw
+    assert Client.result_usage({:ok, "ok", %{usage: raw, logprobs: nil}}) == raw
+    assert Client.result_usage({:error, :timeout}) == %{}
+  end
+
+  test "cache-hit 日志包含厂家模型与 token/条数拆分" do
+    client = Client.new(provider: "guoyu", model: "gpt-5.6-sol", api_key: "test")
+    usage = %{"prompt_tokens" => 4_392, "cache_read_tokens" => 3_840, "cache_write_tokens" => 0}
+
+    assert Client.cache_hit_line(client, usage, "stream_chat") ==
+             "cache-hit provider=guoyu model=gpt-5.6-sol task=stream_chat " <>
+               "prompt=4392 prompt_read=3840 rate=87.4%"
+  end
+
+  test "cache-hit 无 usage 时命中率显示 n/a" do
+    client = Client.new(provider: "opencode", model: "ox-alpha-free", api_key: "test")
+
+    assert Client.cache_hit_line(client, %{}, "complete") =~
+             "provider=opencode model=ox-alpha-free task=complete prompt=0 prompt_read=0 rate=n/a"
+  end
+
   test "stream_chat 返回的 tool_calls 按 index 聚合" do
     # 不发起真实请求：直接验证 apply_delta 的聚合逻辑不可行（私有），
     # 因此验证消息组装路径：interrupt 标志可反复设置/清除。

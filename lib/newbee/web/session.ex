@@ -168,26 +168,20 @@ defmodule Newbee.Web.Session do
     model = Newbee.Session.model(sid)
 
     base =
-      if provider do
-        try do
-          {:ok, Newbee.LLM.Config.client_for("default", provider: provider)}
-        rescue
-          e -> {:error, "provider 「#{provider}」未配置: #{Exception.message(e)}"}
-        end
-      else
-        try do
-          {:ok, Newbee.LLM.Config.client_for()}
-        rescue
-          e -> {:error, Exception.message(e)}
-        end
+      try do
+        opts =
+          []
+          |> then(fn opts -> if provider, do: Keyword.put(opts, :provider, provider), else: opts end)
+          |> then(fn opts -> if model, do: Keyword.put(opts, :model, model), else: opts end)
+
+        {:ok, Newbee.LLM.Config.client_for("default", opts)}
+      rescue
+        e ->
+          prefix = if provider, do: "provider 「#{provider}」未配置: ", else: ""
+          {:error, prefix <> Exception.message(e)}
       end
 
     with {:ok, client} <- base,
-         client <-
-           (case model do
-              nil -> client
-              model -> %{client | model: model}
-            end),
          client <-
            (case Newbee.Session.effort(sid) do
               nil -> client
@@ -377,20 +371,28 @@ defmodule Newbee.Web.Session do
 
   @impl true
   def handle_cast({:prompt, text}, %{busy: true} = st) do
-    {:noreply, %{st | queue: :queue.in({:text, text}, st.queue)}}
+    queue = :queue.in({:text, text}, st.queue)
+    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
+    {:noreply, %{st | queue: queue}}
   end
 
   def handle_cast({:prompt_images, data_urls, text}, %{busy: true} = st) do
-    {:noreply, %{st | queue: :queue.in({:images, data_urls, text}, st.queue)}}
+    queue = :queue.in({:images, data_urls, text}, st.queue)
+    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
+    {:noreply, %{st | queue: queue}}
   end
 
   # kernel 仍在后台 boot：先入队，boot 完成后按顺序提交（用户无需等待或重试）
   def handle_cast({:prompt, text}, %{booting: true} = st) do
-    {:noreply, %{st | queue: :queue.in({:text, text}, st.queue)}}
+    queue = :queue.in({:text, text}, st.queue)
+    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
+    {:noreply, %{st | queue: queue}}
   end
 
   def handle_cast({:prompt_images, data_urls, text}, %{booting: true} = st) do
-    {:noreply, %{st | queue: :queue.in({:images, data_urls, text}, st.queue)}}
+    queue = :queue.in({:images, data_urls, text}, st.queue)
+    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
+    {:noreply, %{st | queue: queue}}
   end
 
   def handle_cast({:prompt_images, data_urls, text}, st) do
@@ -403,6 +405,13 @@ defmodule Newbee.Web.Session do
 
   def handle_cast(:interrupt, st) do
     if st.kernel && Process.alive?(st.kernel), do: Newbee.Agent.Loop.interrupt(st.kernel)
+
+    # 中断 = 停止当前 + 清空排队（用户按停止的意图是不再继续跑后续指令）；
+    # 清空数广播给前端提示。
+    n = :queue.len(st.queue)
+    st = %{st | queue: :queue.new()}
+    if n > 0, do: broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
+
     {:noreply, st}
   end
 
@@ -614,12 +623,8 @@ defmodule Newbee.Web.Session do
     save_stats(st)
     broadcast_turn_end(st.sid, result)
 
-    case :queue.out(st.queue) do
-      {{:value, {:text, t}}, q} -> {:noreply, do_submit(%{st | queue: q}, t)}
-      {{:value, {:images, urls, t}}, q} -> {:noreply, do_submit_images(%{st | queue: q}, urls, t)}
-      {{:value, other}, q} -> {:noreply, do_submit(%{st | queue: q}, other)}
-      {:empty, _} -> {:noreply, %{st | busy: false}}
-    end
+    # 队列驱动：循环出队直到真正开启 turn（/ 命令不开 turn，单条出队会卡住后续排队输入）
+    {:noreply, dispatch_pending(%{st | busy: false})}
   end
 
   def handle_info(_, st), do: {:noreply, st}
