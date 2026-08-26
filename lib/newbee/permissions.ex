@@ -5,7 +5,7 @@ defmodule Newbee.Permissions do
   @config Path.join(System.user_home!(), ".newbee/config.json")
   @risky_patterns [
     ~r/File\.(write|write!|rm|rm_rf|mkdir|cp|mv|rename|touch)/,
-    ~r/Newbee\.Tools\.(Fs\.(write|write!|append!|rm|rm_rf)|Edit\.patch|Structural\.(insert|replace|format))/,
+    ~r/Newbee\.Tools\.(Fs\.(write|write!|append!|rm|rm_rf)|Edit\.patch|Structural\.(insert|replace|format)|HotReload\.(replace|load_file|unload))/,
     ~r/System\.cmd|Port\.open|:os\.cmd/,
     ~r/Newbee\.Tools\.Run\.sh/,
     ~r/PluginManager\.(materialize|load_release)|Coordinator\.(activate|rollback)/,

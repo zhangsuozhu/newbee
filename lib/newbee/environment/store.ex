@@ -275,6 +275,7 @@ defmodule Newbee.Environment.Store do
              active when is_map(active) <- env["active"] do
           builtin = Newbee.Plugins.builtins() |> Map.new(&{&1.plugin_id, &1.release_id})
 
+          # 1. 已有 plugin_id 但 release 指针过期/缺失 → 迁移到当前 builtin release
           migrated =
             Enum.reduce(active, active, fn {plugin_id, release_id}, acc ->
               current = Map.get(builtin, plugin_id)
@@ -285,6 +286,14 @@ defmodule Newbee.Environment.Store do
               else
                 acc
               end
+            end)
+
+          # 2. 新增内置插件（当前 BEAM 新增的 builtin，active 图缺失）
+          #    —— 内置能力从首启就在 active 图（§3.1/§5），新加内置同样应自动呈现，
+          #      避免 CapabilityGate 拒绝"未激活的 builtin 工具"（P0 活锁同源）。
+          migrated =
+            Enum.reduce(builtin, migrated, fn {plugin_id, release_id}, acc ->
+              if Map.has_key?(acc, plugin_id), do: acc, else: Map.put(acc, plugin_id, release_id)
             end)
 
           if migrated != active do
