@@ -407,6 +407,8 @@ case "queued": line("notice", `⏳ 已排队（第 ${p.queued || 1} 位），当
 case "notice": line("notice", p.text); break;
 case "shell_result": shellResult(p); break;
 case "file_diff": fileDiff(p); break;
+case "media_show": renderMediaShow(p); break;
+
 case "turn_long": line("notice", `本轮较长：${p.step || ""} 步`); break;
 case "tool_warnings": line("notice", `工具警告: ${(p.warnings || []).join("; ")}`); break;
 case "final_check": line("notice", `最终检查: ${p.score ?? ""}`); break;
@@ -1460,6 +1462,62 @@ case "goal_round": break;
     return card;
   }
 
+  // 媒体上屏：渲染图片/音频/视频卡片（实时事件与历史回放共用）
+  function renderMediaShow(p) {
+    const d = el("msg-media", "");
+    d.dataset.mediaId = p.media_id || "";
+    const kind = p.kind || (p.url || "").match(/\.(png|jpe?g|gif|webp|svg)/i) ? "image" : "other";
+    const head = document.createElement("div");
+    head.className = "media-head";
+    head.innerHTML = `<span class="media-kind">${escapeHtml(kind)}</span><span class="media-name">${escapeHtml(p.name || "")}</span><span class="media-size">${escapeHtml(p.size ? fmtBytes(p.size) : "")}</span>`;
+    d.appendChild(head);
+    const body = document.createElement("div");
+    body.className = "media-body";
+    if (p.caption) {
+      const cap = document.createElement("div");
+      cap.className = "media-caption";
+      cap.textContent = p.caption;
+      d.appendChild(cap);
+    }
+    if (kind === "image") {
+      const img = document.createElement("img");
+      img.src = p.url;
+      img.alt = p.caption || p.name || "媒体";
+      img.className = "nb-zoomable";
+      img.addEventListener("click", (e) => { e.stopPropagation(); openLightbox(img.src, img.alt); });
+      body.appendChild(img);
+    } else if (kind === "audio") {
+      const au = document.createElement("audio");
+      au.controls = true;
+      au.preload = "metadata";
+      au.src = p.url;
+      body.appendChild(au);
+    } else if (kind === "video") {
+      const vd = document.createElement("video");
+      vd.controls = true;
+      vd.preload = "metadata";
+      vd.src = p.url;
+      body.appendChild(vd);
+    } else {
+      const a = document.createElement("a");
+      a.href = p.url;
+      a.className = "media-download";
+      a.textContent = "⬇ 下载 " + (p.name || "文件");
+      body.appendChild(a);
+    }
+    d.appendChild(body);
+    flow.appendChild(d);
+    scrollBottom();
+  }
+
+  function fmtBytes(n) {
+    if (n == null || isNaN(n)) return "";
+    if (n >= 1048576) return (n/1048576).toFixed(1) + "MB";
+    if (n >= 1024) return (n/1024).toFixed(1) + "KB";
+    return n + "B";
+  }
+
+
   function renderOneMsg(m) {
     if (m.role === "user") {
       if (m.images && m.images.length) renderUserLine(m.content, m.images);
@@ -1477,6 +1535,8 @@ case "goal_round": break;
       }
       if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); if (replayPendingUsage) { attachUsageToBubble(d, replayPendingUsage); replayPendingUsage = null; } }
       (m.toolCalls || []).forEach((tc) => renderReplayTool(tc.name, tc.title, tc.code, "", true));
+    } else if (m.role === "media") {
+      renderMediaShow(m.content || {});
     } else if (m.role === "usage") {
       if (m.usage) replayPendingUsage = typeof m.usage === "string" ? JSON.parse(m.usage) : m.usage;
     } else if (m.role === "tool") {
@@ -3349,3 +3409,4 @@ case "goal_round": break;
     }
   });
 })();
+

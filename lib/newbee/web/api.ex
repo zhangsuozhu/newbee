@@ -224,6 +224,22 @@ defmodule Newbee.Web.Api do
     end
   end
 
+
+  # ── 媒体上屏域 ──
+  defp dispatch_rpc("media.list", %{"sessionId" => sid}) do
+    case Newbee.Media.list(sid) do
+      {:ok, items} -> {:ok, %{items: json_safe(items)}}
+      {:error, code, msg} -> {:error, code, msg}
+    end
+  end
+
+  defp dispatch_rpc("media.delete", %{"sessionId" => sid, "mediaId" => media_id}) do
+    case Newbee.Media.delete(sid, media_id) do
+      :ok -> {:ok, %{deleted: media_id}}
+      {:error, code, msg} -> {:error, code, msg}
+    end
+  end
+
   defp dispatch_rpc("session.state", %{"sessionId" => sid}) do
     with {:ok, pid} <- find_session(sid) do
       {:ok, Newbee.Web.Session.state(pid)}
@@ -1169,6 +1185,9 @@ defmodule Newbee.Web.Api do
   defp history_msg(%{"role" => "tool", "content" => c}) when is_binary(c),
     do: %{role: "tool", content: String.slice(c, 0, 4000)}
 
+  defp history_msg(%{"role" => "media", "content" => c}) when is_map(c),
+    do: %{role: "media", content: json_safe(c)}
+
   defp history_msg(%{"role" => "usage", "usage" => u}) when is_map(u),
     do: %{role: "usage", usage: json_safe(u)}
 
@@ -1442,3 +1461,5 @@ defmodule Newbee.Web.Api do
   defp json_safe(v) when is_binary(v) or is_number(v) or is_boolean(v) or is_nil(v), do: v
   defp json_safe(v), do: inspect(v)
 end
+
+
