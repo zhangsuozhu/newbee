@@ -112,7 +112,7 @@ defmodule Newbee.LLM.Client do
 
       started_at = System.monotonic_time(:millisecond)
       result = await_stream_chat(worker, monitor, ref, client)
-      observe_provider(result, client, started_at, "stream_chat")
+      observe_provider(result, client, started_at, "stream_chat", messages)
       result
     end
   end
@@ -312,17 +312,17 @@ defmodule Newbee.LLM.Client do
       "complete done in #{System.monotonic_time(:millisecond) - t0}ms result=#{elem(result, 0)}"
     )
 
-    observe_provider(result, client, t0, "complete")
+    observe_provider(result, client, t0, "complete", messages)
     result
   end
 
   defp maybe_put_body(body, _k, nil), do: body
   defp maybe_put_body(body, k, v), do: Map.put(body, k, v)
 
-  defp observe_provider(result, client, started_at, task_type) do
+  defp observe_provider(result, client, started_at, task_type, messages) do
     usage = result_usage(result)
 
-    log_cache_hit(client, usage, task_type)
+    log_cache_hit(client, usage, task_type, messages)
 
     {success, tokens, output_bytes} =
       case result do
@@ -363,17 +363,17 @@ defmodule Newbee.LLM.Client do
 
   # ── 缓存命中诊断（临时功能：每请求后台打印一次，验证/调优后移除）──
   # 打印：task_type / prompt_tokens / cache_read / 命中率（cache_read / prompt）
-  defp log_cache_hit(client, usage, task_type) when is_map(usage) do
-    Newbee.DebugLog.log(:llm, cache_hit_line(client, usage, task_type))
+  defp log_cache_hit(client, usage, task_type, messages) when is_map(usage) do
+    Newbee.DebugLog.log(:llm, cache_hit_line(client, usage, task_type, messages))
   rescue
     _ -> :ok
   end
 
   @doc false
-  def cache_hit_line(%__MODULE__{} = client, usage, task_type) when is_map(usage) do
+  def cache_hit_line(%__MODULE__{} = client, usage, task_type, messages \\ nil)
+      when is_map(usage) do
     prompt = usage["prompt_tokens"] || usage[:prompt_tokens] || 0
     cache_read = usage["cache_read_tokens"] || usage[:cache_read_tokens] || 0
-    cache_write = usage["cache_write_tokens"] || usage[:cache_write_tokens] || 0
 
     hit_rate =
       if is_number(prompt) and prompt > 0 do
@@ -382,8 +382,20 @@ defmodule Newbee.LLM.Client do
         "n/a"
       end
 
-    "cache-hit provider=#{client.provider} model=#{client.model} task=#{task_type} " <>
-      "prompt=#{prompt} read=#{cache_read} write=#{cache_write} rate=#{hit_rate}"
+    cnt = if is_list(messages), do: length(messages), else: 0
+    sys = if is_list(messages), do: Enum.count(messages, fn m -> (m["role"] || m[:role]) == "system" end), else: 0
+    his = if cnt > 0, do: max(cnt - sys - 1, 0), else: 0
+
+    token_line = "prompt=#{prompt} prompt_read=#{cache_read} rate=#{hit_rate}"
+
+    line =
+      if cnt > 0 and sys >= 0 do
+        token_line <> " msg_count=#{cnt} (sys=#{sys} his=#{his})"
+      else
+        token_line
+      end
+
+    "cache-hit provider=#{client.provider} model=#{client.model} task=#{task_type} " <> line
   end
 
   # 429/5xx 过载重试（非流式版，无 SSE drain 需求）
