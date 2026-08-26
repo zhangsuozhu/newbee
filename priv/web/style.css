@@ -234,6 +234,8 @@ body {
 
 .msg-usage { display:flex; align-items:center; justify-content:flex-start; gap:8px; margin-top:10px; padding-top:8px; border-top:1px dashed var(--nb-border); font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); font-variant-numeric: tabular-nums; }
 .msg-usage-stats { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tool-usage { display:flex; align-items:center; gap:8px; margin-top:6px; padding-top:6px; border-top:1px dashed var(--nb-border); font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); font-variant-numeric: tabular-nums; }
+.tool-usage-stats { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .msg-usage-model { flex:none; max-width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:0.9; }
 
 /* assistant 输出框：包边框 + 右上角复制按钮 */

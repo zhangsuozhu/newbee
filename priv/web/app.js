@@ -217,6 +217,9 @@ const flow = $("flow");
     turnUsage: null,
     turnUsageDetails: [],
     _pendingUsage: null,
+    lastLLMUsage: null,
+    lastUsageSeq: 0,
+    lastAttachedSeq: 0,
   };
 
   // ── 会话统计持久化（按 sessionId 存 localStorage，刷新/重连后保留）──
@@ -452,6 +455,9 @@ case "goal_round": break;
     state.turnUsage = null;
     state.turnUsageDetails = [];
     state._pendingUsage = null;
+    state.lastLLMUsage = null;
+    // 保留序号用于“同上次请求”判断，跨轮清附着标记
+    state.lastAttachedSeq = 0;
   }
 
   function el(cls, text, md) {
@@ -541,6 +547,7 @@ case "goal_round": break;
       state.currentAssistant = null;
       streamAcc = "";
     }
+  let replayPendingUsage = null; // 回放时 usage 行先于 assistant 行到达，暂存等下个气泡
   let streamAcc = "";
   let streamRaf = 0;
   function appendStream(delta) {
@@ -637,9 +644,10 @@ case "goal_round": break;
   }
 
   function toolStart(p) {
-    // 工具开始时归档当前 reasoning 块（去 running，下次 reasoning 开新块）
     archiveReasoning();
     mcToolStart(p);
+    // 回放历史：usage 行先到，暂存值在此贴到本次工具卡（若有）
+    if (replayPendingUsage) { p._replayUsage = replayPendingUsage; }
     const card = document.createElement("div");
     card.className = "msg msg-tool";
     const head = document.createElement("div");
@@ -676,6 +684,10 @@ case "goal_round": break;
     card.dataset.startedAt = Date.now();
     state.currentTool = result;
     state.currentToolCard = card;
+    try {
+      if (p._replayUsage) { attachToolUsageToCard(card, p._replayUsage); if (replayPendingUsage === p._replayUsage) replayPendingUsage = null; }
+      else if (state.lastLLMUsage) attachToolUsageToCard(card);
+    } catch (e) {}
     flushTextBlock();
   }
 
@@ -1410,7 +1422,42 @@ case "goal_round": break;
     MC._replaying = false;
     MC.steps = [];
     renderMCSteps();
+    initInfiniteHistory();
     scrollBottom(true);
+  }
+
+  // 回放专用静态工具卡（不走 toolStart/toolResult 状态机，避免顺序错乱）
+  function renderReplayTool(name, title, code, result, ok) {
+    const card = document.createElement("div");
+    card.className = "msg msg-tool";
+    const head = document.createElement("div");
+    head.className = "tool-head";
+    head.innerHTML = `<b>${escapeHtml(name || "tool")}</b> <span class="diffstat">${escapeHtml(title || "")}</span>`;
+    const codeEl = document.createElement("pre");
+    const src = (code || "").split("\n").slice(0, 12).join("\n");
+    const isElixir = name === "run_elixir";
+    codeEl.className = `tool-code${isElixir ? " tool-code-elixir" : ""} hidden`;
+    if (isElixir) { codeEl.dataset.language = "elixir"; codeEl.innerHTML = highlightElixir(src); }
+    else codeEl.textContent = src;
+    const res = document.createElement("div");
+    res.className = "tool-result " + (ok ? "ok" : "err") + " hidden";
+    res.textContent = (result || "").split("\n").slice(0, 30).join("\n");
+    card.append(head, codeEl, res);
+    head.style.cursor = "pointer";
+    head.addEventListener("click", () => {
+      const open = codeEl.classList.contains("hidden");
+      codeEl.classList.toggle("hidden", !open);
+      res.classList.toggle("hidden", !open);
+      head.querySelector(".tool-chev")?.remove();
+      if (!open) return;
+      const chev = document.createElement("span");
+      chev.className = "tool-chev";
+      chev.textContent = " ▾";
+      chev.style.color = "var(--nb-label-caption)";
+      head.appendChild(chev);
+    });
+    flow.appendChild(card);
+    return card;
   }
 
   function renderOneMsg(m) {
@@ -1428,11 +1475,13 @@ case "goal_round": break;
         d.dataset.open = "0";
         renderReasoningBody(d);
       }
-      if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); }
-      (m.toolCalls || []).forEach((tc) => toolStart({ name: tc.name, title: tc.title, code: tc.code }));
+      if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); if (replayPendingUsage) { attachUsageToBubble(d, replayPendingUsage); replayPendingUsage = null; } }
+      (m.toolCalls || []).forEach((tc) => renderReplayTool(tc.name, tc.title, tc.code, "", true));
+    } else if (m.role === "usage") {
+      if (m.usage) replayPendingUsage = typeof m.usage === "string" ? JSON.parse(m.usage) : m.usage;
     } else if (m.role === "tool") {
       const ok = !(m.content || "").startsWith("✗");
-      toolResult(m.content, ok);
+      renderReplayTool("tool", "", "", m.content, ok);
     } else if (m.role === "archive") {
       const d = el("msg-archive", "");
       const segs = m.segments || [];
@@ -1464,112 +1513,57 @@ case "goal_round": break;
     flowEl.insertBefore(btn, flowEl.firstChild);
   }
 
+  let loadingEarlier = false; // 防重入
   async function loadEarlier() {
-    const btn = $("load-more");
-    if (btn) btn.remove();
-    const flowEl = $("flow");
+    if (loadingEarlier || historyOffset <= 0) return;
+    loadingEarlier = true;
+    try {
+      const flowEl = $("flow");
+      const transcriptEl = $("transcript");
+      const oldHeight = transcriptEl.scrollHeight;
 
-    // 记录当前滚动位置
-    const transcriptEl = $("transcript");
-    const oldHeight = transcriptEl.scrollHeight;
+      // 先摘走旧按钮（避免被当旧内容一起摘走）
+      const oldBtn = $("load-more");
+      if (oldBtn) oldBtn.remove();
 
-    MC._replaying = true;
-    const newSkip = Math.max(0, historyOffset - HISTORY_PAGE);
-    const start = newSkip;
-    const end = historyOffset;
-    historyOffset = newSkip;
+      // 把当前已显示的内容整体摘下来（顺序保持）
+      const oldNodes = Array.from(flowEl.childNodes);
+      flowEl.innerHTML = ""; // 清空 flow 本身保留
 
-    // 在顶部插入旧消息（需要先收集 DOM 节点再插入）
-    const fragment = document.createDocumentFragment();
-    const tempFlow = document.createElement("div");
-    
-    // 暂存当前 flow 内容
-    const existingNodes = Array.from(flowEl.childNodes);
-    
-    // 清空 flow，渲染旧消息到 fragment
-    // 简化方案：直接在前面追加（DOM 顺序可能不完全对，但功能正确）
-    allHistoryMsgs.slice(start, end).forEach((m) => { renderOneMsg(m); });
+      const newSkip = Math.max(0, historyOffset - HISTORY_PAGE);
+      const start = newSkip;
+      const end = historyOffset;
+      historyOffset = newSkip;
 
-    MC._replaying = false;
+      // 更早消息渲染进空 flow：appendChild 天然从头到尾顺序正确
+      MC._replaying = true;
+      allHistoryMsgs.slice(start, end).forEach((m) => { renderOneMsg(m); });
+      MC._replaying = false;
 
-    // 保持滚动位置（看到的是同一条消息）
-    requestAnimationFrame(() => {
-      transcriptEl.scrollTop = transcriptEl.scrollHeight - oldHeight;
+      // 把原有内容整体挂回末尾（更早的在顶部，旧内容在下方）
+      oldNodes.forEach((n) => flowEl.appendChild(n));
+
+      // 补偿高度差，视觉上当前内容不动
+      requestAnimationFrame(() => {
+        transcriptEl.scrollTop = transcriptEl.scrollHeight - oldHeight;
+      });
+
+      // 仍有更早消息则在最前放按钮
+      if (historyOffset > 0) renderLoadMoreBtn(historyOffset);
+    } finally {
+      loadingEarlier = false;
+    }
+  }
+
+  // 触顶自动加载（窗口式渐进：向上滚到顶自动加载更早对话）
+  function initInfiniteHistory() {
+    const t = $("transcript");
+    if (!t || t.dataset.infinityBound) return;
+    t.dataset.infinityBound = "1";
+    t.addEventListener("scroll", () => {
+      if (historyOffset <= 0 || loadingEarlier || state.busy) return;
+      if (t.scrollTop <= 40) loadEarlier();
     });
-
-    // 如果还有更早的消息，重新显示按钮
-    if (historyOffset > 0) {
-      renderLoadMoreBtn(historyOffset);
-    }
-  }
-
-  function renderOneMsg(m) {
-    if (m.role === "user") {
-      if (m.images && m.images.length) renderUserLine(m.content, m.images);
-      else line("user", m.content);
-    }
-    else if (m.role === "assistant") {
-      if (m.reasoning) {
-        const d = el("msg-reasoning", "");
-        d.dataset.thinkText = m.reasoning;
-        d.dataset.open = "0";
-        renderReasoningBody(d);
-      }
-      if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); }
-      (m.toolCalls || []).forEach((tc) => toolStart({ name: tc.name, title: tc.title, code: tc.code }));
-    } else if (m.role === "tool") {
-      const ok = !(m.content || "").startsWith("✗");
-      toolResult(m.content, ok);
-    }
-  }
-
-  function renderLoadMoreBtn(remaining) {
-    const flowEl = $("flow");
-    const btn = document.createElement("div");
-    btn.className = "load-more-btn";
-    btn.id = "load-more";
-    btn.innerHTML = `<button class="btn-ghost" style="margin:8px auto;display:block;font-size:12px">↑ 加载更早 ${remaining} 条消息</button>`;
-    btn.addEventListener("click", () => loadEarlier());
-    flowEl.insertBefore(btn, flowEl.firstChild);
-  }
-
-  async function loadEarlier() {
-    const btn = $("load-more");
-    if (btn) btn.remove();
-    const flowEl = $("flow");
-
-    // 记录当前滚动位置
-    const transcriptEl = $("transcript");
-    const oldHeight = transcriptEl.scrollHeight;
-
-    MC._replaying = true;
-    const newSkip = Math.max(0, historyOffset - HISTORY_PAGE);
-    const start = newSkip;
-    const end = historyOffset;
-    historyOffset = newSkip;
-
-    // 在顶部插入旧消息（需要先收集 DOM 节点再插入）
-    const fragment = document.createDocumentFragment();
-    const tempFlow = document.createElement("div");
-    
-    // 暂存当前 flow 内容
-    const existingNodes = Array.from(flowEl.childNodes);
-    
-    // 清空 flow，渲染旧消息到 fragment
-    // 简化方案：直接在前面追加（DOM 顺序可能不完全对，但功能正确）
-    allHistoryMsgs.slice(start, end).forEach((m) => { renderOneMsg(m); });
-
-    MC._replaying = false;
-
-    // 保持滚动位置（看到的是同一条消息）
-    requestAnimationFrame(() => {
-      transcriptEl.scrollTop = transcriptEl.scrollHeight - oldHeight;
-    });
-
-    // 如果还有更早的消息，重新显示按钮
-    if (historyOffset > 0) {
-      renderLoadMoreBtn(historyOffset);
-    }
   }
 
   // ── 图片附件（上传 / 粘贴 / 预览）──
@@ -1987,7 +1981,7 @@ case "goal_round": break;
     return (Math.round(n/1e5)/10).toFixed(1).replace(/\.0$/, "") + "M";
   }
   function bubbleUsageLabel(f) {
-    const pct = f.hit == null ? "-" : (f.hit > 99.95 ? "100" : f.hit.toFixed(1).replace(/\.0$/, "")) + "%";
+    const pct = f.hit == null ? "-" : (f.hit > 99.995 ? "100.00" : f.hit.toFixed(2)) + "%";
     return `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${fmtTokShort(f.cached)} (${pct})`;
   }
   function ensureUsageBar(bubble) {
@@ -2024,6 +2018,8 @@ case "goal_round": break;
         state.turnUsage.count += 1;
         if (f.model) state.turnUsage.model = f.model;
         state.turnUsageDetails.push({ ...f, raw: u });
+        state.lastLLMUsage = u;
+        state.lastUsageSeq = (state.lastUsageSeq || 0) + 1;
       }
     } catch (e) {}
     let target = state.currentAssistant;
@@ -2043,6 +2039,28 @@ case "goal_round": break;
     } else {
       state._pendingUsage = u;
     }
+    // 若正有工具卡在等用量（乱序到达），也顺带补上
+    try {
+      if (state.currentToolCard && !state.currentToolCard.querySelector(":scope > .tool-usage") && state.lastLLMUsage) {
+        attachToolUsageToCard(state.currentToolCard);
+      }
+    } catch (e) {}
+  }
+  function attachToolUsageToCard(card, u) {
+    const f = usageFields(u || state.lastLLMUsage);
+    if (!card || !f) return;
+    if (card.querySelector(":scope > .tool-usage")) return;
+    const isShared = state.lastAttachedSeq === state.lastUsageSeq && state.lastUsageSeq !== 0;
+    const bar = document.createElement("div");
+    bar.className = "tool-usage";
+    const left = document.createElement("span");
+    left.className = "tool-usage-stats";
+    const pct = f.hit == null ? "-" : (f.hit > 99.995 ? "100.00" : f.hit.toFixed(2)) + "%";
+    left.textContent = (isShared ? "同上次请求 · " : "") + `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${fmtTokShort(f.cached)} (${pct})`;
+    left.title = `prompt=${f.prompt} completion=${f.completion} total=${f.total} cached=${f.cached} hit=${f.hit == null ? "-" : f.hit.toFixed(2)+"%"}`;
+    bar.appendChild(left);
+    card.appendChild(bar);
+    state.lastAttachedSeq = state.lastUsageSeq;
   }
   function scrollBottom(force) {
     if (force) state.stickBottom = true;
