@@ -1,4 +1,5 @@
 defmodule Newbee.LLM.Config do
+  require Logger
   @moduledoc """
   模型配置 (model.json)。schema 学习 prime-agent 的 models.json：
 
@@ -130,7 +131,7 @@ defmodule Newbee.LLM.Config do
           }
         end,
         max_concurrency: 8,
-        timeout: 10_000,
+        timeout: 30_000,
         on_timeout: :kill_task
       )
       |> Enum.map(fn
@@ -347,18 +348,46 @@ defmodule Newbee.LLM.Config do
         []
       end
 
-    case Req.get(url, headers: headers, receive_timeout: 8_000) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-        {:ok, body}
+    case req_get(url, headers) do
+      {:ok, body} -> {:ok, body}
 
-      _ ->
+      other ->
+        Logger.warning("model_catalog: fetch failed for " <> url <> ": " <> inspect(other))
         :error
     end
-  rescue
-    _ -> :error
-  catch
-    _, _ -> :error
+    end
+
+    # Req/Finch 在部分透明代理（fake-ip 网段）环境下 TLS 会挂起，httpc 实测稳定，作兜底通道
+  defp req_get(url, headers) do
+    case Req.get(url, headers: headers, receive_timeout: 30_000) do
+      {:ok, %Req.Response{status: st} = resp} when st in 200..299 -> {:ok, resp.body}
+      {:ok, %Req.Response{status: st}} -> {:error, {:http_status, st}}
+      {:error, _e} -> httpc_get(url, headers)
+    end
   end
+
+  defp httpc_get(url, headers) do
+    _ = Application.ensure_all_started(:inets)
+    _ = Application.ensure_all_started(:ssl)
+
+    req =
+      {String.to_charlist(url),
+       Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)}
+
+    try do
+      :httpc.set_options(ssl: [verify: :verify_peer, cacerts: :public_key.cacerts_get()])
+
+      case :httpc.request(:get, req, [timeout: 30_000, connect_timeout: 10_000], body_format: :binary) do
+        {:ok, {{_, 200, _}, _, body}} -> {:ok, body}
+        {:ok, {{_, st, _}, _, _body}} -> {:error, {:http_status, st}}
+        {:error, e} -> {:error, e}
+      end
+    rescue
+      e -> {:error, {:httpc_exception, Exception.message(e)}}
+    catch
+      k, r -> {:error, {:httpc_thrown, {k, r}}}
+    end
+   end
   # ── internals ──
 
   defp resolve_path do
