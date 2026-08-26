@@ -161,7 +161,7 @@ defmodule Mix.Tasks.Newbee.Web do
 
   defp extract_pw(["--set-password", v | t], nil, acc) when v != "" do
     if String.starts_with?(v, "--") do
-      extract_pw(t, nil, ["--set-password", v | acc])
+      extract_pw(t, nil, [v, "--set-password" | acc])
     else
       extract_pw(t, v, acc)
     end

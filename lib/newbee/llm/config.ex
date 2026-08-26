@@ -130,7 +130,7 @@ defmodule Newbee.LLM.Config do
           }
         end,
         max_concurrency: 8,
-        timeout: 10_000,
+        timeout: 30_000,
         on_timeout: :kill_task
       )
       |> Enum.map(fn
@@ -347,7 +347,7 @@ defmodule Newbee.LLM.Config do
         []
       end
 
-    case Req.get(url, headers: headers, receive_timeout: 8_000) do
+    case Req.get(url, headers: headers, receive_timeout: 30_000) do
       {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
         {:ok, body}
 

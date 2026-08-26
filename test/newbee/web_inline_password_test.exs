@@ -15,7 +15,7 @@ defmodule Mix.Tasks.Newbee.WebInlinePasswordTest do
 
     test "裸 --set-password 保持原样走交互式" do
       assert {nil, ["--set-password"]} = Web.extract_inline_password(["--set-password"])
-      assert {nil, ["--set-password"]} = Web.extract_inline_password(["--set-password", "--https"])
+      assert {nil, ["--set-password", "--https"]} = Web.extract_inline_password(["--set-password", "--https"])
     end
 
     test "无该标志时原样返回" do
