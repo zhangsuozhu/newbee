@@ -1,6 +1,10 @@
 # Edit v2：面向大模型的版本化文件编辑事务
 
-> 状态：设计提案，尚未实现。
+> 状态：**已实现**（2026-08，PR #12 stage B + PR #17 clean_hash）。
+> 落位：`lib/newbee/tools/edit/v2.ex`（补丁层）+ `lib/newbee/tools/edit/snapshot_store.ex`（快照仓库）+
+> `lib/newbee/tools/edit.ex`（show 集成 v2 快照标签）。行号全部指向原快照；
+> stale/越界/未读/重叠/no-op 一律拒绝，多节预检全过后原子落盘（逻辑原子）。
+> 协议见模块 `@moduledoc`：`[path#tag]` + `PUT N..M / PUT <N / PUT >N / CUT N..M`。
 >
 > 目标：重新设计 `Newbee.Tools.Edit` 的模型接口和落盘协议。本文讨论的是“模型已经形成修改意图之后，如何可靠地把意图变成文件状态变化”，不讨论模型如何理解需求或生成正确算法。
 

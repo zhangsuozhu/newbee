@@ -9,7 +9,7 @@
 [![Elixir](https://img.shields.io/badge/Elixir-1.18%2B-4e2a8e?logo=elixir)](https://elixir-lang.org)
 [![OTP](https://img.shields.io/badge/OTP-29-red?logo=erlang)](https://www.erlang.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Design](https://img.shields.io/badge/design-736_lines-blue)](DESIGN.md)
+[![Design](https://img.shields.io/badge/design-911_lines-blue)](DESIGN.md)
 
 <p align="center">
   <b>长期存活 · 版本化 · 可回退 · 自我进化</b><br/>
@@ -205,7 +205,7 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 - `Esc` 中断执行 · `Ctrl-C` 清输入/退出 · `Ctrl-L` 重绘 · `PgUp/PgDn` 翻屏
 - `Ctrl-T` 切换窗格(绑定/事件日志/工具块/输入队列) · 括号粘贴 · 状态栏(模型/工程/token/绑定/策略)
 
-**命令 / Commands:** `/model` `/bindings` `/tokens` `/rules` `/dump` `/resume` `/reset` `/approve` `/reject` `/log` `/snapshot` `/rollback` `/evolve` `/policy` `/genes` `/bench` `/goal` `/diff` `/undo` `/session` `/init` `/tools` `/permissions` `/compact` `/quit` · TUI 内 `/reasoning` 切换思考流 · `@文件` 引用 · `!shell` 执行
+**命令 / Commands:** `/model` `/bindings` `/tokens` `/rules` `/dump` `/resume` `/reset` `/approve` `/reject` `/log` `/snapshot` `/rollback` `/evolve` `/policy` `/genes` `/bench` `/goal` `/diff` `/undo` `/session` `/init` `/tools` `/permissions` `/compact` `/quit` `/archive [关键词]` `/attach` `/status` `/image <路径>` `/new` `/bundles` `/autonomy <档>` `/environment <sub>` · TUI 内 `/reasoning` 切换思考流 · `@文件` 引用 · `!shell` 执行
 
 *Single-column streaming, reasoning in grey, tool blocks, audit events — all flowing. Every keybinding you expect, plus project-aware superpowers.*
 
@@ -223,6 +223,16 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 ./bin/newbee web --https --host 0.0.0.0 --set-password
 # 设置后每次访问：密码 + SVG 验证码登录拿 token → Bearer 认证
 ```
+
+**功能：** 会话管理（多会话 + busy/排队状态）、流式对话（token 用量/缓存命中率气泡、
+思考强度 7 档热切、图片上传/粘贴、`@文件` 引用补全）、长会话渐进加载（分页拉历史）、
+Mission Control 面板（文件追踪 + step 时间线 + diff + 进化事件流 + 手动触发进化）、
+git 操作（diff / checkpoint 打点 `[checkpoint] <desc>` / PR）、文件浏览。
+
+**传输架构：** `POST /api/<method>` JSON-RPC 信封（`rpcId/payload` → `result.ok|error`，
+异常/exit 兜底回错误信封不裸 500）+ WebSocket 下行事件流（`GET /ws?session=<sid>`，
+text/tool/usage/progress/rule_hit… 实时帧；上行 `interrupt/permission/prompt/promptImage`）。
+busy 期间输入入队（前端显示排队数），turn 结束自动消化；`interrupt` 停止当前并清空排队。
 
 **安全模型：**
 - **本地（回环地址）免认证** —— 绑定 `127.0.0.1` 时全放行，开发零摩擦
@@ -245,7 +255,8 @@ lib/newbee/
 ├── environment/    # Coordinator / Store / Manifest / Release / Revision
 │                  # Plugin* / Generation / EvaluatorPool / Antibodies
 │                  # Verifier / PPT / Fitness / JIT / Autonomy / Projection
-├── llm/            # Client (OpenRouter SSE) / Config
+├── llm/            # Client (OpenRouter SSE) / Config / Responses API 适配
+├── web/            # WebUI: Router / Api(RPC) / Socket(WS) / Session / Auth
 ├── plugins/        # RepoMap / Provider.OpenRouter (无凭证适配器)
 ├── tools/          # Fs / Edit / Structural / Run / Git / Search / ...
 ├── tui/            # Screen / Cards / History / Key / Highlight
@@ -266,8 +277,8 @@ mix newbee.bench                   # 真实 LLM 公开基准
 mix newbee.doctor                  # 工具链/配置/目录体检
 ```
 
-- 全套件 **282–284/287** 通过 (OTP 29 + Elixir 1.20)，`acceptance` 单跑 12/12 全过
-- *Full suite 282–284/287 passing, acceptance 12/12 green in isolation.*
+- 全套件 **280+** 测试通过 (OTP 29 + Elixir 1.20，历史实测 282–284/287)，`acceptance` 单跑 12/12 全过；2026-08 又新增 edit v2 / TCE v2 / archive / web 等测试
+- *Full suite 280+ passing (historic 282–284/287), acceptance 12/12 green in isolation; plus edit v2 / TCE v2 / archive / web suites added in 2026-08.*
 
 ---
 

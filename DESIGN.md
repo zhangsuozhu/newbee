@@ -255,14 +255,17 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 - **代码 IO**：读/写/追加/复制/移动/删除/遍历工程树（`tool` 插件：`Fs`）。
 - **双轨编辑**：
   - **文本轨 · 哈希锚点编辑**（`Edit`）：`show` 生成 `N#hash|` 行锚点；`patch` 按锚点对（目标行+相邻上下文）定位，数错行自动重定位、对不上整体拒绝、多节补丁原子落盘。消灭 string-not-found 重试循环这个最大 token 黑洞。
+  - **文本轨 v2 · 快照范围编辑**（`Edit.V2`，2026-08 落地）：`show` 返回 `[path#tag]` 快照标签 + 连续行号视图；`PUT N..M / PUT <N / PUT >N / CUT N..M` 全部指向原快照行号——stale/越界/未读/重叠/no-op 一律拒绝，多节预检全过后原子落盘。彻底消灭行号漂移重试。
   - **结构轨 · Sourceror**（`Structural`）：保留格式注释的 AST 重写，按 `模块::def` 定位替换。选 Elixir 的最大技术红利。
   - 分工：Elixir 工程走结构轨，其余文本走锚点轨。
+- **热加载**（`HotReload`，2026-08 落地）：`replace/load_file/purge/unload/status`——源码/BEAM 热替换（软 purge，`force: true` 硬 purge），`target: :main` 经 RPC 作用主节点，调试-生效秒级闭环免重启。
 - **运行**：`Run`（mix/elixir/shell）、编译、测试。
 - **工程**：`Scaffold`（mix new、deps、脚手架）。
 - **统一寻址**：`Newbee.read/1` 通吃文件/目录/URL 与内部 scheme——`memory://`、`skill://`、`agent://<id>/findings`、`conflict://N`、`bindings://`、`events://`。只教模型一个接口。
 - **内省**：`Introspect`（模块文档、AST、beam chunk、类型信息）。
 - **RepoMap**（`projection` 插件）：紧凑工程结构图（模块/`@moduledoc` 摘要/公开签名/struct 字段），mtime 指纹增量缓存。模型凭图定位 → 只对目标区域取细节。
 - **记忆/状态**：全局与项目级持久状态读写（自动脱敏剥离密钥）。
+- **大对象逐出**（`ArtifactRef`）：大 binding 自动逐出为 artifact 引用（`%ArtifactRef{ref: ...}`），模型持引用可按需拉回——长期会话不因大对象撑爆绑定。
 - **数据工具**：`Json`/`Http`/`Search`/`Git`/`Diff`。
 - **工作协议**：`JSpace`（§6.4）、`BestTool`（显式不确定性聚合）。
 - **宿主桥**：`Newbee.Host.*` 类型化请求——调模型、代理消息、审计、调度。模型能改造环境的一切，物理上碰不到宿主的心脏：**宽松策略管"行为"，宿主契约管"能力"，后者不依赖模型自觉。**
@@ -294,6 +297,13 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 
 降级通道：模型偶发在正文输出 ` ```elixir ` 块时，容错解析器兜底执行并温和纠偏。
 新能力永远进环境（Plugin），不进工具面。
+
+**健壮性（2026-08 落地）**：
+
+- **错误自动续跑**：流中断/上游 400/过载（429/5xx）等 `retryable_goal_error` 在 goal 模式下自动重试（`error_retries < max_error_retries`，退避），错误信息可读化回填。
+- **沉睡规则当轮重试**：命中沉睡规则不是冷冰冰的注入——中断当前流 → 注入 reminder → **当前 turn 内自动重试**，错误当口当场纠正（§6.3 从"下轮才看见"升级为"本轮即纠正"）。
+- **思考强度（reasoning_effort）**：7 档 `off/auto/low/medium/high/xhigh/max`，TUI/WebUI 热切，会话级持久化，重启保留。
+- **多模态输入**：WebUI 图片上传/粘贴（data URL 管线），TUI/CLI 用 `/image <路径>` 发图。
 
 ### 6.2 结果回填的 token 控制
 
@@ -367,6 +377,29 @@ ledger compactions.jsonl（append-only；tail_sha 锚自校验；尾行损坏整
 （细节仍走 `history://` 拉取，光头原则不破；注入即追加，不破前缀缓存）。无档案/弱
 命中/异常一律静默。CLI/TUI 侧新增 `/archive [关键词]` 命令：裸查询出段索引，带关键词
 跨段全文检索。
+
+### 6.7 WebUI：HTTP/WS 控制台（2026-08 落地）
+
+浏览器里的完整工作台，与 TUI/CLI 同一内核、同一项目环境：
+
+- **RPC-over-HTTP**（`Newbee.Web.Api`）：`POST /api/<method>` JSON-RPC 信封（`rpcId` + `payload` → `result.ok | result.error`）。方法域：`auth.*`（status/captcha/setup/login/logout）、`session.*`（list/history/queue/switch_model/set_effort/set_cwd/…）、`git.*`、`evolution.*`、`workspace.*`。`safe_dispatch` 兜底：异常/exit 一律回 JSON 错误信封，不裸 500。
+- **WebSocket 下行**（`Newbee.Web.Socket`）：`GET /ws?session=<sid>` 订阅 Bus，该会话 Loop 事件以 JSON 帧实时推送（text/tool/usage/progress/rule_hit…）；上行控制帧 `interrupt / permission / prompt / promptImage`——连 WS 即可完成"问 → 看流 → 中断"闭环。
+- **排队执行**：busy/booting 期间的输入入队（`:queue`），turn 结束自动 `dispatch_pending` 顺序消化；`interrupt` = 停止当前 + 清空排队（广播提示）。杜绝"输入被吞/转向"。
+- **渐进加载**：长会话分页拉历史（limit/offset + total，"加载更多"），首屏只出尾部近段；done 总结持久化到 transcript，刷新不丢。
+- **token 用量与缓存命中率**：气泡级实时展示当轮 prompt/completion/缓存命中（usage 事件 + cache-hit 统计），成本可见。
+- **Mission Control 面板**（第 5 tab）：文件追踪 + step 时间线 + diff 查看 + 进化事件流；evolution 面板并入其中，支持手动触发进化（manual evolution trigger）。
+- **checkpoint**（`git.checkpoint.create/list`）：UI 一键打点 `[checkpoint] <desc>` 提交（本地线性历史），跨会话回溯关键节点。
+- **多模态与图片**：点击放大、`@文件` 引用自动补全、文件路径可点击。
+- **认证**：本地回环免认证；远程强制 Bearer（登录 + SVG 验证码 + 限流锁定；WebSocket 用 `?token=`）；HTTPS 自签证书 + `--redirect` 308 跳转。
+- **前端**：`priv/web/`（index.html + app.js + style.css），无构建步骤的 SPA。
+
+### 6.8 多后端协议适配：Responses API（2026-08 落地）
+
+`Newbee.LLM.Config` 的 provider 支持 `api` 字段（`openai-completions` | `responses`），`Newbee.LLM.Client` 按 provider 路由。`Newbee.LLM.Responses` 实现 OpenAI 系 **Responses API**（`POST /responses`，`input` + `tools` + `reasoning`），兼容 Muse 等新端点：
+
+- `input/1` 消息规整（含工具结果）、`tools/1` 转义 function calling、`reasoning/1` 映射思考强度档位、`parse/1` 解析 `output` 数组（`function_call` / `message` / `reasoning` 分派）。
+- **过载重试**：429/500/502/503/529 退避重试（默认 5×1s），与 Completions 路径摘参重试双保险。
+- **前缀缓存兼容**：`Newbee.RequestEnvelope` 记录上次路由请求的可缓存前缀快照（消息+tools+route 逐字节），Archive 摘要请求 = 快照严格前缀 + 尾部压缩指令 → 前缀缓存命中成立（未命中绝不伪装命中）。
 
 ---
 
@@ -590,7 +623,7 @@ worker rollback_request / health 失败 / 错误率超阈 / verifier 判退化 /
 - **内联 diff**：写文件/编辑以语法高亮 inline diff 展示。
 - **底部多行输入**：Enter 发送、Shift+Enter 换行、↑/↓ 历史、Tab 补全；Esc 打断、Ctrl+C 取消/双击退出。
 - **状态栏**：模型、项目、会话、累计 token/花费、bindings 数、autonomy/capability 档位、active revision。
-- **技术选型**：`ratatouille`（ELM 风格），渲染器封装在 `Newbee.TUI.Renderer` 接口后可换自研 ANSI；termbox 上游停更的兼容性风险首日验证，不兼容则启用自研（单列流式渲染逻辑简单，自研成本低）。
+- **技术选型**：自研 ANSI 渲染栈（`TUI.Screen` 双缓冲 diff 重画 + `TUI.Key` 按键解码 + `TUI.Line` 行编辑）——无第三方终端依赖，全屏/滚动/粘贴/双宽字符全自控。
 
 命令体系（`/xxx`），新命令以环境对象模型为准，旧命令做兼容映射：
 
@@ -602,6 +635,13 @@ worker rollback_request / health 失败 / 错误率超阈 / verifier 判退化 /
 | `/diff` `/undo` | 会话累计 diff / 回滚到上一快照 |
 | `/bindings` `/tokens` `/compact` | 绑定清单 / 记账详情 / 压缩对话（视图维护，环境与绑定不受影响） |
 | `/permissions` | Capability 档位（lenient/ask/deny） |
+| `/archive [关键词]` | 会话档案库查询（§6.6）：裸查询出段索引，带关键词跨段全文检索 |
+| `/attach` | 接回常驻 daemon（最近会话） |
+| `/status` | 环境状态总览 |
+| `/image <路径> [说明]` | 发送本地图片做多模态分析 |
+| `/reset` | 重建求值器节点（绑定清空，热载工具重载） |
+| `/goal <目标>` | 设置/查看当前目标（goal 自动续跑） |
+| `/log` | 查看最近审计事件 |
 | `/autonomy <档>` | Autonomy 档位（observe/manual/autonomous/emergency_stop） |
 | `/evolve <描述>` | 向 Adapter 投递 need/任务；查看 Change 状态 |
 | `/environment revisions` `/environment rollback <rev>` | 版本图 / 回退（兼容映射旧 `/snapshot` `/rollback`） |
@@ -713,11 +753,24 @@ lib/newbee/
 ├── events.ex                   # 统一事件入口（Bus + Event Store）
 ├── codec.ex + codec/           # function calling + 降级解析
 ├── reader.ex                   # 统一寻址 Newbee.read/1
+├── archive.ex                  # 会话档案库（§6.6）：压缩即归档 + history:// 可寻址
+├── request_envelope.ex         # 可缓存前缀快照（§6.8，prefix-cache 命中前提）
+├── artifact_ref.ex             # 大对象逐出引用（§5）
+├── markdown.ex / event_log.ex / history.ex / hot_reloader.ex
+├── web/                        # WebUI（§6.7）
+│   ├── api.ex                  #   RPC-over-HTTP 网关（POST /api/<method>）
+│   ├── router.ex               #   顶层路由：静态 + WS + 认证 gate
+│   ├── socket.ex               #   WebSocket 下行流 + 上行控制帧
+│   ├── session.ex              #   浏览器会话进程（排队/热切/持久化）
+│   ├── auth.ex                 #   密码/Bearer/验证码/限流
+│   ├── cert.ex / server.ex / workspace.ex
+├── llm/
+│   ├── client.ex responses.ex  # 流式 Completions + Responses API 双协议
 ├── memory.ex / permissions.ex / diff.ex / status.ex
 ├── tui/ cli.ex commands.ex daemon.ex   # 视图与控制，不持有环境状态
 └── plugins/                    # 内置插件（兼容包装器）：
-    ├── edit.ex structural.ex fs.ex run.ex git.ex search.ex json.ex http.ex
-    ├── scaffold.ex introspect.ex jspace.ex besttool.ex repomap.ex
+    ├── edit.ex edit/v2.ex structural.ex fs.ex run.ex git.ex search.ex json.ex http.ex
+    ├── scaffold.ex introspect.ex jspace.ex hot_reload.ex besttool.ex repomap.ex
     └── provider/openrouter.ex  # 无凭证协议适配器；受控 transport 在 host/
 ```
 
@@ -727,7 +780,7 @@ lib/newbee/
 
 ## 14. 二维路线图
 
-架构轴（Phase，来自 NEW_DESING）× 能力轴（Milestone，来自 DESIGN）。当前定位分两层看，避免把"现有实现能跑"误读为"统一架构下已验收"：**现有实现**——M4 能力已原型落地（280+ tests / 双节点 / J-Space / PPT / Progress）；**统一架构进度**——Phase 0–1 之间（对象模型统一进行中）。M1–M4 的每项能力须在新 Plugin/Change/Generation 合同下重新验收后才算"落地"。
+架构轴（Phase，来自 NEW_DESING）× 能力轴（Milestone，来自 DESIGN）。当前定位分两层看，避免把"现有实现能跑"误读为"统一架构下已验收"：**现有实现**——M4 能力已原型落地（280+ tests / 双节点 / J-Space / PPT / Progress / 会话档案库 / WebUI）；**统一架构进度**——Phase 0–1 之间（对象模型统一进行中）。M1–M4 的每项能力须在新 Plugin/Change/Generation 合同下重新验收后才算"落地"。
 
 | Phase | 架构工作 | 解锁的能力里程碑 |
 |---|---|---|
