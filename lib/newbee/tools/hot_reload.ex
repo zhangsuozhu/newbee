@@ -1,9 +1,23 @@
 defmodule Newbee.Tools.HotReload do
   @moduledoc """
   模块热加载与替换工具：对指定模块做源码/BEAM 热替换，无需重启节点。
-  replace/2 源码字符串编译替换；load_file/2 从 .ex/.exs/.beam 文件加载替换；
-  status/1 查模块加载状态；purge/1 清旧代码；unload/1 卸载。
-  默认作用于当前节点；target: :main 作用于 newbee 主节点（RPC）。
+  默认作用于当前节点（DEE 求值节点或主节点视调用方）；`target: :main` 作用于 newbee 主节点（经 RPC）。
+
+  ## 函数清单
+  - `replace(module_or_string, code_string, opts \\ []) :: %{ok: boolean(), ...}` — 源码字符串编译替换（`Code.compile_string` + `soft_purge`）。
+  - `replace_local(module, code_string, opts)` — 本地节点直接替换（含 `force: true` 可硬 `purge` 旧代码）。
+  - `load_file(path, opts \\ []) :: %{ok: boolean(), ...}` — 从 `.ex/.exs/.beam` 文件加载替换，`.beam` 经 `:code.load_binary`。
+  - `load_file_local(path, opts)` — 本地文件加载。
+  - `purge(module) :: :ok | {:error, reason}` — `soft_purge`，失败提示加 `force: true`。
+  - `unload(module) :: :ok` — 卸载模块。
+  - `status(module) :: %{loaded: boolean(), md5: String.t() | nil}` — 查模块加载状态与 `module_info(:md5)`。
+
+  内部 `dispatch/3` 按 `target` 选本地或 `rpc_call`；超时 30_000ms。
+
+  ## 可跑示例
+      %{ok: true} = Newbee.Tools.HotReload.replace(MyMod, "defmodule MyMod do def hi, do: :ok end")
+      %{ok: true} = Newbee.Tools.HotReload.load_file("lib/my.ex")
+
   """
 
   @rpc_timeout 60_000

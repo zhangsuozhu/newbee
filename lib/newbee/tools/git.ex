@@ -1,5 +1,28 @@
 defmodule Newbee.Tools.Git do
-  @moduledoc "Git 工具集 (DESIGN M3)：DEE 里的版本化操作。"
+  @moduledoc """
+  Git 工具集 (DESIGN M3)：DEE 里的版本化操作。
+
+  ## 函数清单
+  - `status(dir \\ ".")` — `git status --short`，返回 `{:ok, output} | {:error, {code, output}}`。
+  - `diff(dir \\ ".")` — `git diff --stat`。
+  - `diff_full(dir \\ ".")` — `git diff` 全量。
+  - `log(dir \\ ".", n \\ 10)` — `git log --oneline -n`。
+  - `add_all(dir \\ ".")` — `git add -A`。
+  - `commit(dir, msg)` — `git -c user.email=newbee@local -c user.name=newbee commit -m msg`。
+  - `rollback(dir \\ ".")` — 回滚工作区到 `HEAD`（`checkout -- .` + `clean -fd lib/ test/`），宽松沙箱的撤销键（§8）。
+  - `worktree_add(path, ref \\ "HEAD")` — 为子代理开独立 worktree。
+  - `worktree_remove(path)` — 移除 worktree（`--force`）。
+
+  内部 `run/2` 统一经 `System.cmd("git", ["-C", dir | args])`，失败返回 `{:error, {code, output}}`。
+
+  ## 可跑示例
+      {:ok, out} = Newbee.Tools.Git.status()
+      {:ok, out} = Newbee.Tools.Git.diff()
+      {:ok, out} = Newbee.Tools.Git.log(".", 5)
+      {:ok, _} = Newbee.Tools.Git.add_all()
+      {:ok, _} = Newbee.Tools.Git.commit(".", "fix: update")
+
+  """
 
   def status(dir \\ "."), do: run(dir, ["status", "--short"])
   def diff(dir \\ "."), do: run(dir, ["diff", "--stat"])

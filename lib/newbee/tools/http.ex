@@ -2,6 +2,18 @@ defmodule Newbee.Tools.Http do
   @moduledoc """
   HTTP 工具 (DESIGN §3.2 工具库)：GET/POST 封装，超时 + 响应截断。
   URL 读取也可用统一寻址 `Newbee.read/1`（§3.2）。
+
+  ## 函数清单
+  - `get(url, headers \\ []) :: {:ok, %{status: integer(), body: String.t()}} | {:error, reason}` — GET 请求。
+  - `post(url, json, headers \\ []) :: {:ok, %{status, body}} | {:error, reason}` — POST，`json` 可为 `map`（自动 `Jason.encode!`）或 `String.t()`。
+
+  内部经 `Req`，默认超时 30_000ms，响应体超 512KB 截断。
+
+  ## 可跑示例
+      {:ok, %{status: 200, body: body}} = Newbee.Tools.Http.get("https://example.com")
+      {:ok, %{status: 200}} = Newbee.Tools.Http.post("https://api.example.com/v1/chat", %{model: "gpt-4", messages: []})
+      {:ok, html} = Newbee.read("https://example.com")
+
   """
 
   @default_timeout 30_000

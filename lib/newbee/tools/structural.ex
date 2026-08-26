@@ -1,8 +1,21 @@
 defmodule Newbee.Tools.Structural do
   @moduledoc """
   双轨编辑的结构轨 (DESIGN §2/M2)：AST 级编辑。
-  与锚点轨（Tools.Edit）互补：Edit 是行级文本锚点，本模块用 Sourceror
-  解析出的行列元数据做结构化插入/替换，落盘后统一 format。
+  与锚点轨（`Tools.Edit`）互补：Edit 是行级文本锚点，本模块用 Sourceror
+  解析出的行列元数据做结构化插入/替换，落盘后统一 `Code.format_string!`。
+
+  ## 函数清单
+  - `list_functions(path :: String.t(), module :: module()) :: {:ok, [String.t()]} | {:error, :module_not_found}` — 列 `defmodule` 内 `def/defp` 签名，如 `["def hello/1", "defp helper/0"]`。
+  - `insert_function(path, module, def_code :: String.t()) :: {:ok, :inserted} | {:error, reason}` — 在模块最后一个 `end` 前插入函数源码，自动缩进 2 空格。
+  - `replace_function(path, module, name :: atom(), arity :: integer(), new_code :: String.t()) :: {:ok, :replaced} | {:error, :function_not_found | :module_not_found}` — 按 `name/arity` 定位整段定义换新，按原列缩进。
+  - `format(path :: String.t()) :: {:ok, :formatted} | {:error, reason}` — `Code.format_string!` 格式化后回写。
+
+  ## 可跑示例
+      {:ok, sigs} = Newbee.Tools.Structural.list_functions("lib/my.ex", My.Module)
+      {:ok, :inserted} = Newbee.Tools.Structural.insert_function("lib/my.ex", My.Module, "def hello(name), do: \"hi\"")
+      {:ok, :replaced} = Newbee.Tools.Structural.replace_function("lib/my.ex", My.Module, :hello, 1, "def hello(name), do: String.upcase(name)")
+      {:ok, :formatted} = Newbee.Tools.Structural.format("lib/my.ex")
+
   """
 
   @doc "在模块末尾（最后一个 end 之前）插入函数源码。"

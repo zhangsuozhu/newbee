@@ -4,11 +4,23 @@ defmodule Newbee.Tools.JSpace do
   （goal/core/verified/open/next），跨会话与压缩存活（DESIGN §5.3/§6.5）。
 
   - `note` 更新台账：goal/core/next 替换，verified/open/checkpoint 编号追加
-  - `seam` 每个 seam（子任务完成/工具调用/写文件/检查点）重读台账
-  - `ship` 登记"即将交付"的检查项，交付前逐项核验
-  - `resume` 长间隔（压缩/会话边界）后重读：前提 + invariants + 全台账
-  - ledger 按会话存 `~/.newbee/jspace/<session>.md`（全局，不污染仓库；
-    测试/自定义可设 NEWBEE_JSPACE_DIR 覆盖根目录）
+  - `seam` 每个 seam（子任务）收敛后记一笔
+  - `ship` 把 verified 的成果固化为文件/事件
+
+  ## 函数清单
+  - `note(opts)` / `note(session_id, opts)` — 更新台账。`opts` 含 `goal:`, `core:`, `next:`, `verified:`, `open:`, `checkpoint:`。
+  - `read()` / `read(session_id)` — 读当前 ledger（map）。
+  - `resume()` / `resume(session_id)` — 恢复上一会话的 ledger 到当前。
+  - `seam()` / `seam(session_id)` — 标记 seam 边界。
+  - `ship(content)` / `ship(session_id, content)` — 固化成果。
+  - `clear()` / `clear(session_id)` — 清空。
+  - `exists?()` / `exists?(session_id)` — 是否存在。
+  - `ledger_path()` / `ledger_path(session_id)` — 路径。
+
+  ## 可跑示例
+      Newbee.Tools.JSpace.note(goal: "修复 trailing 哈希不一致", core: "Edit clean_hash")
+      Newbee.Tools.JSpace.note(checkpoint: "CP1: Edit trail/CRLF 已修复")
+
   """
 
   @doc "ledger 根目录（可用 NEWBEE_JSPACE_DIR 覆盖，默认 ~/.newbee/jspace）。"

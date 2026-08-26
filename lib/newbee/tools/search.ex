@@ -1,7 +1,21 @@
 defmodule Newbee.Tools.Search do
   @moduledoc """
   搜索工具 (DESIGN M3 工具集)：内容 grep 与文件名查找。
-  跳过 _build/deps/.git/node_modules/cover。返回紧凑命中列表。
+  跳过 `_build/deps/.git/node_modules/cover`。返回紧凑命中列表。
+
+  ## 函数清单
+  - `grep(pattern, dir \\ ".", opts \\ [])` — 递归内容搜索，`pattern` 为正则字符串。
+    返回 `[{path, line_no, line}]`（默认最多 100 条，`opts[:max]` 可调）。单文件先 `File.read`，>5MB 或含 `<<0>>` 的二进制跳过。
+  - `find(name, dir \\ ".")` — 按文件名片段查找，返回 `[path]`。
+
+  内部 `list_files/1` 优先用 `git ls-files -co --exclude-standard`（秒级白名单），失败回退 `Path.wildcard`.
+
+  ## 可跑示例
+      Newbee.Tools.Search.grep("def show", "lib")
+      Newbee.Tools.Search.grep("TODO", ".", max: 20)
+      Newbee.Tools.Search.find("fs.ex")
+      Newbee.Tools.Search.find("edit", "lib/newbee/tools")
+
   """
 
   @skip ~r{/(_build|deps|\.git|node_modules|cover)/}

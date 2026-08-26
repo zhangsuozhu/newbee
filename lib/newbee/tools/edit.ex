@@ -8,6 +8,7 @@ defmodule Newbee.Tools.Edit do
   - **上下文必填**（单行/空文件除外），空行/重复行靠锚点对消歧（show 标记 `[dup:...]`）；
   - **快照 tag 过期只警告**（锚点对才是新鲜度检查），照常应用；
   - **原子**：多节补丁全部验证通过才统一落盘。
+  - **哈希统一**：所有行哈希基于 `clean_line` 后（去 `\\r` 与尾空格），标记 `⟪cr⟫`/`⟪trail⟫` 仅展示用。
 
   补丁语法（节头 + 操作，锚点必须来自最近一次 show）：
 
@@ -20,6 +21,7 @@ defmodule Newbee.Tools.Edit do
       PUT 2.#a1b2=4.#c3d4:      # 范围替换 2..4 行
 
   内容行以 `+` 开头（`++` 转义字面 `+` 开头的行）。
+
   """
 
   @line_re ~r/^(PUT|CUT)\s+(.+?)(:)?$/
@@ -401,7 +403,7 @@ defmodule Newbee.Tools.Edit do
         message: "锚点不匹配: 行号 #{n} 超出文件范围（共 #{length(lines)} 行）——请重新 show"
     end
 
-    actual = lines |> Enum.at(n - 1, "") |> line_hash()
+    actual = lines |> Enum.at(n - 1, "") |> clean_hash()
 
     if actual == h do
       {n, []}
@@ -443,7 +445,7 @@ defmodule Newbee.Tools.Edit do
   defp find_by_hash(lines, h) do
     lines
     |> Enum.with_index(1)
-    |> Enum.filter(fn {line, _} -> line_hash(line) == h end)
+    |> Enum.filter(fn {line, _} -> clean_hash(line) == h end)
     |> Enum.map(&elem(&1, 1))
   end
 
@@ -518,11 +520,11 @@ defmodule Newbee.Tools.Edit do
   defp apply_op(lines, {:insert_before, n, new, _, _}), do: Enum.take(lines, n - 1) ++ new ++ Enum.drop(lines, n - 1)
   defp apply_op(lines, {:insert_after, n, new, _, _}), do: Enum.take(lines, n) ++ new ++ Enum.drop(lines, n)
 
-  # 上下文 hash 校验（行号处必须精确匹配，不重定位）
+  # 上下文 hash 校验（行号处必须精确匹配，不重定位；与 show 的 clean 语义一致）
   defp verify_ctx!(_lines, nil), do: :ok
 
   defp verify_ctx!(lines, {cn, ch}) do
-    actual = lines |> Enum.at(cn - 1, "") |> line_hash()
+    actual = lines |> Enum.at(cn - 1, "") |> clean_hash()
 
     if actual != ch do
       raise AnchorError,
@@ -533,13 +535,15 @@ defmodule Newbee.Tools.Edit do
   defp verify_anchor!(_lines, _n, nil), do: :ok
 
   defp verify_anchor!(lines, n, expected) do
-    actual = lines |> Enum.at(n - 1, "") |> line_hash()
+    actual = lines |> Enum.at(n - 1, "") |> clean_hash()
 
     if actual != expected do
       raise AnchorError,
         message: "锚点不匹配: 第 #{n} 行期望 ##{expected} 实际 ##{actual}——模型可能数错了行，请重新 show"
     end
   end
+
+  defp clean_hash(line), do: line |> clean_line() |> elem(0) |> line_hash()
 
   # ── 行/哈希 ──
 

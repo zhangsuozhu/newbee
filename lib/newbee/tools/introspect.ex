@@ -2,6 +2,17 @@ defmodule Newbee.Tools.Introspect do
   @moduledoc """
   内省工具 (DESIGN §3.2 内省)：模块导出、beam chunk、类型信息。
   模型用它了解已加载模块的 API，不必读源码。
+
+  ## 函数清单
+  - `exports(module :: module()) :: [{atom(), arity()}]` — 模块公开函数签名列表（过滤 `__info__/module_info`）。
+  - `moduledoc(module :: module()) :: String.t() | nil` — 模块 `@moduledoc` 首段（经 `Code.fetch_docs`）。
+  - `beam_info(module :: module()) :: %{module: module(), exports: [...], attributes: map()}` — beam chunk 摘要，经 `:beam_lib.chunks` 取 `:attributes`。
+
+  ## 可跑示例
+      Newbee.Tools.Introspect.exports(Newbee.Tools.Fs)
+      Newbee.Tools.Introspect.moduledoc(Newbee.Tools.Run)
+      Newbee.Tools.Introspect.beam_info(Newbee.Diff)
+
   """
 
   @doc "模块公开函数签名列表：[{name, arity}]。"
