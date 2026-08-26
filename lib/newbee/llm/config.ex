@@ -1,5 +1,6 @@
 defmodule Newbee.LLM.Config do
   require Logger
+
   @moduledoc """
   模型配置 (model.json)。schema 学习 prime-agent 的 models.json：
 
@@ -143,7 +144,6 @@ defmodule Newbee.LLM.Config do
     %{providers: providers, current: %{provider: default["provider"], model: default["model"]}}
   end
 
-
   @doc """
   切换默认模型（/model <id>）：
     * "provider/model-id" —— 首段须是已配置 provider 名，其余整体为模型 id
@@ -256,6 +256,7 @@ defmodule Newbee.LLM.Config do
       _ when force ->
         # 强制刷新：同步拉取
         do_fetch_and_cache(name, provider, key)
+
       _ ->
         # 无缓存非强制：返回静态列表（不自动拉取）
         static_models(provider)
@@ -348,16 +349,24 @@ defmodule Newbee.LLM.Config do
         []
       end
 
-    case req_get(url, headers) do
-      {:ok, body} -> {:ok, body}
+    result =
+      if URI.parse(url).host == "openrouter.ai" do
+        httpc_get(url, headers)
+      else
+        req_get(url, headers)
+      end
+
+    case result do
+      {:ok, body} ->
+        {:ok, body}
 
       other ->
         Logger.warning("model_catalog: fetch failed for " <> url <> ": " <> inspect(other))
         :error
     end
-    end
+  end
 
-    # Req/Finch 在部分透明代理（fake-ip 网段）环境下 TLS 会挂起，httpc 实测稳定，作兜底通道
+  # Finch can hang on OpenRouter under transparent-proxy/fake-IP setups.
   defp req_get(url, headers) do
     case Req.get(url, headers: headers, receive_timeout: 30_000) do
       {:ok, %Req.Response{status: st} = resp} when st in 200..299 -> {:ok, resp.body}
@@ -371,23 +380,31 @@ defmodule Newbee.LLM.Config do
     _ = Application.ensure_all_started(:ssl)
 
     req =
-      {String.to_charlist(url),
-       Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)}
+      {String.to_charlist(url), Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)}
 
     try do
       :httpc.set_options(ssl: [verify: :verify_peer, cacerts: :public_key.cacerts_get()])
 
       case :httpc.request(:get, req, [timeout: 30_000, connect_timeout: 10_000], body_format: :binary) do
-        {:ok, {{_, 200, _}, _, body}} -> {:ok, body}
-        {:ok, {{_, st, _}, _, _body}} -> {:error, {:http_status, st}}
-        {:error, e} -> {:error, e}
+        {:ok, {{_, 200, _}, _, body}} ->
+          case Jason.decode(body) do
+            {:ok, decoded} -> {:ok, decoded}
+            {:error, error} -> {:error, {:invalid_json, Exception.message(error)}}
+          end
+
+        {:ok, {{_, st, _}, _, _body}} ->
+          {:error, {:http_status, st}}
+
+        {:error, e} ->
+          {:error, e}
       end
     rescue
       e -> {:error, {:httpc_exception, Exception.message(e)}}
     catch
       k, r -> {:error, {:httpc_thrown, {k, r}}}
     end
-   end
+  end
+
   # ── internals ──
 
   defp resolve_path do
