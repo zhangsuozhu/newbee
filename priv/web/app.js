@@ -668,7 +668,8 @@ case "goal_round": break;
       addRetryButton(card);
     }
     stampDuration(card, durationMs);
-    addToolCopyButton(card, text);
+    const srcCode = card.querySelector(".tool-code")?.textContent || "";
+    addToolCopyButton(card, text, srcCode);
     mcToolResult(ok, durationMs);
     state.currentTool = null;
     state.currentToolCard = null;
@@ -730,13 +731,15 @@ case "goal_round": break;
     });
     return btn;
   }
-  function addToolCopyButton(card, rawText) {
+  function addToolCopyButton(card, output, cmd) {
     if (!card) return;
     const head = card.querySelector(".tool-head");
     if (!head) return;
     let btn = head.querySelector(".btn-tool-copy");
     if (!btn) { btn = makeToolCopyBtn(); head.appendChild(btn); }
-    btn.dataset.text = rawText || "";
+    const c = (cmd || "").trim();
+    const o = output || "";
+    btn.dataset.text = c ? `$ ${c}\n\n${o}` : o;
   }
   function shellResult(p) {
     const card = document.createElement("div");
@@ -748,7 +751,7 @@ case "goal_round": break;
     out.className = "tool-result " + (p.exit === 0 ? "ok" : "err");
     out.textContent = (p.output || "").split("\n").slice(0, 40).join("\n");
     addToolStatus(card, p.exit === 0);
-    addToolCopyButton(card, p.output);
+    addToolCopyButton(card, p.output, p.cmd);
     card.append(head, out);
     flow.appendChild(card);
     flushTextBlock();
