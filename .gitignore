@@ -18,3 +18,5 @@ nohup.out
 # AppImage 构建产物
 /.appimage-cache/
 /dist/
+zsz.sh
+*.local.sh

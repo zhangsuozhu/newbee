@@ -1916,6 +1916,22 @@ svg.ico {
   .composer-card, .statsbar { padding-left: 8px; padding-right: 8px; }
   /* 用户气泡也几乎拉满 */
   .msg-user { max-width: 96%; }
+  /* 底部状态栏：手机上单行放不下 → 换行展示，全部可见 */
+  .statsbar {
+    flex-wrap: wrap; white-space: normal;
+    row-gap: 2px; column-gap: 12px;
+    font-size: 11px; line-height: 17px; overflow: visible;
+  }
+  .stats-right {
+    order: -1; flex: 1 1 100%;
+    display: flex; justify-content: space-between; gap: 10px;
+    white-space: nowrap;
+  }
+  .stats-left {
+    flex: 1 1 100%; order: 0;
+    white-space: normal; overflow: visible; text-overflow: clip;
+    overflow-wrap: anywhere; line-height: 17px;
+  }
 }
 
 /* ── 手机横屏：全屏利用宽度，压缩垂直空间 ── */
