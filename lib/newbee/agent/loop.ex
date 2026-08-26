@@ -627,13 +627,13 @@ defmodule Newbee.Agent.Loop do
                       inject_prompt(state, reminder, %{
                         source: "sleeping_rule",
                         reason: "模型可见正文或隐藏思考流命中沉睡规则",
-                        timing: "next_user_turn",
+                        timing: "current_turn_retry",
                         step: step,
                         trigger: visible_rule_trigger(msg["content"] || "", hits),
                         rules: rule_audit_details(hits)
                       })
 
-                    {{:text, msg["content"]}, state}
+                    run_turn(state, step + 1)
                 end
 
               {blocks, cleaned} ->

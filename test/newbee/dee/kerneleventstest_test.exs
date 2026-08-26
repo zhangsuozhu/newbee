@@ -75,17 +75,20 @@ defmodule Newbee.Agent.LoopEventsTest do
           scripted([
             fn _m, _o ->
               {:ok, %{"role" => "assistant", "content" => "结果 AUDIT_TRIGGER", "tool_calls" => []}, %{}}
+            end,
+            fn _m, _o ->
+              {:ok, %{"role" => "assistant", "content" => "已按提醒修正", "tool_calls" => []}, %{}}
             end
           ])
       )
 
-    assert {:text, "结果 AUDIT_TRIGGER"} = Loop.submit(kernel, "go")
+    assert {:text, "已按提醒修正"} = Loop.submit(kernel, "go")
     assert_received {:newbee_event, :rule_hit, {:rule_hit, [%{id: "test-prompt-audit"}]}}
 
     assert_received {:newbee_event, :prompt_injection, {:prompt_injection, details}}
     assert details.source == "sleeping_rule"
     assert details.role == "system"
-    assert details.timing == "next_user_turn"
+    assert details.timing == "current_turn_retry"
     assert details.trigger == "结果 AUDIT_TRIGGER"
     assert details.content =~ "[沉睡规则注入]"
     assert details.content =~ "请改写输出"
