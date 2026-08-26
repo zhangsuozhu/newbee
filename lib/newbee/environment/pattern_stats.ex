@@ -325,7 +325,7 @@ defmodule Newbee.Environment.PatternStats do
     e_l = freq_mean(s)
     sd_l = freq_sd(s)
     e_s = max(save_mean(s), 0.0)
-    n_s = max(save_n(s), 1.0)
+    _n_s = max(save_n(s), 1.0)
     sd_s = :math.sqrt(max(s2_of(s), 0.0))
     mean_net = e_l * e_s
     var_net = e_l * e_l * sd_s * sd_s + e_s * e_s * sd_l * sd_l
