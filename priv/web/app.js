@@ -394,6 +394,7 @@ case "done": finishTurn(); line("done", p.summary, true); break;
         break;
       case "prompt_injection": promptInjection(p); break;
 case "advisor_note": line("notice", `◉ advisor: ${p.text}`); break;
+case "queued": line("notice", `⏳ 已排队（第 ${p.queued || 1} 位），当前任务完成后自动执行`); break;
 case "notice": line("notice", p.text); break;
 case "shell_result": shellResult(p); break;
 case "file_diff": fileDiff(p); break;
@@ -1185,7 +1186,7 @@ case "goal_round": break;
     // 同步会话工作目录：切会话后立即反映到侧栏标签 + 底部状态栏
     updateCwdLabel(sessionState.cwd || null);
     state.cwd = sessionState.cwd || null;
-    // 同步会话忙碌状态：切到正在跑任务的会话时，UI 立即反映（中断/转向按钮、busy 圆点）
+      // 同步会话忙碌状态：切到正在跑任务的会话时，UI 立即反映（中断/排队按钮、busy 圆点）
     setBusy(sessionState.busy === true);
     // 切回正在等待权限确认的会话时恢复确认条（permission_ask 事件在切走期间已错过）
     if (sessionState.awaiting_permission === true) showPermission("该会话正在等待权限确认（代码执行请求）");
@@ -1209,7 +1210,7 @@ case "goal_round": break;
         <div class="wc-item"><b>Ctrl+K</b><span>快速命令</span></div>
         <div class="wc-item"><b>Ctrl+M</b><span>Mission Control 面板</span></div>
         <div class="wc-item"><b>Esc</b><span>中断 AI 执行</span></div>
-        <div class="wc-item"><b>Steering</b><span>AI 工作时发消息可转向</span></div>
+          <div class="wc-item"><b>排队</b><span>AI 忙时发消息自动排队执行</span></div>
       </div>
     `;
     flowEl.appendChild(card);
@@ -1569,12 +1570,11 @@ case "goal_round": break;
     const text = input.value.trim();
     const images = state.attachments.map(x => x.dataUrl);
     if ((!text && images.length === 0) || !state.sid) return;
-    const wasSteering = state.busy;
-    if (!wasSteering && text) lastUserPrompt = text;
-    if (wasSteering) {
-      // 转向模式：先中断当前 turn
-      interrupt();
-      line("notice", "⤳ 转向：中断当前操作，执行新指令");
+    if (state.busy) {
+      // 排队模式：当前任务完成后由服务端按顺序自动执行
+      line("notice", "⏳ 已加入队列：当前任务完成后自动执行");
+    } else if (text) {
+      lastUserPrompt = text;
     }
     input.value = "";
     autoGrow();
@@ -1781,9 +1781,8 @@ case "goal_round": break;
     $("interrupt").classList.toggle("hidden", !b);
     const sendBtn = $("send");
     sendBtn.disabled = false;
-    sendBtn.textContent = b ? "转向" : "发送";
-    sendBtn.title = b ? "中断当前 turn 并发送新指令" : "发送";
-    sendBtn.classList.toggle("btn-steer", b);
+    sendBtn.textContent = b ? "排队" : "发送";
+    sendBtn.title = b ? "加入队列：当前任务完成后自动执行" : "发送";
     if (b) {
       showTurnStatus();
       // AI 开始工作时，自动展开 MC 步骤 tab（如果 MC 已打开）
@@ -2004,7 +2003,10 @@ case "goal_round": break;
     if (cacheHit !== null) left.push(`缓存 ${cacheHit.toFixed(1).replace(/\.0$/, "")}%`);
     if (inTok > 0 || outTok > 0) left.push(`入 ${fmtTok(inTok)} · 出 ${fmtTok(outTok)}`);
     $("stats-left").innerHTML = left.join(" | ");
-    const stTxt = st.busy ? '<span class="st-busy">● 运行中</span>' : '<span class="st-ok">● 空闲</span>';
+      const qn = st.queued || 0;
+      const stTxt = st.busy
+        ? `<span class="st-busy">● 运行中${qn > 0 ? " · 排队 " + qn : ""}</span>`
+        : '<span class="st-ok">● 空闲</span>';
     $("stats-right").innerHTML = `${stTxt} bind:${st.bindings || 0} ${escapeHtml(st.policy || "")}`;
   }
 
