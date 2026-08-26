@@ -65,7 +65,7 @@ body {
   font: 14px/1.55 var(--nb-font);
   -webkit-font-smoothing: antialiased;
 }
-#app { display: flex; height: 100vh; position: relative; }
+#app { display: flex; height: 100vh; height: 100dvh; position: relative; }
 
 /* 通用 icon 按钮 */
 .icon-btn {
@@ -231,6 +231,26 @@ body {
 /* assistant 正文：无气泡，占内容列 */
 .msg-assistant { color: var(--nb-label-1); font-size: 15px; line-height: 26px;
   white-space: pre-wrap; word-break: break-word; }
+
+/* assistant 输出框：包边框 + 右上角复制按钮 */
+.msg-boxed {
+  position: relative;
+  border: 1px solid var(--nb-border);
+  border-radius: var(--nb-radius);
+  background: var(--nb-bg-panel);
+  padding: 12px 16px;
+  margin: 6px 0;
+}
+.msg-copy {
+  position: absolute; top: 6px; right: 8px;
+  background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
+  border-radius: 5px; color: var(--nb-label-3);
+  font-size: 11px; padding: 2px 10px; cursor: pointer;
+  font-family: var(--nb-font);
+  opacity: 0.55; transition: opacity 0.15s ease, color 0.15s ease;
+  z-index: 2;
+}
+.msg-copy:hover { opacity: 1; color: var(--nb-label-1); border-color: var(--nb-label-caption); }
 
 /* reasoning 行 */
 .msg-reasoning {
@@ -894,7 +914,7 @@ body {
   font: 14px/1.55 var(--nb-font);
   -webkit-font-smoothing: antialiased;
 }
-#app { display: flex; height: 100vh; position: relative; }
+#app { display: flex; height: 100vh; height: 100dvh; position: relative; }
 
 /* 通用 icon 按钮 */
 .icon-btn {
@@ -1552,3 +1572,121 @@ svg.ico {
 .login-error.hidden { display: none; }
 .login-submit { width: 100%; padding: 10px; border-radius: 8px; font-size: 15px; letter-spacing: 4px; }
 .login-hint { text-align: center; font-size: 12px; color: var(--fg-dim, #9aa0ae); }
+/* ═══ 手机端适配（≤768px）：侧栏抽屉化 + 触控放大 + composer 贴底 ═══ */
+
+@media (max-width: 768px) {
+  /* 1. 侧栏全屏抽屉（覆盖式） */
+  #sidebar {
+    position: fixed; top: 0; bottom: 0; left: 0; z-index: 40;
+    width: min(84vw, 320px); min-width: 0;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.25);
+    transition: transform 0.2s ease;
+  }
+  #app.sidebar-collapsed #sidebar { margin-left: 0; transform: translateX(-105%); }
+  #app:not(.sidebar-collapsed) #sidebar { transform: translateX(0); }
+  #app:not(.sidebar-collapsed)::after {
+    content: ''; position: fixed; inset: 0 0 70px 0;
+    background: rgba(0,0,0,0.35); z-index: 35;
+    pointer-events: auto;
+  }
+
+  /* 2. 顶栏紧凑 */
+  #topbar { padding: 8px 10px; gap: 6px; }
+  #topbar .session-title { font-size: 13px; max-width: 45vw; }
+
+  /* 3. 触控目标放大 */
+  .icon-btn { width: 32px; height: 32px; font-size: 15px; border-radius: 8px; }
+  #sidebar-toggle, #sidebar-expand { width: 34px; height: 34px; }
+  .btn-primary, .btn-ghost, .btn-allow, .btn-deny {
+    min-height: 40px; font-size: 14px; padding: 8px 14px; border-radius: 10px;
+  }
+  /* 侧栏头部操作按钮紧凑(新建会话/选目录) */
+  #new-session, #new-session-dir {
+    min-height: 32px; padding: 4px 12px; font-size: 13px; border-radius: 9px;
+  }
+  .session-actions { gap: 6px; }
+  .composer-actions .icon-btn, .composer-attach .icon-btn { width: 40px; height: 40px; }
+  .permission-bar button { min-height: 40px; }
+
+  /* 4. 消息宽度 */
+  .msg { max-width: 92%; }
+  .msg-user { max-width: 92%; }
+  .msg-assistant { max-width: 100%; }
+  .msg-content { font-size: 15px; line-height: 1.55; }
+
+  /* 布局保障: composer 不被压缩, transcript 占剩余空间 */
+  #composer { flex-shrink: 0; }
+  .transcript { min-height: 0; }
+
+  /* 5. composer 贴底 + 安全区 */
+  #composer { padding: 8px 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  .composer-card { border-radius: 16px; padding: 8px 10px; }
+  #input { font-size: 16px; min-height: 44px; max-height: 120px; }
+  #input, input, select, textarea { font-size: 16px; }
+
+  /* 6. 侧栏内部 */
+  .session-search input { min-height: 44px; font-size: 15px; }
+  .session-item { padding: 9px 10px; }
+  #cwd-label, #model-label { font-size: 12px; }
+
+  /* 7. 其他 */
+  #to-bottom { width: 40px; height: 40px; font-size: 18px; }
+  .modal-box, .modal-box-wide { min-width: 0; width: 94vw; max-width: 94vw; padding: 16px; max-height: 85vh; overflow-y: auto; }
+  .wc-grid { grid-template-columns: 1fr 1fr; }
+}/* 手机端：思考强度控件可发现 + 紧凑可滚动 */
+@media (max-width: 768px) {
+  /* 思考强度控件：可发现 + 紧凑可滚动 + 触控友好 */
+  .composer-effort {
+    gap: 8px; padding: 2px 10px; margin-bottom: 6px;
+    align-items: center; justify-content: flex-start;
+  }
+  .composer-effort .effort-label {
+    font-size: 12px; color: var(--nb-label-2); white-space: nowrap;
+    flex: none;
+  }
+  .composer-effort .effort-label svg { margin-right: 4px; }
+  .effort-text { margin-left: 4px; font-size: 12px; white-space: nowrap; }
+  /* 档位横向滚动，触控友好 */
+   .effort-segments {
+     flex: 1; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch;
+     scrollbar-width: none; padding: 0; gap: 6px;
+     background: transparent; border: none; border-radius: 0;
+   }
+  .effort-segments::-webkit-scrollbar { display: none; }
+  .effort-label { flex: none; }
+  /* 按钮放大，44px 触控标准，圆角药丸 */
+  .effort-seg {
+    font-size: 13px; font-weight: 600; padding: 8px 14px; min-height: 36px; min-width: 44px;
+    display: inline-flex; align-items: center; justify-content: center;
+    flex: none; touch-action: manipulation; border-radius: 10px;
+    border: 1px solid transparent;
+  }
+  .effort-seg.active { border-color: var(--nb-accent); }
+  .effort-seg:active { transform: scale(0.94); transition: transform 0.1s; }
+}
+/* 手机端：顶栏状态栏不挤压、不截断 */
+/* 手机端：输出框复制按钮常显 + 触控放大 */
+@media (max-width: 768px) {
+  .msg-copy {
+    opacity: 1;
+    font-size: 12px; padding: 5px 12px; min-height: 32px; min-width: 52px;
+  }
+  .msg-boxed { padding: 12px 14px; margin: 4px 0; }
+}
+
+@media (max-width: 768px) {
+  #topbar { gap: 6px; }
+  #topbar .session-title { font-size: 13px; max-width: 30vw; flex: 0 1 auto; }
+  #topbar .usage { font-size: 10px; max-width: 28vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #topbar .current-op { font-size: 11px; max-width: 24vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #status-dot { width: 10px; height: 10px; }
+}
+/* 手机端：侧栏模型/路径标签截断 */
+@media (max-width: 768px) {
+  .sidebar-foot { gap: 4px; padding: 0 10px 8px; }
+  #cwd-label, #model-label {
+    max-width: 70vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #model-label { font-size: 11px; }
+  #cwd-label { font-size: 10px; }
+}

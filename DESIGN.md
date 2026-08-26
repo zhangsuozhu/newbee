@@ -777,3 +777,81 @@ lib/newbee/
 ---
 
 > **融合宣言**：DESIGN 回答"环境为什么能越用越聪明"，NEW_DESING 回答"环境的每次改变为什么可信"。统一之后，newbee 是**一台有版本、有质检、有记忆的认知 JIT 编译器**——它编译的不是代码，是它自己的智能。
+
+---
+
+## 17. 附录：认知 JIT 的分级编译经济学（TCE，2026-08 落地）
+
+> 设计文档：`docs/design-jit-economics/`（10 轮"设计→查证"闭环产物，证据链 r1–r10 + 总纲）。
+
+### 17.1 核心命题
+
+把 §8.5 认知 JIT 从"点估计启发式"升级为**不确定性下的在线投资决策系统**：
+
+- 每个模式维护三组共轭后验（`PatternStats`）：频率 Gamma(a,b)、成功率 Beta(α,β)、
+  节省幅度正态——全部充分统计量持久化，重启可恢复（`evaluations/pattern_stats.jsonl`）；
+- 群体先验经经验贝叶斯（EB）收缩个体小样本估计；
+- 时间衰减：有效样本量指数遗忘，均值保持、方差增大（近期分布权重更高）。
+
+### 17.2 决策判据
+
+```text
+编译: LCB(net) = E[λ]·E[save] − κ·σ(net) − C(pattern 复杂度) > 0 且 n ≥ min_samples
+      （LCB = 置信下界；κ 风险厌恶系数；小样本自然不决策）
+排序: 候选按 LCB/C 降序进 adapter 预算队列
+级联: E[save] = P(l3)·C_infer + P(l2_only)·(C_infer − C_l2)   （运行时便宜优先级联）
+deopt 双通道序贯检验:
+  工具坏: P(p < p_min | α,β) > conf 且频率未显著下降 → deopt 到 L2 候选（知识不丢）
+  分布漂移: E[λ] 相对编译时快照跌落 > hσ → dormant 冷层级，工具不降级
+```
+
+### 17.3 校准闭环（元学习）
+
+编译 Change 记录预测快照；实测回流结算相对平方误差（proper scoring rule，
+系统性高报无利可图）；滑窗内分数收敛性检查；偏差驱动编译成本估计上调
+（学习率 α 封顶 ×3）——环境对自身预测的预测越用越准。
+
+### 17.4 实现落位
+
+| 组件 | 文件 |
+|---|---|
+| PatternStats 纯函数库 | `lib/newbee/environment/pattern_stats.ex` |
+| PatternStore 投影/持久化 | `lib/newbee/environment/pattern_store.ex` |
+| Cascade 级联收益模型 | `lib/newbee/environment/cascade.ex` |
+| Calibration 校准投影 | `lib/newbee/environment/calibration.ex` |
+| Jit.tce_hot_needs / tce_deopt_decision | `lib/newbee/environment/jit.ex` |
+
+零旁路原则：一切热度数据来自既有事件流投影，不新增观测通道。
+
+### 17.5 v2 深化（序贯检验与变化点检测）
+
+- **SPRT 化 deopt**（Wald 1945；Wald-Wolfowitz 最优性）：工具坏判定从单次后验尾部检验
+  升级为 Bernoulli 序贯概率比检验——两类错误 alpha/beta 约束下期望样本数最小。
+- **CUSUM 化漂移检测**（Page 1954）：频率漂移用单侧累积和 S=max(0,S+x-omega)，
+  ARL 由阈值 h 直接控制，对缓漂比快照检验敏感一个数量级。
+- **非对称置信区间**（omega-UCB 启发）：benefit 端 LCB、cost 端 UCB，排序分
+  = LCB(benefit) - UCB(C)，贴合预算语义。
+- **校准闭环实证**：蒙特卡洛验证 V1-V4（`tce_monte_carlo_test.exs`）证明
+  SPRT 误判率符合理论、CUSUM 平稳零误报、LCB 决策零噪声误选、校准误差单调下降。
+- 实现落位：`sequential.ex` / `pattern_stats.ex (net_asym, beta_quantile)` /
+  `tce_monte_carlo_test.exs`。BOCPD（run-length 后验）留作 v3 方向。
+
+### 17.6 v2.1（第三轮：场景界定、统计校准、端到端验证）
+
+- **应用场景界定**（docs/design-jit-economics/R1-scenarios.md）：TCE 在
+  周期进化/手动 /evolve 中是过滤器+排序器；worker need 只排序不过滤；
+  prompt_injection 安全域不参与。
+- **Token 归因收集器**（G1）：tool_start 无 token 字段、usage 在 LLM 层且无关联 ID——
+  PatternStore.Collector 订阅 Bus 维护工具名游标，usage 归因给最近工具，批量 flush。
+- **错误风暴即时触发**（G2）：60s 内 >=3 次 tool_error 即 debounce 进化，
+  弥补 10min heartbeat 对坏工具持续烧钱响应太慢。
+- **成功语义修正**（R3）：tool_start 只记频率不判成败（发起不等于成功）；
+  tool_result 才是成功信号——权限拒绝等不污染 deopt 判据。
+- **EB 收缩修正为 James-Stein 标准形式**（R4）：权重 w=var_i/(var_m+var_i)，
+  收缩后方差同步折减并重参数化 Gamma。
+- **SPRT 滚动重置**（R8）：一次判定不是终点，h0/h1 后重置证据继续监控；
+  400 步生命周期仿真验证缓慢劣化->检出->修复->恢复清白全链路。
+- **编译成本实证校准**（R6）：10k 事件基准下 compile_cost 从 5000 校准到 100_000
+  （46 候选 42 噪声 -> 5 热点 0 噪声）；移除 estimate_tokens=500 捏造默认。
+- **SPRT alpha 校准测量**（2000 trials）：健康误判率实测 2.5% < 标称 5%，
+  Wald 保守不等式成立。

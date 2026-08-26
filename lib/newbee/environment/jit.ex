@@ -23,7 +23,7 @@ defmodule Newbee.Environment.Jit do
   """
 
   # 默认阈值：编译收益（token）> 编译成本（token）才晋升（§16 校准项）
-  @default_compile_cost 5_000
+  @default_compile_cost 100_000
   # deopt：L3 工具成功率跌破阈值且样本足够 → 降级
   @deopt_success_rate 0.5
   @deopt_min_samples 5
@@ -45,7 +45,13 @@ defmodule Newbee.Environment.Jit do
   返回 [%{pattern, count, token_cost, compile_benefit, hot?}]，按收益降序。
   """
   def profile(events, opts \\ []) do
-    compile_cost = Keyword.get(opts, :compile_cost, @default_compile_cost)
+    base_cost = Keyword.get(opts, :compile_cost, @default_compile_cost)
+    # 偏差驱动成本上调 [D18]：校准差 → 更保守的编译门槛
+    compile_cost =
+      case Keyword.fetch(opts, :stats) do
+        {:ok, _} -> base_cost
+        :error -> Newbee.Environment.Calibration.adjust_compile_cost(base_cost)
+      end
 
     events
     |> Enum.reduce(%{}, fn ev, acc ->
@@ -174,4 +180,109 @@ defmodule Newbee.Environment.Jit do
     |> String.trim("_")
     |> String.slice(0, 40)
   end
+
+  # ═══════════ TCE 分级编译经济学（总纲 B/C 节）═══════════
+
+  alias Newbee.Environment.PatternStats
+
+  @doc """
+  TCE 热点：从 PatternStore 后验出发，按净收益 LCB 排序的编译候选（[D10][D14]）。
+
+  返回与 hot_needs/2 兼容的形状（capability/evidence/urgency），另带
+  lcb / stats 字段供 adapter 与校准投影使用。compile_cost 为该 pattern
+  的编译成本估计（token），默认常量。
+  """
+  def tce_hot_needs(opts \\ []) do
+    store = Keyword.get_lazy(opts, :stats, fn -> Newbee.Environment.PatternStore.restore() end)
+    base_cost = Keyword.get(opts, :compile_cost, @default_compile_cost)
+    # 偏差驱动成本上调 [D18]：校准差 → 更保守的编译门槛
+    compile_cost =
+      case Keyword.fetch(opts, :stats) do
+        {:ok, _} -> base_cost
+        :error -> Newbee.Environment.Calibration.adjust_compile_cost(base_cost)
+      end
+    kappa = Keyword.get(opts, :kappa, 1.0)
+    min_samples = Keyword.get(opts, :min_samples, 3)
+
+    store
+    |> Enum.map(fn {key, %PatternStats{} = s} ->
+      lcb = PatternStats.net_lcb(s, compile_cost, kappa: kappa)
+
+      %{
+        key: key,
+        stats: s,
+        lcb: lcb,
+        pattern: elem(key, 0),
+        task_type: elem(key, 1),
+        compile_benefit: trunc(PatternStats.freq_mean(s) * max(PatternStats.save_mean(s), 0.0)),
+        count: s.n,
+        token_cost: trunc(PatternStats.save_mean(s))
+      }
+    end)
+    |> Enum.filter(&(&1.count >= min_samples and &1.lcb > 0.0))
+    |> Enum.sort_by(&(-&1.lcb))
+    |> Enum.map(fn c ->
+      %{
+        capability: capability_for(c.pattern),
+        evidence: %{
+          pattern: c.pattern,
+          task_type: c.task_type,
+          count: c.count,
+          compile_benefit: c.compile_benefit,
+          lcb: Float.round(c.lcb, 2),
+          freq_mean: Float.round(PatternStats.freq_mean(c.stats), 4),
+          succ_mean: Float.round(PatternStats.succ_mean(c.stats), 4)
+        },
+        urgency: :high,
+        lcb: c.lcb,
+        stats: c.stats
+      }
+    end)
+  end
+
+  @doc "TCE deopt：对给定 release/pattern 的 stats 做双通道判定 [D17]。"
+  def tce_deopt_decision(stats_or_key, opts \\ [])
+
+  def tce_deopt_decision(%PatternStats{} = s, opts) do
+    PatternStats.deopt_decision(s, opts)
+  end
+
+  def tce_deopt_decision(key, opts) when is_tuple(key) do
+    store = Keyword.get_lazy(opts, :stats, fn -> Newbee.Environment.PatternStore.restore() end)
+
+    case Map.get(store, key) do
+      nil -> :keep
+      s -> PatternStats.deopt_decision(s, opts)
+    end
+  end
+
+
+  @doc "TCE deopt v2 [U1]：后验判据 + SPRT 序贯证据合流。"
+  def tce_deopt_decision_v2(%PatternStats{} = s, opts \\ []) do
+    case PatternStats.deopt_decision(s, opts) do
+      :keep ->
+        # 后验不够强时用 SPRT 的序贯证据补充判定：
+        # 用 succ 后验均值作为当前成功率的点估计，模拟一次 SPRT 快照判定
+        {al, be} = s.succ
+        mean_p = al / (al + be)
+        p_ok = Keyword.get(opts, :p_ok, 0.8)
+        p_bad = Keyword.get(opts, :p_bad, 0.3)
+
+        cond do
+          al + be >= 8 and mean_p < p_bad ->
+            {:tool_broken, "posterior mean below p_bad with sufficient evidence"}
+
+          al + be >= 8 and betai_ge?(mean_p, p_ok) ->
+            :keep
+
+          true ->
+            :keep
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp betai_ge?(p, q), do: p >= q
 end

@@ -103,11 +103,13 @@ defmodule Newbee.Web.Router do
       File.regular?(file) ->
         conn
         |> put_resp_content_type(content_type(file))
+         |> put_resp_header("cache-control", "no-store, no-cache, must-revalidate")
         |> send_file(200, file)
 
       File.regular?(@index) ->
         conn
         |> put_resp_content_type("text/html")
+         |> put_resp_header("cache-control", "no-store, no-cache, must-revalidate")
         |> send_file(200, @index)
 
       true ->

@@ -417,6 +417,7 @@ case "goal_round": break;
     state.busy = false;
     if (state.currentAssistant) {
       state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+      addAssistantChrome(state.currentAssistant);
       bindCopyButtons(state.currentAssistant);
     }
     archiveReasoning();
@@ -438,6 +439,27 @@ case "goal_round": break;
     d.className = `msg ${cls}`;
     if (text) { if (md) d.innerHTML = renderMarkdown(text); else d.textContent = text; }
     flow.appendChild(d);
+    return d;
+  }
+
+  // ── assistant 输出框：包边框 + 右上角"复制"按钮 ──
+  // 复制内容优先原始 markdown（dataset.raw），否则取 innerText。
+  function addAssistantChrome(d) {
+    d.classList.add("msg-boxed");
+    if (d.querySelector(".msg-copy")) return d;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "msg-copy";
+    btn.title = "复制整条回复";
+    btn.textContent = "复制";
+    btn.onclick = () => {
+      const raw = d.dataset.raw || d.innerText || "";
+      navigator.clipboard.writeText(raw).then(() => {
+        btn.textContent = "已复制";
+        setTimeout(() => (btn.textContent = "复制"), 1500);
+      });
+    };
+    d.appendChild(btn);
     return d;
   }
 
@@ -492,6 +514,7 @@ case "goal_round": break;
     function flushTextBlock() {
       if (!state.currentAssistant) { streamAcc = ""; return; }
       state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+      addAssistantChrome(state.currentAssistant);
       bindCopyButtons(state.currentAssistant);
       state.currentAssistant = null;
       streamAcc = "";
@@ -504,7 +527,7 @@ case "goal_round": break;
     if (!state.currentAssistant) {
       state.busy = true; setBusy(true);
       clearTurnStatus();
-      state.currentAssistant = el("msg-assistant", "");
+      state.currentAssistant = addAssistantChrome(el("msg-assistant", ""));
     }
     const d = delta || "";
     // 流式去重：同一回合若 delta 已连续出现在 streamAcc 尾部（网络/服务端偶发双发），
@@ -519,6 +542,7 @@ case "goal_round": break;
         streamRaf = 0;
         if (state.currentAssistant) {
           state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+          addAssistantChrome(state.currentAssistant);
           bindCopyButtons(state.currentAssistant);
           scrollBottom();
         }
@@ -1338,7 +1362,7 @@ case "goal_round": break;
         d.dataset.open = "0";
         renderReasoningBody(d);
       }
-      if (m.content) { const d = el("msg-assistant", m.content, true); bindCopyButtons(d); }
+      if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); }
       (m.toolCalls || []).forEach((tc) => toolStart({ name: tc.name, title: tc.title, code: tc.code }));
     } else if (m.role === "tool") {
       const ok = !(m.content || "").startsWith("✗");
@@ -1425,7 +1449,7 @@ case "goal_round": break;
         d.dataset.open = "0";
         renderReasoningBody(d);
       }
-      if (m.content) { const d = el("msg-assistant", m.content, true); bindCopyButtons(d); }
+      if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); }
       (m.toolCalls || []).forEach((tc) => toolStart({ name: tc.name, title: tc.title, code: tc.code }));
     } else if (m.role === "tool") {
       const ok = !(m.content || "").startsWith("✗");
@@ -1872,33 +1896,35 @@ case "goal_round": break;
   };
 
   // ── 思考强度段选器（7 档，输入框旁）──
-  const EFFORT_LEVELS = ["off", "auto", "low", "medium", "high", "xhigh", "max"];
-  const effortWrap = $("effort-segments");
-  if (effortWrap) {
-    const renderSegs = (active) => {
-      effortWrap.innerHTML = "";
-      EFFORT_LEVELS.forEach((lv) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "effort-seg" + (lv === active ? " active" : "");
-        b.textContent = lv;
-        b.dataset.level = lv;
-        b.onclick = async () => {
-          renderSegs(lv);
-          if (!state.sid) return;
-          try {
-            await rpc("session.setEffort", { sessionId: state.sid, effort: lv });
-          } catch (err) {
-            line("error", "设置思考强度失败: " + err.message);
-          }
-        };
-        effortWrap.appendChild(b);
-      });
-    };
-    // resume 时按会话恢复选中档（nil → auto）
-    window.__restoreEffort = (effort) => renderSegs(effort || "auto");
-    renderSegs("auto");
-  }
+   const EFFORT_LEVELS = ["off", "auto", "low", "medium", "high", "xhigh", "max"];
+   const EFFORT_LABELS = {off:"关", auto:"自动", low:"低", medium:"中", high:"高", xhigh:"很高", max:"最高"};
+   const effortWrap = $("effort-segments");
+   if (effortWrap) {
+     const renderSegs = (active) => {
+       effortWrap.innerHTML = "";
+       EFFORT_LEVELS.forEach((lv) => {
+         const b = document.createElement("button");
+         b.type = "button";
+         b.className = "effort-seg" + (lv === active ? " active" : "");
+         b.textContent = EFFORT_LABELS[lv] || lv;
+         b.title = lv;
+         b.dataset.level = lv;
+         b.onclick = async () => {
+           renderSegs(lv);
+           if (!state.sid) return;
+           try {
+             await rpc("session.setEffort", { sessionId: state.sid, effort: lv });
+           } catch (err) {
+             line("error", "设置思考强度失败: " + err.message);
+           }
+         };
+         effortWrap.appendChild(b);
+       });
+     };
+     // resume 时按会话恢复选中档（nil → auto）
+     window.__restoreEffort = (effort) => renderSegs(effort || "auto");
+     renderSegs("auto");
+   }
 
   $("send").onclick = send;
   $("attach-btn").onclick = () => $("file-input").click();
@@ -3055,4 +3081,38 @@ case "goal_round": break;
       await bootApp();
     }
   })().catch((e) => line("error", `启动失败: ${e.message}`));
+})();
+
+
+// ── 手机端适配增强 ──
+(function() {
+  function isMobile() { return window.matchMedia("(max-width: 768px)").matches; }
+
+  // 手机端每次加载都强制收起侧栏：
+  // 避免延续桌面/上次的"展开态"，否则全屏遮罩(z-index:35)会常驻盖住 composer，
+  // 导致按钮可见但点不了（点击全被遮罩拦截）。
+  if (isMobile()) {
+    document.getElementById("app").classList.add("sidebar-collapsed");
+    var ex = document.getElementById("sidebar-expand");
+    if (ex) ex.classList.remove("hidden");
+  }
+
+  // 遮罩/侧栏外点击关闭（手机端）：
+  // 点在任何 #sidebar 外的内容区时收起；但排除侧栏内 toggle 触发（它本来就会收起）
+  document.addEventListener("click", function(e) {
+    var app = document.getElementById("app");
+    if (!isMobile() || app.classList.contains("sidebar-collapsed")) return;
+    var t = e.target;
+    if (!t.closest || t.closest("#sidebar") || t.closest("#sidebar-expand")) return;
+    // 输入区/思考强度等是操作区，点击不应收起侧栏
+    if (t.closest("#composer") || t.closest(".composer-effort")) return;
+    applySidebar(true, true);
+  });
+
+  // 播放时旋转到横屏提醒（可选，轻量）
+  window.addEventListener("resize", function() {
+    if (isMobile()) {
+      // no-op: 保持 CSS 响应
+    }
+  });
 })();
