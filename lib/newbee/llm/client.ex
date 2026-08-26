@@ -74,7 +74,16 @@ defmodule Newbee.LLM.Client do
          n when is_integer(n) and n > 0 <- model["context_length"] || model[:context_length] do
       n
     else
-      _ -> @default_context_window
+      _ ->
+        n = @default_context_window
+
+        Newbee.DebugLog.log(
+          :llm,
+          "context_window probe failed model=" <> client.model <> ", fallback " <> Integer.to_string(n) <>
+            "（provider /models 未返回 context_length，建议 model.json contextWindows 显式配置）"
+        )
+
+        n
     end
   rescue
     _ -> @default_context_window
@@ -255,7 +264,7 @@ defmodule Newbee.LLM.Client do
       }
       |> maybe_put_body(:temperature, Keyword.get(opts, :temperature, 0.2))
       |> maybe_put_body(:logprobs, Keyword.get(opts, :logprobs))
-      |> maybe_put_body(:top_logprobs, Keyword.get(opts, :top_logprobs, 20))
+      |> maybe_put_body(:top_logprobs, Keyword.get(opts, :top_logprobs))
       |> maybe_put_body(:reasoning_effort, client.reasoning_effort)
       |> Map.merge(Keyword.get(opts, :extra, %{}))
 

@@ -316,8 +316,6 @@ body {
   margin-left: auto; background: none; border: 1px solid var(--nb-border);
   border-radius: 4px; color: var(--nb-label-3); cursor: pointer;
   padding: 1px 7px; font-size: 11px; line-height: 1.4;
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 20px; min-height: 20px;
 }
 .btn-tool-copy:hover { opacity: 1; color: var(--nb-label-1); border-color: var(--nb-label-caption); }
 .msg-archive {
@@ -1479,37 +1477,6 @@ svg.ico {
   color: var(--nb-accent);
 }
 
-/* ── 图片点击放大（lightbox）── */
-.nb-zoomable { cursor: zoom-in; }
-.md-img {
-  max-width: 100%; border-radius: 6px; cursor: zoom-in;
-  display: block; margin: 6px 0;
-}
-.nb-lightbox {
-  position: fixed; inset: 0; z-index: 9999;
-  background: rgba(0,0,0,0.85);
-  display: flex; align-items: center; justify-content: center;
-  cursor: zoom-out;
-}
-.nb-lightbox img {
-  max-width: 94vw; max-height: 94vh;
-  object-fit: contain; border-radius: 4px;
-  box-shadow: 0 8px 40px rgba(0,0,0,0.6);
-}
-
-/* ── 滚动条美化（WebKit：Chrome/Safari/Edge）── */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(128,138,158,0.35) transparent;
-}
-*::-webkit-scrollbar { width: 6px; height: 6px; }
-*::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb {
-  background: rgba(128,138,158,0.35); border-radius: 3px;
-}
-*::-webkit-scrollbar-thumb:hover { background: rgba(128,138,158,0.55); }
-*::-webkit-scrollbar-corner { background: transparent; }
-
 /* Think 展开内容与 assistant 正文共用 Markdown 渲染。 */
 .think-body { white-space: normal; }
 .think-body .md-p { margin: 0 0 8px; }
@@ -1953,6 +1920,10 @@ svg.ico {
 
 /* ── 手机横屏：全屏利用宽度，压缩垂直空间 ── */
 @media (max-height: 500px) and (orientation: landscape) {
+  /* 横屏矮屏：状态栏回退单行省略，保垂直空间 */
+  .statsbar { flex-wrap: nowrap; white-space: nowrap; overflow: hidden; }
+  .stats-right { order: 0; flex: none; display: inline; }
+  .stats-left { flex: 1 1 auto; order: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* 同样压过 #app.sidebar-collapsed 三连的高特异性规则 */
   #app.sidebar-collapsed .flow,
   #app.sidebar-collapsed .composer-card,
@@ -1970,4 +1941,24 @@ svg.ico {
   .flow { gap: 10px; }
   /* 消息更宽 */
   .msg, .msg-user { max-width: 96%; }
+}
+/* ── 浮动展开按钮不遮标题：侧栏收起时给 topbar 左侧让位（全端生效） ── */
+#app.sidebar-collapsed #topbar { padding-left: 52px; }
+/* ── 手机端：topbar 操作按钮右对齐 ── */
+@media (max-width: 768px) {
+  /* 标题恢复占满剩余空间（压过上面 flex:0 1 auto 的移动端覆盖），后续元素自然靠右 */
+  #topbar .session-title { flex: 1 1 auto; max-width: none; }
+  #topbar .icon-btn, #topbar .dot { flex: none; }
+  #topbar .usage, #topbar .current-op { flex: 0 1 auto; }
+  /* 手机端浮动展开按钮对齐 topbar 内边距 */
+  #sidebar-expand { top: 8px; left: 8px; }
+}
+/* ── 手机端：topbar 操作按钮右对齐 + 浮动展开按钮不遮标题 ── */
+@media (max-width: 768px) {
+  /* 标题恢复占满剩余空间（压过上面 flex:0 1 auto 的移动端覆盖），后续元素自然靠右 */
+  #topbar .session-title { flex: 1 1 auto; max-width: none; }
+  #topbar .icon-btn, #topbar .dot { flex: none; }
+  #topbar .usage, #topbar .current-op { flex: 0 1 auto; }
+  /* 侧栏收起（手机端默认态）时给左上角浮动展开按钮让位，标题不再被盖住 */
+  #app.sidebar-collapsed #topbar { padding-left: 52px; }
 }

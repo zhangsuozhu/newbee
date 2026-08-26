@@ -782,7 +782,11 @@ defmodule Newbee.Archive do
       "以下是一个编程 agent 会话片段（段 #{seg_id}）的结构化抽取。" <>
         "用 ≤300 字中文写要点摘要：任务目标、关键决策、改动、踩过的坑与解法、未完成事项。只输出摘要正文。\n\n" <> extract
 
-    case Newbee.LLM.Client.complete(client, [%{"role" => "user", "content" => prompt}], extra: %{max_tokens: 500}) do
+    case Newbee.LLM.Client.complete(client, [%{"role" => "user", "content" => prompt}],
+           tools: [],
+           tool_choice: "none",
+           extra: %{max_tokens: 2000}
+         ) do
       {:ok, content, _} ->
         text = content |> String.trim() |> String.slice(0, @digest_max_chars)
         if text == "", do: {:error, :empty_digest}, else: {:ok, text}
@@ -816,7 +820,12 @@ defmodule Newbee.Archive do
         " hit-path messages=" <> Integer.to_string(length(request)) <> " tools=" <> Integer.to_string(length(tools))
     )
 
-    case Newbee.LLM.Client.complete(client, request, tools: tools, temperature: nil, extra: %{max_tokens: 500}) do
+    case Newbee.LLM.Client.complete(client, request,
+           tools: tools,
+           tool_choice: "none",
+           temperature: nil,
+           extra: %{max_tokens: 2000}
+         ) do
       {:ok, content, _} ->
         text = content |> String.trim() |> String.slice(0, @digest_max_chars)
         if text == "", do: {:error, :empty_digest}, else: {:ok, text}
