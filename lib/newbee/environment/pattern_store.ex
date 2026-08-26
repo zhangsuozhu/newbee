@@ -41,8 +41,22 @@ defmodule Newbee.Environment.PatternStore do
   end
 
   def key_of(%{topic: t, payload: [_t2, name | _]} = ev)
-      when t in [:tool_start, :tool_error, :tool_result] and is_binary(name) do
+      when t in [:tool_start, :tool_result] and is_binary(name) do
     {{:tool_use, name}, task_type_of(ev)}
+  end
+
+  # 真实事件流 JSON 反序列化后 topic 是字符串、map key 是 atom（消费端归一化裂缝）
+  def key_of(%{topic: t, payload: [_t2, name | _]} = ev)
+      when t in ["tool_start", "tool_result"] and is_binary(name) do
+    {{:tool_use, name}, task_type_of(ev)}
+  end
+
+  # tool_error 的 payload 第二元素是错误消息文本而非工具名——
+  # 不提取为 tool_use 模式（避免把错误堆栈当成工具产生假模式）。
+  # 错误归因由 success_of 通道处理（tool_error → success=false 计入配对工具）。
+  def key_of(%{topic: t, payload: [_, msg | _]})
+      when t in [:tool_error, "tool_error"] and is_binary(msg) do
+    nil
   end
   def key_of(ev) when is_map(ev) do
     case JitStrategy.pattern_key(ev) do
