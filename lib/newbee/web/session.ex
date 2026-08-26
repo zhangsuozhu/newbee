@@ -168,26 +168,20 @@ defmodule Newbee.Web.Session do
     model = Newbee.Session.model(sid)
 
     base =
-      if provider do
-        try do
-          {:ok, Newbee.LLM.Config.client_for("default", provider: provider)}
-        rescue
-          e -> {:error, "provider 「#{provider}」未配置: #{Exception.message(e)}"}
-        end
-      else
-        try do
-          {:ok, Newbee.LLM.Config.client_for()}
-        rescue
-          e -> {:error, Exception.message(e)}
-        end
+      try do
+        opts =
+          []
+          |> then(fn opts -> if provider, do: Keyword.put(opts, :provider, provider), else: opts end)
+          |> then(fn opts -> if model, do: Keyword.put(opts, :model, model), else: opts end)
+
+        {:ok, Newbee.LLM.Config.client_for("default", opts)}
+      rescue
+        e ->
+          prefix = if provider, do: "provider 「#{provider}」未配置: ", else: ""
+          {:error, prefix <> Exception.message(e)}
       end
 
     with {:ok, client} <- base,
-         client <-
-           (case model do
-              nil -> client
-              model -> %{client | model: model}
-            end),
          client <-
            (case Newbee.Session.effort(sid) do
               nil -> client
