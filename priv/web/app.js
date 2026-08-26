@@ -214,6 +214,9 @@ const flow = $("flow");
               ftSum: 0, ftCount: 0, ftRecorded: false, outTok: 0 },
     attachments: [],   // [{name, type, dataUrl, size}]
     stickBottom: true,
+    turnUsage: null,
+    turnUsageDetails: [],
+    _pendingUsage: null,
   };
 
   // ── 会话统计持久化（按 sessionId 存 localStorage，刷新/重连后保留）──
@@ -384,7 +387,7 @@ case "done": finishTurn(); line("done", p.summary, true); break;
       }
       case "interrupted": finishTurn(); line("notice", "已中断"); break;
       case "permission_ask": showPermission(p.preview); break;
-      case "usage": setUsage(p.usage); break;
+      case "usage": setUsage(p.usage); handleBubbleUsage(p.usage); break;
       case "compacted": line("notice", `历史已压缩 ${p.count} 条`); break;
       case "model_switched": $("model-label").textContent = p.model; break;
       // 上下文窗口覆盖热更新（当前会话模型匹配时服务端推送）：顶栏用量标签立即反映新值
@@ -419,9 +422,19 @@ case "goal_round": break;
   function finishTurn() {
     state.busy = false;
     if (state.currentAssistant) {
+      const _savedBar = state.currentAssistant.querySelector(":scope > .msg-usage");
       state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
       addAssistantChrome(state.currentAssistant);
       bindCopyButtons(state.currentAssistant);
+      if (_savedBar && !_savedBar.dataset.reattached) { state.currentAssistant.appendChild(_savedBar); }
+      if (state._pendingUsage) { attachUsageToBubble(state.currentAssistant, state._pendingUsage); state._pendingUsage = null; }
+      if (state.currentAssistant.dataset.hasUsage !== "1" && state.turnUsage && state.turnUsage.count > 0) {
+        attachUsageToBubble(state.currentAssistant, { prompt_tokens: state.turnUsage.prompt, completion_tokens: state.turnUsage.completion, cache_read_tokens: state.turnUsage.cached, model: state.turnUsage.model });
+      }
+    }
+    if (state.currentAssistant && state.turnUsage && state.turnUsage.count > 1) {
+      const bar = state.currentAssistant.querySelector(":scope > .msg-usage");
+      if (bar) bar.title = `本轮累计 ${state.turnUsage.count} 次请求 · 输入 ${fmtTokShort(state.turnUsage.prompt)} · 输出 ${fmtTokShort(state.turnUsage.completion)} · 缓存 ${fmtTokShort(state.turnUsage.cached)}`;
     }
     archiveReasoning();
     state.currentAssistant = null;
@@ -432,9 +445,13 @@ case "goal_round": break;
     streamAcc = "";
     if (state.titleDirty) {
       state.titleDirty = false;
-      // 首条用户消息后同步侧栏标题（服务端 list 用首条 user 消息自动取题）
       loadSessions().catch(() => {});
     }
+  }
+  function resetTurnUsage() {
+    state.turnUsage = null;
+    state.turnUsageDetails = [];
+    state._pendingUsage = null;
   }
 
   function el(cls, text, md) {
@@ -516,21 +533,23 @@ case "goal_round": break;
     // 把上一段残留的 streamAcc 连同新 delta 一起渲染（旧文本重复出现）。
     function flushTextBlock() {
       if (!state.currentAssistant) { streamAcc = ""; return; }
+      const _savedBar = state.currentAssistant.querySelector(":scope > .msg-usage");
       state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
       addAssistantChrome(state.currentAssistant);
       bindCopyButtons(state.currentAssistant);
+      if (_savedBar) state.currentAssistant.appendChild(_savedBar);
       state.currentAssistant = null;
       streamAcc = "";
     }
   let streamAcc = "";
   let streamRaf = 0;
   function appendStream(delta) {
-    // 文本到来时归档 reasoning（去 running，下次 reasoning 开新块）
     archiveReasoning();
     if (!state.currentAssistant) {
       state.busy = true; setBusy(true);
       clearTurnStatus();
       state.currentAssistant = addAssistantChrome(el("msg-assistant", ""));
+      if (state._pendingUsage) { attachUsageToBubble(state.currentAssistant, state._pendingUsage); state._pendingUsage = null; }
     }
     const d = delta || "";
     // 流式去重：同一回合若 delta 已连续出现在 streamAcc 尾部（网络/服务端偶发双发），
@@ -544,9 +563,11 @@ case "goal_round": break;
       streamRaf = requestAnimationFrame(() => {
         streamRaf = 0;
         if (state.currentAssistant) {
+          const _savedBar = state.currentAssistant.querySelector(":scope > .msg-usage");
           state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
           addAssistantChrome(state.currentAssistant);
           bindCopyButtons(state.currentAssistant);
+          if (_savedBar) state.currentAssistant.appendChild(_savedBar);
           scrollBottom();
         }
       });
@@ -1669,6 +1690,7 @@ case "goal_round": break;
       applyPromptTitle(text, images);
     }
     state.busy = true; setBusy(true);
+    resetTurnUsage();
     clearAttachments();
     try {
       if (images.length > 0) {
@@ -1946,6 +1968,80 @@ case "goal_round": break;
     if (!u) return;
     if (u.context_tokens > 0 && u.context_window > 0) {
       $("usage-label").textContent = `${fmtContext(u.context_tokens)}/${fmtContext(u.context_window)}`;
+    }
+  }
+  function usageFields(u) {
+    if (!u || typeof u !== "object") return null;
+    const prompt = u.prompt_tokens ?? u.input_tokens ?? 0;
+    const completion = u.completion_tokens ?? u.output_tokens ?? 0;
+    const total = u.total_tokens ?? (prompt + completion);
+    const cached = u.cache_read_tokens ?? u.cached_tokens ?? u.cache_read_input_tokens ?? (u.prompt_tokens_details && (u.prompt_tokens_details.cached_tokens ?? u.prompt_tokens_details.cache_read_tokens)) ?? 0;
+    const hit = prompt > 0 ? (cached / prompt) * 100 : null;
+    const model = u.model || u.model_name || "";
+    return { prompt, completion, total, cached, hit, model };
+  }
+  function fmtTokShort(n) {
+    if (n == null || isNaN(n)) return "0";
+    if (n < 1000) return String(n);
+    if (n < 1e6) return (Math.round(n/100)/10).toFixed(1).replace(/\.0$/, "") + "K";
+    return (Math.round(n/1e5)/10).toFixed(1).replace(/\.0$/, "") + "M";
+  }
+  function bubbleUsageLabel(f) {
+    const pct = f.hit == null ? "-" : (f.hit > 99.95 ? "100" : f.hit.toFixed(1).replace(/\.0$/, "")) + "%";
+    return `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${fmtTokShort(f.cached)} (${pct})`;
+  }
+  function ensureUsageBar(bubble) {
+    if (!bubble) return null;
+    let bar = bubble.querySelector(":scope > .msg-usage");
+    if (bar) return bar;
+    bar = document.createElement("div");
+    bar.className = "msg-usage";
+    bubble.appendChild(bar);
+    return bar;
+  }
+  function attachUsageToBubble(bubble, u) {
+    const f = usageFields(u);
+    if (!bubble || !f) return;
+    const bar = ensureUsageBar(bubble);
+    const label = bubbleUsageLabel(f);
+    bar.innerHTML = "";
+    const left = document.createElement("span");
+    left.className = "msg-usage-stats";
+    left.textContent = label;
+    left.title = `prompt=${f.prompt} completion=${f.completion} total=${f.total} cached=${f.cached} hit=${f.hit == null ? "-" : f.hit.toFixed(2)+"%"}`;
+    bar.appendChild(left);
+    bubble.dataset.hasUsage = "1";
+  }
+  function handleBubbleUsage(u) {
+    if (!u) return;
+    try {
+      if (!state.turnUsage) state.turnUsage = { prompt: 0, completion: 0, cached: 0, count: 0, model: "" };
+      const f = usageFields(u);
+      if (f) {
+        state.turnUsage.prompt += f.prompt || 0;
+        state.turnUsage.completion += f.completion || 0;
+        state.turnUsage.cached += f.cached || 0;
+        state.turnUsage.count += 1;
+        if (f.model) state.turnUsage.model = f.model;
+        state.turnUsageDetails.push({ ...f, raw: u });
+      }
+    } catch (e) {}
+    let target = state.currentAssistant;
+    if (!target || !document.body.contains(target)) {
+      const assistants = flow.querySelectorAll(".msg-assistant.msg-boxed");
+      for (let i = assistants.length - 1; i >= 0; i--) {
+        if (assistants[i].dataset.hasUsage !== "1") { target = assistants[i]; break; }
+      }
+      if (!target && assistants.length) target = assistants[assistants.length - 1];
+    }
+    if (target) {
+      attachUsageToBubble(target, u);
+      if (state.turnUsage && state.turnUsage.count > 1) {
+        const bar = target.querySelector(":scope > .msg-usage");
+        if (bar) bar.title = `本轮累计 ${state.turnUsage.count} 次请求 · 输入 ${fmtTokShort(state.turnUsage.prompt)} · 输出 ${fmtTokShort(state.turnUsage.completion)} · 缓存 ${fmtTokShort(state.turnUsage.cached)}`;
+      }
+    } else {
+      state._pendingUsage = u;
     }
   }
   function scrollBottom(force) {
