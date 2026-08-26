@@ -7,6 +7,18 @@ defmodule Newbee.Plugins.RepoMap do
   被引用多的模块给全签名（Tier1），其余收进单行索引（Tier2）。
   相比 v1 按文件名截断：全模块覆盖、核心模块必现、总字节更省、输出确定。
   非 Elixir 工程退化为目录树。
+
+  ## 函数清单
+  - `build(root \\ ".", opts \\ []) :: String.t()` — 构建工程结构图（紧凑字符串）。非 Elixir 工程退化为目录树。
+    选项：`:tier1_max_bytes` —— Tier1 区字节预算（默认 14_000）。
+
+  增量缓存（§3.6）：以 mix.exs + lib 全部文件的 mtime 指纹为 key，
+  工程未变更时直接复用缓存，不重复 AST 解析。
+
+  ## 可跑示例
+      Newbee.Plugins.RepoMap.build(".")
+      Newbee.Plugins.RepoMap.build(".", tier1_max_bytes: 8_000)
+
   """
 
   @tier1_min 8               # 无论多大预算，Top-8 必给全签名

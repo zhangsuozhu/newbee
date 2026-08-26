@@ -1,5 +1,29 @@
 defmodule Newbee.Tools.Run do
-  @moduledoc "命令执行工具 (DESIGN §3.2)：超时 + 输出上限，结果返回 exit code 与输出。"
+  @moduledoc """
+  命令执行工具 (DESIGN §3.2)：超时 + 输出上限，结果返回 exit code 与输出。
+
+  ## 函数清单
+  - `sh(cmd, opts \\ [])` — 在工程根下执行 shell 命令，返回 `%{exit: integer() | :timeout | :denied, output: String.t()}`。
+    选项：`timeout:` 毫秒（默认 120_000），`cd` 固定为 `File.cwd!()`，`MIX_ENV=test`。
+  - `sh_long(cmd, opts \\ [])` — `sh` 的长超时版，默认 180_000ms，适合 harness/全量测试。
+  - `mix_compile(opts \\ [])` — `mix compile`，返回 `{:ok, output} | {:error, output}`。
+  - `mix_test(files \\ [], opts \\ [])` — `mix test [files...]`，返回 `{:ok, output} | {:error, output}`。
+  - `mix_format(files \\ [])` — `mix format --check-formatted [files...]`，返回 `{:ok, output} | {:error, output}`。
+  - `django_test(args \\ "apps.ha_bridge", opts \\ [])` — Django 场景：自动选 `python3.11`（无 `cgi` 时）跑 `BackCode/manage.py test`。
+
+  ## 权限与截断
+  - 高危命令（`rm -rf /`, `git push` 等）受 `Newbee.Permissions` 档位（`:lenient`/`:ask`/`:deny`）拦截，拦截时返回 `%{exit: :denied, output: msg}`。
+  - 输出超 32KB 自动截断为头尾各 16KB + `… [输出截断]`。
+
+  ## 可跑示例
+      %{exit: 0, output: out} = Newbee.Tools.Run.sh("ls -la")
+      %{exit: 0} = Newbee.Tools.Run.sh("mix compile", timeout: 30_000)
+      {:ok, out} = Newbee.Tools.Run.mix_compile()
+      {:ok, out} = Newbee.Tools.Run.mix_test(["test/newbee/difftest_test.exs"])
+      {:ok, out} = Newbee.Tools.Run.mix_format()
+      %{exit: 0} = Newbee.Tools.Run.sh_long("mix test 2>&1 | tail -n 20", timeout: 180_000)
+
+  """
 
   @default_timeout 120_000
   @max_output 32_000

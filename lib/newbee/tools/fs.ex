@@ -5,6 +5,38 @@ defmodule Newbee.Tools.Fs do
   - 写操作**先进暂存区**（Newbee.Staging），用户 /approve 统一落盘——
     宽松沙箱的"可回滚"承诺（§8）；
   - 读操作直接返回内容，路径限制在当前工程树内（§8 工作目录隔离）。
+
+  ## 函数清单
+  - `read(path)` — 读文件，返回 `{:ok, content} | {:error, reason}`。
+  - `read!(path)` — 读文件，不存在抛 `File.Error`。
+  - `write(path, content)` — 暂存写，返回条目 `id`（integer）或 `:direct`；需 `/approve` 才落盘。
+  - `write!(path, content)` — 直接落盘（危险，绕过暂存），成功 `:ok`，并触发内联 diff 事件。
+  - `append!(path, content)` — 追加写，直接落盘，`:ok`。
+  - `rm(path)` — 删除文件，返回 `:ok | {:error, reason}`。
+  - `rm_rf(path)` — 递归删除（高危，记审计），返回 `{:ok, [deleted]} | {:error, reason}`。
+  - `exists?(path)` — 文件是否存在，`boolean`。
+  - `guard_path!(path)` — 工作目录隔离校验，合法 `:ok`，非法抛 `ArgumentError`。
+  - `ls(dir)` — 列目录一层，返回 `[entry]`（目录带 `/`）或 `{:error, reason}`。
+  - `tree(root \\ ".")` — 遍历工程树（跳过 `_build/deps/.git/node_modules/cover`），返回相对路径 `[String.t()]`。
+  - `size(path)` — 文件字节数，`non_neg_integer()`，不存在返回 `0`。
+
+  ## 可跑示例
+      {:ok, c} = Newbee.Tools.Fs.read("README.md")
+      c = Newbee.Tools.Fs.read!("mix.exs")
+      id = Newbee.Tools.Fs.write("tmp/hello.txt", "hello")
+      :ok = Newbee.Tools.Fs.write!("tmp/a.txt", "direct")
+      :ok = Newbee.Tools.Fs.append!("tmp/log.txt", "line\n")
+      true = Newbee.Tools.Fs.exists?("mix.exs")
+      Newbee.Tools.Fs.ls("lib/newbee/tools")
+      Newbee.Tools.Fs.tree(".") |> Enum.take(3)
+      Newbee.Tools.Fs.size("mix.exs")
+      :ok = Newbee.Tools.Fs.rm("tmp/hello.txt")
+
+  ## 注意
+  - `write/2` 经 `Newbee.Host` 代理回主 VM 的 `Staging`；未启动时降级为 `:direct`。
+  - `write!/2` / `append!/2` 直接落盘并经 `Host.emit` 发 `:file_diff`。
+  - `guard_path!/1` 限制写入 `File.cwd!()` 树或 `~/.newbee` 内，其余抛错；但 `File.write!` 仍可绕过，硬隔离由审计/快照兜底。
+
   """
 
   @doc "读文件。返回 {:ok, content} | {:error, reason}。"

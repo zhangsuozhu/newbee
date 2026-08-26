@@ -292,7 +292,7 @@ defmodule Newbee do
             false
         end)
         |> Enum.map_join("\n", fn {{:function, name, arity}, _, _, doc, _} ->
-          "  #{name}/#{arity}: #{String.slice(doc_text(doc), 0, 200)}"
+          "  #{name}/#{arity}: #{String.slice(doc_text(doc), 0, 800)}"
         end)
 
       {:ok, "## #{module_name}\n" <> moduledoc <> "\n" <> funcs}

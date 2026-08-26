@@ -1,7 +1,20 @@
 defmodule Newbee.Tools.Scaffold do
   @moduledoc """
   工程脚手架工具 (DESIGN §3.2 工程)：`mix new` / `mix deps.get` 等。
-  内部复用 Newbee.Tools.Run.sh（超时 + 输出上限）。
+  内部复用 `Newbee.Tools.Run.sh`（超时 + 输出上限）。
+
+  ## 函数清单
+  - `new_project(name :: String.t()) :: {:ok, output} | {:error, output}` — `mix new <name>` 在当前目录下创建。
+  - `deps_get() :: {:ok, output} | {:error, output}` — `mix deps.get`。
+  - `compile() :: {:ok, output} | {:error, output}` — `mix compile`（委托 `Run.mix_compile`）。
+  - `test(files \\ []) :: {:ok, output} | {:error, output}` — `mix test [files...]`（委托 `Run.mix_test`）。
+
+  ## 可跑示例
+      {:ok, out} = Newbee.Tools.Scaffold.new_project("my_app")
+      {:ok, out} = Newbee.Tools.Scaffold.deps_get()
+      {:ok, out} = Newbee.Tools.Scaffold.compile()
+      {:ok, out} = Newbee.Tools.Scaffold.test(["test/my_app_test.exs"])
+
   """
 
   @doc "创建新 mix 工程（当前目录下）。返回 {:ok, output} | {:error, output}。"
