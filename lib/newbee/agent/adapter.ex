@@ -242,9 +242,62 @@ defmodule Newbee.Agent.Adapter do
           end
 
         :keep ->
-          {:keep, rid}
+          # ContextQuality 质量判据（调研 REPORT §4 落位）：Jit 成本侧判 keep 的
+          # release，再查任务级质量侧——注入是否让任务变差（差分归因，确定性信号）。
+          case quality_deopt_decision(rid) do
+            {:deopt, reason} ->
+              Logger.info("quality deopt #{rid}: #{reason}")
+
+              coordinator
+              |> Newbee.Environment.Coordinator.propose_change(%{
+                reason: "quality deopt #{rid}: #{reason}",
+                evidence: [%{quality_deopt: rid, reason: reason}],
+                author_agent: :adapter
+              })
+              |> case do
+                {:ok, change} -> {:deopted, rid, :quality, reason, change_id: change.change_id}
+                err -> {:error, rid, err}
+              end
+
+            :keep ->
+              {:keep, rid}
+          end
       end
     end)
+  end
+
+  # ContextQuality 质量 deopt 判据：release 注入上下文的实证质量。
+  # Collector 未运行（无账本）时优雅 :keep——度量缺失不阻塞既有成本侧 deopt。
+  @doc false
+  def quality_deopt_decision(release_id) do
+    alias Newbee.Environment.ContextQuality
+    alias Newbee.Environment.ContextQuality.Collector
+
+    if Process.whereis(Collector) do
+      l = Collector.ledger(release_id)
+
+      cond do
+        ContextQuality.verdict(l) == :harmful ->
+          s = ContextQuality.summary(l)
+
+          {:deopt,
+           "harmful: 注入后成功率 #{Float.round(s.success_with, 2)} < 基线 #{Float.round(s.success_without, 2)} " <>
+             "(置信区间不重叠, n=#{s.n_with}/#{s.n_without})"}
+
+        ContextQuality.bloat_regression?(l) ->
+          s = ContextQuality.summary(l)
+
+          {:deopt,
+           "context bloat: 注入后 token #{round(s.avg_tokens_with)} > 基线 #{round(s.avg_tokens_without)} 且成功率不升"}
+
+        true ->
+          :keep
+      end
+    else
+      :keep
+    end
+  rescue
+    _ -> :keep
   end
 
   # ── helpers ──

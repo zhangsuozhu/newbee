@@ -2,25 +2,28 @@ defmodule Newbee.Environment.ContextQuality.Collector do
   @moduledoc """
   ContextQuality Collector：事件流 → ContextQuality ledger 的桥梁。
 
-  订阅 `Newbee.Bus`（{:newbee_event, topic, event}），按 session 维护"当前 turn
-  注入了哪些 release（沉睡规则/记忆）"的滑动窗口，在 turn 结束时把
-  （注入集合 × outcome）记入 ContextQuality 账本并持久化。
+  订阅 `Newbee.Bus`（{:newbee_event, topic, event}），按 **单活跃 turn 模型**
+  归集事件：harness 顺序执行，同一时刻只有一个活跃 turn；事件按时间顺序归属
+  当前 turn，turn 在 `turn_end`/`goal_done` 处关闭并记账。
+
+  ## 真实事件载荷（.newbee/events.jsonl 实证）
+
+  - `prompt_injection`：payload[1] 是 map，规则 id 在 `rules[].id`（source 恒为
+    "sleeping_rule"），session_id 在 map 顶层。
+  - `turn_end`：payload = ["turn_end", outcome_type, ms]，outcome_type ∈
+    "done"/"error"/"interrupted"/"text"/"ask"。**不带 session_id**。
+  - `tool_error`：payload = ["tool_error", msg]。不带 session_id。
+  - `usage`：payload = ["usage", %{total_tokens, model, ...}]。不带 session_id。
+  - `goal_done`：payload 是 %{session_id}。
 
   ## outcome 判定（确定性，非 LLM judge —— Blind Curator 防线）
 
-  turn outcome = success 当且仅当：
-    - 收到 `{:goal_done, _}`（模型自评完成）且该 turn **无 tool_error**；或
-    - verifier `final_score` ≥ 阈值（若有）
-  任一 `tool_error` 或 `final_check_low` → 该 turn 记 failure。
+  turn success 当且仅当 `turn_end` outcome_type == "done" 或收到 goal_done，
+  **且**该 turn 无 tool_error；"error"/"interrupted" 或有 tool_error → failure。
 
-  ## 注入归因
+  ## 注入归因（差分）
 
-  `{:prompt_injection, %{source: rule_id}}` → 该 rule 在本 turn 处于上下文。
-  turn 内注入过的 release 记 `injected?=true`，**未注入的活跃 release 记
-  `injected?=false`**（基线侧）——这是差分归因的关键：同一 release 既积累
-  with_ctx 也积累 without_ctx 样本（取自它没参与的那些 turn）。
-
-  幂等：turn 以 turn_end/goal_done 为界；无 turn 边界的孤立注入不产生样本。
+  turn 内注入的 release 记 with_ctx，未注入的活跃 release 记 without_ctx。
   """
 
   use GenServer
@@ -29,17 +32,11 @@ defmodule Newbee.Environment.ContextQuality.Collector do
   alias Newbee.Environment.{ContextQuality, Store}
 
   @stats_path "context_quality.jsonl"
-  # 活跃 release 登记上限（防内存膨胀，§9.1 GC 纪律）
   @max_ledgers 500
 
-  # ── 状态 ──
-  # %{
-  #   ledgers: %{release_id => ContextQuality.ledger()},
-  #   turns: %{session_id => %{injected: MapSet.t(), errors: non_neg_integer(),
-  #                           tokens: non_neg_integer(), done: boolean()}},
-  #   active: MapSet.t()  # 已知活跃 release（用于基线归因）
-  # }
-  defstruct ledgers: %{}, turns: %{}, active: MapSet.new()
+  # current_turn: nil | %{injected: MapSet.t(), errors: non_neg_integer(),
+  #                       tokens: non_neg_integer(), goal_done: boolean()}
+  defstruct ledgers: %{}, current_turn: nil, active: MapSet.new()
 
   # ═══════════ 公共 API ═══════════
 
@@ -47,22 +44,10 @@ defmodule Newbee.Environment.ContextQuality.Collector do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
-  @doc "取某 release 的质量账本。"
-  def ledger(release_id, server \\ __MODULE__) do
-    GenServer.call(server, {:ledger, release_id})
-  end
+  def ledger(release_id, server \\ __MODULE__), do: GenServer.call(server, {:ledger, release_id})
+  def price_tags(server \\ __MODULE__), do: GenServer.call(server, :price_tags)
+  def retire_candidates(server \\ __MODULE__), do: GenServer.call(server, :retire_candidates)
 
-  @doc "全部 release 的质量价签（Projection/TUI 展示）。"
-  def price_tags(server \\ __MODULE__) do
-    GenServer.call(server, :price_tags)
-  end
-
-  @doc "需退休的 release 清单（verdict == :harmful 或 bloat 回归）。"
-  def retire_candidates(server \\ __MODULE__) do
-    GenServer.call(server, :retire_candidates)
-  end
-
-  @doc "登记一个活跃 release（激活时调用，使其参与基线归因）。"
   def register_release(release_id, server \\ __MODULE__) do
     GenServer.cast(server, {:register, release_id})
   end
@@ -75,20 +60,15 @@ defmodule Newbee.Environment.ContextQuality.Collector do
       Newbee.Bus.subscribe()
     end
 
-    {:ok, %{__struct__() | ledgers: restore(), active: restore_active()}}
+    {:ok, %{__struct__() | ledgers: restore()}}
   end
 
   @impl true
-  def handle_call({:ledger, rid}, _from, s) do
-    {:reply, Map.get(s.ledgers, rid, ContextQuality.new_ledger()), s}
-  end
+  def handle_call({:ledger, rid}, _from, s),
+    do: {:reply, Map.get(s.ledgers, rid, ContextQuality.new_ledger()), s}
 
-  def handle_call(:price_tags, _from, s) do
-    tags =
-      Map.new(s.ledgers, fn {rid, l} -> {rid, ContextQuality.summary(l)} end)
-
-    {:reply, tags, s}
-  end
+  def handle_call(:price_tags, _from, s),
+    do: {:reply, Map.new(s.ledgers, fn {rid, l} -> {rid, ContextQuality.summary(l)} end), s}
 
   def handle_call(:retire_candidates, _from, s) do
     cands =
@@ -102,111 +82,106 @@ defmodule Newbee.Environment.ContextQuality.Collector do
   end
 
   @impl true
-  def handle_cast({:register, rid}, s) do
-    {:noreply, %{s | active: MapSet.put(s.active, to_string(rid))}}
-  end
+  def handle_cast({:register, rid}, s), do: {:noreply, %{s | active: MapSet.put(s.active, to_string(rid))}}
 
   @impl true
-  def handle_info({:newbee_event, topic, event}, s) do
-    {:noreply, handle_event(topic, event, s)}
-  end
-
+  def handle_info({:newbee_event, topic, event}, s), do: {:noreply, handle_event(topic, event, s)}
   def handle_info(_, s), do: {:noreply, s}
 
   # ═══════════ 事件处理（纯函数，可测） ═══════════
 
   @doc false
   def handle_event(:prompt_injection, event, s) do
-    {sid, rid} = {session_of(event), source_of(event)}
+    # 规则 id 从 rules[].id 提取（真实载荷：source 恒为 "sleeping_rule"）
+    rids = rule_ids_of(event)
 
-    if sid && rid do
-      update_turn(s, sid, fn t -> %{t | injected: MapSet.put(t.injected, rid)} end)
-      |> register_active(rid)
+    if rids == [] do
+      s
+    else
+      s = ensure_turn(s)
+
+      s =
+        update_current(s, fn t ->
+          %{t | injected: Enum.reduce(rids, t.injected, &MapSet.put(&2, &1))}
+        end)
+
+      %{s | active: Enum.reduce(rids, s.active, &MapSet.put(&2, &1))}
+    end
+  end
+
+  def handle_event(:rule_hit, event, s) do
+    # rule_hit 也是注入信号（规则命中即注入上下文）
+    handle_event(:prompt_injection, event, s)
+  end
+
+  def handle_event(:tool_error, _event, s) do
+    s |> ensure_turn() |> update_current(fn t -> %{t | errors: t.errors + 1} end)
+  end
+
+  def handle_event(:final_check_low, _event, s) do
+    s |> ensure_turn() |> update_current(fn t -> %{t | errors: t.errors + 1} end)
+  end
+
+  def handle_event(:usage, event, s) do
+    tokens = safe_int(usage_tokens(event))
+
+    if tokens > 0 do
+      s |> ensure_turn() |> update_current(fn t -> %{t | tokens: t.tokens + tokens} end)
     else
       s
     end
   end
 
-  def handle_event(:tool_error, event, s) do
-    case session_of(event) do
-      nil -> s
-      sid -> update_turn(s, sid, fn t -> %{t | errors: t.errors + 1} end)
-    end
-  end
-
-  def handle_event(:usage, event, s) do
-    tokens = (event[:tokens] || event["tokens"] || total_tokens(event)) |> trunc()
-
-    case session_of(event) do
-      nil -> s
-      sid -> update_turn(s, sid, fn t -> %{t | tokens: t.tokens + tokens} end)
-    end
-  end
-
-  def handle_event(:final_check_low, event, s) do
-    case session_of(event) do
-      nil -> s
-      sid -> update_turn(s, sid, fn t -> %{t | errors: t.errors + 1} end)
-    end
-  end
-
-  def handle_event(:goal_done, event, s) do
-    case session_of(event) do
-      nil -> s
-      sid -> close_turn(s, sid, true)
-    end
+  def handle_event(:goal_done, _event, s) do
+    s |> ensure_turn() |> update_current(fn t -> %{t | goal_done: true} end) |> close_turn(:done)
   end
 
   def handle_event(:turn_end, event, s) do
-    case session_of(event) do
-      nil -> s
-      # turn_end 无 goal_done 时按成败未定处理——只在有明确信号时记账
-      sid -> close_turn(s, sid, nil)
-    end
+    outcome = turn_end_outcome(event)
+    close_turn(s, outcome)
   end
 
   def handle_event(_, _, s), do: s
 
-  # ── turn 生命周期 ──
+  # ═══════════ turn 生命周期（单活跃 turn） ═══════════
 
-  defp update_turn(s, sid, fun) do
-    t = Map.get(s.turns, sid, fresh_turn())
-    %{s | turns: Map.put(s.turns, sid, fun.(t))}
-  end
+  defp ensure_turn(%{current_turn: nil} = s), do: %{s | current_turn: fresh_turn()}
+  defp ensure_turn(s), do: s
 
-  defp register_active(s, rid), do: %{s | active: MapSet.put(s.active, rid)}
+  # 调用方都先经 ensure_turn，current_turn 必非 nil
+  defp update_current(%{current_turn: t} = s, fun) when not is_nil(t),
+    do: %{s | current_turn: fun.(t)}
 
-  defp fresh_turn, do: %{injected: MapSet.new(), errors: 0, tokens: 0}
+  defp fresh_turn, do: %{injected: MapSet.new(), errors: 0, tokens: 0, goal_done: false}
 
-  # turn 关闭：有明确成败信号才记账
-  defp close_turn(s, sid, done_override) do
-    case Map.pop(s.turns, sid) do
-      {nil, _} ->
-        s
+  # outcome: :done | :error | :interrupted | :text | :ask | nil
+  defp close_turn(%{current_turn: nil} = s, _outcome), do: s
 
-      {t, turns} ->
-        s = %{s | turns: turns}
+  defp close_turn(s, outcome) do
+    t = s.current_turn
+    s = %{s | current_turn: nil}
 
-        success =
-          cond do
-            done_override == true and t.errors == 0 -> true
-            done_override == true and t.errors > 0 -> false
-            done_override == false -> false
-            # turn_end 无 goal 信号且出错 → failure；干净退出 → 不计（成败未定）
-            done_override == nil and t.errors > 0 -> false
-            done_override == nil and t.injected == MapSet.new() -> :skip
-            true -> :skip
-          end
+    success =
+      cond do
+        # goal_done 显式声明 + 无错误
+        t.goal_done and t.errors == 0 -> true
+        t.goal_done and t.errors > 0 -> false
+        # turn_end outcome_type
+        outcome == :done and t.errors == 0 -> true
+        outcome == :done and t.errors > 0 -> false
+        outcome in [:error, :interrupted] -> false
+        t.errors > 0 -> false
+        # text/ask/nil：成败未定，诚实缺测不记账
+        true -> :skip
+      end
 
-        if success == :skip do
-          s
-        else
-          record_turn(s, t, success)
-        end
+    if success == :skip or MapSet.size(t.injected) == 0 do
+      s
+    else
+      record_turn(s, t, success)
     end
   end
 
-  # 差分归因落账：注入的记 with_ctx，未注入的活跃 release 记 without_ctx
   defp record_turn(s, t, success) do
     tokens = if t.tokens > 0, do: t.tokens, else: nil
 
@@ -217,7 +192,6 @@ defmodule Newbee.Environment.ContextQuality.Collector do
         l = Map.get(acc, rid, ContextQuality.new_ledger())
         Map.put(acc, rid, ContextQuality.record(l, injected?, success, tokens))
       end)
-      # GC：超上限时淘汰样本最少的账本（§9.1）
       |> gc_ledgers()
 
     persist(ledgers)
@@ -233,72 +207,117 @@ defmodule Newbee.Environment.ContextQuality.Collector do
     |> Map.new()
   end
 
-  # ── 事件字段提取（兼容 atom/string key） ──
+  # ═══════════ 载荷解析（兼容真实事件流形状） ═══════════
 
-  defp session_of(event) when is_map(event) do
-    event[:session_id] || event["session_id"] || event[:session] || event["session"]
+  # 规则 id：真实载荷 rules[].id；兼容 source 直接是规则 id 的情况
+  # 系统注入的 source（非可退休经验，不进入质量度量）——实证自真实事件流
+  @system_sources ["sleeping_rule", "history_recall", "goal_continue", "goal_start",
+                   "goal_idle", "final_verifier", "jspace_recovery"]
+
+  defp rule_ids_of(event) when is_map(event) do
+    rules = event[:rules] || event["rules"]
+
+    cond do
+      # 权威来源：rules[].id（沉睡规则命中的真实载荷）
+      is_list(rules) and rules != [] ->
+        rules
+        |> Enum.map(fn r -> if is_map(r), do: r[:id] || r["id"], else: nil end)
+        |> Enum.filter(&is_binary/1)
+
+      # fallback：仅当 source 是明确的自定义规则（非系统注入）才收录
+      true ->
+        case event[:source] || event["source"] do
+          src when is_binary(src) ->
+            if src in @system_sources, do: [], else: [src]
+
+          _ ->
+            []
+        end
+    end
   end
 
-  defp session_of(_), do: nil
+  defp rule_ids_of(_), do: []
 
-  defp source_of(event) when is_map(event) do
-    src = event[:source] || event["source"]
-    if is_binary(src), do: src, else: nil
+  # turn_end outcome：payload = ["turn_end", type, ms]（真实流），或 map
+  defp turn_end_outcome(event) when is_map(event) do
+    case event[:payload] || event["payload"] do
+      ["turn_end", type | _] when is_binary(type) -> String.to_atom(type)
+      [_, type | _] when is_binary(type) -> String.to_atom(type)
+      _ -> nil
+    end
   end
 
-  defp source_of(_), do: nil
+  defp turn_end_outcome(_), do: nil
 
-  defp total_tokens(event) do
-    (event[:total_tokens] || event["total_tokens"] || 0) +
-      (event[:input_tokens] || event["input_tokens"] || 0) +
-      (event[:output_tokens] || event["output_tokens"] || 0)
+  # usage tokens：payload = ["usage", %{total_tokens}]，或 %{tokens}
+  defp usage_tokens(event) when is_map(event) do
+    case event[:payload] || event["payload"] do
+      ["usage", usage] when is_map(usage) ->
+        usage[:total_tokens] || usage["total_tokens"] ||
+          (safe_int(usage[:prompt_tokens] || usage["prompt_tokens"]) +
+             safe_int(usage[:completion_tokens] || usage["completion_tokens"]))
+
+      usage when is_map(usage) ->
+        usage[:total_tokens] || usage["total_tokens"] || usage[:tokens] || usage["tokens"]
+
+      _ ->
+        # 真实流形状：usage map 顶层直接带 total_tokens / prompt+completion
+        event[:total_tokens] || event["total_tokens"] || event[:tokens] || event["tokens"] ||
+          safe_int(event[:prompt_tokens] || event["prompt_tokens"]) +
+            safe_int(event[:completion_tokens] || event["completion_tokens"])
+    end
   end
 
-  # ── 持久化（Project Store evaluations/） ──
+  defp usage_tokens(_), do: 0
+
+  # 健壮性（隔离性原则）：事件字段任意形态，非数字降级 0，绝不让畸形事件杀死 Collector
+  defp safe_int(v) when is_integer(v), do: v
+  defp safe_int(v) when is_float(v), do: trunc(v)
+
+  defp safe_int(v) when is_binary(v) do
+    case Integer.parse(v) do
+      {n, _} -> n
+      _ -> 0
+    end
+  end
+
+  defp safe_int(_), do: 0
+
+  # ═══════════ 持久化（Project Store evaluations/） ═══════════
 
   defp persist(ledgers) do
-    if Process.whereis(Newbee.Bus) && store_ready?() do
-      dir = Path.join(Store.dir(:evaluations), "context_quality")
-      File.mkdir_p!(dir)
-      path = Path.join(dir, @stats_path)
+    dir = Path.join(Store.dir(:evaluations), "context_quality")
+    File.mkdir_p!(dir)
+    path = Path.join(dir, @stats_path)
 
-      content =
-        ledgers
-        |> Enum.map(fn {rid, l} -> Jason.encode!(%{release_id: rid, ledger: ser(l)}) end)
-        |> Enum.join("\n")
+    content =
+      ledgers
+      |> Enum.map(fn {rid, l} -> Jason.encode!(%{release_id: rid, ledger: ser(l)}) end)
+      |> Enum.join("\n")
 
-      Store.write_atomic!(path, content <> "\n")
-    end
+    Store.write_atomic!(path, content <> "\n")
   rescue
     e -> Logger.debug("context_quality persist failed: #{Exception.message(e)}")
   end
 
   defp restore do
-    if store_ready?() do
-      path = Path.join([Store.dir(:evaluations), "context_quality", @stats_path])
+    path = Path.join([Store.dir(:evaluations), "context_quality", @stats_path])
 
-      with {:ok, content} <- File.read(path),
-           lines <- String.split(content, "\n", trim: true) do
-        Map.new(lines, fn line ->
-          case Jason.decode(line) do
-            {:ok, %{"release_id" => rid, "ledger" => l}} -> {rid, deser(l)}
-            _ -> {nil, nil}
-          end
-        end)
-        |> Map.delete(nil)
-      else
-        _ -> %{}
-      end
+    with {:ok, content} <- File.read(path),
+         lines <- String.split(content, "\n", trim: true) do
+      lines
+      |> Enum.reduce(%{}, fn line, acc ->
+        case Jason.decode(line) do
+          {:ok, %{"release_id" => rid, "ledger" => l}} -> Map.put(acc, rid, deser(l))
+          _ -> acc
+        end
+      end)
     else
-      %{}
+      _ -> %{}
     end
   rescue
     _ -> %{}
   end
-
-  defp restore_active, do: MapSet.new()
-
-  defp store_ready?, do: function_exported?(Store, :dir, 1)
 
   defp ser(l) do
     %{
