@@ -1169,6 +1169,9 @@ defmodule Newbee.Web.Api do
   defp history_msg(%{"role" => "tool", "content" => c}) when is_binary(c),
     do: %{role: "tool", content: String.slice(c, 0, 4000)}
 
+  defp history_msg(%{"role" => "usage", "usage" => u}) when is_map(u),
+    do: %{role: "usage", usage: json_safe(u)}
+
   defp history_msg(_), do: nil
 
   defp args_field(call, key) do
