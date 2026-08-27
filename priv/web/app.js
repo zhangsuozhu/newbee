@@ -1636,7 +1636,11 @@ case "goal_round": break;
         d.dataset.open = "0";
         renderReasoningBody(d);
       }
-      if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); if (replayPendingUsage) { attachUsageToBubble(d, replayPendingUsage); replayPendingUsage = null; } }
+      if (m.content) {
+        const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d);
+        // 回放：有 tool_calls 时 usage 留给工具卡（底部统计），纯文本回复才贴气泡
+        if (replayPendingUsage && !(m.toolCalls || []).length) { attachUsageToBubble(d, replayPendingUsage); replayPendingUsage = null; }
+      }
       (m.toolCalls || []).forEach((tc) => { const card = renderReplayTool(tc.name, tc.title, tc.code, "", true); if (tc.id) replayToolCards[tc.id] = card; });
     } else if (m.role === "ask") {
       const c = m.content || {};
@@ -1653,6 +1657,11 @@ case "goal_round": break;
         if (resEl) { resEl.classList.add(ok ? "ok" : "err"); resEl.textContent = (m.content || "").split("\n").slice(0, 30).join("\n"); }
         addToolStatus(host, ok);
         addToolCopyButton(host, m.content, host.querySelector(".tool-code")?.textContent || "");
+        // 回放：usage 行先于 tool 行到达（transcript 顺序），此时贴到工具卡
+        if (replayPendingUsage && !host.querySelector(":scope > .tool-usage")) {
+          attachToolUsageToCard(host, replayPendingUsage);
+          replayPendingUsage = null;
+        }
         delete replayToolCards[m.toolCallId];
       } else { renderReplayTool("tool", "", "", m.content, ok); }
     } else if (m.role === "archive") {

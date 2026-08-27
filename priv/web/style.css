@@ -222,7 +222,7 @@ body {
 
 /* 用户气泡：右对齐 r22 */
 .msg-user {
-  position: relative; align-self: flex-end; max-width: min(680px, 78%);
+  position: relative; align-self: flex-end; max-width: var(--nb-content-w); width: 100%;
   background: linear-gradient(135deg, color-mix(in srgb, var(--nb-accent) 30%, var(--nb-bg-panel)), color-mix(in srgb, var(--nb-accent) 16%, var(--nb-bg-panel)));
   border: 1px solid color-mix(in srgb, var(--nb-accent) 30%, transparent);
   border-radius: 16px 16px 6px 16px;
@@ -233,7 +233,7 @@ body {
 
 /* assistant 正文：无气泡，占内容列 */
 .msg-assistant {
-  align-self: flex-start; max-width: min(820px, 92%);
+  align-self: flex-start; max-width: var(--nb-content-w); width: 100%;
   background: color-mix(in srgb, var(--nb-accent) 7%, var(--nb-bg-panel));
   border: 1px solid color-mix(in srgb, var(--nb-accent) 14%, transparent);
   border-radius: 16px 16px 16px 6px;
@@ -253,10 +253,11 @@ body {
 .msg-boxed {
   position: relative;
   border: 1px solid var(--nb-border);
-  border-radius: var(--nb-radius);
+  border-radius: 16px 16px 16px 6px;
   background: var(--nb-bg-panel);
   padding: 12px 16px;
   margin: 6px 0;
+  max-width: var(--nb-content-w); width: 100%; align-self: flex-start;
 }
 .msg-copy {
   position: absolute; top: 6px; right: 8px;
@@ -311,7 +312,8 @@ body {
 .msg-tool {
   font-family: var(--nb-mono); font-size: 12.5px;
   background: var(--nb-bg-panel); border: 1px solid var(--nb-border);
-  border-radius: var(--nb-radius); overflow: hidden; margin: 2px 0;
+  border-radius: 12px; overflow: hidden; margin: 2px 0;
+  max-width: var(--nb-content-w); width: 100%; align-self: flex-start;
 }
 .tool-head {
   padding: 7px 12px; background: var(--nb-bg-elev); color: var(--nb-accent-soft);
@@ -352,7 +354,7 @@ body {
 .msg-done { color: var(--nb-label-1); white-space: pre-wrap; font-size: 15px; }
 .msg-ask {
   color: var(--nb-label-1); white-space: pre-wrap; font-size: 15px;
-  align-self: flex-start; max-width: min(640px, 92%);
+  align-self: flex-start; max-width: var(--nb-content-w); width: 100%;
   background: var(--nb-bg-panel);
   border: 1px solid color-mix(in srgb, var(--nb-warn) 38%, transparent);
   border-left: 3px solid var(--nb-warn);
@@ -477,7 +479,7 @@ body {
   margin: 8px 0; padding: 10px 12px;
   background: var(--nb-bg-panel);
   border: 1px solid var(--nb-border); border-radius: 12px;
-  max-width: min(720px, 92%);
+  max-width: var(--nb-content-w); width: 100%;
 }
 .msg-media .media-head {
   display: flex; align-items: center; gap: 8px;
@@ -1174,7 +1176,7 @@ body {
 
 /* 用户气泡：右对齐 r22 */
 .msg-user {
-  align-self: flex-end; max-width: min(680px, 78%);
+  align-self: flex-end; max-width: var(--nb-content-w); width: 100%;
   background: var(--nb-bubble); border-radius: var(--nb-radius-bubble);
   padding: 10px 16px; font-size: 15px; line-height: 24px; color: var(--nb-label-1);
   white-space: pre-wrap; word-break: break-word;
@@ -1182,7 +1184,7 @@ body {
 
 /* assistant 正文：无气泡，占内容列 */
 .msg-assistant {
-  align-self: flex-start; max-width: min(820px, 92%);
+  align-self: flex-start; max-width: var(--nb-content-w); width: 100%;
   background: color-mix(in srgb, var(--nb-accent) 7%, var(--nb-bg-panel));
   border: 1px solid color-mix(in srgb, var(--nb-accent) 14%, transparent);
   border-radius: 16px 16px 16px 6px;
@@ -1232,7 +1234,8 @@ body {
 .msg-tool {
   font-family: var(--nb-mono); font-size: 12.5px;
   background: var(--nb-bg-panel); border: 1px solid var(--nb-border);
-  border-radius: var(--nb-radius); overflow: hidden; margin: 2px 0;
+  border-radius: 12px; overflow: hidden; margin: 2px 0;
+  max-width: var(--nb-content-w); width: 100%; align-self: flex-start;
 }
 .tool-head {
   padding: 7px 12px; background: var(--nb-bg-elev); color: var(--nb-accent-soft);
@@ -1254,7 +1257,7 @@ body {
 .msg-done { color: var(--nb-label-1); white-space: pre-wrap; font-size: 15px; }
 .msg-ask {
   color: var(--nb-label-1); white-space: pre-wrap; font-size: 15px;
-  align-self: flex-start; max-width: min(640px, 92%);
+  align-self: flex-start; max-width: var(--nb-content-w); width: 100%;
   background: var(--nb-bg-panel);
   border: 1px solid color-mix(in srgb, var(--nb-warn) 38%, transparent);
   border-left: 3px solid var(--nb-warn);
@@ -1757,7 +1760,7 @@ svg.ico {
 
   /* 4. 消息宽度：指令卡与输出内容统一 100%，两边对齐 */
   .msg, .msg-tool, .msg-boxed { max-width: 100%; }
-  .msg-user { max-width: 92%; }
+  .msg-user { max-width: 100%; }
   .msg-assistant { max-width: 100%; }
   .msg-content { font-size: 15px; line-height: 1.55; }
 
@@ -2047,7 +2050,7 @@ svg.ico {
   .flow { padding-left: 0; padding-right: 0; }
   .composer-card, .statsbar { padding-left: 8px; padding-right: 8px; }
   /* 用户气泡也几乎拉满 */
-  .msg-user { max-width: 96%; }
+  .msg-user { max-width: 100%; }
   /* 底部状态栏：手机上单行放不下 → 换行展示，全部可见 */
   .statsbar {
     flex-wrap: wrap; white-space: normal;
@@ -2088,7 +2091,7 @@ svg.ico {
   #input { min-height: 38px; max-height: 80px; }
   .flow { gap: 10px; }
   /* 消息更宽 */
-  .msg, .msg-user { max-width: 96%; }
+  .msg, .msg-user { max-width: 100%; }
 }
 /* ── 浮动展开按钮不遮标题：侧栏收起时给 topbar 左侧让位（全端生效） ── */
 #app.sidebar-collapsed #topbar { padding-left: 52px; }
