@@ -26,6 +26,7 @@ defmodule Newbee.Application do
     # Web 认证/挑战表：由 Application 主进程持有，避免随 Plug 请求进程退出而销毁
     Newbee.Web.Auth.create_table()
     Newbee.Web.WebAuthn.create_table()
+    Newbee.Web.Pair.create_table()
 
     opts = [strategy: :one_for_one, name: Newbee.Supervisor]
     Supervisor.start_link(children, opts)
