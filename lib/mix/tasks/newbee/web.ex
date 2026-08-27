@@ -11,11 +11,11 @@ defmodule Mix.Tasks.Newbee.Web do
     --keyfile PATH      自己的私钥
     --redirect          另起 HTTP→HTTPS 308 重定向（需配 --https）
     --redirect-port N   重定向用的 HTTP 端口（默认 80）
-    --set-password [PW] 首次设置登录密码（已有密码时保持不变，不会覆盖）：
+    --set-password [PW] 设置/更新登录密码（显式传参永远生效）：
                         不跟值交互式输入；跟值直接设置（如 --set-password h4njhmC）
-    --reset-password    重置密码（覆盖旧密码并吊销全部已登录会话，交互式输入）
+    --reset-password    同 --set-password 不跟值（别名，兼容旧习惯）
 
-    密码持久化于 ~/.newbee/web/auth.json，重启自动恢复，日常启动无需传密码参数
+    不带密码参数启动时，密码从 ~/.newbee/web/auth.json 持久化恢复
     --password PW       直接设置密码（脚本/测试用）
 
   ## 安全模型
@@ -122,53 +122,42 @@ defmodule Mix.Tasks.Newbee.Web do
 
   defp host_str(ip) when is_tuple(ip), do: ip |> :inet.ntoa() |> to_string()
 
-  # 密码持久化在 ~/.newbee/web/auth.json，重启自动恢复，无需每次启动都传。
-  # --set-password 只在「尚未设密码」时生效；已有密码时保持不变——
-  # 历史版本在此无条件覆盖 + 吊销全部登录会话，且发生在端口绑定之前：
-  # 若随后端口被占用导致本实例崩溃，磁盘上密码已被换掉而旧实例仍在跑，
-  # 造成"重启后密码失忆/对不上"的现场。确要改密码请用 --reset-password。
+  # 语义（用户钦定）：显式传参永远生效——
+  #   --set-password=PW / --set-password PW → 用 PW 覆盖
+  #   --set-password（不跟值）→ 交互式输入并覆盖
+  #   不带任何密码参数 → 从 ~/.newbee/web/auth.json 持久化恢复
+  # --reset-password 保留为别名（交互式覆盖），行为与裸 --set-password 一致。
+  # 时序：本函数在端口绑定成功之后调用，避免"密码已改写但服务没起来"。
   defp maybe_set_password(opts) do
     cond do
       pw = Keyword.get(opts, :password) ->
-        if Newbee.Web.Auth.password_set?() do
-          Mix.shell().info(
-            "[newbee.web] 密码已设置，本次保持不变（--set-password 不再覆盖已有密码；如需重置请用 --reset-password）"
-          )
-        else
-          case Newbee.Web.Auth.set_password(pw) do
-            :ok -> Mix.shell().info("[newbee.web] 登录密码已设置")
-            {:error, msg} -> Mix.raise("设置密码失败: " <> msg)
-          end
+        case Newbee.Web.Auth.set_password(pw) do
+          :ok -> Mix.shell().info("[newbee.web] 登录密码已设置/更新")
+          {:error, msg} -> Mix.raise("设置密码失败: " <> msg)
         end
 
       Keyword.get(opts, :set_password, false) ->
-        maybe_interactive_set_password()
+        set_password_interactive!("设置登录密码（≥6 位）: ")
 
       Keyword.get(opts, :reset_password, false) ->
-        reset_password!()
+        set_password_interactive!("重置登录密码（≥6 位）: ")
 
       true ->
         :ok
     end
   end
 
-  defp maybe_interactive_set_password do
-    if Newbee.Web.Auth.password_set?() do
-      Mix.shell().info(
-        "[newbee.web] 密码已设置，本次保持不变（--set-password 不再覆盖已有密码；如需重置请用 --reset-password）"
-      )
-    else
-      pw1 = prompt_password("设置登录密码（≥6 位）: ")
-      pw2 = prompt_password("再次输入确认: ")
+  defp set_password_interactive!(prompt) do
+    pw1 = prompt_password(prompt)
+    pw2 = prompt_password("再次输入确认: ")
 
-      if pw1 == pw2 do
-        case Newbee.Web.Auth.set_password(pw1) do
-          :ok -> Mix.shell().info("[newbee.web] 登录密码已设置")
-          {:error, msg} -> Mix.raise("设置密码失败: " <> msg)
-        end
-      else
-        Mix.raise("两次输入不一致")
+    if pw1 == pw2 do
+      case Newbee.Web.Auth.set_password(pw1) do
+        :ok -> Mix.shell().info("[newbee.web] 登录密码已设置/更新，所有已登录会话已吊销")
+        {:error, msg} -> Mix.raise("设置密码失败: " <> msg)
       end
+    else
+      Mix.raise("两次输入不一致")
     end
   end
 

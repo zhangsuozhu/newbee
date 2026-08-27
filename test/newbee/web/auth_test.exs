@@ -4,8 +4,11 @@ defmodule Newbee.Web.AuthTest do
   alias Newbee.Web.Auth
 
   setup do
-    # 触发惰性建表后再清空；HOME 用真实值（auth.json/sessions.json 写在 ~/.newbee/web，
-    # 测试密码互不冲突，且本测试不涉及真实用户数据）。限流/锁定按独立 IP 隔离。
+    # HOME 隔离：auth.json/sessions.json 写进临时目录，绝不触碰真实 ~/.newbee/web/
+    # （历史事故：本测试曾把用户真实密码覆盖为测试值）。限流/锁定按独立 IP 隔离。
+    sandbox = Newbee.TestSupport.WebTmpHome.enter("auth_test")
+    on_exit(fn -> Newbee.TestSupport.WebTmpHome.restore(sandbox) end)
+
     Auth.password_set?()
     if :ets.whereis(:newbee_web_auth) != :undefined do
       :ets.delete_all_objects(:newbee_web_auth)

@@ -20,8 +20,13 @@ defmodule Newbee.GlobalStore do
 
   alias Newbee.Environment.{Coordinator, Fitness}
 
-  @doc "全局根目录。"
-  def root, do: Path.join(System.user_home!(), ".newbee")
+  @doc "全局根目录。测试可用 Application.put_env(:newbee, :global_root_override, path) 沙箱化。"
+  def root do
+    case Application.get_env(:newbee, :global_root_override) do
+      path when is_binary(path) -> path
+      _ -> Path.join(System.user_home!(), ".newbee")
+    end
+  end
 
   def dir(:bundles), do: Path.join(root(), "bundles")
   def dir(:plugins), do: Path.join(root(), "plugins")

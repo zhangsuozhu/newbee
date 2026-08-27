@@ -7,6 +7,10 @@ defmodule Newbee.Web.AuthGateTest do
   @opts Newbee.Web.Router.init([])
 
   setup do
+    # HOME 隔离：测试的 set_password/issue_token 落在临时目录，不触碰真实凭据
+    sandbox = Newbee.TestSupport.WebTmpHome.enter("auth_gate_test")
+    on_exit(fn -> Newbee.TestSupport.WebTmpHome.restore(sandbox) end)
+
     Auth.password_set?()
     if :ets.whereis(:newbee_web_auth) != :undefined, do: :ets.delete_all_objects(:newbee_web_auth)
     # 每个测试后恢复回环（免认证），避免污染其它测试
