@@ -3761,6 +3761,14 @@ case "goal_round": break;
       });
     } catch (e) {
       console.error("加载凭据列表失败:", e);
+      const listEl = document.getElementById("webauthn-cred-list");
+      if (listEl) {
+        listEl.innerHTML = "<div class='webauthn-empty'>加载失败: " + (e.message || "未知错误") + "</div>";
+        if (String(e.message).includes("\u672a\u767b\u5f55")) {
+          const overlay = listEl.closest(".webauthn-modal-overlay");
+          if (overlay) overlay.remove();
+        }
+      }
     }
   }
 
