@@ -590,6 +590,9 @@ defmodule Newbee.Agent.Loop do
         Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
         emit(state, {:usage, Map.put(usage, "model", client_model(state.client))})
         state = %{state | usage: merge_usage(state.usage, usage)}
+        # 用量持久化（UI 历史回放）：附加到 assistant 消息私有字段，
+        # 仅前端 history 消费；发模型的 messages 不含 _usage（见 request_messages）
+        msg = Map.put(msg, "_usage", usage)
 
         # 上游（DeepSeek/OpenRouter 系）拒绝 content 为空的 assistant 消息（400）：
         # 模型偶发返回"空正文且无工具调用"（只吐思考流/空串），该消息一旦落进
@@ -1241,8 +1244,20 @@ defmodule Newbee.Agent.Loop do
 
   defp push_msg(state, msg) do
     msg = sanitize_msg(msg)
-    if state.session, do: Newbee.Session.append(state.session, msg)
-    %{state | messages: state.messages ++ [msg]}
+
+    # 用量行（UI 回放）：带 _usage 的 assistant 消息落盘时拆成两条——
+    # ① 独立 usage 行（前端 history 消费）；② 干净 assistant 消息（进 state.messages，
+    # 发给模型的历史绝不含 _usage，避免污染请求体）。
+    if state.session && is_map(msg) && msg["_usage"] do
+      usage = Map.get(msg, "_usage")
+      Newbee.Session.append(state.session, %{"role" => "usage", "usage" => usage})
+      clean = Map.delete(msg, "_usage")
+      Newbee.Session.append(state.session, clean)
+      %{state | messages: state.messages ++ [clean]}
+    else
+      if state.session, do: Newbee.Session.append(state.session, msg)
+      %{state | messages: state.messages ++ [msg]}
+    end
   end
 
   # 兜底：任何入会话消息都必须是合法 UTF-8，否则 Jason 编码崩溃
