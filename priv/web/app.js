@@ -375,7 +375,7 @@ const flow = $("flow");
       case "tool_result": toolResult(p.text, true, p.duration_ms); break;
       case "tool_error": toolResult(p.text, false); break;
 case "done": finishTurn(); line("done", p.summary, true); break;
-      case "ask": finishTurn(); line("ask", p.question); break;
+      case "ask": finishTurn(); renderAskCard(p.question, p.options || [], p.kind || "text", null); break;
       case "text_end": finishTurn(); break;
       case "error": {
         finishTurn();
@@ -1638,6 +1638,9 @@ case "goal_round": break;
       }
       if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); if (replayPendingUsage) { attachUsageToBubble(d, replayPendingUsage); replayPendingUsage = null; } }
       (m.toolCalls || []).forEach((tc) => { const card = renderReplayTool(tc.name, tc.title, tc.code, "", true); if (tc.id) replayToolCards[tc.id] = card; });
+    } else if (m.role === "ask") {
+      const c = m.content || {};
+      renderAskCard(c.question || "", c.options || [], c.kind || "text", c.created_at || null);
     } else if (m.role === "media") {
       renderMediaShow(m.content || {});
     } else if (m.role === "usage") {

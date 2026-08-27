@@ -472,9 +472,15 @@ defmodule Newbee.Agent.Loop do
 
   defp after_turn({:ask, question, options, kind}, state) do
     # 目标保留：用户回答后的 submit 出口会自动续跑。
-    # goal_ask 事件保持 2-tuple（TUI/Web 仅作"目标模式被提问打断"提示）
+    # goal_ask 事件携带 options/kind（前端渲染交互控件）；submit 返回值保持 2-tuple 兼容（CLI/TUI）。
+    emit(state, {:goal_ask, question, options, kind})
+    {{:ask, question}, %{state | goal: %{state.goal | error_retries: 0}}}
+  end
+
+  defp after_turn({:ask, question}, state) do
+    # 兼容旧版 2-tuple（历史事件流）
     emit(state, {:goal_ask, question})
-    {{:ask, question, options, kind}, %{state | goal: %{state.goal | error_retries: 0}}}
+    {{:ask, question}, %{state | goal: %{state.goal | error_retries: 0}}}
   end
 
   defp after_turn({:ask, question}, state) do
@@ -870,7 +876,7 @@ defmodule Newbee.Agent.Loop do
                   }
                 })
               end
-              {:halt, {:halt, {:ask, question, options, kind}, push_msg(state, tool_msg)}}
+              {:halt, {:halt, {:ask, question}, push_msg(state, tool_msg)}}
 
             other ->
               tool_msg = %{

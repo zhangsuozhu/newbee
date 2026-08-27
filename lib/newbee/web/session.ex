@@ -887,6 +887,8 @@ defmodule Newbee.Web.Session do
   defp encode_event({:turn_end, kind, ms}), do: %{result: kind, ms: ms}
   defp encode_event({:goal_start, text}), do: %{text: text}
   defp encode_event({:goal_done, summary}), do: %{summary: summary}
+  defp encode_event({:ask, q, options, kind}), do: %{question: q, options: options || [], kind: kind || "text"}
+  defp encode_event({:ask, q}), do: %{question: q, options: [], kind: "text"}
   defp encode_event({:goal_ask, q, options, kind}), do: %{question: q, options: options || [], kind: kind || "text"}
   defp encode_event({:goal_ask, q}), do: %{question: q, options: [], kind: "text"}
   defp encode_event({:goal_round, n}), do: %{round: n}

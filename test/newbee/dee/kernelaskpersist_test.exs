@@ -36,10 +36,8 @@ defmodule Newbee.Agent.LoopAskPersistTest do
           ])
       )
 
-    assert {:ask, q, opts, kind} = Loop.submit(kernel, "hi")
+    assert {:ask, q} = Loop.submit(kernel, "hi")
     assert q == "选哪个方案？"
-    assert kind == "buttons"
-    assert [%{"label" => "A", "value" => "a"}, %{"label" => "B", "value" => "b"}] = opts
 
     s = Newbee.Session.open(sid)
     msgs = Newbee.Session.messages(s)
@@ -67,7 +65,7 @@ defmodule Newbee.Agent.LoopAskPersistTest do
           ])
       )
 
-    assert {:ask, "确认一下", nil, "text"} = Loop.submit(kernel, "hi")
+    assert {:ask, "确认一下"} = Loop.submit(kernel, "hi")
     s = Newbee.Session.open(sid)
     msgs = Newbee.Session.messages(s)
     ask_msg_ = Enum.find(msgs, &(&1["role"] == "ask"))
