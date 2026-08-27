@@ -447,7 +447,12 @@ defmodule Newbee.Web.Auth do
     :ok
   end
 
-  defp ensure_table do
+  @doc """
+  创建认证 ETS 表（若不存在）。由 Application 主进程在启动时调用：
+  若惰性建表发生在 Plug 请求进程内，该进程退出即表销毁，刚签发的
+  token/验证码/限流状态全部丢失（对应“登录成功 34 秒后 401”现场）。
+  """
+  def create_table do
     case :ets.whereis(@table) do
       :undefined ->
         try do
@@ -460,6 +465,8 @@ defmodule Newbee.Web.Auth do
         @table
     end
   end
+
+  defp ensure_table, do: create_table()
 
   defp get(key) do
     ensure_table()

@@ -110,4 +110,30 @@ defmodule Newbee.Web.AuthTest do
       assert {:error, "locked", _} = Auth.login(%{"password" => "hunter22", "captchaId" => cap.id, "captcha" => cap.text}, ip)
     end
   end
+  describe "认证表跨进程存活（回归：表随请求进程销毁导致 token 丢失）" do
+    test "短命进程签发的 token，进程退出后仍可校验" do
+      parent = self()
+
+      pid =
+        spawn(fn ->
+          {:ok, tok} = Auth.issue_token()
+          send(parent, {:tok, tok})
+        end)
+
+      tok =
+        receive do
+          {:tok, t} -> t
+        after
+          2000 -> flunk("未收到 token")
+        end
+
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 2000
+      Process.sleep(20)
+
+      # 表必须仍存在且 token 可校验
+      assert :ets.whereis(:newbee_web_auth) != :undefined
+      assert Auth.check_token(tok) == :ok
+    end
+  end
 end

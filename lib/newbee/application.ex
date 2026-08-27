@@ -23,7 +23,8 @@ defmodule Newbee.Application do
           [Newbee.Environment.Coordinator, Newbee.Environment.ContextQuality.Collector, Newbee.Daemon, Newbee.HotReloader]
         end
 
-    # WebAuthn 挑战表：由 Application 主进程持有，避免随 Plug 请求进程退出而销毁
+    # Web 认证/挑战表：由 Application 主进程持有，避免随 Plug 请求进程退出而销毁
+    Newbee.Web.Auth.create_table()
     Newbee.Web.WebAuthn.create_table()
 
     opts = [strategy: :one_for_one, name: Newbee.Supervisor]
