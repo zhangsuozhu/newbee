@@ -228,7 +228,6 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("media.list", %{"sessionId" => sid}) do
     case Newbee.Media.list(sid) do
       {:ok, items} -> {:ok, %{items: json_safe(items)}}
-      other -> {:error, "media_error", inspect(other)}
     end
   end
 
@@ -1186,6 +1185,12 @@ defmodule Newbee.Web.Api do
     do: %{role: "tool", content: String.slice(c, 0, 4000), toolCallId: tcid}
 
   # 兼容无 tool_call_id 的旧记录：仅内容，前端按孤结果兜底渲染
+
+  defp history_msg(%{"role" => "ask", "content" => c}) when is_map(c),
+    do: %{role: "ask", content: json_safe(c)}
+
+  defp history_msg(%{"role" => "ask", "content" => c}) when is_binary(c),
+    do: %{role: "ask", content: %{question: c, options: [], kind: "text"}}
 
   defp history_msg(%{"role" => "media", "content" => c}) when is_map(c),
     do: %{role: "media", content: json_safe(c)}

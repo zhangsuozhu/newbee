@@ -470,10 +470,17 @@ defmodule Newbee.Agent.Loop do
     {{:done, summary}, %{state | goal: nil}}
   end
 
-  defp after_turn({:ask, question}, state) do
-    # 目标保留：用户回答后的 submit 出口会自动续跑
+  defp after_turn({:ask, question, options, kind}, state) do
+    # 目标保留：用户回答后的 submit 出口会自动续跑。
+    # goal_ask 事件保持 2-tuple（TUI/Web 仅作"目标模式被提问打断"提示）
     emit(state, {:goal_ask, question})
-    {{:ask, question}, %{state | goal: %{state.goal | error_retries: 0}}}
+    {{:ask, question, options, kind}, %{state | goal: %{state.goal | error_retries: 0}}}
+  end
+
+  defp after_turn({:ask, question}, state) do
+    # 兼容旧版 2-tuple（历史事件流）
+    emit(state, {:goal_ask, question})
+    {{:ask, question, nil, "text"}, %{state | goal: %{state.goal | error_retries: 0}}}
   end
 
   defp after_turn({:interrupted, content}, state) do
@@ -846,9 +853,24 @@ defmodule Newbee.Agent.Loop do
 
             "ask" ->
               question = call.args["question"] || ""
-              emit(state, {:ask, question})
+              options = call.args["options"]
+              kind = call.args["kind"] || "text"
+              emit(state, {:ask, question, options, kind})
               tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => "（等待用户回答）"}
-              {:halt, {:halt, {:ask, question}, push_msg(state, tool_msg)}}
+              # ask 问题必须落盘：刷新/新设备后前端凭 role=ask 记录恢复提问卡片（§5.3）
+              if state.session do
+                Newbee.Session.append(state.session, %{
+                  "role" => "ask",
+                  "content" => %{
+                    "question" => question,
+                    "options" => options || [],
+                    "kind" => kind,
+                    "tool_call_id" => call.id,
+                    "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+                  }
+                })
+              end
+              {:halt, {:halt, {:ask, question, options, kind}, push_msg(state, tool_msg)}}
 
             other ->
               tool_msg = %{

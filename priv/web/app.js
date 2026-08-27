@@ -1464,6 +1464,107 @@ case "goal_round": break;
     return card;
   }
 
+  // 提问卡片：text / single（单选）/ multi（多选）/ buttons（按钮组）
+  function renderAskCard(question, options, kind, createdAt) {
+    const d = el("msg-ask", "");
+    d.classList.add("ask-card");
+    const qWrap = document.createElement("div");
+    qWrap.className = "ask-question";
+    qWrap.textContent = question || "（问题为空）";
+    d.appendChild(qWrap);
+
+    const opts = Array.isArray(options) ? options.filter(o => o && (o.label || o.value)) : [];
+    const k = kind === "single" || kind === "multi" || kind === "buttons" ? kind : (opts.length ? "buttons" : "text");
+
+    if (opts.length && k !== "text") {
+      const box = document.createElement("div");
+      box.className = "ask-options " + k;
+
+      if (k === "single" || k === "multi") {
+        opts.forEach((o) => {
+          const lab = document.createElement("label");
+          lab.className = "ask-opt";
+          const cb = document.createElement("input");
+          cb.type = k === "multi" ? "checkbox" : "radio";
+          cb.name = k === "multi" ? "askm_" + (createdAt || "x") : "asks_" + (createdAt || "x");
+          cb.value = o.value || o.label || "";
+          lab.appendChild(cb);
+          const span = document.createElement("span");
+          span.textContent = o.label || o.value;
+          lab.appendChild(span);
+          box.appendChild(lab);
+        });
+        const send = document.createElement("button");
+        send.className = "ask-send";
+        send.type = "button";
+        send.textContent = k === "multi" ? "提交选择" : "确认";
+        send.addEventListener("click", () => {
+          const picked = Array.from(box.querySelectorAll("input:checked")).map(i => i.value);
+          answerAsk(picked.length ? (k === "multi" ? picked : picked[0]) : null);
+        });
+        box.appendChild(send);
+      } else { // buttons
+        opts.forEach((o) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "ask-btn";
+          b.textContent = o.label || o.value;
+          b.addEventListener("click", () => answerAsk(o.value != null ? o.value : o.label));
+          box.appendChild(b);
+        });
+      }
+      d.appendChild(box);
+    } else {
+      const box = document.createElement("div");
+      box.className = "ask-options text";
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.className = "ask-input";
+      inp.placeholder = "输入回答…";
+      const send = document.createElement("button");
+      send.type = "button";
+      send.className = "ask-send";
+      send.textContent = "回答";
+      send.addEventListener("click", () => {
+        const v = inp.value.trim();
+        if (v) answerAsk(v);
+      });
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && inp.value.trim()) answerAsk(inp.value.trim());
+      });
+      box.append(inp, send);
+      d.appendChild(box);
+    }
+    return d;
+  }
+
+  // 把提问卡片变为"已回答"态：移除输入控件，显示用户回答
+  function markAskAnswered(d, answer) {
+    if (!d) return;
+    d.querySelectorAll(".ask-options, .ask-input, .ask-send, .ask-btn, .ask-opt").forEach(el => el.remove());
+    const ans = document.createElement("div");
+    ans.className = "ask-answer";
+    const label = document.createElement("b");
+    label.textContent = "已回答: ";
+    ans.appendChild(label);
+    ans.appendChild(document.createTextNode(answer == null ? "（已跳过）" : String(answer)));
+    d.appendChild(ans);
+  }
+
+  // 提交回答：塞入输入框并直接发送（复用 send() 发送链路），并标记卡片已回答
+  function answerAsk(value) {
+    const inp = document.getElementById("input");
+    const text = typeof value === "string" ? value : (value == null ? "" : JSON.stringify(value));
+    if (inp) {
+      inp.value = text;
+      autoGrow();
+    }
+    document.querySelectorAll(".msg-ask").forEach((el) => markAskAnswered(el, value));
+    if (text.trim()) send();
+    else line("notice", "已跳过问题");
+  }
+
+
   // 媒体上屏：渲染图片/音频/视频卡片（实时事件与历史回放共用）
   function renderMediaShow(p) {
     const d = el("msg-media", "");
