@@ -3570,12 +3570,28 @@ case "goal_round": break;
       setToken(r.token);
       hideLogin();
       bootApp();
+      maybePromptWebAuthnRegister();
     } catch (e) {
       loginError(e.message || "登录失败");
       refreshCaptcha();
       const capEl = $("login-captcha");
       if (capEl) capEl.value = "";
     }
+  }
+
+  // 密码登录成功后：设备支持且无凭据 → 主动提示注册通行密钥
+  async function maybePromptWebAuthnRegister() {
+    if (!webAuthnSupported()) return;
+    try {
+      const r = await rpc("webauthn.has_credentials", {});
+      if (r.has_credentials) return;
+      setTimeout(() => {
+        if (confirm("🎉 登录成功！\\n\\n这台设备支持指纹/面容登录。是否现在注册通行密钥？\\n注册后下次可一键登录，无需密码。")) {
+          const name = prompt("给这台设备起个名字：", "我的设备");
+          if (name !== null) doWebAuthnRegister(name || "我的设备");
+        }
+      }, 800);
+    } catch (e) { /* 忽略 */ }
   }
   function initLogin() {
     const sub = $("login-submit");
