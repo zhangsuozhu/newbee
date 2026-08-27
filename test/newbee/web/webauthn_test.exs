@@ -90,4 +90,34 @@ defmodule Newbee.Web.WebAuthnTest do
       assert opts.rp.id == "custom.example.com"
     end
   end
+  describe "挑战表跨进程存活（回归：表随请求进程销毁的 bug）" do
+    test "短命进程存入的挑战，进程退出后仍可取出" do
+      parent = self()
+
+      pid =
+        spawn(fn ->
+          {:ok, %{challenge_id: cid}} = WebAuthn.registration_challenge("跨进程设备")
+          send(parent, {:challenge_id, cid})
+        end)
+
+      cid =
+        receive do
+          {:challenge_id, c} -> c
+        after
+          2000 -> flunk("未收到 challenge_id")
+        end
+
+      # 等进程彻底退出
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 2000
+      Process.sleep(20)
+
+      # 表必须还活着
+      assert :ets.whereis(:newbee_web_authn) != :undefined
+
+      # pop_challenge 应成功取出（register/authenticate 内部用它）
+      assert {:ok, {_challenge, {:register, "跨进程设备"}}} =
+               WebAuthn.pop_challenge_for_test(cid)
+    end
+  end
 end

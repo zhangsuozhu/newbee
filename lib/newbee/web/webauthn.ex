@@ -259,7 +259,11 @@ defmodule Newbee.Web.WebAuthn do
     :ok
   end
 
-  defp ensure_table do
+  @doc """
+  创建挑战 ETS 表（若不存在）。由 Application 主进程在启动时调用，
+  确保表归属长寿进程，不随 Plug 请求进程退出而销毁。
+  """
+  def create_table do
     case :ets.whereis(@table) do
       :undefined ->
         try do
@@ -272,4 +276,9 @@ defmodule Newbee.Web.WebAuthn do
         @table
     end
   end
+
+  @doc false
+  def pop_challenge_for_test(challenge_id), do: pop_challenge(challenge_id)
+
+  defp ensure_table, do: create_table()
 end
