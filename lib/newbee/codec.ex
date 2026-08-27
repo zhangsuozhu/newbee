@@ -39,10 +39,14 @@ defmodule Newbee.Codec do
       type: "function",
       function: %{
         name: "ask",
-        description: "需要用户确认或澄清时调用，会暂停等待用户回答。",
+        description: "需要用户确认或澄清时调用，会暂停等待用户回答。可附带 options（预置选项）与 kind 交互形态：text=纯文本问题、single=单选、multi=多选、buttons=按钮。options 每项为 {label, value}。使用 times：complex decision 用 buttons/single；多选筛选用 multi；简单澄清用 text。",
         parameters: %{
           type: "object",
-          properties: %{question: %{type: "string"}},
+          properties: %{
+            question: %{type: "string", description: "向用户提出的问题"},
+            kind: %{type: "string", enum: ["text", "single", "multi", "buttons"], description: "交互形态：text（默认）/ single / multi / buttons"},
+            options: %{type: "array", description: "预置选项 [{label, value}]", items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}}
+          },
           required: ["question"]
         }
       }

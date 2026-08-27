@@ -838,7 +838,8 @@ defmodule Newbee.Web.Session do
     {kind, payload} =
       case result do
         {:done, summary} -> {:done, %{summary: summary}}
-        {:ask, q} -> {:ask, %{question: q}}
+        {:ask, q, options, kind} -> {:ask, %{question: q, options: options || [], kind: kind || "text"}}
+        {:ask, q} -> {:ask, %{question: q, options: [], kind: "text"}}
         {:text, body} -> {:text_end, %{body: body}}
         {:error, e} -> {:error, %{message: inspect(e)}}
         {:interrupted, _} -> {:interrupted, %{}}
@@ -886,7 +887,10 @@ defmodule Newbee.Web.Session do
   defp encode_event({:turn_end, kind, ms}), do: %{result: kind, ms: ms}
   defp encode_event({:goal_start, text}), do: %{text: text}
   defp encode_event({:goal_done, summary}), do: %{summary: summary}
-  defp encode_event({:goal_ask, q}), do: %{question: q}
+  defp encode_event({:ask, q, options, kind}), do: %{question: q, options: options || [], kind: kind || "text"}
+  defp encode_event({:ask, q}), do: %{question: q, options: [], kind: "text"}
+  defp encode_event({:goal_ask, q, options, kind}), do: %{question: q, options: options || [], kind: kind || "text"}
+  defp encode_event({:goal_ask, q}), do: %{question: q, options: [], kind: "text"}
   defp encode_event({:goal_round, n}), do: %{round: n}
   defp encode_event({:goal_retry, n}), do: %{retry: n}
   defp encode_event({:goal_cancelled, why}), do: %{reason: inspect(why)}
