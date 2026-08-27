@@ -121,6 +121,18 @@ defmodule Newbee.Media do
 
   def read(_, _), do: {:error, :enoent}
 
+  @doc "按 media_id 查 manifest 条目（含 ext / kind / name / url）。返回 {:ok, map} | {:error, :enoent}。"
+  def info(sid, media_id) when is_binary(sid) and is_binary(media_id) do
+    with {:ok, items} <- list(sid) do
+      case Enum.find(items, &(&1["media_id"] == media_id)) do
+        nil -> {:error, :enoent}
+        item -> {:ok, item}
+      end
+    end
+  end
+
+  def info(_, _), do: {:error, :enoent}
+
   @doc "媒体文件绝对路径。"
   def media_path(sid, media_id, ext \\ "") do
     safe = String.replace(media_id, ~r/[^a-zA-Z0-9_-]/, "")
@@ -186,10 +198,9 @@ defmodule Newbee.Media do
   defp manifest_path(sid), do: Path.join(Session.media_dir(sid), "manifest.json")
 
   defp broadcast(sid, payload) do
-    if Process.whereis(Newbee.Bus) do
-      Newbee.Bus.emit(:web_event, {:web_event, sid, :media_show, payload})
-    end
-
+    # DEE 求值节点上没有 Bus 进程：经 Host.emit 转发到主节点（on_main? 时直发，
+    # 否则 RPC 回主 VM 的 Bus），WebSocket 订阅者才能收到 :media_show 下行。
+    Newbee.Host.emit(:web_event, {:web_event, sid, :media_show, payload})
     :ok
   end
 

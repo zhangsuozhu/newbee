@@ -32,18 +32,19 @@ defmodule Newbee.Web.Router do
   get "/media/:sid/:media_id" do
     sid = URI.decode(sid)
     media_id = URI.decode(media_id)
+    with {:ok, item} <- Newbee.Media.info(sid, media_id),
+         {:ok, bin} <- Newbee.Media.read(sid, media_id) do
+      ext = item["ext"] || ""
+      mime = if ext != "", do: content_type("." <> ext), else: "application/octet-stream"
 
-    case Newbee.Media.read(sid, media_id) do
-      {:ok, bin} ->
-        ext = media_id |> String.split(".") |> List.last()
+      conn
+      |> put_resp_content_type(mime)
+      |> put_resp_header("cache-control", "private, max-age=3600")
+      |> send_resp(200, bin)
+      |> halt()
+    else
+      _ ->
 
-        conn
-        |> put_resp_content_type(content_type("." <> ext))
-        |> put_resp_header("cache-control", "private, max-age=3600")
-        |> send_resp(200, bin)
-        |> halt()
-
-      {:error, _} ->
         send_resp(conn, 404, "media not found")
     end
   end

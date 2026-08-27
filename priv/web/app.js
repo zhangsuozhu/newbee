@@ -1481,7 +1481,7 @@ case "goal_round": break;
     }
     if (kind === "image") {
       const img = document.createElement("img");
-      img.src = p.url;
+      img.src = p.url + (p.url.includes("?") ? "&" : "?") + "_t=" + Date.now();
       img.alt = p.caption || p.name || "媒体";
       img.className = "nb-zoomable";
       img.addEventListener("click", (e) => { e.stopPropagation(); openLightbox(img.src, img.alt); });
@@ -1490,13 +1490,13 @@ case "goal_round": break;
       const au = document.createElement("audio");
       au.controls = true;
       au.preload = "metadata";
-      au.src = p.url;
+      au.src = p.url + "?_t=" + Date.now();
       body.appendChild(au);
     } else if (kind === "video") {
       const vd = document.createElement("video");
       vd.controls = true;
       vd.preload = "metadata";
-      vd.src = p.url;
+      vd.src = p.url + "?_t=" + Date.now();
       body.appendChild(vd);
     } else {
       const a = document.createElement("a");
