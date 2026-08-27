@@ -190,7 +190,6 @@ defmodule Newbee.Web.WebAuthn do
     end
   end
 
-
   # origin/rp_id 推导
 
   defp origin do
@@ -203,13 +202,16 @@ defmodule Newbee.Web.WebAuthn do
 
   # 挑战存储
 
-
   defp store_challenge(challenge, context) do
     challenge_id = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
     now = System.system_time(:millisecond)
 
     ensure_table()
-    :ets.insert(@table, {{:challenge, challenge_id}, %{challenge: challenge, context: context, expires: now + @challenge_ttl_ms}})
+
+    :ets.insert(
+      @table,
+      {{:challenge, challenge_id}, %{challenge: challenge, context: context, expires: now + @challenge_ttl_ms}}
+    )
 
     challenge_id
   end

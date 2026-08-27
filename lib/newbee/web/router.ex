@@ -32,6 +32,7 @@ defmodule Newbee.Web.Router do
   get "/media/:sid/:media_id" do
     sid = URI.decode(sid)
     media_id = URI.decode(media_id)
+
     with {:ok, item} <- Newbee.Media.info(sid, media_id),
          {:ok, bin} <- Newbee.Media.read(sid, media_id) do
       ext = item["ext"] || ""
@@ -44,11 +45,9 @@ defmodule Newbee.Web.Router do
       |> halt()
     else
       _ ->
-
         send_resp(conn, 404, "media not found")
     end
   end
-
 
   match _ do
     serve_static(conn)
@@ -59,7 +58,13 @@ defmodule Newbee.Web.Router do
 
   # ── 认证 gate ──
 
-  @auth_free_prefixes ["/api/auth.", "/api/health"]
+  @auth_free_prefixes [
+    "/api/auth.",
+    "/api/health",
+    "/api/webauthn.has_credentials",
+    "/api/webauthn.login_challenge",
+    "/api/webauthn.login"
+  ]
 
   defp require_auth(conn, _opts) do
     if Newbee.Web.Auth.auth_required?(bind_ip()) and not auth_free?(conn) do
@@ -127,13 +132,13 @@ defmodule Newbee.Web.Router do
       File.regular?(file) ->
         conn
         |> put_resp_content_type(content_type(file))
-         |> put_resp_header("cache-control", "no-store, no-cache, must-revalidate")
+        |> put_resp_header("cache-control", "no-store, no-cache, must-revalidate")
         |> send_file(200, file)
 
       File.regular?(@index) ->
         conn
         |> put_resp_content_type("text/html")
-         |> put_resp_header("cache-control", "no-store, no-cache, must-revalidate")
+        |> put_resp_header("cache-control", "no-store, no-cache, must-revalidate")
         |> send_file(200, @index)
 
       true ->
@@ -173,10 +178,8 @@ defmodule Newbee.Web.Router do
       ".webm" -> "video/webm"
       ".mov" -> "video/quicktime"
       ".mkv" -> "video/x-matroska"
-
       ".webmanifest" -> "application/manifest+json"
       _ -> "application/octet-stream"
     end
   end
 end
-

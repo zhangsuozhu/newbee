@@ -120,7 +120,6 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("auth.logout", _p), do: {:ok, %{logged_out: true}}
 
-
   # ── WebAuthn 指纹/面容登录 ──
 
   defp dispatch_rpc("webauthn.has_credentials", _p) do
@@ -133,6 +132,7 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("webauthn.register_challenge", p) do
     name = Map.get(p, "name", "未命名设备")
+
     case Newbee.Web.WebAuthn.registration_challenge(name) do
       {:ok, opts} -> {:ok, opts}
       {:error, code, msg} -> {:error, code, msg}
@@ -200,7 +200,8 @@ defmodule Newbee.Web.Api do
     end
   end
 
-  defp dispatch_rpc("webauthn.login", p), do: dispatch_rpc("webauthn.login", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+  defp dispatch_rpc("webauthn.login", p),
+    do: dispatch_rpc("webauthn.login", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
 
   # 会话域
   defp dispatch_rpc("session.list", p) do
