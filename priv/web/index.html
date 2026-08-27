@@ -236,6 +236,28 @@
     </div>
   </div>
 </div>
+<div id="file-viewer" class="modal hidden">
+  <div class="file-viewer-box">
+    <header class="file-viewer-head">
+      <div class="file-viewer-ident">
+        <div id="file-viewer-name" class="file-viewer-name">文件</div>
+        <div id="file-viewer-meta" class="file-viewer-meta"></div>
+      </div>
+      <button id="file-viewer-close" class="icon-btn" title="关闭" aria-label="关闭">×</button>
+    </header>
+    <div class="file-viewer-toolbar">
+      <div id="file-viewer-modes" class="file-viewer-modes hidden">
+        <button class="file-viewer-mode current" data-mode="preview">预览</button>
+        <button class="file-viewer-mode" data-mode="source">源码</button>
+      </div>
+      <div class="file-viewer-tools">
+        <button id="file-viewer-copy" class="btn-ghost">复制</button>
+        <button id="file-viewer-diff" class="btn-ghost">查看 Diff</button>
+      </div>
+    </div>
+    <div id="file-viewer-body" class="file-viewer-body"></div>
+  </div>
+</div>
 <div id="session-menu" class="ctx-menu hidden">
   <button data-act="rename"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg> 重命名</button>
   <button data-act="delete" class="danger"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> 删除</button>
@@ -261,6 +283,8 @@
   </div>
 </div>
 
-<script src="/app.js?v=1787790000"></script>
+<script src="/vendor/highlight.min.js"></script>
+<script src="/vendor/languages/elixir.min.js"></script>
+<script src="/app.js?v=1787790002"></script>
 </body>
 </html>

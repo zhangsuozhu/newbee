@@ -182,6 +182,27 @@
     return html;
   }
 
+// highlight.js 薄封装：未加载或语言未知时回退纯转义
+  function highlightSource(code, language) {
+    if (window.hljs) {
+      const alias = HIGHLIGHT_ALIASES[language] || language;
+      if (window.hljs.getLanguage(alias)) {
+        try {
+          return window.hljs.highlight(code, {language: alias, ignoreIllegals: true}).value;
+        } catch (e) {}
+      }
+    }
+    return escapeHtml(code);
+  }
+
+  const HIGHLIGHT_ALIASES = {
+    elixir: "elixir", javascript: "javascript", typescript: "typescript",
+    jsx: "javascript", tsx: "typescript", json: "json", css: "css", html: "xml",
+    yaml: "yaml", toml: "ini", shell: "bash", python: "python",
+    rust: "rust", go: "go", markdown: "markdown"
+  };
+
+
   const $ = (id) => document.getElementById(id);
 const transcript = $("transcript");
 const flow = $("flow");
@@ -3275,16 +3296,103 @@ case "goal_round": break;
   }
 
 
-  // 文件路径点击 → 显示 diff
-  document.addEventListener("click", (e) => {
-    if (e.target.classList.contains("file-ref")) {
-      const path = e.target.dataset.path;
-      if (path) {
-        if (!MC.open) setMCOpen(true);
-        showFileDiff(path);
-      }
+  // 文件路径点击 → 当前会话工作区内只读查看
+  const fileViewer = { path: null, content: "", markdown: false, mode: "source" };
+
+  async function openFileViewer(path) {
+    const modal = $("file-viewer");
+    fileViewer.path = path;
+    fileViewer.content = "";
+    fileViewer.markdown = false;
+    $("file-viewer-name").textContent = path;
+    $("file-viewer-meta").textContent = "正在读取…";
+    $("file-viewer-body").innerHTML = '<div class="file-viewer-state">正在读取…</div>';
+    $("file-viewer-modes").classList.add("hidden");
+    modal.classList.remove("hidden");
+
+    try {
+      const file = await rpc("files.read", { sessionId: state.sid, path });
+      fileViewer.path = file.path;
+      fileViewer.content = file.content || "";
+      fileViewer.language = file.language || "text";
+      fileViewer.markdown = !!file.markdown;
+      fileViewer.mode = fileViewer.markdown ? "preview" : "source";
+      $("file-viewer-name").textContent = file.path;
+      $("file-viewer-meta").textContent = `${fileViewer.language} · ${fmtBytes(file.bytes || 0)}`;
+      $("file-viewer-modes").classList.toggle("hidden", !fileViewer.markdown);
+      renderFileViewer();
+    } catch (error) {
+      $("file-viewer-meta").textContent = "读取失败";
+      $("file-viewer-body").innerHTML = `<div class="file-viewer-state error">${escapeHtml(error.message)}</div>`;
     }
+  }
+
+  function renderFileViewer() {
+    const body = $("file-viewer-body");
+    $("file-viewer-modes").querySelectorAll(".file-viewer-mode").forEach((button) => {
+      button.classList.toggle("current", button.dataset.mode === fileViewer.mode);
+    });
+
+    if (fileViewer.markdown && fileViewer.mode === "preview") {
+      body.className = "file-viewer-body file-viewer-markdown";
+      body.innerHTML = renderMarkdown(fileViewer.content);
+      bindCopyButtons(body);
+    } else {
+      body.className = "file-viewer-body file-viewer-source";
+      renderSourceView(body, fileViewer.content, fileViewer.language);
+    }
+  }
+
+// 源码视图：整段 hljs 高亮 + 独立行号栏（同步滚动，避免多行 token 被逐行截断）
+  function renderSourceView(container, code, language) {
+    container.innerHTML = "";
+    const gutter = document.createElement("div");
+    gutter.className = "file-source-gutter";
+    const scroller = document.createElement("pre");
+    scroller.className = "file-source-pre";
+    const codeEl = document.createElement("code");
+    codeEl.innerHTML = highlightSource(code, language);
+    scroller.appendChild(codeEl);
+    const lineCount = code.split("\n").length;
+    for (let n = 1; n <= lineCount; n++) {
+      const no = document.createElement("span");
+      no.textContent = n;
+      gutter.appendChild(no);
+    }
+    container.appendChild(gutter);
+    container.appendChild(scroller);
+  }
+
+
+  function closeFileViewer() { $("file-viewer").classList.add("hidden"); }
+
+  $("file-viewer-close").addEventListener("click", closeFileViewer);
+  $("file-viewer").addEventListener("mousedown", (e) => { if (e.target === $("file-viewer")) closeFileViewer(); });
+  $("file-viewer-modes").addEventListener("click", (e) => {
+    const button = e.target.closest(".file-viewer-mode");
+    if (!button) return;
+    fileViewer.mode = button.dataset.mode;
+    renderFileViewer();
   });
+  $("file-viewer-copy").addEventListener("click", () => {
+    navigator.clipboard.writeText(fileViewer.content).then(() => {
+      const button = $("file-viewer-copy");
+      button.textContent = "已复制";
+      setTimeout(() => { button.textContent = "复制"; }, 1200);
+    });
+  });
+  $("file-viewer-diff").addEventListener("click", () => {
+    if (!fileViewer.path) return;
+    closeFileViewer();
+    if (!MC.open) setMCOpen(true);
+    showFileDiff(fileViewer.path);
+  });
+
+  document.addEventListener("click", (e) => {
+    const ref = e.target.closest(".file-ref");
+    if (ref && ref.dataset.path) openFileViewer(ref.dataset.path);
+  });
+
 
   // ── 命令面板 (Command Palette) ──
   const CMD_LIST = [

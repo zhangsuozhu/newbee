@@ -483,12 +483,6 @@ defmodule Newbee.Agent.Loop do
     {{:ask, question}, %{state | goal: %{state.goal | error_retries: 0}}}
   end
 
-  defp after_turn({:ask, question}, state) do
-    # 兼容旧版 2-tuple（历史事件流）
-    emit(state, {:goal_ask, question})
-    {{:ask, question, nil, "text"}, %{state | goal: %{state.goal | error_retries: 0}}}
-  end
-
   defp after_turn({:interrupted, content}, state) do
     emit(state, {:goal_cancelled, :interrupted})
     {{:interrupted, content}, %{state | goal: nil}}
@@ -876,6 +870,7 @@ defmodule Newbee.Agent.Loop do
                   }
                 })
               end
+
               {:halt, {:halt, {:ask, question}, push_msg(state, tool_msg)}}
 
             other ->

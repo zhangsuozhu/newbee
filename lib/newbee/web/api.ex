@@ -789,6 +789,42 @@ defmodule Newbee.Web.Api do
     _ -> {:ok, %{files: []}}
   end
 
+  @file_preview_max_bytes 1_048_576
+
+  defp dispatch_rpc("files.read", %{"sessionId" => sid, "path" => path})
+       when is_binary(sid) and is_binary(path) do
+    root = Newbee.Session.cwd(sid) || File.cwd!()
+
+    with :ok <- validate_preview_path(path),
+         {:ok, real_root} <- canonical_path(root),
+         {:ok, real_path} <- canonical_path(Path.join(real_root, path)),
+         true <- within_root?(real_path, real_root),
+         {:ok, stat} <- File.stat(real_path),
+         true <- stat.type == :regular,
+         true <- stat.size <= @file_preview_max_bytes,
+         {:ok, content} <- File.read(real_path),
+         true <- String.valid?(content) and not String.contains?(content, <<0>>) do
+      {:ok,
+       %{
+         path: Path.relative_to(real_path, real_root),
+         content: content,
+         bytes: stat.size,
+         language: preview_language(real_path),
+         markdown: String.downcase(Path.extname(real_path)) in [".md", ".markdown"]
+       }}
+    else
+      false -> {:error, "file_forbidden", "文件不在当前工作区、不是文本文件或超过 1 MiB"}
+      {:error, :enoent} -> {:error, "file_not_found", "文件不存在"}
+      {:error, :bad_path} -> {:error, "file_forbidden", "只允许查看当前工作区内的相对路径"}
+      {:error, reason} -> {:error, "file_read_error", inspect(reason)}
+    end
+  rescue
+    _ -> {:error, "file_read_error", "无法读取文件"}
+  end
+
+  defp dispatch_rpc("files.read", _),
+    do: {:error, "bad_request", "需要 sessionId 和 path 字段"}
+
   # ── 变更影响分析 ──
 
   defp dispatch_rpc("git.impact", _p) do
@@ -1006,6 +1042,73 @@ defmodule Newbee.Web.Api do
   end
 
   defp tail(v, n), do: v |> to_string() |> tail(n)
+
+  defp validate_preview_path(path) do
+    trimmed = String.trim(path)
+
+    if trimmed != "" and Path.type(trimmed) == :relative and not String.contains?(trimmed, <<0>>),
+      do: :ok,
+      else: {:error, :bad_path}
+  end
+
+  defp canonical_path(path) do
+    case System.cmd("readlink", ["-f", "--", Path.expand(path)], stderr_to_stdout: true) do
+      {resolved, 0} -> {:ok, String.trim(resolved)}
+      _ -> {:error, :enoent}
+    end
+  end
+
+  defp within_root?(path, root), do: path == root or String.starts_with?(path, root <> "/")
+
+  defp preview_language(path) do
+    case String.downcase(Path.extname(path)) do
+      ".ex" -> "elixir"
+      ".exs" -> "elixir"
+      ".js" -> "javascript"
+      ".mjs" -> "javascript"
+      ".cjs" -> "javascript"
+      ".ts" -> "typescript"
+      ".mts" -> "typescript"
+      ".cts" -> "typescript"
+      ".jsx" -> "jsx"
+      ".tsx" -> "tsx"
+      ".java" -> "java"
+      ".kt" -> "kotlin"
+      ".kts" -> "kotlin"
+      ".c" -> "c"
+      ".h" -> "c"
+      ".cc" -> "cpp"
+      ".cpp" -> "cpp"
+      ".cxx" -> "cpp"
+      ".hh" -> "cpp"
+      ".hpp" -> "cpp"
+      ".hxx" -> "cpp"
+      ".cs" -> "csharp"
+      ".css" -> "css"
+      ".scss" -> "scss"
+      ".less" -> "less"
+      ".html" -> "html"
+      ".htm" -> "html"
+      ".xml" -> "xml"
+      ".vue" -> "html"
+      ".svelte" -> "html"
+      ".json" -> "json"
+      ".jsonc" -> "json"
+      ".md" -> "markdown"
+      ".markdown" -> "markdown"
+      ".yml" -> "yaml"
+      ".yaml" -> "yaml"
+      ".toml" -> "toml"
+      ".sh" -> "shell"
+      ".bash" -> "shell"
+      ".zsh" -> "shell"
+      ".py" -> "python"
+      ".pyw" -> "python"
+      ".rs" -> "rust"
+      ".go" -> "go"
+      ext -> String.trim_leading(ext, ".") || "text"
+    end
+  end
 
   defp git_cmd(args) do
     case System.cmd("git", args, stderr_to_stdout: true) do

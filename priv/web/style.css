@@ -918,16 +918,94 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
   color: var(--accent); cursor: pointer; text-decoration: underline;
   text-decoration-style: dotted; text-underline-offset: 2px;
 }
-.file-ref:hover { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 2px; }
+.file-ref:hover { color: var(--nb-accent-soft); text-decoration-style: solid; }
 
-/* 文件路径可点击 */
-.file-ref {
-  color: var(--accent); cursor: pointer; text-decoration: underline;
-  text-decoration-style: dotted; text-underline-offset: 2px;
+/* 本地文件只读查看器 */
+.file-viewer-box {
+  width: min(1120px, calc(100vw - 48px)); height: min(820px, calc(100vh - 48px));
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+  background: var(--nb-bg-panel); border: 1px solid var(--nb-border); border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.42); overflow: hidden;
 }
-.file-ref:hover { background: var(--accent); color: #fff; border-radius: 3px; padding: 0 2px; }
+.file-viewer-head {
+  min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 13px 16px; border-bottom: 1px solid var(--nb-border);
+}
+.file-viewer-ident { min-width: 0; }
+.file-viewer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13px var(--nb-mono); }
+.file-viewer-meta { color: var(--nb-label-3); font-size: 11px; margin-top: 2px; }
+.file-viewer-head .icon-btn { flex: 0 0 30px; font-size: 22px; line-height: 1; }
+.file-viewer-toolbar {
+  min-height: 46px; padding: 7px 12px; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; border-bottom: 1px solid var(--nb-border); background: var(--nb-bg-elev);
+}
+.file-viewer-modes { display: inline-flex; padding: 2px; border: 1px solid var(--nb-border); border-radius: 6px; }
+.file-viewer-mode {
+  border: 0; border-radius: 4px; padding: 5px 12px; background: transparent;
+  color: var(--nb-label-3); font-size: 12px; cursor: pointer;
+}
+.file-viewer-mode.current { background: var(--nb-bg-panel); color: var(--nb-label-1); box-shadow: 0 1px 3px rgba(0,0,0,.15); }
+.file-viewer-tools { display: flex; gap: 7px; margin-left: auto; }
+.file-viewer-tools .btn-ghost { border-radius: 6px; padding: 5px 10px; }
+.file-viewer-body { min-height: 0; overflow: auto; }
+.file-viewer-state { display: grid; place-items: center; height: 100%; color: var(--nb-label-3); }
+.file-viewer-state.error { color: var(--nb-red); }
+.file-viewer-markdown { padding: 28px clamp(20px, 5vw, 72px) 60px; line-height: 1.7; }
+.file-viewer-markdown .md-p { margin: 0 0 12px; }
+.file-viewer-source { background: var(--nb-bg); display: flex; align-items: flex-start; }
+.file-source-gutter {
+  position: sticky; left: 0; z-index: 1; flex: 0 0 auto;
+  padding: 14px 10px 36px 16px; text-align: right;
+  font: 12.5px/1.65 var(--nb-mono); color: var(--nb-label-caption);
+  background: var(--nb-bg); border-right: 1px solid var(--nb-border); user-select: none;
+}
+.file-source-gutter span { display: block; }
+.file-viewer-source pre.file-source-pre {
+  margin: 0; padding: 14px 28px 36px 16px; overflow: visible; min-width: max-content; flex: 1 0 auto;
+}
+.file-viewer-source code { display: block; font: 12.5px/1.65 var(--nb-mono); tab-size: 2; white-space: pre; }
+.file-viewer-source .hljs-comment, .file-viewer-source .hljs-quote { color: #8b949e; font-style: italic; }
+.file-viewer-source .hljs-keyword, .file-viewer-source .hljs-selector-tag,
+.file-viewer-source .hljs-built_in, .file-viewer-source .hljs-doctag { color: #ff7b72; }
+.file-viewer-source .hljs-string, .file-viewer-source .hljs-regexp { color: #a5d6ff; }
+.file-viewer-source .hljs-number, .file-viewer-source .hljs-literal,
+.file-viewer-source .hljs-symbol { color: #79c0ff; }
+.file-viewer-source .hljs-title, .file-viewer-source .hljs-title.function_,
+.file-viewer-source .hljs-section { color: #d2a8ff; }
+.file-viewer-source .hljs-type, .file-viewer-source .hljs-class .hljs-title,
+.file-viewer-source .hljs-attr, .file-viewer-source .hljs-attribute,
+.file-viewer-source .hljs-variable, .file-viewer-source .hljs-template-variable { color: #ffa657; }
+.file-viewer-source .hljs-meta, .file-viewer-source .hljs-punctuation { color: #c9d1d9; }
+.file-viewer-source .hljs-emphasis { font-style: italic; }
+.file-viewer-source .hljs-strong { font-weight: 600; }
+[data-theme="light"] .file-viewer-source { background: #fff; }
+[data-theme="light"] .file-source-gutter { background: #f6f8fa; }
+[data-theme="light"] .file-viewer-source .hljs-comment,
+[data-theme="light"] .file-viewer-source .hljs-quote { color: #6e7781; }
+[data-theme="light"] .file-viewer-source .hljs-keyword,
+[data-theme="light"] .file-viewer-source .hljs-selector-tag,
+[data-theme="light"] .file-viewer-source .hljs-built_in,
+[data-theme="light"] .file-viewer-source .hljs-doctag { color: #cf222e; }
+[data-theme="light"] .file-viewer-source .hljs-string,
+[data-theme="light"] .file-viewer-source .hljs-regexp { color: #0a3069; }
+[data-theme="light"] .file-viewer-source .hljs-number,
+[data-theme="light"] .file-viewer-source .hljs-literal,
+[data-theme="light"] .file-viewer-source .hljs-symbol { color: #0550ae; }
+[data-theme="light"] .file-viewer-source .hljs-title,
+[data-theme="light"] .file-viewer-source .hljs-title.function_,
+[data-theme="light"] .file-viewer-source .hljs-section { color: #8250df; }
+[data-theme="light"] .file-viewer-source .hljs-type,
+[data-theme="light"] .file-viewer-source .hljs-class .hljs-title,
+[data-theme="light"] .file-viewer-source .hljs-attr,
+[data-theme="light"] .file-viewer-source .hljs-attribute,
+[data-theme="light"] .file-viewer-source .hljs-variable,
+[data-theme="light"] .file-viewer-source .hljs-template-variable { color: #953800; }
 
-
+@media (max-width: 700px) {
+  .file-viewer-box { width: 100vw; height: 100vh; border: 0; border-radius: 0; }
+  .file-viewer-toolbar { align-items: stretch; }
+  .file-viewer-markdown { padding: 20px 16px 48px; }
+}
 
 /* @ 文件引用自动补全 */
 .at-dropdown {
