@@ -16,6 +16,18 @@ defmodule Newbee.Session do
   @doc "登记当前活动会话（kernel init 调用；nil 清除）。"
   def set_current(nil), do: :persistent_term.erase({__MODULE__, :current})
   def set_current(id) when is_binary(id), do: :persistent_term.put({__MODULE__, :current}, id)
+  @doc "该会话的媒体上屏制品目录（不存在时自动创建）。"
+  def media_dir(id) when is_binary(id) do
+    dir = Path.join(@artifacts, id <> "/media")
+    File.mkdir_p!(dir)
+    dir
+  end
+  def media_dir(_) do
+    dir = Path.join(@artifacts, "unknown/media")
+    File.mkdir_p!(dir)
+    dir
+  end
+
 
   @doc "新会话或恢复已有会话。"
   def open(id \\ nil) do
@@ -683,3 +695,4 @@ defmodule Newbee.Session do
     :io_lib.format("~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0B", [y, m, d, h, mi, sec]) |> IO.iodata_to_binary()
   end
 end
+

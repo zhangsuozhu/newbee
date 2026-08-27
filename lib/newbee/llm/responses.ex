@@ -65,8 +65,12 @@ defmodule Newbee.LLM.Responses do
       %{"role" => "tool", "tool_call_id" => id, "content" => content} ->
         [%{"type" => "function_call_output", "call_id" => id, "output" => to_string(content)}]
 
-      message ->
+      %{"role" => role} = message when role in ["user", "system", "assistant"] ->
         [message]
+
+      # media/usage/未知角色：非标准消息不进 API 请求，避免 400
+      _message ->
+        []
     end)
   end
 

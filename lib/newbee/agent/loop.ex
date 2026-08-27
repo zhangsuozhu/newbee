@@ -893,6 +893,15 @@ defmodule Newbee.Agent.Loop do
   # 顺带丢弃空 assistant 消息（否则整段历史请求被上游 400 拒）。
   defp repair_history(messages) do
     messages = Enum.reject(messages, &empty_assistant_msg?/1)
+    # transcript 会混入 UI 审计行：`role=usage`（token 用量）、`role=media`
+    # （图片上屏记录，见 push_msg/Media.append）。它们只供前端回放，写入时有
+    # 意不进 state.messages；恢复路径必须同等过滤，否则请求带非法角色，OpenAI
+    # 兼容上游整单拒绝（400 "Incorrect role information"，Console Go/GLM 实测）。
+    messages =
+      Enum.reject(messages, fn m ->
+        not Map.has_key?(m, "tool_call_id") and
+          m["role"] not in ["system", "user", "assistant", "tool"]
+      end)
 
     {chunks, pending} =
       Enum.map_reduce(messages, [], fn msg, pending ->

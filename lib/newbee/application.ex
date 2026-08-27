@@ -20,7 +20,7 @@ defmodule Newbee.Application do
         if Mix.env() == :test do
           []
         else
-          [Newbee.Environment.Coordinator, Newbee.Daemon, Newbee.HotReloader]
+          [Newbee.Environment.Coordinator, Newbee.Environment.ContextQuality.Collector, Newbee.Daemon, Newbee.HotReloader]
         end
 
     opts = [strategy: :one_for_one, name: Newbee.Supervisor]

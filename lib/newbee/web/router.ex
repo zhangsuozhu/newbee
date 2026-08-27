@@ -25,6 +25,30 @@ defmodule Newbee.Web.Router do
   end
 
   forward("/api", to: Newbee.Web.Api)
+  # ── 媒体上屏：模型上屏的多媒体文件（图片/音频/视频），以不透明 id 作为令牌 ──
+  # 认证：受整体 require_auth（远程强制 Bearer）保护；浏览器 <img>/<video> 标签
+  # 无法带 Authorization 头，故本地回环（auth_required? == false）直接放行；
+  # 远程暴露时通过 ?token= 查询参数鉴权（见 require_auth 的 bearer_token 兜底）。
+  get "/media/:sid/:media_id" do
+    sid = URI.decode(sid)
+    media_id = URI.decode(media_id)
+    with {:ok, item} <- Newbee.Media.info(sid, media_id),
+         {:ok, bin} <- Newbee.Media.read(sid, media_id) do
+      ext = item["ext"] || ""
+      mime = if ext != "", do: content_type("." <> ext), else: "application/octet-stream"
+
+      conn
+      |> put_resp_content_type(mime)
+      |> put_resp_header("cache-control", "private, max-age=3600")
+      |> send_resp(200, bin)
+      |> halt()
+    else
+      _ ->
+
+        send_resp(conn, 404, "media not found")
+    end
+  end
+
 
   match _ do
     serve_static(conn)
@@ -136,8 +160,26 @@ defmodule Newbee.Web.Router do
       ".svg" -> "image/svg+xml"
       ".png" -> "image/png"
       ".json" -> "application/json"
+      ".png" -> "image/png"
+      ".jpg" -> "image/jpeg"
+      ".jpeg" -> "image/jpeg"
+      ".gif" -> "image/gif"
+      ".webp" -> "image/webp"
+      ".svg" -> "image/svg+xml"
+      ".mp3" -> "audio/mpeg"
+      ".wav" -> "audio/wav"
+      ".ogg" -> "audio/ogg"
+      ".m4a" -> "audio/mp4"
+      ".flac" -> "audio/flac"
+      ".aac" -> "audio/aac"
+      ".mp4" -> "video/mp4"
+      ".webm" -> "video/webm"
+      ".mov" -> "video/quicktime"
+      ".mkv" -> "video/x-matroska"
+
       ".webmanifest" -> "application/manifest+json"
       _ -> "application/octet-stream"
     end
   end
 end
+

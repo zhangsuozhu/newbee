@@ -24,6 +24,7 @@ defmodule Newbee.Plugins do
     {:tool, "tool.scaffold", Newbee.Tools.Scaffold, [:shell, :fs]},
     {:tool, "tool.introspect", Newbee.Tools.Introspect, []},
     {:tool, "tool.hotreload", Newbee.Tools.HotReload, []},
+    
     {:workflow, "workflow.jspace", Newbee.Tools.JSpace, [:fs]},
     {:projection, "projection.repomap", Newbee.Plugins.RepoMap, [:fs]},
     {:provider, "provider.openrouter", Newbee.Plugins.Provider.OpenRouter, [:net]}
