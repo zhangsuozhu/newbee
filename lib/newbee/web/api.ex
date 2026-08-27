@@ -27,6 +27,13 @@ defmodule Newbee.Web.Api do
   # ── RPC envelope ──
 
   post "/:method" do
+    # 注入 origin 供 WebAuthn 使用（从请求 Host + Scheme 推导）
+    scheme = if conn.scheme == :https, do: "https", else: "http"
+    host = conn.host || "localhost"
+    port_str = if conn.port in [80, 443], do: "", else: ":#{conn.port}"
+    origin = "#{scheme}://#{host}#{port_str}"
+    Newbee.Web.WebAuthn.set_origin(origin)
+
     rpc_id = get_in(conn.body_params, ["rpcId"]) || "-"
     payload = get_in(conn.body_params, ["payload"]) || %{}
 
@@ -112,6 +119,89 @@ defmodule Newbee.Web.Api do
   end
 
   defp dispatch_rpc("auth.logout", _p), do: {:ok, %{logged_out: true}}
+
+  # ── WebAuthn 指纹/面容登录 ──
+
+  defp dispatch_rpc("webauthn.has_credentials", _p) do
+    {:ok, %{has_credentials: Newbee.Web.WebAuthn.has_credentials?()}}
+  end
+
+  defp dispatch_rpc("webauthn.list", _p) do
+    {:ok, %{credentials: Newbee.Web.WebAuthn.list_credentials()}}
+  end
+
+  defp dispatch_rpc("webauthn.register_challenge", p) do
+    name = Map.get(p, "name", "未命名设备")
+
+    case Newbee.Web.WebAuthn.registration_challenge(name) do
+      {:ok, opts} -> {:ok, opts}
+      {:error, code, msg} -> {:error, code, msg}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.register", p) do
+    with {:ok, challenge_id} <- fetch_param(p, "challenge_id"),
+         {:ok, attestation_object} <- fetch_param(p, "attestation_object"),
+         {:ok, client_data_json} <- fetch_param(p, "client_data_json"),
+         {:ok, cred_id} <- fetch_param(p, "credential_id") do
+      case Newbee.Web.WebAuthn.register(challenge_id, attestation_object, client_data_json, cred_id) do
+        {:ok, result} -> {:ok, result}
+        {:error, code, msg} -> {:error, code, msg}
+      end
+    else
+      {:error, :missing_param} -> {:error, "bad_request", "缺少必需参数"}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.delete", p) do
+    case fetch_param(p, "credential_id") do
+      {:ok, cred_id} ->
+        case Newbee.Web.WebAuthn.delete_credential(cred_id) do
+          :ok -> {:ok, %{deleted: true}}
+          {:error, code, msg} -> {:error, code, msg}
+        end
+
+      {:error, :missing_param} ->
+        {:error, "bad_request", "缺少 credential_id"}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.login_challenge", _p) do
+    case Newbee.Web.WebAuthn.authentication_challenge() do
+      {:ok, opts} -> {:ok, opts}
+      {:error, code, msg} -> {:error, code, msg}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.login", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        with {:ok, challenge_id} <- fetch_param(p, "challenge_id"),
+             {:ok, cred_id} <- fetch_param(p, "credential_id"),
+             {:ok, auth_data} <- fetch_param(p, "authenticator_data"),
+             {:ok, sig} <- fetch_param(p, "signature"),
+             {:ok, client_data_json} <- fetch_param(p, "client_data_json") do
+          case Newbee.Web.WebAuthn.authenticate(challenge_id, cred_id, auth_data, sig, client_data_json) do
+            {:ok, _} ->
+              {:ok, token} = Newbee.Web.Auth.issue_token()
+              Newbee.Web.Auth.record_success(ip)
+              {:ok, %{token: token}}
+
+            {:error, code, msg} ->
+              Newbee.Web.Auth.record_fail(ip)
+              {:error, code, msg}
+          end
+        else
+          {:error, :missing_param} -> {:error, "bad_request", "缺少必需参数"}
+        end
+
+      {:error, _ms} ->
+        {:error, "locked", "操作过于频繁，请稍后重试"}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.login", p),
+    do: dispatch_rpc("webauthn.login", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
 
   # 会话域
   defp dispatch_rpc("session.list", p) do
@@ -1570,4 +1660,12 @@ defmodule Newbee.Web.Api do
   defp json_safe(v) when is_atom(v), do: to_string(v)
   defp json_safe(v) when is_binary(v) or is_number(v) or is_boolean(v) or is_nil(v), do: v
   defp json_safe(v), do: inspect(v)
+
+  defp fetch_param(map, key) do
+    case Map.get(map, key) do
+      nil -> {:error, :missing_param}
+      val when is_binary(val) -> {:ok, val}
+      _ -> {:error, :missing_param}
+    end
+  end
 end
