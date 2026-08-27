@@ -3586,7 +3586,7 @@ case "goal_round": break;
       const r = await rpc("webauthn.has_credentials", {});
       if (r.has_credentials) return;
       setTimeout(() => {
-        if (confirm("🎉 登录成功！\\n\\n这台设备支持指纹/面容登录。是否现在注册通行密钥？\\n注册后下次可一键登录，无需密码。")) {
+        if (confirm("🎉 登录成功！\n\n这台设备支持指纹/面容登录。是否现在注册通行密钥？\n注册后下次可一键登录，无需密码。")) {
           const name = prompt("给这台设备起个名字：", "我的设备");
           if (name !== null) doWebAuthnRegister(name || "我的设备");
         }
@@ -3609,6 +3609,12 @@ case "goal_round": break;
 
   function webAuthnSupported() {
     return window.PublicKeyCredential !== undefined && typeof window.PublicKeyCredential === "function";
+  }
+
+  // ArrayBuffer → base64url（无 padding），用于 WebAuthn 字段回传服务端
+  function b64urlEncode(buf) {
+    return btoa(String.fromCharCode(...new Uint8Array(buf)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
 
   async function initWebAuthn() {
@@ -3656,10 +3662,10 @@ case "goal_round": break;
 
       const r = await rpc("webauthn.login", {
         challenge_id: ch.challenge_id,
-        credential_id: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
-        authenticator_data: btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
-        signature: btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
-        client_data_json: btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, "")
+        credential_id: b64urlEncode(assertion.rawId),
+        authenticator_data: b64urlEncode(assertion.response.authenticatorData),
+        signature: b64urlEncode(assertion.response.signature),
+        client_data_json: b64urlEncode(assertion.response.clientDataJSON)
       });
 
       setToken(r.token);
@@ -3764,9 +3770,9 @@ case "goal_round": break;
 
       await rpc("webauthn.register", {
         challenge_id: ch.challenge_id,
-        credential_id: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
-        attestation_object: btoa(String.fromCharCode(...new Uint8Array(credential.response.attestationObject))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
-        client_data_json: btoa(String.fromCharCode(...new Uint8Array(credential.response.clientDataJSON))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, "")
+        credential_id: b64urlEncode(credential.rawId),
+        attestation_object: b64urlEncode(credential.response.attestationObject),
+        client_data_json: b64urlEncode(credential.response.clientDataJSON)
       });
 
       alert("✅ 通行密钥注册成功！下次登录可使用指纹/面容。");
