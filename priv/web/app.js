@@ -1269,6 +1269,8 @@ case "goal_round": break;
     localStorage.setItem("newbee.sid", sid);
     loadTiming(sid);
     resetStreamState();
+    // 恢复该会话的输入草稿（未发送文字刷新/切会话不丢）
+    restoreDraft();
     // 权限条是 flow 之外的独立 DOM：切会话必须先收起，否则 A 的确认请求
     // 挂在 B 的界面上，用户一点就把回复发给了错误的会话
     hidePermission();
@@ -1325,6 +1327,8 @@ case "goal_round": break;
   // 点击“新会话”先把 UI 切到空白会话（断掉旧 ws、清屏、显示欢迎卡），
   // RPC/求值器 boot 在后台完成；不再让用户点完干等 1-3s。
   function prepareNewSessionUI(cwd, sid) {
+    // 新建会话：不恢复任何草稿（避免旧会话残留文字串台）
+    try { localStorage.removeItem("newbee.draft." + sid); } catch (e) {}
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
     if (state.ws) {
       state.ws.onclose = null;
@@ -1858,6 +1862,7 @@ case "goal_round": break;
     }
     input.value = "";
     autoGrow();
+    saveDraft(""); // 已发送：清空草稿
     // 回显：文本 + 图片
     scrollBottom(true);
     renderUserLine(text, images);
@@ -2255,6 +2260,23 @@ case "goal_round": break;
     transcript.scrollTop = transcript.scrollHeight;
     $("to-bottom").classList.remove("show");
   }
+  // ── 输入草稿自动保存（localStorage）：刷新/切会话后恢复未发送的文字 ──
+  function draftKey() { return "newbee.draft." + (state.sid || "none"); }
+  function saveDraft(v) {
+    try {
+      if (state.sid && v) localStorage.setItem(draftKey(), v);
+      else if (state.sid && !v) localStorage.removeItem(draftKey());
+    } catch (e) {}
+  }
+  function restoreDraft() {
+    try {
+      const d = state.sid && localStorage.getItem(draftKey());
+      if (d) {
+        input.value = d;
+        autoGrow();
+      }
+    } catch (e) {}
+  }
   function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; }
   function escapeHtml(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -2366,7 +2388,10 @@ case "goal_round": break;
   $("model-label").onclick = openModels;
   $("model-cancel").onclick = () => $("model-modal").classList.add("hidden");
   // model-confirm 的 onclick 在 openModels 里动态绑定（每次打开重新捕获 pending）
-  input.addEventListener("input", autoGrow);
+  input.addEventListener("input", () => {
+    autoGrow();
+    saveDraft(input.value);
+  });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
