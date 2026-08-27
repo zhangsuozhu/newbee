@@ -314,6 +314,7 @@ defmodule Newbee.Agent.LoopTest do
       if fun, do: fun.(messages, on_text), else: {:error, :script_exhausted}
     end
   end
+
   @tag timeout: 60_000
   test "恢复含 usage/media 审计行的 transcript：请求历史过滤掉（Incorrect role information 根因）" do
     {:ok, ev} = Evaluator.start(mode: :local)

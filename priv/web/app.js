@@ -549,6 +549,7 @@ case "goal_round": break;
       state.currentAssistant = null;
       streamAcc = "";
     }
+  let replayToolCards = {}; // 回放：tool_call_id → 工具卡，tool 结果按 id 回填（对齐实时流视觉）
   let replayPendingUsage = null; // 回放时 usage 行先于 assistant 行到达，暂存等下个气泡
   let streamAcc = "";
   let streamRaf = 0;
@@ -1409,6 +1410,7 @@ case "goal_round": break;
 
   function renderHistory(msgs) {
     MC._replaying = true;
+    replayToolCards = {}; // 新一轮回放前重置，避免跨会话/翻页串卡
     allHistoryMsgs = msgs.filter(Boolean);
 
     if (allHistoryMsgs.length > HISTORY_PAGE) {
@@ -1534,14 +1536,21 @@ case "goal_round": break;
         renderReasoningBody(d);
       }
       if (m.content) { const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d); if (replayPendingUsage) { attachUsageToBubble(d, replayPendingUsage); replayPendingUsage = null; } }
-      (m.toolCalls || []).forEach((tc) => renderReplayTool(tc.name, tc.title, tc.code, "", true));
+      (m.toolCalls || []).forEach((tc) => { const card = renderReplayTool(tc.name, tc.title, tc.code, "", true); if (tc.id) replayToolCards[tc.id] = card; });
     } else if (m.role === "media") {
       renderMediaShow(m.content || {});
     } else if (m.role === "usage") {
       if (m.usage) replayPendingUsage = typeof m.usage === "string" ? JSON.parse(m.usage) : m.usage;
     } else if (m.role === "tool") {
       const ok = !(m.content || "").startsWith("✗");
-      renderReplayTool("tool", "", "", m.content, ok);
+      const host = (m.toolCallId && replayToolCards[m.toolCallId]) || null;
+      if (host) {
+        const resEl = host.querySelector(".tool-result");
+        if (resEl) { resEl.classList.add(ok ? "ok" : "err"); resEl.textContent = (m.content || "").split("\n").slice(0, 30).join("\n"); }
+        addToolStatus(host, ok);
+        addToolCopyButton(host, m.content, host.querySelector(".tool-code")?.textContent || "");
+        delete replayToolCards[m.toolCallId];
+      } else { renderReplayTool("tool", "", "", m.content, ok); }
     } else if (m.role === "archive") {
       const d = el("msg-archive", "");
       const segs = m.segments || [];

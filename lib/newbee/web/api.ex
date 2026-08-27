@@ -224,7 +224,6 @@ defmodule Newbee.Web.Api do
     end
   end
 
-
   # ── 媒体上屏域 ──
   defp dispatch_rpc("media.list", %{"sessionId" => sid}) do
     case Newbee.Media.list(sid) do
@@ -1171,7 +1170,8 @@ defmodule Newbee.Web.Api do
           do: %{
             name: get_in(c, ["function", "name"]),
             title: args_field(c, "title"),
-            code: args_field(c, "code")
+            code: args_field(c, "code"),
+            id: c["id"]
           }
 
     %{
@@ -1182,8 +1182,10 @@ defmodule Newbee.Web.Api do
     }
   end
 
-  defp history_msg(%{"role" => "tool", "content" => c}) when is_binary(c),
-    do: %{role: "tool", content: String.slice(c, 0, 4000)}
+  defp history_msg(%{"role" => "tool", "tool_call_id" => tcid, "content" => c}) when is_binary(c),
+    do: %{role: "tool", content: String.slice(c, 0, 4000), toolCallId: tcid}
+
+  # 兼容无 tool_call_id 的旧记录：仅内容，前端按孤结果兜底渲染
 
   defp history_msg(%{"role" => "media", "content" => c}) when is_map(c),
     do: %{role: "media", content: json_safe(c)}
@@ -1461,5 +1463,3 @@ defmodule Newbee.Web.Api do
   defp json_safe(v) when is_binary(v) or is_number(v) or is_boolean(v) or is_nil(v), do: v
   defp json_safe(v), do: inspect(v)
 end
-
-
