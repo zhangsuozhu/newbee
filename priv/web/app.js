@@ -3524,7 +3524,21 @@ case "goal_round": break;
       if (tok) localStorage.setItem("newbee.token", tok);
       else localStorage.removeItem("newbee.token");
     } catch (e) {}
+    updateLogoutBtn();
   }
+  // 已登录（有 token）时显示登出按钮；登出/未登录时隐藏
+  function updateLogoutBtn() {
+    const b = $("logout-btn");
+    if (b) b.classList.toggle("hidden", !state.token);
+  }
+  async function doLogout() {
+    try { await rpc("auth.logout", {}); } catch (e) { /* 即使失败也本地登出 */ }
+    if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
+    setToken(null);
+    updateLogoutBtn();
+    showLogin();
+  }
+
   function showLogin() {
     const ov = $("login-overlay");
     if (ov) ov.classList.remove("hidden");
@@ -3602,6 +3616,8 @@ case "goal_round": break;
       const el = $(id);
       if (el) el.addEventListener("keydown", (e) => { if (e.key === "Enter") submitLogin(); });
     }
+    const lo = $("logout-btn");
+    if (lo) lo.addEventListener("click", doLogout);
     initWebAuthn();
   }
 
@@ -3808,6 +3824,7 @@ case "goal_round": break;
   // ── 启动 ──
   (async () => {
     initLogin();
+    updateLogoutBtn();
     let needAuth = false;
     try {
       const host = await rpc("host.describe", {});
