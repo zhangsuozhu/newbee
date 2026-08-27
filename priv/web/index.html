@@ -295,12 +295,28 @@
         <a href="#" id="webauthn-manage-link">管理通行密钥</a>
       </div>
     </div>
+    <div id="pair-section" class="pair-section hidden">
+      <div class="login-divider"><span>或</span></div>
+      <div class="pair-toggle-row">
+        <button id="pair-show" class="btn-ghost pair-show-btn">
+          <svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3z"/><path d="M21 14v7h-7"/></svg>
+          手机扫码登录
+        </button>
+      </div>
+      <div id="pair-box" class="pair-box hidden">
+        <div id="pair-qr" class="pair-qr"></div>
+        <div id="pair-status" class="pair-status">用已登录的手机扫码，确认后这台电脑即可登录</div>
+        <button id="pair-refresh" class="pair-refresh hidden">二维码已过期，点击刷新</button>
+      </div>
+    </div>
+
     <div class="login-hint">远程访问已启用安全认证</div>
   </div>
 </div>
 
 <script src="/vendor/highlight.min.js"></script>
 <script src="/vendor/languages/elixir.min.js"></script>
+<script src="/vendor/qrcodegen.js"></script>
 <script src="/app.js?v=1787790002"></script>
 </body>
 </html>

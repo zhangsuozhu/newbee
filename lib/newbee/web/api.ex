@@ -43,6 +43,13 @@ defmodule Newbee.Web.Api do
         _ -> payload
       end
 
+    # 注入 User-Agent 供扫码授权页展示"请求设备"摘要
+    payload =
+      case get_req_header(conn, "user-agent") do
+        [ua | _] -> Map.put(payload, "__ua__", ua)
+        _ -> payload
+      end
+
     case safe_dispatch(method, payload) do
       {:ok, value} ->
         reply(conn, 200, %{rpcId: rpc_id, result: %{ok: json_safe(value)}})
@@ -208,6 +215,92 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("webauthn.login", p),
     do: dispatch_rpc("webauthn.login", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # ── 扫码授权登录（手机替电脑"盖章"）──
+  # 安全核心：配对码只存在于手机的授权 URL，绝不经这些 RPC 回传或出现在二维码里。
+  # 电脑端仅凭 pairing_id 轮询；手机端凭已登录会话 + pairing_id 授权。
+
+  # 电脑端：创建配对，拿到 pairing_id（轮询凭证）。二维码内容由前端用服务器基址生成。
+  defp dispatch_rpc("pair.create", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        {:ok, %{pairing_id: pairing_id, code: code}} =
+          Newbee.Web.Pair.create(%{ua: Map.get(p, "__ua__", ""), ip: ip_to_s(ip)})
+
+        {:ok, %{pairing_id: pairing_id, code: code, ttl_ms: Newbee.Web.Pair.ttl_ms()}}
+
+      {:error, ms} ->
+        {:error, "locked", ~s"操作过于频繁，请 #{div(ms, 1000)} 秒后重试"}
+    end
+  end
+
+  defp dispatch_rpc("pair.create", p),
+    do: dispatch_rpc("pair.create", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # 电脑端：轮询配对状态。approved 时一次性返回 token（读出即焚）。
+  defp dispatch_rpc("pair.status", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        case Newbee.Web.Pair.status(Map.get(p, "pairing_id", "")) do
+          {:ok, data} -> {:ok, data}
+          {:error, code, msg} -> {:error, code, msg}
+        end
+
+      {:error, _ms} ->
+        {:error, "locked", "操作过于频繁，请稍后重试"}
+    end
+  end
+
+  defp dispatch_rpc("pair.status", p),
+    do: dispatch_rpc("pair.status", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # 手机端：进入授权页后复核配对有效性。
+  defp dispatch_rpc("pair.phone_status", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        case Newbee.Web.Pair.phone_status(Map.get(p, "pairing_id", "")) do
+          {:ok, data} -> {:ok, data}
+          {:error, code, msg} -> {:error, code, msg}
+        end
+
+      {:error, _ms} ->
+        {:error, "locked", "操作过于频繁，请稍后重试"}
+    end
+  end
+
+  defp dispatch_rpc("pair.phone_status", p),
+    do: dispatch_rpc("pair.phone_status", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # 手机端：点"允许"，为电脑签发登录 token。
+  defp dispatch_rpc("pair.confirm", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        case Newbee.Web.Pair.confirm(Map.get(p, "pairing_id", ""), %{ua: Map.get(p, "__ua__", "")}) do
+          {:ok, data} ->
+            Newbee.Web.Auth.record_success(ip)
+            {:ok, data}
+
+          {:error, code, msg} ->
+            Newbee.Web.Auth.record_fail(ip)
+            {:error, code, msg}
+        end
+
+      {:error, ms} ->
+        {:error, "locked", ~s"操作过于频繁，请 #{div(ms, 1000)} 秒后重试"}
+    end
+  end
+
+  defp dispatch_rpc("pair.confirm", p),
+    do: dispatch_rpc("pair.confirm", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # 手机端：点"拒绝"。
+  defp dispatch_rpc("pair.deny", p) do
+    case Newbee.Web.Pair.deny(Map.get(p, "pairing_id", "")) do
+      {:ok, data} -> {:ok, data}
+      {:error, code, msg} -> {:error, code, msg}
+    end
+  end
+
 
   # 会话域
   defp dispatch_rpc("session.list", p) do
@@ -1666,6 +1759,11 @@ defmodule Newbee.Web.Api do
   defp json_safe(v) when is_atom(v), do: to_string(v)
   defp json_safe(v) when is_binary(v) or is_number(v) or is_boolean(v) or is_nil(v), do: v
   defp json_safe(v), do: inspect(v)
+
+  # IP tuple → 字符串（扫码授权页展示用）
+  defp ip_to_s(ip) when is_tuple(ip), do: ip |> Tuple.to_list() |> Enum.join(".")
+  defp ip_to_s(ip) when is_binary(ip), do: ip
+  defp ip_to_s(_), do: ""
 
   defp fetch_param(map, key) do
     case Map.get(map, key) do

@@ -2237,3 +2237,22 @@ svg.ico {
   .msg-user .msg-copy:hover { opacity: 1; }
 }
 
+
+/* ── 扫码授权登录（手机替电脑盖章）── */
+.pair-section { margin-top: 20px; }
+.pair-section.hidden { display: none; }
+.pair-show-btn { width: 100%; padding: 10px; border-radius: 8px; font-size: 14px;
+  display: flex; align-items: center; justify-content: center; gap: 8px; }
+.pair-show-btn svg { flex-shrink: 0; }
+.pair-box { margin-top: 14px; text-align: center; }
+.pair-box.hidden { display: none; }
+.pair-qr { display: inline-flex; padding: 14px; background: #fff; border-radius: 12px;
+  border: 1px solid var(--border, #2a2e3a); }
+.pair-qr svg { display: block; width: 180px; height: 180px; }
+.pair-qr a { color: #4f8cff; font-size: 12px; }
+.pair-status { margin-top: 12px; font-size: 13px; color: var(--fg-dim, #9aa0ae); line-height: 1.6; }
+.pair-refresh { margin-top: 10px; padding: 8px 18px; border-radius: 8px; font-size: 13px;
+  background: transparent; border: 1px solid var(--border, #2a2e3a); color: var(--fg, #e6e9ef);
+  cursor: pointer; }
+.pair-refresh:hover { border-color: var(--accent, #4f8cff); color: var(--accent, #4f8cff); }
+.pair-refresh.hidden { display: none; }

@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>扫码登录授权 · newbee</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
+  .pair-card { max-width:420px; width:100%; margin:16px; padding:28px 24px; border-radius:18px;
+    background:var(--card,#16181d); border:1px solid var(--border,#2a2e37); box-shadow:0 8px 40px rgba(0,0,0,.35); }
+  .pair-brand { display:flex; align-items:center; gap:10px; font-size:20px; font-weight:600; margin-bottom:6px; }
+  .pair-title { font-size:22px; font-weight:700; margin:14px 0 4px; }
+  .pair-sub { color:var(--muted,#8b93a3); font-size:13px; margin-bottom:18px; line-height:1.6; }
+  .pair-dev { background:var(--bg2,#0f1115); border:1px solid var(--border,#2a2e37); border-radius:12px;
+    padding:12px 14px; margin-bottom:20px; font-size:13px; }
+  .pair-dev .row { display:flex; justify-content:space-between; gap:12px; padding:4px 0; }
+  .pair-dev .k { color:var(--muted,#8b93a3); flex-shrink:0; }
+  .pair-dev .v { text-align:right; word-break:break-all; }
+  .pair-actions { display:flex; gap:12px; }
+  .pair-actions button { flex:1; padding:13px 0; border-radius:12px; font-size:15px; cursor:pointer; border:none; }
+  .pair-approve { background:var(--accent,#4f7cff); color:#fff; font-weight:600; }
+  .pair-deny { background:transparent; border:1px solid var(--border,#2a2e37) !important; color:var(--fg,#e6e9ef); }
+  .pair-msg { text-align:center; padding:24px 0 8px; font-size:15px; line-height:1.7; }
+  .pair-msg.ok { color:#3fb96b; } .pair-msg.err { color:#e5636f; }
+  .pair-err-card { color:#e5636f; text-align:center; padding:18px 0 6px; line-height:1.7; }
+  .pair-hint { text-align:center; color:var(--muted,#8b93a3); font-size:12px; margin-top:18px; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<div class="pair-card">
+  <div class="pair-brand">
+    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8.5 5v8L12 21l-8.5-5V8L12 3z"/><path d="M8.5 10.5h7M8.5 13.5h7"/></svg>
+    <span>newbee</span>
+  </div>
+
+  <%= if ok do %>
+    <div class="pair-title">登录授权</div>
+    <div class="pair-sub">有设备请求登录你的 newbee。请确认这是你本人正在使用的电脑，再点击"允许登录"。</div>
+
+    <div class="pair-dev">
+      <div class="row"><span class="k">请求设备</span><span class="v"><%= ua_short %></span></div>
+      <div class="row"><span class="k">IP 地址</span><span class="v"><%= ip %></span></div>
+      <div class="row"><span class="k">发起时间</span><span class="v"><%= time_ago %></span></div>
+    </div>
+
+    <div id="pair-check" class="pair-msg">正在校验你的手机登录状态…</div>
+
+    <div id="pair-actions" class="pair-actions hidden">
+      <button id="pair-deny" class="pair-deny">拒绝</button>
+      <button id="pair-approve" class="pair-approve">允许登录</button>
+    </div>
+
+    <div id="pair-result" class="pair-msg hidden"></div>
+  <% else %>
+    <div class="pair-title">无法完成授权</div>
+    <div class="pair-err-card"><%= error %></div>
+    <div class="pair-hint">请回到电脑，刷新二维码后重新扫码</div>
+  <% end %>
+</div>
+
+<%= if ok do %>
+<script>
+window.PAIRING_ID = <%= pairing_id_json %>;
+(function(){
+  var resultEl = document.getElementById("pair-result");
+  var checkEl  = document.getElementById("pair-check");
+  var actionsEl= document.getElementById("pair-actions");
+  function showResult(msg, ok) {
+    checkEl.classList.add("hidden"); actionsEl.classList.add("hidden");
+    resultEl.classList.remove("hidden");
+    resultEl.className = "pair-msg " + (ok ? "ok" : "err");
+    resultEl.textContent = msg;
+  }
+  function rpc(method, payload) {
+    var token = null;
+    try { token = localStorage.getItem("newbee.token"); } catch(e) {}
+    var headers = { "content-type": "application/json" };
+    if (token) headers["authorization"] = "Bearer " + token;
+    return fetch("/api/" + method, { method:"POST", headers:headers,
+      body: JSON.stringify({ rpcId:"pair-"+Date.now(), method:method, payload:payload||{} }) })
+      .then(function(res){ return res.text(); })
+      .then(function(text){ var b = JSON.parse(text);
+        if (b.result && "ok" in b.result) return b.result.ok;
+        var err = b.result && b.result.error;
+        throw new Error(err ? err.message : ("请求失败: "+method)); });
+  }
+  // 手机必须处于已登录会话，才能充当"盖章的人"
+  var token = null;
+  try { token = localStorage.getItem("newbee.token"); } catch(e) {}
+  if (!token) {
+    showResult("这台手机尚未登录 newbee。\n请先用手机登录一次，再扫码授权。", false);
+    return;
+  }
+  rpc("host.describe", {}).then(function(h){
+    if (!h.auth_required) { showResult("当前为本地免认证模式，无需扫码授权。", false); return; }
+    // 复核配对仍有效（二次确认未过期/未被占用）
+    return rpc("pair.phone_status", { pairing_id: window.PAIRING_ID }).then(function(){
+      checkEl.classList.add("hidden");
+      actionsEl.classList.remove("hidden");
+    });
+  }).catch(function(e){ showResult(e.message || "校验失败，请重新扫码", false); });
+
+  document.getElementById("pair-approve").addEventListener("click", function(){
+    rpc("pair.confirm", { pairing_id: window.PAIRING_ID })
+      .then(function(){ showResult("✓ 已允许，电脑端正在登录…", true); })
+      .catch(function(e){ showResult(e.message || "授权失败，请重新扫码", false); });
+  });
+  document.getElementById("pair-deny").addEventListener("click", function(){
+    rpc("pair.deny", { pairing_id: window.PAIRING_ID })
+      .then(function(){ showResult("已拒绝该登录请求。", true); })
+      .catch(function(){ showResult("已拒绝。", true); });
+  });
+})();
+</script>
+<% end %>
+</body>
+</html>

@@ -3619,7 +3619,123 @@ case "goal_round": break;
     const lo = $("logout-btn");
     if (lo) lo.addEventListener("click", doLogout);
     initWebAuthn();
+    initPairLogin();
   }
+
+  // ── 扫码授权登录（手机替电脑"盖章"）──
+  // 二维码只含服务器基址+配对码；配对码由服务端从 ETS 核对、一次性消费，不经 RPC 回传。
+  var pairPollTimer = 0;
+  var pairCurrentId = null;
+
+  function pairIsMobile() {
+    return window.matchMedia("(max-width: 768px)").matches ||
+      /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || "");
+  }
+  function pairQRSupported() { return typeof window.qrcode === "function"; }
+  function pairOrigin() { return location.origin; }
+
+  function initPairLogin() {
+    if (pairIsMobile()) return; // 手机端是"盖章的人"，不显示扫码块
+    var sec = $("pair-section");
+    if (!sec) return;
+    sec.classList.remove("hidden");
+    var btn = $("pair-show");
+    if (btn) btn.addEventListener("click", function() {
+      var box = $("pair-box");
+      if (box.classList.contains("hidden")) { startPairLogin(); }
+      else { stopPairLogin(); box.classList.add("hidden"); }
+    });
+    var refresh = $("pair-refresh");
+    if (refresh) refresh.addEventListener("click", startPairLogin);
+  }
+
+  async function startPairLogin() {
+    stopPairLogin();
+    var box = $("pair-box");
+    var qrEl = $("pair-qr");
+    var refreshBtn = $("pair-refresh");
+    box.classList.remove("hidden");
+    refreshBtn.classList.add("hidden");
+    qrEl.innerHTML = "";
+    pairSetStatus("正在生成二维码…");
+    try {
+      var r = await rpc("pair.create", {});
+      var pairingId = r.pairing_id;
+      pairCurrentId = pairingId;
+      // 二维码塞配对码 code（一次性、仅服务端核对），绝不能塞 pairing_id
+      var url = pairOrigin() + "/pair?c=" + encodeURIComponent(r.code);
+      renderPairQR(qrEl, url);
+      pairSetStatus("用已登录的手机扫码，确认后这台电脑即可登录");
+      var deadline = Date.now() + (r.ttl_ms || 90000);
+      pairPollTimer = setInterval(function(){ pollPair(pairingId, deadline); }, 1500);
+    } catch (e) {
+      pairSetStatus("生成失败: " + (e.message || e));
+      refreshBtn.classList.remove("hidden");
+    }
+  }
+
+  function renderPairQR(el, text) {
+    if (!pairQRSupported()) {
+      el.innerHTML = "";
+      var a = document.createElement("a");
+      a.href = text; a.textContent = text; a.style.wordBreak = "break-all";
+      el.appendChild(a);
+      return;
+    }
+    try {
+      var qr = window.qrcode(0, "M");
+      qr.addData(text);
+      qr.make();
+      el.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+      var svg = el.querySelector("svg");
+      if (svg) { svg.removeAttribute("width"); svg.removeAttribute("height"); }
+    } catch (e) { el.textContent = text; }
+  }
+
+  async function pollPair(pairingId, deadline) {
+    if (pairingId !== pairCurrentId) { stopPairLogin(); return; }
+    if (Date.now() > deadline) {
+      stopPairLogin();
+      pairSetStatus("二维码已过期");
+      $("pair-refresh").classList.remove("hidden");
+      return;
+    }
+    try {
+      var r = await rpc("pair.status", { pairing_id: pairingId });
+      if (pairingId !== pairCurrentId) return;
+      if (r.status === "approved" && r.token) {
+        stopPairLogin();
+        pairSetStatus("✓ 已授权，正在登录…");
+        setToken(r.token);
+        hideLogin();
+        bootApp();
+      } else if (r.status === "scanned") {
+        pairSetStatus("手机已扫码，请在手机上确认…");
+      } else if (r.status === "denied") {
+        stopPairLogin();
+        pairSetStatus("手机已拒绝，请重新生成");
+        $("pair-refresh").classList.remove("hidden");
+      } else if (r.status === "expired") {
+        stopPairLogin();
+        pairSetStatus("二维码已过期");
+        $("pair-refresh").classList.remove("hidden");
+      }
+    } catch (e) {
+      stopPairLogin();
+      pairSetStatus("配对已失效，请刷新");
+      $("pair-refresh").classList.remove("hidden");
+    }
+  }
+
+  function pairSetStatus(msg) {
+    var el = $("pair-status");
+    if (el) el.textContent = msg;
+  }
+  function stopPairLogin() {
+    if (pairPollTimer) { clearInterval(pairPollTimer); pairPollTimer = 0; }
+    pairCurrentId = null;
+  }
+
 
   // ── WebAuthn 指纹/面容登录 ──
 
