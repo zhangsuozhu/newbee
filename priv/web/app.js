@@ -555,19 +555,20 @@ case "goal_round": break;
   let streamRaf = 0;
   function appendStream(delta) {
     archiveReasoning();
+    const d = typeof delta === "string" ? delta : "";
+    // Some OpenAI-compatible providers emit empty text events between tool calls.
+    // Keep leading whitespace, but do not create an assistant bubble until the
+    // accumulated block contains visible text.
+    if (d === "") return;
+    if (d.length >= 5 && streamAcc.endsWith(d)) return;
+    streamAcc += d;
+    if (!state.currentAssistant && streamAcc.trim() === "") return;
     if (!state.currentAssistant) {
       state.busy = true; setBusy(true);
       clearTurnStatus();
       state.currentAssistant = addAssistantChrome(el("msg-assistant", ""));
       if (state._pendingUsage) { attachUsageToBubble(state.currentAssistant, state._pendingUsage); state._pendingUsage = null; }
     }
-    const d = delta || "";
-    // 流式去重：同一回合若 delta 已连续出现在 streamAcc 尾部（网络/服务端偶发双发），
-    // 跳过第二次，避免“对话进行中同一段文字逐字重复”。
-    // 仅对较长 delta（≥5 字符）做整段尾部去重，短增量（标点/单个字符）正常追加，
-    // 避免把模型合理输出的连续相同符号（如 **、--、代码缩进）误判为重复。
-    if (d.length >= 5 && streamAcc.endsWith(d)) return;
-    streamAcc += d;
     state.currentAssistant.dataset.raw = streamAcc;
     if (!streamRaf) {
       streamRaf = requestAnimationFrame(() => {
