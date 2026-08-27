@@ -4,6 +4,11 @@ defmodule Newbee.Web.WebAuthnTest do
   alias Newbee.Web.WebAuthn
 
   setup do
+    # HOME 隔离：webauthn.json 写进临时目录，绝不触碰真实 ~/.newbee/web/
+    # （历史事故：File.rm 曾删掉用户真实通行密钥）。
+    sandbox = Newbee.TestSupport.WebTmpHome.enter("webauthn_test")
+    on_exit(fn -> Newbee.TestSupport.WebTmpHome.restore(sandbox) end)
+
     # 清空 ETS 与配置文件
     if :ets.whereis(:newbee_web_authn) != :undefined do
       :ets.delete_all_objects(:newbee_web_authn)
