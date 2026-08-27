@@ -37,6 +37,12 @@ defmodule Newbee.Web.Api do
     rpc_id = get_in(conn.body_params, ["rpcId"]) || "-"
     payload = get_in(conn.body_params, ["payload"]) || %{}
 
+    payload =
+      case get_req_header(conn, "authorization") do
+        ["Bearer " <> tok | _] -> Map.put(payload, "__token__", String.trim(tok))
+        _ -> payload
+      end
+
     case safe_dispatch(method, payload) do
       {:ok, value} ->
         reply(conn, 200, %{rpcId: rpc_id, result: %{ok: json_safe(value)}})
