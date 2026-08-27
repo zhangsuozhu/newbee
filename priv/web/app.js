@@ -3586,6 +3586,181 @@ case "goal_round": break;
       const el = $(id);
       if (el) el.addEventListener("keydown", (e) => { if (e.key === "Enter") submitLogin(); });
     }
+    initWebAuthn();
+  }
+
+  // ── WebAuthn 指纹/面容登录 ──
+
+  function webAuthnSupported() {
+    return window.PublicKeyCredential !== undefined && typeof window.PublicKeyCredential === "function";
+  }
+
+  async function initWebAuthn() {
+    if (!webAuthnSupported()) return;
+
+    try {
+      const r = await rpc("webauthn.has_credentials", {});
+      if (r.has_credentials) {
+        $("webauthn-section").classList.remove("hidden");
+        $("webauthn-login").addEventListener("click", doWebAuthnLogin);
+        $("webauthn-manage-link").addEventListener("click", (e) => { e.preventDefault(); showWebAuthnManage(); });
+      } else {
+        // 没有凭据：检查是否已登录（有 token），已登录则显示"注册通行密钥"入口
+        if (state.token) {
+          showWebAuthnRegisterHint();
+        }
+      }
+    } catch (e) {
+      console.warn("WebAuthn 初始化失败:", e);
+    }
+  }
+
+  function showWebAuthnRegisterHint() {
+    // 已登录但无凭据：在登录界面显示注册提示（不遮挡主流程，仅提示）
+    console.log("[WebAuthn] 已登录但无凭据，可在设置中注册通行密钥");
+  }
+
+  async function doWebAuthnLogin() {
+    try {
+      loginError("");
+      const ch = await rpc("webauthn.login_challenge", {});
+
+      const publicKey = {
+        challenge: Uint8Array.from(atob(ch.challenge.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
+        timeout: ch.timeout,
+        rpId: ch.rp_id,
+        allowCredentials: ch.allow_credentials.map(c => ({
+          type: c.type,
+          id: Uint8Array.from(atob(c.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0))
+        })),
+        userVerification: ch.user_verification
+      };
+
+      const assertion = await navigator.credentials.get({ publicKey });
+
+      const r = await rpc("webauthn.login", {
+        challenge_id: ch.challenge_id,
+        credential_id: btoa(String.fromCharCode(...new Uint8Array(assertion.rawId))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
+        authenticator_data: btoa(String.fromCharCode(...new Uint8Array(assertion.response.authenticatorData))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
+        signature: btoa(String.fromCharCode(...new Uint8Array(assertion.response.signature))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
+        client_data_json: btoa(String.fromCharCode(...new Uint8Array(assertion.response.clientDataJSON))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, "")
+      });
+
+      setToken(r.token);
+      hideLogin();
+      bootApp();
+    } catch (e) {
+      if (e.name === "NotAllowedError") {
+        loginError("指纹/面容验证已取消");
+      } else {
+        loginError(e.message || "指纹/面容登录失败");
+      }
+    }
+  }
+
+  async function showWebAuthnManage() {
+    // 简单弹窗：列出凭据 + 删除 + 注册新凭据
+    const modal = document.createElement("div");
+    modal.className = "webauthn-modal-overlay";
+    modal.innerHTML = `
+      <div class="webauthn-modal">
+        <div class="webauthn-modal-header">
+          <h3>通行密钥管理</h3>
+          <button class="webauthn-modal-close">×</button>
+        </div>
+        <div class="webauthn-modal-body">
+          <div id="webauthn-cred-list" class="webauthn-cred-list">加载中...</div>
+          <button id="webauthn-register-new" class="btn-primary" style="width:100%;margin-top:16px;">注册新设备</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // 加载凭据列表
+    loadWebAuthnCredentials();
+
+    // 关闭
+    modal.querySelector(".webauthn-modal-close").addEventListener("click", () => modal.remove());
+    modal.addEventListener("click", (e) => { if (e.target === modal) modal.remove(); });
+
+    // 注册新设备
+    modal.querySelector("#webauthn-register-new").addEventListener("click", async () => {
+      const name = prompt("给这台设备起个名字（如：我的 iPhone）:", "未命名设备");
+      if (!name) return;
+      await doWebAuthnRegister(name);
+      modal.remove();
+    });
+  }
+
+  async function loadWebAuthnCredentials() {
+    try {
+      const r = await rpc("webauthn.list", {});
+      const listEl = document.getElementById("webauthn-cred-list");
+      if (r.credentials.length === 0) {
+        listEl.innerHTML = "<div class='webauthn-empty'>暂无已注册的设备</div>";
+        return;
+      }
+      listEl.innerHTML = r.credentials.map(c => `
+        <div class="webauthn-cred-item">
+          <div class="webauthn-cred-info">
+            <div class="webauthn-cred-name">${c.name}</div>
+            <div class="webauthn-cred-meta">
+              注册于 ${new Date(c.created_at).toLocaleDateString()}
+              ${c.last_used_at ? " · 最近使用 " + new Date(c.last_used_at).toLocaleDateString() : ""}
+            </div>
+          </div>
+          <button class="btn-ghost webauthn-cred-delete" data-cred-id="${c.credential_id}">删除</button>
+        </div>
+      `).join("");
+
+      // 绑定删除按钮
+      listEl.querySelectorAll(".webauthn-cred-delete").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          if (!confirm("确定删除这台设备的通行密钥吗？删除后该设备将无法用指纹/面容登录。")) return;
+          await rpc("webauthn.delete", { credential_id: btn.dataset.credId });
+          loadWebAuthnCredentials();
+        });
+      });
+    } catch (e) {
+      console.error("加载凭据列表失败:", e);
+    }
+  }
+
+  async function doWebAuthnRegister(name) {
+    try {
+      const ch = await rpc("webauthn.register_challenge", { name });
+
+      const publicKey = {
+        challenge: Uint8Array.from(atob(ch.challenge.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
+        rp: ch.rp,
+        user: {
+          id: Uint8Array.from(atob(ch.user.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
+          name: ch.user.name,
+          displayName: ch.user.display_name
+        },
+        pubKeyCredParams: ch.pub_key_cred_params,
+        timeout: ch.timeout,
+        attestation: ch.attestation,
+        authenticatorSelection: ch.authenticator_selection
+      };
+
+      const credential = await navigator.credentials.create({ publicKey });
+
+      await rpc("webauthn.register", {
+        challenge_id: ch.challenge_id,
+        credential_id: btoa(String.fromCharCode(...new Uint8Array(credential.rawId))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
+        attestation_object: btoa(String.fromCharCode(...new Uint8Array(credential.response.attestationObject))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, ""),
+        client_data_json: btoa(String.fromCharCode(...new Uint8Array(credential.response.clientDataJSON))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=/g, "")
+      });
+
+      alert("✅ 通行密钥注册成功！下次登录可使用指纹/面容。");
+    } catch (e) {
+      if (e.name === "NotAllowedError") {
+        alert("注册已取消");
+      } else {
+        alert("注册失败: " + (e.message || e));
+      }
+    }
   }
 
   // 实际启动逻辑（登录成功后或免认证时调用）

@@ -1800,6 +1800,17 @@ svg.ico {
 .login-error.hidden { display: none; }
 .login-submit { width: 100%; padding: 10px; border-radius: 8px; font-size: 15px; letter-spacing: 4px; }
 .login-hint { text-align: center; font-size: 12px; color: var(--fg-dim, #9aa0ae); }
+
+/* WebAuthn 指纹/面容登录 */
+.webauthn-section { margin-top: 20px; }
+.webauthn-section.hidden { display: none; }
+.login-divider { display: flex; align-items: center; gap: 12px; margin: 16px 0 12px; color: var(--fg-dim, #9aa0ae); font-size: 13px; }
+.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: var(--border, #2a2f3a); }
+.webauthn-login { width: 100%; padding: 10px; border-radius: 8px; font-size: 14px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.webauthn-login svg { flex-shrink: 0; }
+.webauthn-manage { text-align: center; margin-top: 8px; }
+.webauthn-manage a { font-size: 12px; color: var(--accent, #4f8cff); text-decoration: none; }
+.webauthn-manage a:hover { text-decoration: underline; }
 /* ═══ 手机端适配（≤768px）：侧栏抽屉化 + 触控放大 + composer 贴底 ═══ */
 
 @media (max-width: 768px) {
