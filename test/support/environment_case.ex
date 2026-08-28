@@ -14,7 +14,9 @@ defmodule Newbee.EnvironmentCase do
   end
 
   setup do
-    tmp = Path.join(System.tmp_dir!(), "newbee_env_#{System.system_time(:native)}_#{System.unique_integer([:positive])}")
+    tmp =
+      Path.join(System.tmp_dir!(), "newbee_env_#{System.system_time(:native)}_#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(tmp)
     original_cwd = File.cwd!()
     File.cd!(tmp)
@@ -73,11 +75,11 @@ defmodule Newbee.EnvironmentCase do
     :exit, _ -> :ok
   end
 
-  @doc "一个合法的 tool release 源码（实现 PluginContract 静态子集）。"
+  @doc "一个符合 ToolContract 的合法 tool release 源码。"
   def tool_source(mod_name \\ "DemoTool", plugin_id \\ "tool.demo") do
     """
     defmodule Newbee.Plugins.#{mod_name} do
-      @moduledoc "demo tool"
+      @moduledoc "Demo deterministic tool.\n\n## 可跑示例\n    Newbee.Plugins.#{mod_name}.hello()"
       @behaviour Newbee.Environment.PluginContract
 
       @impl true
@@ -85,10 +87,23 @@ defmodule Newbee.EnvironmentCase do
       @impl true
       def version, do: "1.0.0"
       @impl true
-      def describe, do: %{kind: :tool}
-      @impl true
       def dependencies, do: []
+      @impl true
+      def describe do
+        %{
+          kind: :tool,
+          summary: "Demo deterministic tool",
+          when_to_use: "environment lifecycle tests need a harmless tool",
+          avoid_when: "do not use outside tests",
+          capabilities: [],
+          effects: [],
+          error_contract: %{recoverable: :none, unexpected: :raise},
+          api: [%{name: :hello, arity: 0, returns: ":world", errors: "none"}],
+          examples: ["Newbee.Plugins.#{mod_name}.hello()"]
+        }
+      end
 
+      @doc "Return :world."
       def hello, do: :world
     end
     """

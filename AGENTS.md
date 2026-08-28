@@ -50,3 +50,14 @@
 - 本地回环免认证；远程强制 Bearer token（`auth.login` 拿 token，验证码防暴破）
 - HTTPS 自签 RSA 2048 证书，首启自动生成于 `~/.newbee/web/`，私钥 chmod 600
 - 浏览器首访自签证书有警告；要绿锁用 `--certfile/--keyfile` 挂 CA 证书或反代
+## 模型可见工具开发规范（强制）
+
+- 机器事实是 `Newbee.Environment.ToolContract`；本节只做开发提醒，不能替代源码门禁。
+- 新增工具前先查现有能力。已有高层工具可完成、仅是默认参数别名/纯转发、或只服务单个外部项目时，不新增公开工具 API。
+- 动态/自动生成工具必须实现 PluginContract，并在 `describe/0` 声明 `summary/when_to_use/avoid_when/capabilities/effects/error_contract/api/examples`。
+- `api` 与真实公开导出必须完全一致；helper 用 `defp`，RPC 内部入口用 `@doc false`。
+- 每个模型可见函数必须有 `@doc` 和模块“可跑示例”；可恢复错误是值，bang 函数才抛异常。
+- 使用 `Newbee.Environment.ToolContract.template/2` 起步，不手写不完整 envelope。
+- Adapter/JIT/人工 release 都必须经过 PluginContract → ToolContract → PluginManager static → Verifier，禁止旁路激活。
+- 修改工具 API 时同步源码说明、示例、DESIGN、README 和契约测试；不得只改代码。
+- 完整字段、预算和验证命令见 `docs/tool-development-contract.md`。

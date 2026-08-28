@@ -211,6 +211,8 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 ```
 
 无状态工具只实现静态子集，runtime 用兼容包装器运行。**"源码能编译" ≠ "合法插件"**。
+
+**模型可见 tool 还必须通过 ToolContract**：声明一行用途、选择/避用边界、capabilities/effects、错误语义、与真实导出一一对应的 API、函数文档和示例，并满足提示预算。Adapter 自动合成、JIT 晋升、项目 release 和 builtin 都走同一治理门；builtin 在应用启动时审计，动态工具在 PluginContract/PluginManager/Verifier 三层拒绝旁路。规范见 `docs/tool-development-contract.md`。
 统一 Envelope 之外，各 kind 可在后续 Phase 扩展专属契约（ToolContract / RuleContract / ProviderContract…）；第一阶段只强制 Envelope + `capabilities` 声明——先统一生命周期与安全边界，再逐步加深类型约束（与"先统一生命周期，再扩大插件种类"的非目标一致）。
 **Effect 回收 = 受监督生命周期 + 显式登记**：Plugin Runtime 以 `DynamicSupervisor` 管有状态插件，启动/停止经有界任务池执行并设超时，单个插件阻塞不占住 Coordinator；规模达到实测阈值后可由 `PartitionSupervisor` 分片，不把“50 个插件”本身视为 BEAM 扇出问题。ETS、进程、`pg`、PubSub、Registry 和外部连接必须通过 runtime wrapper 创建并写入 `effects` 登记表；停止时按登记表回收并做 leak check。绕过 wrapper 的任意直接调用无法保证自动回收，因此 contract 违规会令 health gate 失败，而不是承诺无条件“零悬挂”。
 

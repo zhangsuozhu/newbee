@@ -492,8 +492,7 @@ defmodule Newbee.Environment.Coordinator do
     append_event(state, :revision_healthy, %{"rev" => rev})
     persist_manifest(manifest, state.event_store)
 
-    {:reply, :ok,
-     %{state | manifest: manifest, pending_notices: [notice | state.pending_notices]}}
+    {:reply, :ok, %{state | manifest: manifest, pending_notices: [notice | state.pending_notices]}}
   end
 
   def handle_call(:autonomy_evidence, _from, state) do
@@ -515,7 +514,6 @@ defmodule Newbee.Environment.Coordinator do
       true -> :ok
     end
   end
-
 
   # ── 评测任务回报（事件驱动状态转换）──
 
@@ -775,8 +773,7 @@ defmodule Newbee.Environment.Coordinator do
         state = %{state | manifest: manifest} |> put_change(change)
 
         append_event(state, :revision_advanced, %{
-          "revision" =>
-            Revision.to_map(Revision.new(manifest.revision, manifest.active, change.change_id))
+          "revision" => Revision.to_map(Revision.new(manifest.revision, manifest.active, change.change_id))
         })
 
         append_event(state, :change_rolled_back, %{
@@ -1079,7 +1076,7 @@ defmodule Newbee.Environment.Coordinator do
   defp mount_rule(release) do
     # 编译 release 源码取 describe（pattern/injection 即 contract 数据）
     with [{_name, source} | _] <- Map.to_list(release.source_files),
-         {:ok, %{envelope: env}} <- Newbee.Environment.PluginContract.validate_source(source),
+         {:ok, %{envelope: env}} <- Newbee.Environment.PluginContract.validate_source(source, release.kind),
          %{pattern: pattern, injection: injection}
          when is_binary(pattern) and is_binary(injection) <-
            env.describe do

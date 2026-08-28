@@ -55,6 +55,14 @@ defmodule Newbee.Plugins do
     Map.new(builtins(), &{&1.plugin_id, &1.release_id})
   end
 
+  @doc "按 plugin_id 找 builtin 模块。"
+  def module_for_plugin_id(plugin_id) when is_binary(plugin_id) do
+    case Enum.find(@builtin_modules, fn {_kind, id, _module, _caps} -> id == plugin_id end) do
+      {_kind, _id, module, _caps} -> module
+      nil -> nil
+    end
+  end
+
   @doc "按模块找 plugin_id。"
   def plugin_id_for(mod) do
     case Enum.find(@builtin_modules, fn {_k, _id, m, _c} -> m == mod end) do
