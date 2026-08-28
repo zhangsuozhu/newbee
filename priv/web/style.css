@@ -1779,11 +1779,13 @@ svg.ico {
 }
 .login-overlay.hidden { display: none; }
 .login-box {
-  width: 320px; padding: 32px 28px; border-radius: 14px;
+  width: 340px; max-width: calc(100vw - 32px); padding: 28px 26px; border-radius: 14px;
   background: var(--panel, #171a21); border: 1px solid var(--border, #2a2e3a);
   box-shadow: 0 8px 40px rgba(0,0,0,.4);
-  display: flex; flex-direction: column; gap: 14px;
+  display: flex; flex-direction: column; gap: 12px;
+  transition: width .25s ease;
 }
+.login-box.pair-open { width: 640px; }
 .login-brand {
   display: flex; align-items: center; gap: 10px; justify-content: center;
   font-size: 20px; font-weight: 700; color: var(--fg, #e6e8ee);
@@ -1806,7 +1808,20 @@ svg.ico {
 }
 .login-error.hidden { display: none; }
 .login-submit { width: 100%; padding: 10px; border-radius: 8px; font-size: 15px; letter-spacing: 4px; }
-.login-hint { text-align: center; font-size: 12px; color: var(--fg-dim, #9aa0ae); }
+.login-hint { text-align: center; font-size: 12px; color: var(--fg-dim, #9aa0ae); margin-top: 6px; }
+
+/* 双栏布局：左表单右扫码 */
+.login-cols { display: flex; gap: 22px; align-items: stretch; }
+.login-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.login-col-form { flex: 1 1 0; }
+.login-col-pair { flex: 0 0 220px; justify-content: flex-start; align-items: stretch; }
+.login-box:not(.pair-open) .login-col-pair { flex: 0 0 auto; }
+.login-box:not(.pair-open) .login-cols { flex-direction: column; gap: 12px; }
+
+/* 右栏左侧竖分隔线（仅展开扫码时显示） */
+.login-divider-v { flex-direction: row; margin: 0; }
+.login-box.pair-open .login-col-pair { border-left: 1px solid var(--border, #2a2e3a); padding-left: 22px; }
+.login-box.pair-open .login-divider-v { display: none; }
 
 /* WebAuthn 指纹/面容登录 */
 .webauthn-section { margin-top: 20px; }
@@ -1837,6 +1852,12 @@ svg.ico {
 /* ═══ 手机端适配（≤768px）：侧栏抽屉化 + 触控放大 + composer 贴底 ═══ */
 
 @media (max-width: 768px) {
+  /* 登录页移动端回退单列 */
+  .login-box, .login-box.pair-open { width: 340px; max-width: calc(100vw - 24px); }
+  .login-cols { flex-direction: column; gap: 12px; }
+  .login-col-pair { border-left: none !important; padding-left: 0 !important; flex: 0 0 auto; }
+  .login-box.pair-open .login-divider-v { display: flex; }
+
   /* 1. 侧栏全屏抽屉（覆盖式） */
   #sidebar {
     position: fixed; top: 0; bottom: 0; left: 0; z-index: 40;
@@ -2239,15 +2260,16 @@ svg.ico {
 
 
 /* ── 扫码授权登录（手机替电脑盖章）── */
-.pair-section { margin-top: 20px; }
+.pair-section { margin-top: 0; }
 .pair-section.hidden { display: none; }
 .pair-show-btn { width: 100%; padding: 10px; border-radius: 8px; font-size: 14px;
   display: flex; align-items: center; justify-content: center; gap: 8px; }
 .pair-show-btn svg { flex-shrink: 0; }
-.pair-box { margin-top: 14px; text-align: center; }
+.pair-box { margin-top: 4px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .pair-box.hidden { display: none; }
 .pair-qr { display: inline-flex; padding: 14px; background: #fff; border-radius: 12px;
-  border: 1px solid var(--border, #2a2e3a); }
+  border: 1px solid var(--border, #2a2e3a); cursor: pointer; }
+.pair-qr:hover { box-shadow: 0 0 0 2px var(--accent, #4f8cff); }
 .pair-qr svg { display: block; width: 180px; height: 180px; }
 .pair-qr a { color: #4f8cff; font-size: 12px; }
 .pair-status { margin-top: 12px; font-size: 13px; color: var(--fg-dim, #9aa0ae); line-height: 1.6; }

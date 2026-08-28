@@ -3557,11 +3557,16 @@ case "goal_round": break;
     if (msg) { el.textContent = msg; el.classList.remove("hidden"); }
     else { el.textContent = ""; el.classList.add("hidden"); }
   }
-  async function refreshCaptcha() {
+  let captchaLastRefresh = 0;
+  const CAPTCHA_MIN_INTERVAL_MS = 30_000; // 验证码最短展示 30s，避免频繁换图
+  async function refreshCaptcha(force) {
+    const now = Date.now();
+    if (!force && captchaLastRefresh && now - captchaLastRefresh < CAPTCHA_MIN_INTERVAL_MS) return;
     try {
       const r = await rpc("auth.captcha", {});
       const img = $("login-captcha-img");
       if (img && r.svg) {
+        captchaLastRefresh = now;
         img.dataset.captchaId = r.captchaId;
         img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(r.svg)));
       }
@@ -3587,7 +3592,7 @@ case "goal_round": break;
       maybePromptWebAuthnRegister();
     } catch (e) {
       loginError(e.message || "登录失败");
-      refreshCaptcha();
+      refreshCaptcha(true); // 旧验证码提交一次即焚，失败必须强制换新
       const capEl = $("login-captcha");
       if (capEl) capEl.value = "";
     }
@@ -3640,24 +3645,44 @@ case "goal_round": break;
     if (!sec) return;
     sec.classList.remove("hidden");
     var btn = $("pair-show");
+    var loginBox = $("login-box");
     if (btn) btn.addEventListener("click", function() {
       var box = $("pair-box");
-      if (box.classList.contains("hidden")) { startPairLogin(); }
-      else { stopPairLogin(); box.classList.add("hidden"); }
+      if (box.classList.contains("hidden")) {
+        startPairLogin();
+        if (loginBox) loginBox.classList.add("pair-open");
+      } else {
+        stopPairLogin();
+        box.classList.add("hidden");
+        if (loginBox) loginBox.classList.remove("pair-open");
+      }
     });
     var refresh = $("pair-refresh");
-    if (refresh) refresh.addEventListener("click", startPairLogin);
+    if (refresh) refresh.addEventListener("click", function(){ startPairLogin(); });
+    // 点二维码本体也可刷新（重新生成新码）
+    var qrBox = document.querySelector(".pair-qr");
+    if (qrBox) qrBox.addEventListener("click", function(){ startPairLogin(); });
   }
+
+  var pairAutoTimer = 0;   // 到期自动换新码
+  var pairAutoArmed = false;
 
   async function startPairLogin() {
     stopPairLogin();
+    pairAutoArmed = true;
+    await newPairCode();          // 初始手动：立即出一张
+  }
+
+  // 生成一张新二维码；manual=false 表示"到期自动续"
+  async function newPairCode(manual) {
+    if (pairPollTimer) { clearInterval(pairPollTimer); pairPollTimer = 0; }
     var box = $("pair-box");
-    var qrEl = $("pair-qr");
+    var qrEl = document.querySelector(".pair-qr");
     var refreshBtn = $("pair-refresh");
     box.classList.remove("hidden");
     refreshBtn.classList.add("hidden");
     qrEl.innerHTML = "";
-    pairSetStatus("正在生成二维码…");
+    pairSetStatus(manual === false ? "二维码已过期，正在自动刷新…" : "正在生成二维码…");
     try {
       var r = await rpc("pair.create", {});
       var pairingId = r.pairing_id;
@@ -3665,13 +3690,24 @@ case "goal_round": break;
       // 二维码塞配对码 code（一次性、仅服务端核对），绝不能塞 pairing_id
       var url = pairOrigin() + "/pair?c=" + encodeURIComponent(r.code);
       renderPairQR(qrEl, url);
-      pairSetStatus("用已登录的手机扫码，确认后这台电脑即可登录");
-      var deadline = Date.now() + (r.ttl_ms || 90000);
+      pairSetStatus("用已登录的手机扫码，确认后这台电脑即可登录（点击二维码可刷新）");
+      var ttl = r.ttl_ms || 150000;
+      var deadline = Date.now() + ttl;
       pairPollTimer = setInterval(function(){ pollPair(pairingId, deadline); }, 1500);
+      // 到期自动换新码（提前 2s，避开边界）；只排一次，生成后再排下一次
+      schedulePairAuto(ttl);
     } catch (e) {
       pairSetStatus("生成失败: " + (e.message || e));
       refreshBtn.classList.remove("hidden");
     }
+  }
+
+  function schedulePairAuto(ttl) {
+    if (pairAutoTimer) clearTimeout(pairAutoTimer);
+    pairAutoTimer = setTimeout(function(){
+      // 扫码块仍开着且未被拒绝/授权时，自动续一张新码
+      if (pairAutoArmed && pairCurrentId) { newPairCode(false); }
+    }, Math.max((ttl || 150000) - 2000, 10000));
   }
 
   function renderPairQR(el, text) {
@@ -3695,9 +3731,8 @@ case "goal_round": break;
   async function pollPair(pairingId, deadline) {
     if (pairingId !== pairCurrentId) { stopPairLogin(); return; }
     if (Date.now() > deadline) {
-      stopPairLogin();
-      pairSetStatus("二维码已过期");
-      $("pair-refresh").classList.remove("hidden");
+      // 交给自动刷新；仅提示，不清会话
+      pairSetStatus("二维码已过期，正在自动刷新…");
       return;
     }
     try {
@@ -3716,9 +3751,8 @@ case "goal_round": break;
         pairSetStatus("手机已拒绝，请重新生成");
         $("pair-refresh").classList.remove("hidden");
       } else if (r.status === "expired") {
-        stopPairLogin();
-        pairSetStatus("二维码已过期");
-        $("pair-refresh").classList.remove("hidden");
+        // 自动刷新接管：schedulePairAuto 会很快换上新码，这里只提示
+        pairSetStatus("二维码已过期，正在自动刷新…");
       }
     } catch (e) {
       stopPairLogin();
@@ -3733,6 +3767,8 @@ case "goal_round": break;
   }
   function stopPairLogin() {
     if (pairPollTimer) { clearInterval(pairPollTimer); pairPollTimer = 0; }
+    if (pairAutoTimer) { clearTimeout(pairAutoTimer); pairAutoTimer = 0; }
+    pairAutoArmed = false;
     pairCurrentId = null;
   }
 

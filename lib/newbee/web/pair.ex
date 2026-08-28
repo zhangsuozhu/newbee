@@ -9,7 +9,7 @@ defmodule Newbee.Web.Pair do
 
   - **配对码烘焙进手机授权链接，不上二维码、不经 RPC 回传。** 二维码里只有
     服务器基址。手机扫码打开 `GET /pair?c=<code>`，服务端渲染授权页时才从
-    ETS 取码核对。配对码是 128bit 随机、一次性、TTL 90s，永不出现在任何
+    ETS 取码核对。配对码是 128bit 随机、一次性、TTL 150s，永不出现在任何
     可被轮询/抓包读到的接口响应里——攻击者拿不到码，就无法伪造授权。
   - **手机必须在已登录会话里授权**：授权页 JS 校验 `state.token`（本机已有
     登录）且 `host.describe.auth_required == true`，否则拒绝。这把"已登录
@@ -36,7 +36,7 @@ defmodule Newbee.Web.Pair do
 
   @table :newbee_web_pair
   @code_bytes 16
-  @ttl_ms 90_000
+  @ttl_ms 150_000
   @poll_max_ms 60_000
 
   # ── 表 ──

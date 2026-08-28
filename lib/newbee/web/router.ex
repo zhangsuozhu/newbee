@@ -159,7 +159,7 @@ defmodule Newbee.Web.Router do
   @pair_template Path.expand("../../../priv/web/pair.html.eex", __DIR__)
   require EEx
   EEx.function_from_file(:defp, :render_pair_page, @pair_template,
-    [:ok, :error, :pairing_id_json, :ua_short, :ip, :time_ago],
+    [:ok, :error, :pairing_id_json, :ua_short, :ip, :time_ago, :auth_required],
     trim: true
   )
 
@@ -176,11 +176,12 @@ defmodule Newbee.Web.Router do
             Jason.encode!(info.pairing_id),
             ua_summary(info.ua),
             info.ip,
-            time_ago(info.created)
+            time_ago(info.created),
+            Newbee.Web.Auth.auth_required?(bind_ip())
           )
 
         {:error, _code, msg} ->
-          render_pair_page(false, msg, "null", "", "", "")
+          render_pair_page(false, msg, "null", "", "", "", false)
       end
 
     conn

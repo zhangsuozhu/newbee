@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="stylesheet" href="/style.css?v=1787874040" />
+  <link rel="stylesheet" href="/style.css?v=1787880700" />
 </head>
 <body>
 <div id="app">
@@ -268,55 +268,62 @@
 </div>
 
 <div id="login-overlay" class="login-overlay hidden">
-  <div class="login-box">
+  <div class="login-box" id="login-box">
     <div class="login-brand">
       <svg class="ico" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8.5 5v8L12 21l-8.5-5V8L12 3z"/><path d="M8.5 10.5h7M8.5 13.5h7"/></svg>
       <span>newbee</span>
     </div>
     <div id="login-title" class="login-title">登录</div>
-    <div class="login-field">
-      <input id="login-password" type="password" placeholder="密码" autocomplete="current-password" />
-    </div>
-    <div class="login-field login-captcha-row">
-      <input id="login-captcha" type="text" placeholder="验证码" autocomplete="off" spellcheck="false" />
-      <img id="login-captcha-img" class="login-captcha-img" title="点击刷新验证码" alt="验证码" />
-    </div>
-    <div id="login-error" class="login-error hidden"></div>
-    <button id="login-submit" class="btn-primary login-submit">登 录</button>
-    <div id="webauthn-section" class="webauthn-section hidden">
-      <div class="login-divider">
-        <span>或</span>
+
+    <div class="login-cols" id="login-cols">
+      <!-- 左栏：密码 + 指纹 -->
+      <div class="login-col login-col-form">
+        <div class="login-field">
+          <input id="login-password" type="password" placeholder="密码" autocomplete="current-password" />
+        </div>
+        <div class="login-field login-captcha-row">
+          <input id="login-captcha" type="text" placeholder="验证码" autocomplete="off" spellcheck="false" />
+          <img id="login-captcha-img" class="login-captcha-img" title="点击刷新验证码" alt="验证码" />
+        </div>
+        <div id="login-error" class="login-error hidden"></div>
+        <button id="login-submit" class="btn-primary login-submit">登 录</button>
+        <div id="webauthn-section" class="webauthn-section hidden">
+          <div class="login-divider">
+            <span>或</span>
+          </div>
+          <button id="webauthn-login" class="btn-ghost webauthn-login">
+            <svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A10.003 10.003 0 0 0 12 3v0a10.003 10.003 0 0 1 10 10c0 1.342-.132 2.651-.384 3.916M9.25 9.875A2.75 2.75 0 0 1 12 8v0a2.75 2.75 0 0 1 2.75 2.75c0 .475-.12.94-.342 1.35"/></svg>
+            使用指纹/面容登录
+          </button>
+          <div class="webauthn-manage">
+            <a href="#" id="webauthn-manage-link">管理通行密钥</a>
+          </div>
+        </div>
+        <div class="login-hint">远程访问已启用安全认证</div>
       </div>
-      <button id="webauthn-login" class="btn-ghost webauthn-login">
-        <svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A10.003 10.003 0 0 0 12 3v0a10.003 10.003 0 0 1 10 10c0 1.342-.132 2.651-.384 3.916M9.25 9.875A2.75 2.75 0 0 1 12 8v0a2.75 2.75 0 0 1 2.75 2.75c0 .475-.12.94-.342 1.35"/></svg>
-        使用指纹/面容登录
-      </button>
-      <div class="webauthn-manage">
-        <a href="#" id="webauthn-manage-link">管理通行密钥</a>
-      </div>
-    </div>
-    <div id="pair-section" class="pair-section hidden">
-      <div class="login-divider"><span>或</span></div>
-      <div class="pair-toggle-row">
+
+      <!-- 右栏：扫码 -->
+      <div id="pair-section" class="login-col login-col-pair pair-section hidden">
+        <div class="login-divider login-divider-v"><span>或</span></div>
         <button id="pair-show" class="btn-ghost pair-show-btn">
           <svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3z"/><path d="M21 14v7h-7"/></svg>
           手机扫码登录
         </button>
-      </div>
-      <div id="pair-box" class="pair-box hidden">
-        <div id="pair-qr" class="pair-qr"></div>
-        <div id="pair-status" class="pair-status">用已登录的手机扫码，确认后这台电脑即可登录</div>
-        <button id="pair-refresh" class="pair-refresh hidden">二维码已过期，点击刷新</button>
+        <div id="pair-box" class="pair-box hidden">
+          <div class="pair-qr"></div>
+          <div id="pair-status" class="pair-status">用已登录的手机扫码<br>确认后这台电脑即可登录</div>
+          <button id="pair-refresh" class="pair-refresh hidden">二维码已过期，点击刷新</button>
+        </div>
       </div>
     </div>
-
-    <div class="login-hint">远程访问已启用安全认证</div>
   </div>
 </div>
+
+
 
 <script src="/vendor/highlight.min.js"></script>
 <script src="/vendor/languages/elixir.min.js"></script>
 <script src="/vendor/qrcodegen.js"></script>
-<script src="/app.js?v=1787874040"></script>
+<script src="/app.js?v=1787880700"></script>
 </body>
 </html>
