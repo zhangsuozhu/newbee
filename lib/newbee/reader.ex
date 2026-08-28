@@ -280,7 +280,7 @@ defmodule Newbee do
       # 文档值在 Elixir ≥1.15 是 `%{"en" => text}` 语言分键 map，旧版才是裸 binary；
       # 只认 binary 会把所有函数 @doc 渲染成空串（模型从此对工具 API 一无所知，
       # 只能瞎猜函数名，如 Fs.write 猜成 write_file）。
-      moduledoc = doc_text(module_doc)
+      moduledoc = module_tool_doc(doc_text(module_doc))
 
       funcs =
         func_docs
@@ -291,16 +291,38 @@ defmodule Newbee do
           _ ->
             false
         end)
-        |> Enum.map_join("\n", fn {{:function, name, arity}, _, _, doc, _} ->
-          "  #{name}/#{arity}: #{String.slice(doc_text(doc), 0, 800)}"
+        |> Enum.map_join("\n", fn {{:function, name, arity}, _, signatures, doc, _} ->
+          signature =
+            case signatures do
+              [sig | _] when is_binary(sig) -> sig
+              _ -> "#{name}/#{arity}"
+            end
+
+          "  - `#{signature}` — " <> String.slice(first_paragraph(doc_text(doc)), 0, 500)
         end)
 
-      {:ok, "## #{module_name}\n" <> moduledoc <> "\n" <> funcs}
+      {:ok, "## #{module_name}\n" <> moduledoc <> "\n\n## 真实函数签名\n" <> funcs}
     else
       {:error, :module_not_loaded}
     end
   rescue
     _ -> {:error, :module_not_found}
+  end
+
+  # 函数签名由 Code.fetch_docs 自动生成；tool:// 视图移除模块文档中的手写清单，
+  # 避免同一 API 在模型上下文中出现两遍。源码和 ExDoc 仍保留完整清单。
+  defp module_tool_doc(doc) do
+    doc
+    |> String.replace(~r/\n\s*## 函数清单.*?(?=\n\s*## |\z)/s, "")
+    |> String.trim()
+  end
+
+  defp first_paragraph(doc) do
+    doc
+    |> String.split(~r/\n\s*\n/, parts: 2)
+    |> hd()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
   end
 
   # docs_v1 文档值统一提文本：language-keyed map（%{"en" => …}）、{format, text} 元组、

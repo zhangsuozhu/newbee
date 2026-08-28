@@ -10,6 +10,17 @@ defmodule Newbee.Tools.Edit do
 
   行号全部指向原快照；stale/越界/未读/重叠/no-op 一律拒绝；
   多节全部预检通过才落盘（逻辑原子）。
+
+  ## 函数清单
+  - `show(path, range \\\\ :all) :: %{tag: String.t(), text: String.t(), lines: non_neg_integer()}` — 读取全文或 `{first, last}` 范围并记录快照；默认参数使 `show/1` 与 `show/2` 都可调用。
+  - `patch(patch_text) :: %{status: :applied, files: [map()], warnings: list()}` — 应用 `[path#tag]` 行号补丁；解析失败抛 `ParseError`，预检拒绝抛带 `category` 的 `RejectError`。
+  - `source_literal(text) :: String.t()` — 把任意文本包装成安全 Elixir 字符串表达式，避免二阶插值和 heredoc/sigil 分隔符冲突。
+
+  ## 可跑示例
+      snapshot = Newbee.Tools.Edit.show("README.md", {1, 20})
+      # patch_text 的节头使用 snapshot.tag；PUT/CUT 行号来自 snapshot.text
+      result = Newbee.Tools.Edit.patch(patch_text)
+      literal = Newbee.Tools.Edit.source_literal(source_code)
   """
 
   alias Newbee.Tools.Edit.SnapshotStore

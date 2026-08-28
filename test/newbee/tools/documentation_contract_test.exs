@@ -24,4 +24,16 @@ defmodule Newbee.Tools.DocumentationContractTest do
     assert snapshots =~ "docs/edit-design.md"
     refute edit =~ "docs/edit-v2-design.md"
   end
+
+  test "DESIGN 和 README 固定三层提示与去重 API" do
+    design = File.read!(Path.expand("../../../DESIGN.md", __DIR__))
+    readme = File.read!(Path.expand("../../../README.md", __DIR__))
+
+    assert design =~ "常驻 function schema"
+    assert design =~ "按需 `tool://`"
+    assert readme =~ "Scaffold 只做工程创建/依赖"
+    assert readme =~ "没有 `sh_long`"
+    assert readme =~ "~/.newbee/jspace/"
+    refute design =~ "edit/v2.ex"
+  end
 end

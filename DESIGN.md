@@ -259,8 +259,8 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
   - **结构轨 · Sourceror**（`Structural`）：保留格式注释的 AST 重写，按 `模块::def` 定位替换。选 Elixir 的最大技术红利。
   - 分工：Elixir 语义级修改优先结构轨；普通文本局部修改走 Edit；新文件或整文件重写走 Fs。
 - **热加载**（`HotReload`，2026-08 落地）：`replace/load_file/purge/unload/status`——源码/BEAM 热替换（软 purge，`force: true` 硬 purge），`target: :main` 经 RPC 作用主节点，调试-生效秒级闭环免重启。
-- **运行**：`Run`（mix/elixir/shell）、编译、测试。
-- **工程**：`Scaffold`（mix new、deps、脚手架）。
+- **运行**：`Run` 统一承载 shell、编译和测试；长超时直接传 `timeout:`，不提供 `sh_long`/项目专用测试别名。
+- **工程**：`Scaffold` 只负责 `mix new` 和首次 `deps.get`，不重复封装 Run 的编译/测试。
 - **统一寻址**：`Newbee.read/1` 通吃文件/目录/URL 与内部 scheme——`memory://`、`skill://`、`agent://<id>/findings`、`conflict://N`、`bindings://`、`events://`。只教模型一个接口。
 - **内省**：`Introspect`（模块文档、AST、beam chunk、类型信息）。
 - **RepoMap**（`projection` 插件）：紧凑工程结构图（模块/`@moduledoc` 摘要/公开签名/struct 字段），mtime 指纹增量缓存。模型凭图定位 → 只对目标区域取细节。
@@ -298,6 +298,14 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 
 降级通道：模型偶发在正文输出 ` ```elixir ` 块时，容错解析器兜底执行并温和纠偏。
 新能力永远进环境（Plugin），不进工具面。
+
+**模型工具提示分三层，禁止重复注入**：
+
+1. **常驻 function schema**：只含上述 3 个 function，预算 ≤1.5KB；只描述调用时机和参数形状。
+2. **常驻能力索引**：全部内置 tool/workflow/projection/provider 各一行“何时用”，预算 ≤1.8KB；不展开函数表。
+3. **按需 `tool://`**：模块用途、边界和示例 + `Code.fetch_docs` 自动生成的真实调用签名与 `@doc`，单模块预算 ≤3.5KB。手写函数清单不重复进入模型上下文。
+
+每个模型可见函数必须有 `@doc` 和调用示例；`@doc false` 只用于 RPC/内部入口。API 删除或默认参数变化由契约测试校验，避免说明漂移。
 
 **健壮性（2026-08 落地）**：
 
@@ -594,7 +602,7 @@ worker rollback_request / health 失败 / 错误率超阈 / verifier 判退化 /
 | 1 | 绑定持久化 | Evaluator + Binding Continuity（§4.4）——最大头的节省 |
 | 2 | RepoMap | `projection` 插件，注图不注全文 |
 | 3 | 结果回填压缩 | 默认 exit code + 摘要；模型写代码过滤（确定性压缩） |
-| 4 | 工具清单动态化 | Projection 只放相关插件的一行签名（名字+一句话） |
+| 4 | 工具提示分层 | 3 个 function schema + 全内置能力一行索引 + 按需 `tool://` 真实签名；均有字节预算 |
 | 5 | 记忆分片 | 按 topic 索引按需检索；Memory Guidance 块有 token 上限 |
 | 6 | 推理固化 | 认知 JIT（§8.5），直至零 token |
 | 7 | 异步后台 | adapter/索引构建不占主循环预算 |
@@ -770,9 +778,9 @@ lib/newbee/
 ├── memory.ex / permissions.ex / diff.ex / status.ex
 ├── tui/ cli.ex commands.ex daemon.ex   # 视图与控制，不持有环境状态
 └── plugins/                    # 内置插件（兼容包装器）：
-    ├── edit.ex edit/v2.ex structural.ex fs.ex run.ex git.ex search.ex json.ex http.ex
+    ├── edit.ex structural.ex fs.ex run.ex git.ex search.ex json.ex http.ex
     ├── scaffold.ex introspect.ex jspace.ex hot_reload.ex besttool.ex repomap.ex
-    └── provider/openrouter.ex  # 无凭证协议适配器；受控 transport 在 host/
+    └── provider/openrouter.ex  # plan(model, messages, opts) 无凭证计划器；受控 transport 在 host/
 ```
 
 迁移映射（旧 → 新）：`DEE.Kernel` → `Agent.Loop` + Worker/Adapter role；`Tools.HotLoader` → `PluginManager`（兼容 facade 后删旧实现）；`Evolution.Evolver` → `AdapterAgent`；`Evolution.Snapshot` → Environment Revision；`Evolution.JIT` → release 晋升/deopt 策略模块；`Evolution.Policy` → AutonomyPolicy；`Staging` → 只管用户工程文件暂存；`DEE.Tools` → PluginRegistry 投影；`Session` 只管会话与绑定快照。

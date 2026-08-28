@@ -1,7 +1,7 @@
 defmodule Newbee.Tools.Structural do
   @moduledoc """
-  双轨编辑的结构轨 (DESIGN §2/M2)：AST 级编辑。
-  与锚点轨（`Tools.Edit`）互补：Edit 是行级文本锚点，本模块用 Sourceror
+  Elixir 结构编辑工具：按模块和函数定位 AST 级插入/替换。
+  与快照行号文本轨（`Tools.Edit`）互补：本模块用 Sourceror
   解析出的行列元数据做结构化插入/替换，落盘后统一 `Code.format_string!`。
 
   ## 函数清单

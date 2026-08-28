@@ -147,6 +147,8 @@
 - **可恢复错误是值**：工具返回 `{:error, %{reason: atom(), hint: String.t(), ...}}`；带 `!` 的函数保留 Elixir 的抛异常语义。
 - **命令结果符合常见直觉**：`Run.sh/2` 返回 `%{exit, exit_code, output}`；`exit_code` 是 `exit` 的别名。
 - **简单 GET 优先统一读取**：只要正文时用 `Newbee.read("https://...")`；需要 POST、headers、status 或网络错误分类时用 `Newbee.Tools.Http`。
+- **避免重复入口**：Scaffold 只做工程创建/依赖；编译测试用 Run。长命令使用 `Run.sh(..., timeout: ms)`，没有 `sh_long` 或项目专用 Django helper。
+- **按需说明不重复**：`Newbee.read("tool://模块名")` 展示用途/示例和编译器真实签名；内部 `@doc false` 函数不会暴露给模型。
 
 Edit 完整协议、错误类别和示例见 [`docs/edit-design.md`](docs/edit-design.md)。
 
@@ -277,7 +279,7 @@ lib/newbee/
 ├── tui/            # Screen / Cards / History / Key / Highlight
 └── host/           # Shell (Ring 0) — 凭证/边界/审计
 
-priv/jspace/        # J-Space 工作台账 (long-task ledger)
+~/.newbee/jspace/   # J-Space 长任务台账（可用 NEWBEE_JSPACE_DIR 覆盖）
 .newbee/            # 项目权威快照 (被 gitignore，重启完整恢复)
 ```
 
@@ -292,8 +294,8 @@ mix newbee.bench                   # 真实 LLM 公开基准
 mix newbee.doctor                  # 工具链/配置/目录体检
 ```
 
-- 全套件 **280+** 测试通过 (OTP 29 + Elixir 1.20，历史实测 282–284/287)，`acceptance` 单跑 12/12 全过；2026-08 又新增 edit v2 / TCE v2 / archive / web 等测试
-- *Full suite 280+ passing (historic 282–284/287), acceptance 12/12 green in isolation; plus edit v2 / TCE v2 / archive / web suites added in 2026-08.*
+- 全套件 **280+** 测试通过 (OTP 29 + Elixir 1.20，历史实测 282–284/287)，`acceptance` 单跑 12/12 全过；2026-08 又新增 Edit / TCE / archive / web 等测试
+- *Full suite 280+ passing (historic 282–284/287), acceptance 12/12 green in isolation; plus Edit / TCE / archive / web suites added in 2026-08.*
 
 ---
 

@@ -1,34 +1,37 @@
 defmodule Newbee.Tools.HotReload do
   @moduledoc """
-  模块热加载与替换工具：对指定模块做源码/BEAM 热替换，无需重启节点。
-  默认作用于当前节点（DEE 求值节点或主节点视调用方）；`target: :main` 作用于 newbee 主节点（经 RPC）。
+  Elixir/BEAM 模块热替换工具；从完整源码或文件加载，不接收 diff/模块名+片段。
+  默认作用当前节点；传 `target: :main` 经 RPC 作用 newbee 主节点。
 
   ## 函数清单
-  - `replace(module_or_string, code_string, opts \\ []) :: %{ok: boolean(), ...}` — 源码字符串编译替换（`Code.compile_string` + `soft_purge`）。
-  - `replace_local(module, code_string, opts)` — 本地节点直接替换（含 `force: true` 可硬 `purge` 旧代码）。
-  - `load_file(path, opts \\ []) :: %{ok: boolean(), ...}` — 从 `.ex/.exs/.beam` 文件加载替换，`.beam` 经 `:code.load_binary`。
-  - `load_file_local(path, opts)` — 本地文件加载。
-  - `purge(module) :: :ok | {:error, reason}` — `soft_purge`，失败提示加 `force: true`。
-  - `unload(module) :: :ok` — 卸载模块。
-  - `status(module) :: %{loaded: boolean(), md5: String.t() | nil}` — 查模块加载状态与 `module_info(:md5)`。
+  - `replace(source, opts \ []) :: map()` — 编译完整源码字符串并替换其中模块。`opts` 支持 `file:`、`target:`、`force:`。
+  - `load_file(path, opts \ []) :: map()` — 加载 `.ex/.exs/.beam` 文件；选项同 `replace/2`。
+  - `status(module) :: map()` — 返回 `loaded?`、`source`、`md5`、`old_code?`。
+  - `purge(module) :: map()` — 强制清除旧代码版本，返回 `purged?` 和 `old_code_remaining?`。
+  - `unload(module) :: map()` — `delete + purge` 卸载模块，返回 `deleted?`、`purged?`、`loaded?`。
 
-  内部 `dispatch/3` 按 `target` 选本地或 `rpc_call`；超时 30_000ms。
+  `replace_local/2`、`load_file_local/2` 是 RPC 内部入口（`@doc false`），模型不直接调用。
 
   ## 可跑示例
-      %{ok: true} = Newbee.Tools.HotReload.replace(MyMod, "defmodule MyMod do def hi, do: :ok end")
-      %{ok: true} = Newbee.Tools.HotReload.load_file("lib/my.ex")
+      source = "defmodule Demo.Hot do\n  def hi, do: :ok\nend"
+      %{ok: true} = Newbee.Tools.HotReload.replace(source)
+      %{ok: true} = Newbee.Tools.HotReload.load_file("lib/demo/hot.ex", target: :main)
+      %{ok: true, loaded?: loaded?} = Newbee.Tools.HotReload.status(Demo.Hot)
+      %{ok: true, purged?: _} = Newbee.Tools.HotReload.purge(Demo.Hot)
+      %{ok: true, loaded?: false} = Newbee.Tools.HotReload.unload(Demo.Hot)
 
+  `force: true` 和 `purge/unload` 可能终止旧代码路径；只对可重新加载的临时或明确目标模块使用。
   """
 
   @rpc_timeout 60_000
 
   @doc """
-  从源码字符串编译并替换模块。
+  从完整源码字符串编译并替换其中定义的模块；参数不是模块名。
   opts:
     - :file   源码文件名（诊断用，默认 "hot_reload.ex"）
     - :target :local（默认）| :main | 节点 atom——在哪个节点替换
     - :force  true 时强行 purge 旧代码（有进程仍在用旧版本时，默认报错不换）
-  返回 %{ok: true, modules: [...]} 或 %{ok: false, error: reason}。
+  返回 `%{ok: true, file: _, modules: [...], warnings: [...]}`；编译/加载失败返回 `%{ok: false, error: reason}`。
   """
   def replace(source, opts \\ []) when is_binary(source) do
     dispatch(:replace, [source, opts], opts)
@@ -62,18 +65,25 @@ defmodule Newbee.Tools.HotReload do
         }
 
       _other ->
-        %{ok: true, module: mod, loaded?: true, source: nil, md5: module_md5(mod), old_code?: :erlang.check_old_code(mod)}
+        %{
+          ok: true,
+          module: mod,
+          loaded?: true,
+          source: nil,
+          md5: module_md5(mod),
+          old_code?: :erlang.check_old_code(mod)
+        }
     end
   end
 
-  @doc "强制清除模块旧代码版本（运行中的旧代码进程不受影响，但后续无法再进入）。"
+  @doc "强制清除模块旧代码版本，返回包含 purged? 与 old_code_remaining? 的 map。"
   def purge(module) do
     mod = to_module(module)
     purged = :code.purge(mod)
     %{ok: true, module: mod, purged?: purged, old_code_remaining?: :erlang.check_old_code(mod)}
   end
 
-  @doc "卸载模块（delete + purge）。"
+  @doc "卸载模块（delete + purge），返回包含 deleted?/purged?/loaded? 的 map。"
   def unload(module) do
     mod = to_module(module)
     deleted = :code.delete(mod)
@@ -97,7 +107,15 @@ defmodule Newbee.Tools.HotReload do
         |> Enum.flat_map(fn r -> r[:warnings] || [] end)
         |> Enum.uniq()
 
-      %{ok: true, file: file, modules: Enum.map(results, fn r -> Map.delete(Map.put(Map.take(r, [:mod, :new_md5, :old_code?]), :module, r[:mod]), :mod) end), warnings: warnings}
+      %{
+        ok: true,
+        file: file,
+        modules:
+          Enum.map(results, fn r ->
+            Map.delete(Map.put(Map.take(r, [:mod, :new_md5, :old_code?]), :module, r[:mod]), :mod)
+          end),
+        warnings: warnings
+      }
     rescue
       e -> %{ok: false, error: Exception.message(e)}
     catch
@@ -188,9 +206,13 @@ defmodule Newbee.Tools.HotReload do
       false ->
         if force? do
           :code.purge(mod)
+
           case :code.load_binary(mod, String.to_charlist(path), binary) do
-            {:module, ^mod} -> Map.merge(acc, %{ok: true, old_code?: false, new_md5: module_md5(mod), force_purged?: true})
-            other -> %{ok: false, error: {:load_binary_failed, other}}
+            {:module, ^mod} ->
+              Map.merge(acc, %{ok: true, old_code?: false, new_md5: module_md5(mod), force_purged?: true})
+
+            other ->
+              %{ok: false, error: {:load_binary_failed, other}}
           end
         else
           %{ok: false, error: {:old_code_in_use, mod}, hint: "有进程仍在运行旧版本；确认后加 force: true 硬替换"}
@@ -217,6 +239,7 @@ defmodule Newbee.Tools.HotReload do
   end
 
   defp to_module(mod) when is_atom(mod), do: mod
+
   defp to_module(mod) when is_binary(mod) do
     mod = String.trim_leading(mod, "Elixir.")
     Module.concat([mod])
