@@ -185,7 +185,7 @@ defmodule Newbee.Web.Session do
          client <-
            (case Newbee.Session.effort(sid) do
               nil -> client
-              e -> %{client | reasoning_effort: e}
+              e -> %{client | reasoning_effort: normalize_effort(e)}
             end) do
       {:ok, %{client | interrupt_scope: Newbee.LLM.Client.new_interrupt_scope()}}
     end
@@ -548,7 +548,7 @@ defmodule Newbee.Web.Session do
     {:reply, {:ok, %{applied: applied}}, %{st | client: client}}
   end
 
-  @effort_levels ~w(off auto low medium high xhigh max)
+  @effort_levels ~w(none low medium high xhigh max)
 
   defp normalize_effort(e)
 
@@ -557,6 +557,7 @@ defmodule Newbee.Web.Session do
 
     cond do
       e in ["", "default", "auto"] -> nil
+      e == "off" -> "none"
       e in @effort_levels -> e
       true -> nil
     end

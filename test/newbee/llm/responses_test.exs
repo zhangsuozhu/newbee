@@ -66,6 +66,31 @@ defmodule Newbee.LLM.ResponsesTest do
     assert usage["cache_read_tokens"] == 8
   end
 
+  test "legacy off effort is sent as none" do
+    test_pid = self()
+
+    plug = fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:reasoning_body, Jason.decode!(body)})
+      Req.Test.json(conn, %{"output" => [], "usage" => %{}})
+    end
+
+    client =
+      %Client{
+        api: "openai-responses",
+        model: "test/m",
+        api_key: "test",
+        base_url: "http://localhost",
+        reasoning_effort: "off",
+        req_options: [plug: plug, retry: false]
+      }
+
+    assert {:ok, _message, _usage} =
+             Client.stream_chat(client, [%{"role" => "user", "content" => "hi"}], fn _ -> :ok end)
+
+    assert_received {:reasoning_body, %{"reasoning" => %{"effort" => "none"}}}
+  end
+
   test "input converts prior tool calls and outputs" do
     messages = [
       %{

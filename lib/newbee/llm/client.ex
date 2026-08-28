@@ -31,13 +31,17 @@ defmodule Newbee.LLM.Client do
       api_key: Keyword.get(opts, :api_key, System.get_env("OPENROUTER_API_KEY")),
       base_url: Keyword.get(opts, :base_url, @default_base_url),
       api: Keyword.get(opts, :api, "openai-completions"),
-      reasoning_effort: Keyword.get(opts, :reasoning_effort),
+      reasoning_effort: normalize_reasoning_effort(Keyword.get(opts, :reasoning_effort)),
       vision: Keyword.get(opts, :vision, true),
       context_window: Keyword.get(opts, :context_window),
       interrupt_scope: Keyword.get(opts, :interrupt_scope),
       req_options: Keyword.get(opts, :req_options, [])
     }
   end
+
+  @doc "将旧版关闭值 off 迁移为上游 API 接受的 none。"
+  def normalize_reasoning_effort("off"), do: "none"
+  def normalize_reasoning_effort(effort), do: effort
 
   @doc "获取模型上下文窗口；显式配置优先，否则查询 provider 元数据，失败回退 256K。"
   def context_window(%__MODULE__{context_window: n}) when is_integer(n) and n > 0, do: n
@@ -151,9 +155,11 @@ defmodule Newbee.LLM.Client do
       stream_options: %{include_usage: true}
     }
 
+    effort = normalize_reasoning_effort(client.reasoning_effort)
+
     body =
-      if client.reasoning_effort,
-        do: Map.put(body, :reasoning_effort, client.reasoning_effort),
+      if effort,
+        do: Map.put(body, :reasoning_effort, effort),
         else: body
 
     # receive_timeout 是"相邻两块数据的间隔"。serverless 端点冷启动（唤醒实例）
@@ -265,7 +271,7 @@ defmodule Newbee.LLM.Client do
       |> maybe_put_body(:temperature, Keyword.get(opts, :temperature, 0.2))
       |> maybe_put_body(:logprobs, Keyword.get(opts, :logprobs))
       |> maybe_put_body(:top_logprobs, Keyword.get(opts, :top_logprobs))
-      |> maybe_put_body(:reasoning_effort, client.reasoning_effort)
+      |> maybe_put_body(:reasoning_effort, normalize_reasoning_effort(client.reasoning_effort))
       |> Map.merge(Keyword.get(opts, :extra, %{}))
 
     body =

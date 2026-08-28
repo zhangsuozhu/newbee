@@ -72,6 +72,29 @@ defmodule Newbee.LLM.ClientTest do
     if old, do: System.put_env("OPENROUTER_API_KEY", old), else: System.delete_env("OPENROUTER_API_KEY")
   end
 
+  test "旧 reasoning_effort off 归一化并发送为 none" do
+    test_pid = self()
+
+    plug = fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:reasoning_body, Jason.decode!(body)})
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"role" => "assistant", "content" => "ok"}}]})
+    end
+
+    client =
+      Client.new(
+        model: "test/m",
+        api_key: "t",
+        base_url: "http://localhost",
+        reasoning_effort: "off",
+        req_options: [plug: plug, retry: false]
+      )
+
+    assert client.reasoning_effort == "none"
+    assert {:ok, "ok", _} = Client.complete(client, [%{"role" => "user", "content" => "hi"}])
+    assert_received {:reasoning_body, %{"reasoning_effort" => "none"}}
+  end
+
   test "format_error: 400/provider 错误转简短提示" do
     msg = ~s({"error":{"type":"server_error","message":"invalid input"}})
     out = Client.format_error({:http_error, 400, msg})

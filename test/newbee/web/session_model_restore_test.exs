@@ -29,6 +29,7 @@ defmodule Newbee.Web.SessionModelRestoreTest do
     Newbee.Session.open(sid)
     :ok = Newbee.Session.set_provider(sid, "opencode")
     :ok = Newbee.Session.set_model(sid, "muse-spark-1.2-contributor")
+    :ok = Newbee.Session.set_effort(sid, "off")
 
     on_exit(fn ->
       if old_config,
@@ -44,5 +45,6 @@ defmodule Newbee.Web.SessionModelRestoreTest do
     assert client.provider == "opencode"
     assert client.model == "muse-spark-1.2-contributor"
     assert client.api == "openai-responses"
+    assert client.reasoning_effort == "none"
   end
 end

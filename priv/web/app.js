@@ -2355,8 +2355,8 @@ case "goal_round": break;
   };
 
   // ── 思考强度段选器（7 档，输入框旁）──
-   const EFFORT_LEVELS = ["off", "auto", "low", "medium", "high", "xhigh", "max"];
-   const EFFORT_LABELS = {off:"关", auto:"自动", low:"低", medium:"中", high:"高", xhigh:"很高", max:"最高"};
+   const EFFORT_LEVELS = ["none", "auto", "low", "medium", "high", "xhigh", "max"];
+   const EFFORT_LABELS = {none:"关", auto:"自动", low:"低", medium:"中", high:"高", xhigh:"很高", max:"最高"};
    const effortWrap = $("effort-segments");
    if (effortWrap) {
      const renderSegs = (active) => {
