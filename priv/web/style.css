@@ -2403,3 +2403,18 @@ svg.ico {
   background: transparent; border: 1px solid var(--border, #2a2e3a); color: var(--fg-dim, #9aa0ae); cursor: pointer; }
 .qa-refresh:hover { border-color: var(--accent, #4f8cff); color: var(--accent, #4f8cff); }
 .qa-refresh.hidden { display: none; }
+
+/* 顶栏手机扫码按钮（与主题切换/Mission Control 同排） */
+.qa-topbar { color: var(--nb-label-2); }
+.qa-topbar:hover { color: var(--nb-accent-soft); }
+/* 顶栏"手机扫码"文字按钮 */
+.qa-top-text { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px;
+  border-radius: 8px; border: 1px solid var(--nb-border); background: transparent;
+  color: var(--nb-label-2); font-size: 12px; cursor: pointer; white-space: nowrap;
+  transition: background var(--nb-dur), color var(--nb-dur), border-color var(--nb-dur); }
+.qa-top-text:hover { background: var(--nb-bg-elev); color: var(--nb-accent-soft); border-color: var(--nb-accent); }
+
+/* 手机端不展示扫码按钮（手机是扫码方） */
+@media (max-width: 768px) {
+  #qa-show { display: none !important; }
+}

@@ -71,7 +71,8 @@ defmodule Newbee.Web.Router do
     "/api/webauthn.has_credentials",
     "/api/webauthn.login_challenge",
     "/api/webauthn.login",
-    "/api/pair."
+    "/api/pair.",
+    "/api/quick_access.redeem"
   ]
 
   defp require_auth(conn, _opts) do
@@ -158,10 +159,12 @@ defmodule Newbee.Web.Router do
 
   @pair_template Path.expand("../../../priv/web/pair.html.eex", __DIR__)
   require EEx
-  EEx.function_from_file(:defp, :render_pair_page, @pair_template,
-    [:ok, :error, :pairing_id_json, :ua_short, :ip, :time_ago, :auth_required],
-    trim: true
-  )
+
+  EEx.function_from_file(
+    :defp,
+    :render_pair_page,
+    @pair_template,
+    [:ok, :error, :pairing_id_json, :ua_short, :ip, :time_ago, :auth_required], trim: true)
 
   defp serve_pair_page(conn) do
     conn = fetch_query_params(conn)
@@ -207,6 +210,7 @@ defmodule Newbee.Web.Router do
 
   defp time_ago(created_ms) when is_integer(created_ms) do
     sec = div(System.system_time(:millisecond) - created_ms, 1000)
+
     cond do
       sec < 5 -> "刚刚"
       sec < 60 -> "#{sec} 秒前"

@@ -1,3 +1,3 @@
 defmodule Mini do
-  def hello, do: :world
+  def hello(name), do: "hi " <> name
 end

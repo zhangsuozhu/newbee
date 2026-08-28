@@ -28,3 +28,47 @@
 {"call":"patch 无[","tool":"edit","scenario":"节头缺[方括号]","outcome":"error_returned","detail":"ERROR: \"补丁必须以节头 [path#tag] 开头，或内容行以 + 开头 [Newbee.Tools.Edit.ParseError]\""}
 {"call":"patch 不存在文件","tool":"edit","scenario":"节头文件不存在","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 1#c23e17f6（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
 {"call":"patch +空","tool":"edit","scenario":"内容行仅+(空内容)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30#a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"apply_patch PUT 2..2","tool":"edit_v2","scenario":"PUT 替换单行(正确)","outcome":"other","detail":"%{status: :applied, warnings: [], files: [%{path: \"/home/alanx/data/git/newbee/tool_stress_test/mini.ex\", context: \"1| defmodule Mini do\\n2|   def hello(name), do: \\\"hi \\\" <> name\\n3| end\", diff: \"defmodule Mini do\\n-   "}
+{"call":"apply_patch CUT 1..1","tool":"edit_v2","scenario":"CUT 删除行(正确)","outcome":"error_returned","detail":"ERROR: \"文件已变化（stale）：/home/alanx/data/git/newbee/tool_stress_test/mini.ex 与快照 b2e76244d774 不一致，未写入。请重新 show 后基于新标签提交 [Newbee.Tools.Edit.V2.RejectError]\""}
+{"call":"apply_patch PUT <1","tool":"edit_v2","scenario":"PUT< 行前插入(正确)","outcome":"error_returned","detail":"ERROR: \"文件已变化（stale）：/home/alanx/data/git/newbee/tool_stress_test/mini.ex 与快照 b2e76244d774 不一致，未写入。请重新 show 后基于新标签提交 [Newbee.Tools.Edit.V2.RejectError]\""}
+{"call":"apply_patch PUT 99..99","tool":"edit_v2","scenario":"越界行号99","outcome":"error_returned","detail":"ERROR: \"文件已变化（stale）：/home/alanx/data/git/newbee/tool_stress_test/mini.ex 与快照 b2e76244d774 不一致，未写入。请重新 show 后基于新标签提交 [Newbee.Tools.Edit.V2.RejectError]\""}
+{"call":"apply_patch 错误tag","tool":"edit_v2","scenario":"stale/错误tag","outcome":"error_returned","detail":"ERROR: \"节头格式错误: [/home/alanx/data/git/newbee/tool_stress_test/mini.ex#deadbeef]（应为 [path#12位tag]） [Newbee.Tools.Edit.V2.ParseError]\""}
+{"call":"apply_patch no-op","tool":"edit_v2","scenario":"no-op 相同内容","outcome":"error_returned","detail":"ERROR: \"文件已变化（stale）：/home/alanx/data/git/newbee/tool_stress_test/mini.ex 与快照 b2e76244d774 不一致，未写入。请重新 show 后基于新标签提交 [Newbee.Tools.Edit.V2.RejectError]\""}
+{"call":"apply_patch PUT 2..2 无:","tool":"edit_v2","scenario":"PUT 缺冒号","outcome":"error_returned","detail":"ERROR: \"文件已变化（stale）：/home/alanx/data/git/newbee/tool_stress_test/mini.ex 与快照 b2e76244d774 不一致，未写入。请重新 show 后基于新标签提交 [Newbee.Tools.Edit.V2.RejectError]\""}
+{"call":"apply_patch PUT 2..3","tool":"edit_v2","scenario":"PUT 范围替换2..3(正确)","outcome":"other","detail":"%{status: :applied, warnings: [], files: [%{path: \"/home/alanx/data/git/newbee/tool_stress_test/v2t.ex\", context: \"1| a\\n2|  X\\n3|  Y\\n4| d\", diff: \"a\\n- b\\n- c\\n+  X\\n+  Y\\nd\\n\", changed_lines: {2, 3}, new_tag: \"39decd0"}
+{"call":"apply_patch PUT >1","tool":"edit_v2","scenario":"PUT> 行后插入(正确)","outcome":"other","detail":"%{status: :applied, warnings: [], files: [%{path: \"/home/alanx/data/git/newbee/tool_stress_test/v2t.ex\", context: \"1| a\\n2|  inserted\\n3| b\", diff: \"a\\n+  inserted\\nb\\nc\\n\", changed_lines: {1, 1}, new_tag: \"4593b44b8857\""}
+{"call":"apply_patch PUT 3..1","tool":"edit_v2","scenario":"范围反序3..1","outcome":"error_returned","detail":"ERROR: \"行号越界: 3..1（快照共 3 行） [Newbee.Tools.Edit.V2.RejectError]\""}
+{"call":"apply_patch 无[","tool":"edit_v2","scenario":"节头缺方括号","outcome":"error_returned","detail":"ERROR: \"补丁必须以 [path#tag] 节头开始 [Newbee.Tools.Edit.V2.ParseError]\""}
+{"call":"apply_patch PUT :","tool":"edit_v2","scenario":"PUT 缺行号","outcome":"error_returned","detail":"ERROR: \"范围格式错误: :（应为 N 或 N..M） [Newbee.Tools.Edit.V2.ParseError]\""}
+{"call":"apply_patch 内容无+","tool":"edit_v2","scenario":"内容行无+前缀","outcome":"error_returned","detail":"ERROR: \"无法识别的行（正文必须以 + 开头）: x [Newbee.Tools.Edit.V2.ParseError]\""}
+{"call":"apply_patch CUT+","tool":"edit_v2","scenario":"CUT 带+内容(非法)","outcome":"error_returned","detail":"ERROR: \"正文行必须紧跟带 : 的 PUT/插入头 [Newbee.Tools.Edit.V2.ParseError]\""}
+{"call":"list_functions(reader.ex, Newbee)","tool":"structural","scenario":"list_functions(正确)","outcome":"ok","detail":"[\"def when/2\", \"def read/1\", \"defp read_path/1\", \"defp sensitive_path?/1\", \"defp read_skill/1\", \"defp read_agent/1\", \"defp read_conflict/1\", \"defp read_conflict/1\", \"defp read_rules/0\", \"defp read_memory/1\", \"defp read_b"}
+{"call":"list_functions(f, BadMod)","tool":"structural","scenario":"list_functions(module不存在)","outcome":"error_returned","detail":"ERROR: :module_not_found"}
+{"call":"list_functions(py, Newbee)","tool":"structural","scenario":"对python文件调用(非elixir)","outcome":"error_returned","detail":"ERROR: {[line: 18, column: 47], \"unexpected token: \", \"\\\":\\\" (column 47, code point U+003A)\"}"}
+{"call":"insert_function(mod, M, code)","tool":"structural","scenario":"insert_function(正确)","outcome":"ok","detail":":inserted"}
+{"call":"insert_function(mod, Wrong, code)","tool":"structural","scenario":"insert_function(module未加载)","outcome":"error_returned","detail":"ERROR: :module_not_found"}
+{"call":"insert_function(非法代码)","tool":"structural","scenario":"insert_function(非法elixir源码)","outcome":"ok","detail":":inserted"}
+{"call":"grep('def read', file)","tool":"search","scenario":"grep 内容搜索(正确)","outcome":"other","detail":"[{\"tool_stress_test/elixir_reader.ex\", 30, \"  def read(path) when is_binary(path) do\"}, {\"tool_stress_test/elixir_reader.ex\", 71, \"  def read(_), do: {:error, :invalid_path}\"}]"}
+{"call":"grep('def read', file)","tool":"search","scenario":"grep 内容搜索(正确)","outcome":"other","detail":"[{\"tool_stress_test/elixir_reader.ex\", 30, \"  def read(path) when is_binary(path) do\"}, {\"tool_stress_test/elixir_reader.ex\", 71, \"  def read(_), do: {:error, :invalid_path}\"}]"}
+{"call":"grep('([a-z', f)","tool":"search","scenario":"grep 非法正则(抛编译错)","outcome":"error_returned","detail":"ERROR: \"missing terminating ] for character class at position 5 [Regex.CompileError]\""}
+{"call":"find('reader', dir)","tool":"search","scenario":"find 文件名(正确)","outcome":"other","detail":"[\"tool_stress_test/_show_reader.json\", \"tool_stress_test/elixir_reader.ex\"]"}
+{"call":"find('x', 不存在)","tool":"search","scenario":"find 不存在目录","outcome":"other","detail":"[]"}
+{"call":"grep('def', f, max:3)","tool":"search","scenario":"grep 带max选项","outcome":"other","detail":"[{\"tool_stress_test/elixir_reader.ex\", 1, \"defmodule Newbee do\"}, {\"tool_stress_test/elixir_reader.ex\", 30, \"  def read(path) when is_binary(path) do\"}, {\"tool_stress_test/elixir_reader.ex\", 71, \"  def read(_), do: {:err"}
+{"call":"sh('echo hello')","tool":"run","scenario":"sh 正确命令","outcome":"ok","detail":"exit=0 out=hello\n/home/alanx/data/git/newbee"}
+{"call":"sh('rm -rf /tmp/x')","tool":"run","scenario":"sh 高危rm(可能被拦)","outcome":"ok","detail":"exit=0 out="}
+{"call":"sh('不存在命令')","tool":"run","scenario":"sh 不存在命令","outcome":"error_returned","detail":"exit=127 out=/usr/bin/sh: 1: this_cmd_does_not_exist_xyz: not found"}
+{"call":"sh('sleep 5', timeout:1000)","tool":"run","scenario":"sh 超时(1s)","outcome":"timeout","detail":"exit=:timeout out="}
+{"call":"Git.status(dir)","tool":"git","scenario":"status(正确)","outcome":"ok","detail":"\"\""}
+{"call":"Git.diff(dir)","tool":"git","scenario":"diff(正确)","outcome":"ok","detail":"\"\""}
+{"call":"Git.status(非git)","tool":"git","scenario":"status(非git目录)","outcome":"ok","detail":"\"M ../lib/newbee/collaboration/coordinator.ex\\n M ../lib/newbee/web/session.ex\\n M ../lib/newbee/web/socket.ex\\n M ../priv/web/app.js\\n M ../priv/web/style.css\\n M ../test/newbee/web/collaboration_api_test.exs\\n M mini.e"}
+{"call":"Git.status(不存在)","tool":"git","scenario":"status(目录不存在)","outcome":"error_returned","detail":"ERROR: {128, \"fatal: cannot change to '/home/alanx/data/git/newbee/tool_stress_test/nope': 没有那个文件或目录\"}"}
+{"call":"Http.get(example.com)","tool":"http","scenario":"get 外网(预期失败)","outcome":"error_returned","detail":"ERROR: :request_failed"}
+{"call":"Http.get('not a url')","tool":"http","scenario":"get 非法URL","outcome":"error_returned","detail":"ERROR: :request_failed"}
+{"call":"Json.decode('{\"a\":1}')","tool":"json","scenario":"decode 合法(正确)","outcome":"ok","detail":"%{\"a\" => 1}"}
+{"call":"Json.decode('{bad')","tool":"json","scenario":"decode 非法json","outcome":"error_returned","detail":"ERROR: %Jason.DecodeError{position: 1, token: nil, data: \"{bad json\"}"}
+{"call":"Json.encode(map)","tool":"json","scenario":"encode map(正确)","outcome":"other","detail":"{\"x\":[1,2,3]}"}
+{"call":"Introspect.exports(Module)","tool":"introspect","scenario":"exports(正确)","outcome":"other","detail":"[patch: 1, show: 1, show: 2]"}
+{"call":"Introspect.exports(不存在)","tool":"introspect","scenario":"exports(模块不存在)","outcome":"other","detail":"[]"}
+{"call":"Introspect.exports(String)","tool":"introspect","scenario":"exports(原子模块,正确)","outcome":"other","detail":"[at: 2, bag_distance: 2, byte_slice: 3, capitalize: 1, capitalize: 2, chunk: 2, codepoints: 1, contains?: 2, count: 2, downcase: 1, downcase: 2, duplicate: 2, ends_with?: 2, equivalent?: 2, first: 1, graphemes: 1, jaro_d"}
+{"call":"Scaffold.new(name, dir)","tool":"scaffold","scenario":"new 创建工程(隔离目录)","outcome":"error_returned","detail":"ERROR: \"function Newbee.Tools.Scaffold.new/2 is undefined or private\""}
+{"call":"Scaffold.new(已存在dir)","tool":"scaffold","scenario":"new 目录已存在","outcome":"error_returned","detail":"ERROR: \"function Newbee.Tools.Scaffold.new/2 is undefined or private\""}

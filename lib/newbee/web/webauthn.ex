@@ -211,20 +211,41 @@ defmodule Newbee.Web.WebAuthn do
     Process.put({__MODULE__, :origin}, origin)
   end
 
-  # WebAuthn 规范要求 RP ID 必须是有效域名（不能是 IP 地址）。用 IP 直接访问
-  # WebUI 时（如 https://192.168.0.8:5151），rp_id=:auto 推导出的 RP ID 是裸 IP，
-  # 浏览器在 navigator.credentials.create/get 阶段直接抛
-  # "This is an invalid domain."。这里在服务端提前拦截，返回可操作的引导。
+  # WebAuthn 两层硬约束（浏览器强制，服务端无法绕过）：
+  # 1. RP ID 必须是有效域名，不能是 IP 字面量。裸 IP 访问（如 https://192.168.0.8:5151）
+  #    时 rp_id=:auto 推导出裸 IP，浏览器在 navigator.credentials.create/get 阶段直接拒绝。
+  # 2. 页面必须是受信任的安全上下文。自签证书站点用户跳过告警后能浏览页面，
+  #    但 WebAuthn 调用仍被浏览器拒绝（NotAllowedError），用户看到的"注册已取消"实为浏览器拒绝。
+  #    nip.io/sslip.io 这类"IP 嵌入域名"通常正配合自签证书使用，是同一失败模式。
+  # 这里在服务端提前拦截，避免用户走完流程才撞上浏览器静默失败。
   defp ensure_webauthn_origin do
     host = URI.parse(origin()).host || ""
 
-    if ip_literal?(host) do
-      {:error, "invalid_domain",
-       "当前通过 IP 地址（#{host}）访问，浏览器禁止在该站点使用通行密钥（指纹/面容）。" <>
-         "请改用域名/主机名访问本服务后再试，例如 http://<主机名>.local 或配置的域名。"}
-    else
-      :ok
+    cond do
+      ip_literal?(host) ->
+        {:error, "invalid_domain",
+         "当前通过 IP 地址（#{host}）访问，浏览器禁止在该站点使用通行密钥（指纹/面容）。" <>
+           "请在受信任的域名下使用：本机可用 http://localhost:<端口>（localhost 属安全上下文）；" <>
+           "远程请用受 CA 信任的证书（--certfile/--keyfile）配合真实域名，或经反向代理终止 TLS。"}
+
+      wildcard_dns?(host) ->
+        {:error, "invalid_domain",
+         "当前通过通配 DNS 域名（#{host}）访问。这类域名通常配合自签证书使用，" <>
+           "浏览器即使跳过证书告警仍会拒绝通行密钥（指纹/面容）请求——这不是您取消了操作。" <>
+           "解决办法：给 #{host} 配一张受信任的证书（如 Let's Encrypt，可用 --certfile/--keyfile 挂载），" <>
+           "或经受信反向代理访问后再注册。"}
+
+      true ->
+        :ok
     end
+  end
+
+  # nip.io / sslip.io 等通配 DNS：把 IP 编进域名（192.168.0.8.nip.io → 192.168.0.8）。
+  # 域名虽合法，但这类场景几乎必然伴随自签证书，WebAuthn 会被浏览器拒绝，提前拦截。
+  defp wildcard_dns?(host) do
+    Enum.any?(["nip.io", "sslip.io"], fn suffix ->
+      host == suffix or String.ends_with?(host, "." <> suffix)
+    end)
   end
 
   defp ip_literal?(host) do

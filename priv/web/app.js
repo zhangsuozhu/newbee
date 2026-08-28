@@ -4216,9 +4216,9 @@ case "goal_round": break;
       bootApp();
     } catch (e) {
       if (e.name === "NotAllowedError") {
-        loginError("指纹/面容验证已取消");
+        loginError("指纹/面容验证未完成：可能是用户取消，或浏览器因证书不受信任/域名不匹配直接拒绝了请求（详见浏览器控制台）");
       } else {
-        loginError(e.message || "指纹/面容登录失败");
+        loginError((e.name || "Error") + ": " + (e.message || "指纹/面容登录失败"));
       }
     }
   }
@@ -4329,9 +4329,20 @@ case "goal_round": break;
       alert("✅ 通行密钥注册成功！下次登录可使用指纹/面容。");
     } catch (e) {
       if (e.name === "NotAllowedError") {
-        alert("注册已取消");
+        // NotAllowedError 不一定是用户取消：浏览器在证书不受信任（自签/告警页放行）、
+        // RP ID 与站点不匹配、或用户超时未操作时都抛这个错。给出可操作的信息而不是误导。
+        const hint = "浏览器没有弹出指纹/面容验证就拒绝了通行密钥。\n\n" +
+          "常见原因：\n" +
+          "1. 当前站点证书不受信任（自签名证书，浏览器地址栏有⚠警告）；\n" +
+          "2. 访问域名与证书/RP ID 不匹配（如 nip.io 直连内网 IP）；\n" +
+          "3. 验证弹窗超时未操作。\n\n" +
+          "请改用受信任的证书（或反向代理）访问本服务后再注册。\n" +
+          "浏览器详情: " + (e.message || "NotAllowedError");
+        alert("通行密钥注册被浏览器拒绝\n\n" + hint);
+      } else if (e.name === "InvalidStateError") {
+        alert("这台设备已注册过通行密钥，无需重复注册。");
       } else {
-        alert("注册失败: " + (e.message || e));
+        alert("注册失败: " + (e.name || "Error") + ": " + (e.message || e));
       }
     }
   }
@@ -4397,12 +4408,9 @@ case "goal_round": break;
       const r = await rpc("quick_access.redeem", { code: qk });
       if (r && r.token) {
         setToken(r.token);
-        // 静默进入主界面（无需再走登录流程）
+        // 只完成登录态：外层启动块检测到 needAuth && state.token 后会自动 bootApp
         hideLogin();
         updateLogoutBtn();
-        if (!state.sid) { await newSession(); } else { await resume(state.sid); }
-        loadSessions();
-        startStats();
         return;
       }
     } catch (e) {
@@ -4410,11 +4418,15 @@ case "goal_round": break;
     }
   }
 
+  function qaIsMobile() {
+    return window.matchMedia("(max-width: 768px)").matches ||
+      /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || "");
+  }
   function initQuickAccess() {
-    const show = $("qa-show");
-    if (!show) return;
-    show.addEventListener("click", () => {
-      openQuickAccess();
+    // 手机端不展示"手机扫码"按钮（手机本身就是扫码方）
+    if (qaIsMobile()) return;
+    document.querySelectorAll("#qa-show, .qa-topbar, .qa-top-text").forEach((el) => {
+      el.addEventListener("click", () => openQuickAccess());
     });
   }
 

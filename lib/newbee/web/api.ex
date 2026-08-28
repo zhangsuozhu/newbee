@@ -301,6 +301,47 @@ defmodule Newbee.Web.Api do
     end
   end
 
+  # ── 手机免登录扫码（电脑发码，手机扫 → 直接进）──
+  # 与 pair.* 方向相反：pair 是手机替电脑"盖章"，这里电脑生成一次性码，
+  # 手机打开 /?qk=<code> 后由前端调 redeem 换成正式 token。
+
+  # 电脑端（需已登录）：生成一次性邀请码。
+  defp dispatch_rpc("quick_access.create", %{"__remote_ip__" => ip}) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        {:ok, %{code: code, ttl_ms: ttl}} = Newbee.Web.QuickAccess.create(%{ip: ip_to_s(ip)})
+        {:ok, %{code: code, ttl_ms: ttl}}
+
+      {:error, ms} ->
+        {:error, "locked", ~s"操作过于频繁，请 #{div(ms, 1000)} 秒后重试"}
+    end
+  end
+
+  defp dispatch_rpc("quick_access.create", p),
+    do: dispatch_rpc("quick_access.create", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # 手机端（免认证）：拿码换 token。
+  defp dispatch_rpc("quick_access.redeem", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        case Newbee.Web.QuickAccess.redeem(Map.get(p, "code", "")) do
+          {:ok, token} ->
+            Newbee.Web.Auth.record_success(ip)
+            {:ok, %{token: token}}
+
+          {:error, code, msg} ->
+            Newbee.Web.Auth.record_fail(ip)
+            {:error, code, msg}
+        end
+
+      {:error, _ms} ->
+        {:error, "locked", "操作过于频繁，请稍后重试"}
+    end
+  end
+
+  defp dispatch_rpc("quick_access.redeem", p),
+    do: dispatch_rpc("quick_access.redeem", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
   # 会话群协作域（P0/P1：群组、成员、可靠 notify 消息）
   defp dispatch_rpc("group.list", p) do
     session_id = blank_to_nil(p["sessionId"])
@@ -2122,3 +2163,4 @@ defmodule Newbee.Web.Api do
     end
   end
 end
+
