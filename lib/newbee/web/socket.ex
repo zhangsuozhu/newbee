@@ -25,8 +25,9 @@ defmodule Newbee.Web.Socket do
       {:ok, %{"type" => "interrupt"}} ->
         cast_session(st.sid, &WSession.interrupt/1)
 
-      {:ok, %{"type" => "permission", "ok" => ok}} ->
-        cast_session(st.sid, &WSession.permission_reply(&1, ok))
+      {:ok, %{"type" => "permission", "ok" => ok} = frame} ->
+        target = frame["sessionId"] || st.sid
+        cast_session(target, &WSession.permission_reply(&1, ok))
 
       {:ok, %{"type" => "prompt", "text" => t}} ->
         cast_session(st.sid, &WSession.prompt(&1, t))

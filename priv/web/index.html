@@ -33,6 +33,10 @@
     <div class="sidebar-foot">
       <div id="cwd-label" class="cwd-label" title="当前会话工作目录"></div>
       <div id="model-label" class="model-label" title="点击切换模型"></div>
+      <button id="qa-show" class="qa-show-btn" title="生成二维码，手机扫码免登录打开">
+        <svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><path d="M14 14h3v3h-3z"/><path d="M21 14v3M14 21h3"/></svg>
+        <span>手机扫码</span>
+      </button>
       <button id="logout-btn" class="logout-btn hidden" title="退出登录">
         <svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         <span>退出登录</span>
@@ -411,5 +415,20 @@
 <script src="/vendor/languages/elixir.min.js"></script>
 <script src="/vendor/qrcodegen.js"></script>
 <script src="/app.js?v=1787880700"></script>
+<!-- 手机扫码免登录弹窗 -->
+<div id="qa-overlay" class="qa-overlay hidden">
+  <div class="qa-box">
+    <div class="qa-head">
+      <span>手机扫码进入</span>
+      <button id="qa-close" class="icon-btn" title="关闭"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="qa-qr"></div>
+    <div id="qa-status" class="qa-status">用手机扫码，即可免登录打开 newbee</div>
+    <div id="qa-expire" class="qa-expire"></div>
+    <button id="qa-refresh" class="qa-refresh hidden">二维码已失效，点击重新生成</button>
+  </div>
+</div>
+
 </body>
+
 </html>

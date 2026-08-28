@@ -2372,3 +2372,34 @@ svg.ico {
 
 /* 协作消息投递徽标（notify/queue/wake） */
 .collab-dbadge{font-style:normal;font-size:10px;color:#5b6472;border:1px solid #3a4149;border-radius:8px;padding:0 6px;margin-left:4px;white-space:nowrap}
+
+.collab-task-result{margin-top:8px;padding:8px 10px;background:var(--panel-2,#20252b);border-left:2px solid var(--accent,#6ea8fe);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.collab-task-result strong{display:block;margin-bottom:4px;color:var(--fg2,#9aa4b2)}.collab-task-actions{display:flex;gap:6px;margin-top:8px}
+
+.diff-owner,.mc-file-owner{font-size:10px;color:var(--fg2,#9aa4b2);margin-left:8px;border:1px solid var(--line,#3a4149);border-radius:8px;padding:1px 6px;white-space:nowrap}.mc-file-path{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+
+
+/* ── 手机扫码免登录（Quick Access）── */
+.qa-show-btn { display: flex; align-items: center; gap: 6px; align-self: flex-start;
+  padding: 5px 10px; border-radius: 8px; background: transparent; border: 1px solid var(--nb-border);
+  color: var(--nb-label-2); cursor: pointer; font-size: 12px; margin-top: 4px;
+  transition: background var(--nb-dur), color var(--nb-dur), border-color var(--nb-dur); }
+.qa-show-btn:hover { background: var(--nb-bg-elev); color: var(--nb-accent-soft); border-color: var(--nb-accent); }
+.qa-overlay { position: fixed; inset: 0; z-index: 2500; background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center; }
+.qa-overlay.hidden { display: none; }
+.qa-box { width: 300px; max-width: calc(100vw - 32px); padding: 22px 24px; border-radius: 14px;
+  background: var(--panel, #171a21); border: 1px solid var(--border, #2a2e3a);
+  box-shadow: 0 8px 40px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 14px;
+  align-items: center; text-align: center; }
+.qa-head { width: 100%; display: flex; align-items: center; justify-content: space-between;
+  font-size: 15px; font-weight: 600; color: var(--fg, #e6e8ee); }
+.qa-head .icon-btn { background: transparent; border: none; color: var(--fg-dim, #9aa0ae); cursor: pointer; }
+.qa-qr { display: inline-flex; padding: 14px; background: #fff; border-radius: 12px; }
+.qa-qr svg { display: block; width: 200px; height: 200px; }
+.qa-qr a { color: #4f8cff; font-size: 12px; word-break: break-all; }
+.qa-status { font-size: 13px; color: var(--fg-dim, #9aa0ae); line-height: 1.6; }
+.qa-expire { font-size: 12px; color: var(--fg-dim, #9aa0ae); }
+.qa-refresh { padding: 8px 18px; border-radius: 8px; font-size: 13px;
+  background: transparent; border: 1px solid var(--border, #2a2e3a); color: var(--fg-dim, #9aa0ae); cursor: pointer; }
+.qa-refresh:hover { border-color: var(--accent, #4f8cff); color: var(--accent, #4f8cff); }
+.qa-refresh.hidden { display: none; }

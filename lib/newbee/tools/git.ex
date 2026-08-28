@@ -41,8 +41,10 @@ defmodule Newbee.Tools.Git do
   end
 
   @doc "worktree 隔离：为子代理开独立工作树。"
-  def worktree_add(path, ref \\ "HEAD"), do: run(".", ["worktree", "add", path, ref])
-  def worktree_remove(path), do: run(".", ["worktree", "remove", "--force", path])
+  def worktree_add(path, ref \\ "HEAD"), do: worktree_add(".", path, ref)
+  def worktree_add(root, path, ref), do: run(root, ["worktree", "add", path, ref])
+  def worktree_remove(path), do: worktree_remove(".", path)
+  def worktree_remove(root, path), do: run(root, ["worktree", "remove", "--force", path])
 
   defp run(dir, args) do
     case System.cmd("git", ["-C", dir | args], stderr_to_stdout: true) do

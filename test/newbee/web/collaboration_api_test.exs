@@ -298,7 +298,6 @@ defmodule Newbee.Web.CollaborationApiTest do
   end
 
   defp post_rpc(method, payload) do
-
     body = Jason.encode!(%{"rpcId" => "test", "method" => method, "payload" => payload})
 
     Plug.Test.conn(:post, "/api/" <> method, body)

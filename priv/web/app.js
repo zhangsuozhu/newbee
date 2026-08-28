@@ -246,6 +246,7 @@ const flow = $("flow");
     activeGroup: null,
     groupMessages: [],
     groupTasks: [],
+    fileAttribution: {},
     groupBySession: {},
     selectedSessions: new Set(),
   };
@@ -829,7 +830,9 @@ case "goal_round": break;
     const head = document.createElement("div");
     head.className = "tool-head";
     const st = p.stats || {};
-    head.innerHTML = `<b>✎</b> ${escapeHtml(p.path || "")} <span class="diffstat">+${st.added ?? 0} −${st.removed ?? 0}</span>`;
+    const actor = p.session_id ? sessionDisplayName(p.session_id) : "当前会话";
+    if (p.path && p.session_id) state.fileAttribution[p.path] = { sessionId: p.session_id, name: actor };
+    head.innerHTML = `<b>✎</b> ${escapeHtml(p.path || "")} <span class="diffstat">+${st.added ?? 0} −${st.removed ?? 0}</span><span class="diff-owner">${escapeHtml(actor)}</span>`;
     const body = document.createElement("div");
     body.className = "tool-code";
     (p.diff || []).slice(0, 60).forEach((ln) => {
@@ -969,6 +972,12 @@ case "goal_round": break;
     return ({ notify: "仅通知", queue: "排队处理", wake: "立即处理" })[d] || "仅通知";
   }
 
+  function formatTaskResult(result) {
+    if (result == null) return "";
+    if (typeof result === "string") return result;
+    try { return JSON.stringify(result, null, 2); } catch (_) { return String(result); }
+  }
+
   function taskStatusLabel(status) {
     return ({ pending: "未开始", assigned: "已分派", accepted: "已接受", running: "进行中", blocked: "受阻", succeeded: "已完成", failed: "失败", cancelled: "已取消" })[status] || status || "未开始";
   }
@@ -989,10 +998,24 @@ case "goal_round": break;
     const tasks = state.groupTasks || [];
     list.innerHTML = tasks.length ? tasks.map((task) => {
       const owner = task.assigned_session_id ? sessionDisplayName(task.assigned_session_id) : "未分配";
-      const progress = task.progress ? `<div class="collab-task-progress">${escapeHtml(String(task.progress))}</div>` : "";
-      const claim = !task.assigned_session_id && task.status === "pending" ? `<button class="btn-ghost" data-claim="${escapeHtml(task.task_id)}">领取</button>` : "";
-      return `<article class="collab-task ${escapeHtml(task.status || "pending")}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(task.status))}</div>${progress}${claim}</article>`;
+      const status = task.status || "pending";
+      const progress = task.progress ? `<div class="collab-task-progress">进度：${escapeHtml(String(task.progress))}</div>` : "";
+      const result = task.result != null && status !== "pending" && status !== "assigned" ? `<div class="collab-task-result"><strong>${status === "succeeded" ? "结果" : "失败信息"}</strong><div>${escapeHtml(formatTaskResult(task.result))}</div></div>` : "";
+      const claim = !task.assigned_session_id && status === "pending" ? `<button class="btn-ghost" data-claim="${escapeHtml(task.task_id)}">领取</button>` : "";
+      const actions = task.assigned_session_id ? `<div class="collab-task-actions"><button class="btn-ghost" data-open-session="${escapeHtml(task.assigned_session_id)}">查看会话</button><button class="btn-ghost" data-message-session="${escapeHtml(task.assigned_session_id)}">发消息</button></div>` : "";
+      return `<article class="collab-task ${escapeHtml(status)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))}</div>${progress}${result}${claim}${actions}</article>`;
     }).join("") : '<div class="collab-empty">暂无工作项</div>';
+    list.querySelectorAll("[data-open-session]").forEach((button) => {
+      button.onclick = () => resume(button.dataset.openSession);
+    });
+    list.querySelectorAll("[data-message-session]").forEach((button) => {
+      button.onclick = () => {
+        const recipient = $("mc-collab-recipient");
+        if (recipient) recipient.value = button.dataset.messageSession;
+        switchMCTab("collaboration");
+        $("mc-collab-input").focus();
+      };
+    });
     list.querySelectorAll("[data-claim]").forEach((button) => {
       button.onclick = async () => {
         try {
@@ -1142,7 +1165,23 @@ case "goal_round": break;
     } catch (e) { line("error", "移出工作组失败: " + e.message); }
   }
 
-  async function onGroupEvent() {
+  async function onGroupEvent(frame) {
+    const topic = frame && frame.topic;
+    const payload = (frame && frame.payload) || {};
+    if (topic === "collab_permission_ask" && payload.request_session_id !== state.sid) {
+      showPermission(payload.preview, payload.request_session_id);
+      line("notice", `协作会话 ${sessionDisplayName(payload.request_session_id)} 请求权限，请审批`);
+    } else if (topic === "collab_member_added" && payload.member) {
+      const member = payload.member;
+      if (member.session_id !== state.sid) {
+        line("notice", `模型已派生子代理：${sessionDisplayName(member.session_id)}（${member.role || "worker"}）`);
+      }
+    } else if (topic === "collab_task_created" && payload.task) {
+      const task = payload.task;
+      line("notice", `模型已分派工作项：${task.title || "未命名工作项"}`);
+    } else if (topic === "collab_task_updated" && payload.task && payload.task.status === "succeeded") {
+      line("done", `子代理完成：${payload.task.title || "工作项"}`, true);
+    }
     await Promise.all([loadSessions(), loadGroups()]);
   }
 
@@ -1167,7 +1206,8 @@ case "goal_round": break;
     });
   }
 
-  function showPermission(preview) {
+  function showPermission(preview, requestSessionId) {
+    state.permissionSessionId = requestSessionId || state.sid;
     $("perm-preview").textContent = preview || "";
     $("permission-bar").classList.remove("hidden");
   }
@@ -1175,9 +1215,9 @@ case "goal_round": break;
 
   function permission(ok) {
     if (state.ws && state.ws.readyState === 1) {
-      state.ws.send(JSON.stringify({ type: "permission", ok }));
+      state.ws.send(JSON.stringify({ type: "permission", ok, sessionId: state.permissionSessionId || state.sid }));
     } else {
-      rpc("respond", { sessionId: state.sid, permission: ok }).catch(() => {});
+      rpc("respond", { sessionId: state.permissionSessionId || state.sid, permission: ok }).catch(() => {});
     }
     hidePermission();
   }
@@ -3346,8 +3386,10 @@ case "goal_round": break;
       const stats = f.status === "new"
         ? `<span class="mc-file-added">+${f.added}</span> <span class="mc-file-status">新文件</span>`
         : `<span class="mc-file-added">+${f.added}</span> <span class="mc-file-deleted">-${f.deleted}</span>`;
+      const attribution = state.fileAttribution && state.fileAttribution[f.path];
+      const owner = attribution ? `<span class="mc-file-owner">${escapeHtml(attribution.name)}</span>` : "";
       return `<div class="${cls}" data-path="${escapeHtml(f.path)}" title="点击查看 diff">
-        <div class="mc-file-path">${escapeHtml(f.path)}</div>
+        <div class="mc-file-path">${escapeHtml(f.path)}${owner}</div>
         <div class="mc-file-stats">${stats}</div>
       </div>`;
     }).join("");
@@ -3957,6 +3999,7 @@ case "goal_round": break;
     if (lo) lo.addEventListener("click", doLogout);
     initWebAuthn();
     initPairLogin();
+    initQuickAccess();
   }
 
   // ── 扫码授权登录（手机替电脑"盖章"）──
@@ -4319,6 +4362,7 @@ case "goal_round": break;
   (async () => {
     initLogin();
     updateLogoutBtn();
+    await redeemQuickAccess();
     let needAuth = false;
     try {
       const host = await rpc("host.describe", {});
@@ -4338,6 +4382,123 @@ case "goal_round": break;
       await bootApp();
     }
   })().catch((e) => line("error", `启动失败: ${e.message}`));
+  // ── 手机扫码免登录进入（Quick Access）──
+  // 电脑端已登录 → 生成一次性邀请码 → 二维码 URL 带 ?qk=CODE；
+  // 手机扫码打开后本函数把码换成正式 token，免登录直接进入。
+  function qaQRSupported() { return typeof window.qrcode === "function"; }
+
+  async function redeemQuickAccess() {
+    try {
+      const qk = new URLSearchParams(location.search).get("qk");
+      if (!qk) return;
+      // 清掉 URL 里的码，避免 token 换好后刷新页面又兑一次（码已焚，会报错）
+      const cleanUrl = location.origin + location.pathname;
+      history.replaceState(null, "", cleanUrl);
+      const r = await rpc("quick_access.redeem", { code: qk });
+      if (r && r.token) {
+        setToken(r.token);
+        // 静默进入主界面（无需再走登录流程）
+        hideLogin();
+        updateLogoutBtn();
+        if (!state.sid) { await newSession(); } else { await resume(state.sid); }
+        loadSessions();
+        startStats();
+        return;
+      }
+    } catch (e) {
+      // 码无效/过期：不阻塞，走正常登录流程
+    }
+  }
+
+  function initQuickAccess() {
+    const show = $("qa-show");
+    if (!show) return;
+    show.addEventListener("click", () => {
+      openQuickAccess();
+    });
+  }
+
+  // 弹窗状态
+  var qaTimer = 0;
+  var qaCurrent = null;
+  var qaDeadline = 0;
+
+  function openQuickAccess() {
+    const ov = $("qa-overlay");
+    if (!ov) return;
+    ov.classList.remove("hidden");
+    qaGenerate(false);
+    const close = $("qa-close");
+    if (close) close.addEventListener("click", closeQuickAccess);
+    const refresh = $("qa-refresh");
+    if (refresh) refresh.addEventListener("click", () => qaGenerate(true));
+    ov.addEventListener("click", function(e) {
+      if (e.target === ov) closeQuickAccess();
+    });
+  }
+
+  function closeQuickAccess() {
+    const ov = $("qa-overlay");
+    if (ov) ov.classList.add("hidden");
+    if (qaTimer) { clearInterval(qaTimer); qaTimer = 0; }
+    qaCurrent = null;
+    qaDeadline = 0;
+    const refresh = $("qa-refresh");
+    if (refresh) refresh.classList.add("hidden");
+  }
+
+  async function qaGenerate(manual) {
+    if (qaTimer) { clearInterval(qaTimer); qaTimer = 0; }
+    const qrEl = document.querySelector(".qa-qr");
+    const status = $("qa-status");
+    const refresh = $("qa-refresh");
+    const expire = $("qa-expire");
+    if (!qrEl) return;
+    qaSetStatus("正在生成二维码…");
+    if (refresh) refresh.classList.add("hidden");
+    if (expire) expire.textContent = "";
+    try {
+      const r = await rpc("quick_access.create", {});
+      qaCurrent = r.code;
+      var url = location.origin + "/?qk=" + encodeURIComponent(r.code);
+      if (!qaQRSupported()) {
+        qrEl.innerHTML = "";
+        const a = document.createElement("a");
+        a.href = url; a.textContent = url; a.style.wordBreak = "break-all";
+        qrEl.appendChild(a);
+      } else {
+        try {
+          const qr = window.qrcode(0, "M");
+          qr.addData(url);
+          qr.make();
+          qrEl.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+          const svg = qrEl.querySelector("svg");
+          if (svg) { svg.removeAttribute("width"); svg.removeAttribute("height"); }
+        } catch (e) { qrEl.textContent = url; }
+      }
+      qaDeadline = Date.now() + (r.ttl_ms || 600000);
+      qaSetStatus("用手机扫码，即可免登录打开 newbee");
+      var ttl = r.ttl_ms || 600000;
+      var mm = Math.floor(ttl / 60000), ss = Math.floor(ttl % 60000 / 1000);
+      if (expire) expire.textContent = "有效期 " + mm + " 分 " + ss + " 秒";
+      qaTimer = setInterval(() => {
+        if (Date.now() > qaDeadline) {
+          clearInterval(qaTimer); qaTimer = 0;
+          qaSetStatus("二维码已失效，请点击下方按钮重新生成");
+          if (refresh) refresh.classList.remove("hidden");
+        }
+      }, 1000);
+    } catch (e) {
+      qaSetStatus("生成失败: " + (e.message || e));
+      if (refresh) refresh.classList.remove("hidden");
+    }
+  }
+
+  function qaSetStatus(msg) {
+    const el = $("qa-status");
+    if (el) el.textContent = msg;
+  }
+
 })();
 
 
@@ -4373,4 +4534,3 @@ case "goal_round": break;
     }
   });
 })();
-

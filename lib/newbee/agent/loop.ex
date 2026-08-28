@@ -1081,6 +1081,18 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
+  # 模型代码在独立 evaluator 节点执行；把不可伪造的当前会话身份短暂注入
+  # evaluator 进程，供 Newbee.Tools.Collaboration.delegate/2 读取，执行后必清除。
+  defp collaboration_context_code(state, code) do
+    sid = if state.session, do: state.session.id, else: nil
+    root = state.root || (state.session && state.session.dir)
+
+    "Process.put({Newbee.Tools.Collaboration, :context}, %{session_id: #{inspect(sid)}, project_root: #{inspect(root)}}); " <>
+      "try do\n" <>
+      code <>
+      "\nafter\n  Process.delete({Newbee.Tools.Collaboration, :context})\nend"
+  end
+
   # 权限放行后的真实执行（与 ask 拒绝路径分离，避免重复代码）
   defp execute_run_elixir(state, call, code, title) do
     audit_dangerous(code)
@@ -1090,7 +1102,7 @@ defmodule Newbee.Agent.Loop do
 
     eval_result =
       try do
-        Newbee.DEE.Evaluator.eval(state.evaluator, code)
+        Newbee.DEE.Evaluator.eval(state.evaluator, collaboration_context_code(state, code))
       rescue
         e ->
           Newbee.DebugLog.log(:tool, "eval raised #{inspect(e)}")

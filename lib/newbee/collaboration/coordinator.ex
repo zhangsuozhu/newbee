@@ -4,7 +4,7 @@ defmodule Newbee.Collaboration.Coordinator do
 
   消息语义为可靠事件：先落盘，再按 delivery 调度——notify 只进时间线，
   queue/wake 投递给目标会话的模型运行时（忙时排队，不强行打断当前 turn）。
-  任务 lease 与 worktree 集成在后续阶段接入，不改变本模块 API。
+  任务 lease 已存在；模型派生的子会话默认使用独立 worktree，避免并行修改互相污染。
   """
 
   use GenServer
@@ -15,6 +15,8 @@ defmodule Newbee.Collaboration.Coordinator do
   @roles ~w(coordinator worker reviewer observer)
   @message_kinds ~w(chat question task_assign task_progress task_result artifact system error)
   @deliveries ~w(notify queue wake)
+  @max_members 12
+  @max_tasks 64
 
   defstruct store: nil, path: nil, groups: %{}, commands: MapSet.new()
 
@@ -30,6 +32,9 @@ defmodule Newbee.Collaboration.Coordinator do
   def create_group(attrs, server \\ __MODULE__), do: GenServer.call(server, {:create_group, attrs})
   def list(session_id \\ nil, server \\ __MODULE__), do: GenServer.call(server, {:list, session_id})
   def get(group_id, server \\ __MODULE__), do: GenServer.call(server, {:get, group_id})
+
+  def permission_request(session_id, preview, server \\ __MODULE__),
+    do: GenServer.call(server, {:permission_request, session_id, preview})
 
   def groups_for_session(session_id, server \\ __MODULE__),
     do: GenServer.call(server, {:groups_for_session, session_id})
@@ -157,6 +162,7 @@ defmodule Newbee.Collaboration.Coordinator do
     with {:ok, group} <- fetch_group(state, group_id),
          {:ok, attrs} <- normalize_member(attrs),
          :ok <- unique_command(state, attrs["command_id"]),
+         :ok <- ensure_member_capacity(group),
          :ok <- ensure_not_member(group, attrs["session_id"]) do
       member = %{
         "member_id" => id("mem"),
@@ -238,6 +244,7 @@ defmodule Newbee.Collaboration.Coordinator do
          {:ok, attrs} <- normalize_task(attrs),
          :ok <- unique_command(state, attrs["command_id"]),
          :ok <- ensure_member(group, attrs["created_by_session_id"]),
+         :ok <- ensure_task_capacity(group),
          :ok <- ensure_recipient(group, attrs["assigned_session_id"]) do
       task = %{
         "task_id" => id("task"),
@@ -364,6 +371,30 @@ defmodule Newbee.Collaboration.Coordinator do
     else
       false -> {:reply, {:error, "bad_request", "lease 时长必须是 30-3600 秒"}, state}
       {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
+
+  def handle_call({:permission_request, session_id, preview}, _from, state) do
+    case Enum.find(state.groups, fn {_id, group} -> session_member?(group, session_id) end) do
+      {_id, group} ->
+        event = %{
+          "event_id" => id("perm"),
+          "topic" => "collab_permission_ask",
+          "group_id" => group["group_id"],
+          "payload" => %{
+            "request_session_id" => session_id,
+            "preview" => preview,
+            "session_ids" => Enum.map(group["members"], & &1["session_id"])
+          },
+          "session_ids" => Enum.map(group["members"], & &1["session_id"]),
+          "at" => now_iso()
+        }
+
+        if Process.whereis(Newbee.Bus), do: Newbee.Bus.emit(:collab_event, event)
+        {:reply, :ok, state}
+
+      nil ->
+        {:reply, {:error, "not_member", "会话不属于任何工作组"}, state}
     end
   end
 
@@ -519,6 +550,18 @@ defmodule Newbee.Collaboration.Coordinator do
     if MapSet.member?(state.commands, command_id),
       do: {:error, "duplicate_command", "请求已处理"},
       else: :ok
+  end
+
+  defp ensure_member_capacity(group) do
+    if length(group["members"] || []) < @max_members,
+      do: :ok,
+      else: {:error, "member_limit", "工作组成员已达到上限"}
+  end
+
+  defp ensure_task_capacity(group) do
+    if length(group["tasks"] || []) < @max_tasks,
+      do: :ok,
+      else: {:error, "task_limit", "工作组任务已达到上限"}
   end
 
   defp fetch_group(state, group_id) do
@@ -863,7 +906,6 @@ defmodule Newbee.Collaboration.Coordinator do
   defp dispatch_message(_message, _group), do: :ok
 
   defp dispatch_task(%{"assigned_session_id" => nil}), do: :ok
-
 
   defp dispatch_task(task) do
     case Newbee.Web.Session.lookup(task["assigned_session_id"]) do

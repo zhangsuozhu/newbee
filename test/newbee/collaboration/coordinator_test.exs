@@ -216,4 +216,21 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     refute Coordinator.member?(group_id, "worker", server)
     GenServer.stop(restored)
   end
+
+  test "权限请求广播给工作组成员并标记请求会话", %{server: server} do
+    assert {:ok, group} = Coordinator.create_group(%{"session_id" => "parent", "title" => "审批群"}, server)
+    group_id = group["group_id"]
+    assert {:ok, _} = Coordinator.add_member(group_id, %{"session_id" => "child"}, server)
+
+    Newbee.Bus.subscribe()
+    assert :ok = Coordinator.permission_request("child", "执行写文件", server)
+
+    assert_receive {:newbee_event, :collab_event, event}, 1_000
+    assert event["topic"] == "collab_permission_ask"
+    assert event["payload"]["request_session_id"] == "child"
+    assert Enum.sort(event["session_ids"]) == ["child", "parent"]
+
+    assert {:error, "not_member", _} = Coordinator.permission_request("outsider", "x", server)
+    Newbee.Bus.unsubscribe()
+  end
 end

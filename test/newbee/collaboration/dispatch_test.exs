@@ -67,6 +67,39 @@ defmodule Newbee.Collaboration.DispatchTest do
     refute_receive {:stub_got, _, {:collaboration_task, _}}, 200
   end
 
+  test "模型只能从当前执行上下文派生工作组子代理" do
+    assert {:error, "no_execution_context", _} = Newbee.Tools.Collaboration.delegate("无上下文任务")
+
+    Process.put({Newbee.Tools.Collaboration, :context}, %{
+      session_id: "model-parent",
+      project_root: File.cwd!()
+    })
+
+    assert {:ok, result} =
+             Newbee.Tools.Collaboration.delegate("分析认证失败路径",
+               name: "认证分析子代理",
+               description: "找出失败路径并给出测试建议",
+               role: "reviewer"
+             )
+
+    assert is_binary(result.session_id)
+    assert result.member["parent_session_id"] == "model-parent"
+    assert [group | _] = Coordinator.groups_for_session("model-parent")
+    assert group["member_count"] == 2
+    assert result.task["assigned_session_id"] == result.session_id
+    assert Coordinator.member?(group["group_id"], result.session_id)
+    child_root = Newbee.Session.cwd(result.session_id)
+    assert String.contains?(child_root, Path.join([".newbee", "worktrees"]))
+    assert File.dir?(child_root)
+
+    Process.delete({Newbee.Tools.Collaboration, :context})
+
+    on_exit(fn ->
+      Newbee.Web.Session.destroy(result.session_id)
+      Newbee.Tools.Git.worktree_remove(File.cwd!(), child_root)
+    end)
+  end
+
   test "Tools.Collaboration.report 更新任务并校验状态" do
     assert {:ok, group} = Coordinator.create_group(%{"session_id" => "p", "title" => "工具群"})
     gid = group["group_id"]

@@ -912,6 +912,8 @@ Newbee.Tools.Collaboration.report(task_id, result, opts)
 
 工具文档应接入既有 `tool://Newbee.Tools.Collaboration` 渐进式披露，而不是把长协议塞入系统 prompt。
 
+模型调用 `Newbee.Tools.Collaboration.delegate(title, opts)` 时，运行时从当前 evaluator 上下文取得父会话身份；没有工作组会自动创建模型协作组。子代理 ID 由运行时生成，默认进入独立 Git worktree；成员最多 12 个、任务最多 64 个。
+
 ---
 
 ## 10. WebSocket 与实时协议
