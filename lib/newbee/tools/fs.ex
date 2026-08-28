@@ -15,7 +15,7 @@ defmodule Newbee.Tools.Fs do
   - `rm(path)` — 删除文件，返回 `:ok | {:error, reason}`。
   - `rm_rf(path)` — 递归删除（高危，记审计），返回 `{:ok, [deleted]} | {:error, reason}`。
   - `exists?(path)` — 文件是否存在，`boolean`。
-  - `guard_path!(path)` — 工作目录隔离校验，合法 `:ok`，非法抛 `ArgumentError`。
+  - `guard_path!(path)` — 工作目录隔离校验，合法 `:ok`，非法返回 `{:error, %{reason: :out_of_bounds, hint: _}}`。
   - `ls(dir)` — 列目录一层，返回 `[entry]`（目录带 `/`）或 `{:error, reason}`。
   - `tree(root \\ ".")` — 遍历工程树（跳过 `_build/deps/.git/node_modules/cover`），返回相对路径 `[String.t()]`。
   - `size(path)` — 文件字节数，`non_neg_integer()`，不存在返回 `0`。
@@ -52,61 +52,68 @@ defmodule Newbee.Tools.Fs do
   注意：求值器节点上没有 Staging 进程——经 Newbee.Host 代理回主 VM（§3.4），
   主 VM 无暂存区（app 未启动）时降级直接落盘。"
   def write(path, content) do
-    guard_path!(path)
+    case guard_path!(path) do
+      :ok ->
+        case Newbee.Host.call(Newbee.Staging, :stage, [path, content, :fs_write]) do
+          id when is_integer(id) ->
+            id
 
-    case Newbee.Host.call(Newbee.Staging, :stage, [path, content, :fs_write]) do
-      id when is_integer(id) ->
-        id
+          _ ->
+            File.mkdir_p!(Path.dirname(path))
+            File.write!(path, content)
+            :direct
+        end
 
-      _ ->
-        # 主 VM 暂存区不可用（badrpc / 未启动）：直接落盘
-        File.mkdir_p!(Path.dirname(path))
-        File.write!(path, content)
-        :direct
+      {:error, _} = err ->
+        err
     end
   end
-
-  @doc "写文件（直接落盘，不暂存）。危险操作，模型慎用。落盘后发内联 diff 事件（§5.1）。"
+  @doc "写文件（直接落盘，不暂存）。危险操作，模型慎用。落盘后发内联 diff 事件（§5.1）。越界写入返回 `{:error, %{reason: :out_of_bounds, hint: ...}}` 而非抛 ArgumentError。"
   def write!(path, content) do
-    guard_path!(path)
-    old = if File.exists?(path), do: File.read!(path), else: ""
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, content)
-    emit_diff(path, old, content)
-    :ok
+    case guard_path!(path) do
+      :ok ->
+        old = if File.exists?(path), do: File.read!(path), else: ""
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, content)
+        Newbee.Events.emit(:file_written, %{path: path, old: old, new: content})
+        :ok
+
+      {:error, _} = err ->
+        err
+    end
   end
 
   @doc "追加写（直接落盘——追加语义不适合暂存）。"
   def append!(path, content) do
-    guard_path!(path)
-    File.mkdir_p!(Path.dirname(path))
-    File.write!(path, content, [:append])
-    :ok
+    case guard_path!(path) do
+      :ok ->
+        File.mkdir_p!(Path.dirname(path))
+        File.write!(path, content, [:append])
+        :ok
+
+      {:error, _} = err ->
+        err
+    end
   end
 
   @doc "删除文件。返回 :ok | {:error, reason}。"
   def rm(path) do
-    guard_path!(path)
-    File.rm(path)
+    case guard_path!(path) do
+      :ok -> File.rm(path)
+      {:error, _} = err -> err
+    end
   end
 
   @doc "递归删除（高风险，记审计）。"
   def rm_rf(path) do
-    guard_path!(path)
-    Newbee.Host.emit(:audit, {:audit, :dangerous_code, ["File.rm_rf!", path]})
-    File.rm_rf(path)
-  end
+    case guard_path!(path) do
+      :ok ->
+        Newbee.Host.emit(:audit, {:audit, :dangerous_code, ["File.rm_rf!", path]})
+        File.rm_rf(path)
 
-  # 内联 diff 事件（§5.1）：节点上经 Host 代理回主 VM 总线
-  defp emit_diff(path, old, new) do
-    if old != new do
-      Newbee.Host.emit(
-        :file_diff,
-        {:file_diff, path, Enum.join(Newbee.Diff.lines(old, new), "\n"), Newbee.Diff.stats(old, new)}
-      )
+      {:error, _} = err ->
+        err
     end
-
-    :ok
   end
 
   @doc """
@@ -130,8 +137,7 @@ defmodule Newbee.Tools.Fs do
     if ok? do
       :ok
     else
-      raise ArgumentError,
-            "拒绝写入工程树外路径: #{path}（长输出可写到工程内 .newbee-tmp/ 或 ~/.newbee/）"
+      {:error, %{reason: :out_of_bounds, hint: "拒绝写入工程树外路径: " <> path <> "（长输出可写到工程内 .newbee-tmp/ 或 ~/.newbee/）"}}
     end
   end
 

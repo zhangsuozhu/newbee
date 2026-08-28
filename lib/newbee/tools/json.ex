@@ -4,7 +4,7 @@ defmodule Newbee.Tools.Json do
   路径语法：`a.b[0].c`（点分 + 数组下标），模型常用它从 API 响应抠字段。
 
   ## 函数清单
-  - `decode(text :: String.t()) :: {:ok, value} | {:error, reason}` — 解析 JSON 字符串（基于 `Jason.decode`）。
+  - `decode(text :: String.t()) :: {:ok, value} | {:error, %{reason: :decode_failed, line:, column:, position:}}` — 解析 JSON 字符串（基于 `Jason.decode`），非法 JSON 返回带行/列号的错误 map。
   - `encode(value, pretty \\ false) :: String.t() | {:error, :encode_failed}` — 编码为 JSON，`pretty: true` 时美化。
   - `get(value, path :: String.t()) :: {:ok, v} | :error` — 按路径取值（不抛错）。
   - `get!(value, path :: String.t()) :: v | nil` — 按路径取值，段含 `[idx]` 时取数组元素。
@@ -18,8 +18,20 @@ defmodule Newbee.Tools.Json do
   """
 
   @doc "解析 JSON 字符串。返回 {:ok, value} | {:error, reason}。"
-  def decode(text) when is_binary(text), do: Jason.decode(text)
+  def decode(text) when is_binary(text) do
+    case Jason.decode(text) do
+      {:ok, _} = ok ->
+        ok
 
+      {:error, %Jason.DecodeError{position: pos, data: data}} ->
+        # 从 position 计算 line/column
+        {line, col} = line_col_from_pos(data, pos)
+        {:error, %{reason: :decode_failed, line: line, column: col, position: pos}}
+
+      {:error, _} = err ->
+        err
+    end
+  end
   @doc "编码为 JSON 字符串（美化可选）。"
   def encode(value, pretty \\ false) do
     if pretty, do: Jason.encode!(value, pretty: true), else: Jason.encode!(value)
@@ -50,5 +62,19 @@ defmodule Newbee.Tools.Json do
     {:ok, get!(value, path)}
   rescue
     _ -> :error
+  end
+
+  defp line_col_from_pos(data, pos) do
+    lines = String.split(data, "\n")
+    {line, col} =
+      Enum.reduce_while(lines, {1, 0}, fn line_str, {ln, acc_pos} ->
+        line_len = String.length(line_str) + 1
+        if acc_pos + line_len > pos do
+          {:halt, {ln, pos - acc_pos + 1}}
+        else
+          {:cont, {ln + 1, acc_pos + line_len}}
+        end
+      end)
+    {line, col}
   end
 end
