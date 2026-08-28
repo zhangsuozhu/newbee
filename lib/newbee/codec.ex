@@ -10,14 +10,13 @@ defmodule Newbee.Codec do
       function: %{
         name: "run_elixir",
         description:
-          "在长期存活的 Elixir 环境(DEE)中执行任意 Elixir 代码。" <>
-            "变量绑定跨调用持久（像 IEx）；可调用 Newbee.Tools.Fs/Run 等工具库与任意已加载模块。" <>
-            "返回值与 stdout 会被压缩回填；大结果请存入变量后续引用，或写文件后局部读取。",
+          "在持久 Elixir 环境执行代码；绑定跨调用保留，可调用 Newbee.Tools.*。" <>
+            "大结果留在 binding 或文件。生成含插值/heredoc 的源码先用 Edit.source_literal/1。",
         parameters: %{
           type: "object",
           properties: %{
             code: %{type: "string", description: "要执行的 Elixir 代码"},
-            title: %{type: "string", description: "一句话说明这步在做什么"}
+            title: %{type: "string", description: "简短操作标题"}
           },
           required: ["code"]
         }
@@ -39,10 +38,22 @@ defmodule Newbee.Codec do
       type: "function",
       function: %{
         name: "ask",
-        description: "需要用户确认或澄清时调用，会暂停等待用户回答。",
+        description: "需要用户决定或澄清时暂停。kind: text=文本、single=单选、multi=多选、buttons=按钮；选择项放 options。",
         parameters: %{
           type: "object",
-          properties: %{question: %{type: "string"}},
+          properties: %{
+            question: %{type: "string", description: "向用户提出的问题"},
+            kind: %{
+              type: "string",
+              enum: ["text", "single", "multi", "buttons"],
+              description: "交互形态；默认 text"
+            },
+            options: %{
+              type: "array",
+              description: "选择项 [{label, value}]",
+              items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}
+            }
+          },
           required: ["question"]
         }
       }

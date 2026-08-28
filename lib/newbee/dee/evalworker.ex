@@ -5,7 +5,10 @@ defmodule Newbee.DEE.EvalWorker do
   """
   use GenServer
 
-  @default_timeout 60_000
+  @default_timeout :infinity
+
+  @doc false
+  def default_timeout, do: @default_timeout
   @active_key :newbee_eval_active_task
 
   defstruct binding: [], count: 0, quiesced: false
@@ -38,7 +41,9 @@ defmodule Newbee.DEE.EvalWorker do
   @impl true
   def handle_call({:eval, _code, _opts}, _from, %{quiesced: true} = state) do
     # Binding Continuity step 0（§4.4 quiesce）：静默期拒收新 step
-    {:reply, %{status: :error, error: "generation quiescing (switch in progress)", output: "", warnings: "", quiesced: true}, state}
+    {:reply,
+     %{status: :error, error: "generation quiescing (switch in progress)", output: "", warnings: "", quiesced: true},
+     state}
   end
 
   def handle_call({:eval, code, opts}, _from, state) do
@@ -61,13 +66,17 @@ defmodule Newbee.DEE.EvalWorker do
   end
 
   def handle_call({:set_cwd, cwd}, _from, state) when is_binary(cwd) do
-    reply = case File.cd(cwd) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    reply =
+      case File.cd(cwd) do
+        :ok -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+
     {:reply, reply, state}
   end
+
   def handle_call({:set_cwd, nil}, _from, state), do: {:reply, :ok, state}
+
   def handle_call({:restore_bindings, binding}, _from, state) do
     {:reply, :ok, %{state | binding: binding}}
   end
@@ -105,37 +114,83 @@ defmodule Newbee.DEE.EvalWorker do
         end
       end)
 
-    # Task.async/1 links the worker; unlink so Esc can kill only the cell,
+    # Task.async/1 links the worker; unlink so cancellation kills only the cell,
     # not the long-lived EvalWorker GenServer that owns the bindings.
     Process.unlink(task.pid)
 
-    case Task.yield(task, timeout) do
-      nil ->
-        Task.shutdown(task, :brutal_kill)
-        {%{status: :error, error: "timeout after #{timeout}ms", output: "", warnings: ""}, binding, count + 1}
+    cancel_owners = List.wrap(Keyword.get(opts, :cancel_owners) || Keyword.get(opts, :cancel_owner))
+    watcher = start_owner_watcher(cancel_owners, task.pid)
 
-      {:ok, _} ->
-        receive do
-          {:cell_done, _, {:ok, value, new_binding}, out} ->
-            {warnings, clean_out} = split_warnings(out)
-            {%{status: :ok, value: safe_inspect(value), output: clean_out, warnings: warnings}, new_binding, count + 1}
+    result =
+      case Task.yield(task, timeout) do
+        nil ->
+          Task.shutdown(task, :brutal_kill)
+          {%{status: :error, error: "timeout after #{timeout}ms", output: "", warnings: ""}, binding, count + 1}
 
-          {:cell_done, _, {:error, msg}, out} ->
-            {warnings, clean_out} = split_warnings(out)
-            # 异常里也可能含编译 warning 尾巴，统一拆出
-            {extra_w, clean_err} = split_warnings(msg)
-            warnings = if extra_w != "", do: warnings <> "\n" <> extra_w, else: warnings
-            {%{status: :error, error: clean_err, output: clean_out, warnings: warnings}, binding, count + 1}
-        after
-          1_000 ->
-            {%{status: :error, error: "cell result lost", output: "", warnings: ""}, binding, count + 1}
+        {:ok, _} ->
+          receive do
+            {:cell_done, _, {:ok, value, new_binding}, out} ->
+              {warnings, clean_out} = split_warnings(out)
+
+              {%{status: :ok, value: safe_inspect(value), output: clean_out, warnings: warnings}, new_binding,
+               count + 1}
+
+            {:cell_done, _, {:error, msg}, out} ->
+              {warnings, clean_out} = split_warnings(out)
+              # 异常里也可能含编译 warning 尾巴，统一拆出
+              {extra_w, clean_err} = split_warnings(msg)
+              warnings = if extra_w != "", do: warnings <> "\n" <> extra_w, else: warnings
+              {%{status: :error, error: clean_err, output: clean_out, warnings: warnings}, binding, count + 1}
+          after
+            1_000 ->
+              {%{status: :error, error: "cell result lost", output: "", warnings: ""}, binding, count + 1}
+          end
+
+        {:exit, :killed} ->
+          {%{status: :error, error: "interrupted", output: "", warnings: ""}, binding, count + 1}
+
+        {:exit, reason} ->
+          {%{status: :error, error: "cell task exited: #{inspect(reason)}", output: "", warnings: ""}, binding,
+           count + 1}
+      end
+
+    if watcher, do: send(watcher, :stop)
+    clear_remote_active(interrupt_node, interrupt_key, task.pid)
+    result
+  end
+
+  # 监控全部 owner（调用者 + Evaluator）与 cell 本身；任一 owner 退出即杀 cell，
+  # cell 结束或被叫停时 watcher 自行退出，不泄漏进程。
+  defp start_owner_watcher(owners, task_pid) do
+    owners = owners |> Enum.filter(&is_pid/1) |> Enum.uniq()
+
+    if owners == [] do
+      nil
+    else
+      spawn(fn ->
+        owner_refs = Map.new(owners, &{Process.monitor(&1), &1})
+        task_ref = Process.monitor(task_pid)
+        owner_watch_loop(owner_refs, task_ref, task_pid)
+      end)
+    end
+  end
+
+  defp owner_watch_loop(owner_refs, task_ref, task_pid) do
+    receive do
+      {:DOWN, ref, :process, _pid, _reason} ->
+        cond do
+          ref == task_ref ->
+            :ok
+
+          Map.has_key?(owner_refs, ref) ->
+            if Process.alive?(task_pid), do: Process.exit(task_pid, :kill)
+
+          true ->
+            owner_watch_loop(owner_refs, task_ref, task_pid)
         end
 
-      {:exit, :killed} ->
-        {%{status: :error, error: "interrupted", output: "", warnings: ""}, binding, count + 1}
-
-      {:exit, reason} ->
-        {%{status: :error, error: "cell task exited: #{inspect(reason)}", output: "", warnings: ""}, binding, count + 1}
+      :stop ->
+        :ok
     end
   end
 

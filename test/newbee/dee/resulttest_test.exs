@@ -31,4 +31,16 @@ defmodule Newbee.DEE.ResultTest do
     assert out =~ "IO.puts(content)"
     assert out =~ "读取失败"
   end
+
+  test "二阶插值错误给出 Edit.source_literal 专项提示" do
+    error = "** (CompileError) expanding macro: Kernel.to_string/1"
+    assert Result.repair_hint(error) =~ "Edit.source_literal"
+    assert Result.repair_hint(error) =~ "二阶插值"
+  end
+
+  test "heredoc 分隔符冲突给出 Edit.source_literal 专项提示" do
+    error = "** (MismatchedDelimiterError) missing terminator: heredoc"
+    assert Result.repair_hint(error) =~ "Edit.source_literal"
+    assert Result.repair_hint(error) =~ "分隔符"
+  end
 end

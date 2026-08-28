@@ -56,26 +56,44 @@ defmodule Newbee.Agent.Adapter do
 
   # ── 信号收集：事件流 + JIT 热度 + need 消息 ──
 
-  @doc "收集进化信号（need 消息 + JIT 热项 + 停滞线索）。"
   def collect_signals(opts \\ []) do
     needs =
       Protocol.messages(kind: :need)
       |> Enum.map(fn m ->
-        %{type: :need, capability: m["payload"]["capability"], evidence: m["payload"]["evidence"], urgency: m["payload"]["urgency"]}
+        %{
+          type: :need,
+          capability: m["payload"]["capability"],
+          evidence: m["payload"]["evidence"],
+          urgency: m["payload"]["urgency"]
+        }
       end)
 
     jit_hot =
-      (case Keyword.get(opts, :events) do
-         nil ->
-           # 默认从近期事件流拉取（不走 opts 传入），避免热度恒空
-           events = try do
-             Newbee.EventStore.replay(Newbee.Environment.Store.path(:events), 0)
-           rescue _ -> []
-           catch _, _ -> []
-           end
-           Jit.hot_needs(events, Keyword.get(opts, :jit_opts, []))
-         events -> Jit.hot_needs(events, Keyword.get(opts, :jit_opts, []))
-       end)
+      case Keyword.get(opts, :events) do
+        nil ->
+          # TCE v2 [F3]: 默认走 PatternStore 后验（LCB 排序 + 校准成本调整），
+          # PatternStore 为空时回退旧事件流点估计
+          case Jit.tce_hot_needs() do
+            [] ->
+              events =
+                try do
+                  Newbee.EventStore.replay(Newbee.Environment.Store.path(:events), 0)
+                rescue
+                  _ -> []
+                catch
+                  _, _ -> []
+                end
+
+              Jit.hot_needs(events, Keyword.get(opts, :jit_opts, []))
+
+            needs_tce ->
+              needs_tce
+          end
+
+        events ->
+          # 显式传事件流时保持旧行为（测试兼容）
+          Jit.hot_needs(events, Keyword.get(opts, :jit_opts, []))
+      end
       |> Enum.map(fn n -> %{type: :jit_hot, capability: n.capability, evidence: n.evidence, urgency: n.urgency} end)
 
     hints = Keyword.get(opts, :hints, []) |> Enum.map(&%{type: :hint, capability: &1, urgency: :low})
@@ -101,15 +119,22 @@ defmodule Newbee.Agent.Adapter do
     你是 newbee 的 adapter（环境进化工程师）。根据 worker 信号产出环境进化提案。
     只输出 JSON 数组，每项：
       {"type":"rule","id":"...","pattern":"正则","injection":"命中时注入给模型的提醒"}
-      {"type":"tool","id":"...","name":"模块短名","source":"完整 Elixir 模块源码（实现 PluginContract 静态子集）"}
+      {"type":"tool","id":"...","name":"模块短名","source":"完整 Elixir 模块源码（实现 PluginContract + ToolContract）"}
       {"type":"prompt","id":"...","note":"L1 教训（what/when/why ≤2KB）"}
+
+    工具提案纪律：先以 Newbee.Environment.ToolContract.template(Module, plugin_id) 为骨架。
+    describe 必须声明 summary/when_to_use/avoid_when/capabilities/effects/error_contract/api/examples；
+    api 必须与真实公开导出完全一致，helper 用 defp，示例必须调用真实 API。
+    不得重复已有高层工具；avoid_when 必须写清与现有能力的边界。
 
     纪律（§3.4 补丁纪律）：小、有据（引用信号证据）、可评价。不确定就不要产出。
     信号：#{inspect(signals, limit: 8)}
     """
 
     case client_fun.([%{"role" => "user", "content" => prompt}]) do
-      {:ok, content} -> parse_proposals(content)
+      {:ok, content} ->
+        parse_proposals(content)
+
       {:error, e} ->
         Logger.warning("adapter synthesize failed: #{inspect(e)}")
         []
@@ -180,13 +205,18 @@ defmodule Newbee.Agent.Adapter do
   end
 
   def proposal_to_release(%{"type" => "tool", "id" => id, "name" => name, "source" => source}) do
-    case Newbee.Environment.PluginContract.validate_source(source) do
-      {:ok, _} ->
+    case Newbee.Environment.PluginContract.validate_source(source, :tool) do
+      {:ok, %{envelope: envelope}} ->
+        summary = contract_field(envelope.describe, :summary)
+
         {:ok,
          %{
            plugin_id: "tool." <> slug(id || name),
            kind: :tool,
-           source_files: %{"#{slug(name)}.ex" => source}
+           source_files: %{"#{slug(name)}.ex" => source},
+           usage: summary,
+           capabilities: envelope.capabilities || [],
+           effects: envelope.effects || []
          }}
 
       {:error, reasons} ->
@@ -228,9 +258,61 @@ defmodule Newbee.Agent.Adapter do
           end
 
         :keep ->
-          {:keep, rid}
+          # ContextQuality 质量判据（调研 REPORT §4 落位）：Jit 成本侧判 keep 的
+          # release，再查任务级质量侧——注入是否让任务变差（差分归因，确定性信号）。
+          case quality_deopt_decision(rid) do
+            {:deopt, reason} ->
+              Logger.info("quality deopt #{rid}: #{reason}")
+
+              coordinator
+              |> Newbee.Environment.Coordinator.propose_change(%{
+                reason: "quality deopt #{rid}: #{reason}",
+                evidence: [%{quality_deopt: rid, reason: reason}],
+                author_agent: :adapter
+              })
+              |> case do
+                {:ok, change} -> {:deopted, rid, :quality, reason, change_id: change.change_id}
+                err -> {:error, rid, err}
+              end
+
+            :keep ->
+              {:keep, rid}
+          end
       end
     end)
+  end
+
+  # ContextQuality 质量 deopt 判据：release 注入上下文的实证质量。
+  # Collector 未运行（无账本）时优雅 :keep——度量缺失不阻塞既有成本侧 deopt。
+  @doc false
+  def quality_deopt_decision(release_id) do
+    alias Newbee.Environment.ContextQuality
+    alias Newbee.Environment.ContextQuality.Collector
+
+    if Process.whereis(Collector) do
+      l = Collector.ledger(release_id)
+
+      cond do
+        ContextQuality.verdict(l) == :harmful ->
+          s = ContextQuality.summary(l)
+
+          {:deopt,
+           "harmful: 注入后成功率 #{Float.round(s.success_with, 2)} < 基线 #{Float.round(s.success_without, 2)} " <>
+             "(置信区间不重叠, n=#{s.n_with}/#{s.n_without})"}
+
+        ContextQuality.bloat_regression?(l) ->
+          s = ContextQuality.summary(l)
+
+          {:deopt, "context bloat: 注入后 token #{round(s.avg_tokens_with)} > 基线 #{round(s.avg_tokens_without)} 且成功率不升"}
+
+        true ->
+          :keep
+      end
+    else
+      :keep
+    end
+  rescue
+    _ -> :keep
   end
 
   # ── helpers ──
@@ -257,6 +339,10 @@ defmodule Newbee.Agent.Adapter do
       def injection, do: #{inspect(injection)}
     end
     """
+  end
+
+  defp contract_field(map, key) when is_map(map) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key)) || ""
   end
 
   defp slug(name) do

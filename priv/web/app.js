@@ -111,6 +111,8 @@
     t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     t = t.replace(/\*([^*\s][^*]*)\*/g, "<em>$1</em>");
     t = t.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+    // 图片：![alt](url) —— 渲染为可点击放大的缩略图
+    t = t.replace(/!\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<img class="md-img" src="$2" alt="$1" loading="lazy" />');
     t = t.replace(/\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noopener">$1</a>');
     // 文件路径可点击（lib/xxx.ex 等）
     t = t.replace(/\b((?:lib|test|config|docs|priv|bench)\/[\w\/.\-]+\.(?:ex|exs|js|css|html|md|json|toml|yml|yaml))\b/g, '<span class="file-ref" data-path="$1" title="点击查看 diff">$1</span>');
@@ -180,6 +182,27 @@
     return html;
   }
 
+// highlight.js 薄封装：未加载或语言未知时回退纯转义
+  function highlightSource(code, language) {
+    if (window.hljs) {
+      const alias = HIGHLIGHT_ALIASES[language] || language;
+      if (window.hljs.getLanguage(alias)) {
+        try {
+          return window.hljs.highlight(code, {language: alias, ignoreIllegals: true}).value;
+        } catch (e) {}
+      }
+    }
+    return escapeHtml(code);
+  }
+
+  const HIGHLIGHT_ALIASES = {
+    elixir: "elixir", javascript: "javascript", typescript: "typescript",
+    jsx: "javascript", tsx: "typescript", json: "json", css: "css", html: "xml",
+    yaml: "yaml", toml: "ini", shell: "bash", python: "python",
+    rust: "rust", go: "go", markdown: "markdown"
+  };
+
+
   const $ = (id) => document.getElementById(id);
 const transcript = $("transcript");
 const flow = $("flow");
@@ -212,6 +235,12 @@ const flow = $("flow");
               ftSum: 0, ftCount: 0, ftRecorded: false, outTok: 0 },
     attachments: [],   // [{name, type, dataUrl, size}]
     stickBottom: true,
+    turnUsage: null,
+    turnUsageDetails: [],
+    _pendingUsage: null,
+    lastLLMUsage: null,
+    lastUsageSeq: 0,
+    lastAttachedSeq: 0,
   };
 
   // ── 会话统计持久化（按 sessionId 存 localStorage，刷新/重连后保留）──
@@ -350,7 +379,8 @@ const flow = $("flow");
   }
   function fmtDur(ms) {
     const s = ms / 1000;
-    if (ms > 0 && s < 0.05) return "<0.1s";
+    if (ms < 1000) return Math.max(1, Math.round(ms)) + "ms";
+    if (s < 10) return s.toFixed(2) + "s";
     if (s < 60) return (Math.round(s * 10) / 10) + "s";
     const w = Math.round(s);
     return Math.floor(w / 60) + "m" + (w % 60) + "s";
@@ -366,7 +396,7 @@ const flow = $("flow");
       case "tool_result": toolResult(p.text, true, p.duration_ms); break;
       case "tool_error": toolResult(p.text, false); break;
 case "done": finishTurn(); line("done", p.summary, true); break;
-      case "ask": finishTurn(); line("ask", p.question); break;
+      case "ask": finishTurn(); renderAskCard(p.question, p.options || [], p.kind || "text", null); break;
       case "text_end": finishTurn(); break;
       case "error": {
         finishTurn();
@@ -381,7 +411,7 @@ case "done": finishTurn(); line("done", p.summary, true); break;
       }
       case "interrupted": finishTurn(); line("notice", "已中断"); break;
       case "permission_ask": showPermission(p.preview); break;
-      case "usage": setUsage(p.usage); break;
+      case "usage": setUsage(p.usage); handleBubbleUsage(p.usage); break;
       case "compacted": line("notice", `历史已压缩 ${p.count} 条`); break;
       case "model_switched": $("model-label").textContent = p.model; break;
       // 上下文窗口覆盖热更新（当前会话模型匹配时服务端推送）：顶栏用量标签立即反映新值
@@ -394,9 +424,12 @@ case "done": finishTurn(); line("done", p.summary, true); break;
         break;
       case "prompt_injection": promptInjection(p); break;
 case "advisor_note": line("notice", `◉ advisor: ${p.text}`); break;
+case "queued": line("notice", `⏳ 已排队（第 ${p.queued || 1} 位），当前任务完成后自动执行`); break;
 case "notice": line("notice", p.text); break;
 case "shell_result": shellResult(p); break;
 case "file_diff": fileDiff(p); break;
+case "media_show": renderMediaShow(p); break;
+
 case "turn_long": line("notice", `本轮较长：${p.step || ""} 步`); break;
 case "tool_warnings": line("notice", `工具警告: ${(p.warnings || []).join("; ")}`); break;
 case "final_check": line("notice", `最终检查: ${p.score ?? ""}`); break;
@@ -415,8 +448,19 @@ case "goal_round": break;
   function finishTurn() {
     state.busy = false;
     if (state.currentAssistant) {
+      const _savedBar = state.currentAssistant.querySelector(":scope > .msg-usage");
       state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+      addAssistantChrome(state.currentAssistant);
       bindCopyButtons(state.currentAssistant);
+      if (_savedBar && !_savedBar.dataset.reattached) { state.currentAssistant.appendChild(_savedBar); }
+      if (state._pendingUsage) { attachUsageToBubble(state.currentAssistant, state._pendingUsage); state._pendingUsage = null; }
+      if (state.currentAssistant.dataset.hasUsage !== "1" && state.turnUsage && state.turnUsage.count > 0) {
+        attachUsageToBubble(state.currentAssistant, { prompt_tokens: state.turnUsage.prompt, completion_tokens: state.turnUsage.completion, cache_read_tokens: state.turnUsage.cached, model: state.turnUsage.model });
+      }
+    }
+    if (state.currentAssistant && state.turnUsage && state.turnUsage.count > 1) {
+      const bar = state.currentAssistant.querySelector(":scope > .msg-usage");
+      if (bar) bar.title = `本轮累计 ${state.turnUsage.count} 次请求 · 输入 ${fmtTokShort(state.turnUsage.prompt)} · 输出 ${fmtTokShort(state.turnUsage.completion)} · 缓存 ${fmtTokShort(state.turnUsage.cached)}`;
     }
     archiveReasoning();
     state.currentAssistant = null;
@@ -427,9 +471,16 @@ case "goal_round": break;
     streamAcc = "";
     if (state.titleDirty) {
       state.titleDirty = false;
-      // 首条用户消息后同步侧栏标题（服务端 list 用首条 user 消息自动取题）
       loadSessions().catch(() => {});
     }
+  }
+  function resetTurnUsage() {
+    state.turnUsage = null;
+    state.turnUsageDetails = [];
+    state._pendingUsage = null;
+    state.lastLLMUsage = null;
+    // 保留序号用于“同上次请求”判断，跨轮清附着标记
+    state.lastAttachedSeq = 0;
   }
 
   function el(cls, text, md) {
@@ -437,6 +488,27 @@ case "goal_round": break;
     d.className = `msg ${cls}`;
     if (text) { if (md) d.innerHTML = renderMarkdown(text); else d.textContent = text; }
     flow.appendChild(d);
+    return d;
+  }
+
+  // ── assistant 输出框：包边框 + 右上角"复制"按钮 ──
+  // 复制内容优先原始 markdown（dataset.raw），否则取 innerText。
+  function addAssistantChrome(d) {
+    d.classList.add("msg-boxed");
+    if (d.querySelector(".msg-copy")) return d;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "msg-copy";
+    btn.title = "复制整条回复";
+    btn.textContent = "⧉";
+    btn.onclick = () => {
+      const raw = d.dataset.raw || d.innerText || "";
+      navigator.clipboard.writeText(raw).then(() => {
+        btn.textContent = "已复制";
+        setTimeout(() => (btn.textContent = "⧉"), 1500);
+      });
+    };
+    d.appendChild(btn);
     return d;
   }
 
@@ -485,30 +557,49 @@ case "goal_round": break;
   }
 
 
+    // 文本块边界定稿：reasoning/tool/shell/diff 等非 text 事件到来时，
+    // 把当前流式文本块渲染定稿并清空 residue，避免下一段 text 到来时
+    // 把上一段残留的 streamAcc 连同新 delta 一起渲染（旧文本重复出现）。
+    function flushTextBlock() {
+      if (!state.currentAssistant) { streamAcc = ""; return; }
+      const _savedBar = state.currentAssistant.querySelector(":scope > .msg-usage");
+      state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+      addAssistantChrome(state.currentAssistant);
+      bindCopyButtons(state.currentAssistant);
+      if (_savedBar) state.currentAssistant.appendChild(_savedBar);
+      state.currentAssistant = null;
+      streamAcc = "";
+    }
+  let replayToolCards = {}; // 回放：tool_call_id → 工具卡，tool 结果按 id 回填（对齐实时流视觉）
+  let replayPendingUsage = null; // 回放时 usage 行先于 assistant 行到达，暂存等下个气泡
   let streamAcc = "";
   let streamRaf = 0;
   function appendStream(delta) {
-    // 文本到来时归档 reasoning（去 running，下次 reasoning 开新块）
     archiveReasoning();
+    const d = typeof delta === "string" ? delta : "";
+    // Some OpenAI-compatible providers emit empty text events between tool calls.
+    // Keep leading whitespace, but do not create an assistant bubble until the
+    // accumulated block contains visible text.
+    if (d === "") return;
+    if (d.length >= 5 && streamAcc.endsWith(d)) return;
+    streamAcc += d;
+    if (!state.currentAssistant && streamAcc.trim() === "") return;
     if (!state.currentAssistant) {
       state.busy = true; setBusy(true);
       clearTurnStatus();
-      state.currentAssistant = el("msg-assistant", "");
+      state.currentAssistant = addAssistantChrome(el("msg-assistant", ""));
+      if (state._pendingUsage) { attachUsageToBubble(state.currentAssistant, state._pendingUsage); state._pendingUsage = null; }
     }
-    const d = delta || "";
-    // 流式去重：同一回合若 delta 已连续出现在 streamAcc 尾部（网络/服务端偶发双发），
-    // 跳过第二次，避免“对话进行中同一段文字逐字重复”。
-    // 仅对较长 delta（≥5 字符）做整段尾部去重，短增量（标点/单个字符）正常追加，
-    // 避免把模型合理输出的连续相同符号（如 **、--、代码缩进）误判为重复。
-    if (d.length >= 5 && streamAcc.endsWith(d)) return;
-    streamAcc += d;
     state.currentAssistant.dataset.raw = streamAcc;
     if (!streamRaf) {
       streamRaf = requestAnimationFrame(() => {
         streamRaf = 0;
         if (state.currentAssistant) {
+          const _savedBar = state.currentAssistant.querySelector(":scope > .msg-usage");
           state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
+          addAssistantChrome(state.currentAssistant);
           bindCopyButtons(state.currentAssistant);
+          if (_savedBar) state.currentAssistant.appendChild(_savedBar);
           scrollBottom();
         }
       });
@@ -555,7 +646,7 @@ case "goal_round": break;
       state.currentReasoning = el("msg-reasoning running", "");
       state.currentReasoning.dataset.thinkText = "";
       state.currentReasoning.dataset.open = "0";
-      state.currentAssistant = null;
+    flushTextBlock();
     }
     state.currentReasoning.dataset.thinkText += delta || "";
     if (!reasoningRaf) {
@@ -578,9 +669,10 @@ case "goal_round": break;
   }
 
   function toolStart(p) {
-    // 工具开始时归档当前 reasoning 块（去 running，下次 reasoning 开新块）
     archiveReasoning();
     mcToolStart(p);
+    // 回放历史：usage 行先到，暂存值在此贴到本次工具卡（若有）
+    if (replayPendingUsage) { p._replayUsage = replayPendingUsage; }
     const card = document.createElement("div");
     card.className = "msg msg-tool";
     const head = document.createElement("div");
@@ -617,17 +709,25 @@ case "goal_round": break;
     card.dataset.startedAt = Date.now();
     state.currentTool = result;
     state.currentToolCard = card;
-    state.currentAssistant = null;
+    try {
+      if (p._replayUsage) { attachToolUsageToCard(card, p._replayUsage); if (replayPendingUsage === p._replayUsage) replayPendingUsage = null; }
+      else if (state.lastLLMUsage) attachToolUsageToCard(card);
+    } catch (e) {}
+    flushTextBlock();
   }
 
   function toolResult(text, ok, durationMs) {
-    if (!state.currentTool) return;
+    const card = state.currentToolCard;
+    if (!state.currentTool || !card) return;
     state.currentTool.classList.add(ok ? "ok" : "err");
+    addToolStatus(card, ok);
     state.currentTool.textContent = (text || "").split("\n").slice(0, 30).join("\n");
     if (!ok && lastUserPrompt) {
-      addRetryButton(state.currentToolCard);
+      addRetryButton(card);
     }
-    stampDuration(state.currentToolCard, durationMs);
+    stampDuration(card, durationMs);
+    const srcCode = card.querySelector(".tool-code")?.textContent || "";
+    addToolCopyButton(card, text, srcCode);
     mcToolResult(ok, durationMs);
     state.currentTool = null;
     state.currentToolCard = null;
@@ -648,7 +748,8 @@ case "goal_round": break;
   // 工具用时（对齐 TUI ⏱ format_duration）：<60s → X.Xs，否则 Xm Y.Ys
   function formatDur(ms) {
     const secs = ms / 1000;
-    if (ms > 0 && secs < 0.05) return "<0.1s";
+    if (ms < 1000) return Math.max(1, Math.round(ms)) + "ms";
+    if (secs < 10) return secs.toFixed(2) + "s";
     if (secs < 60) return (Math.round(secs * 10) / 10) + "s";
     const m = Math.floor(secs / 60);
     const s = Math.round((secs - m * 60) * 10) / 10;
@@ -663,18 +764,55 @@ case "goal_round": break;
     slot.textContent = " ⏱ " + formatDur(ms);
   }
 
+  // 工具卡：⏱ 旁的成功/失败标识 + 输出复制按钮（live 与回放共用）
+  function addToolStatus(card, ok) {
+    if (!card) return;
+    card.querySelectorAll(".tool-status").forEach((n) => n.remove());
+    const sp = document.createElement("span");
+    sp.className = "tool-status " + (ok ? "tool-ok" : "tool-bad");
+    sp.textContent = ok ? "✓" : "✗";
+    const dur = card.querySelector(".tool-dur");
+    if (dur && dur.parentNode) dur.parentNode.insertBefore(sp, dur.nextSibling);
+    else card.querySelector(".tool-head")?.appendChild(sp);
+  }
+  function makeToolCopyBtn() {
+    const btn = document.createElement("button");
+    btn.className = "tool-copy btn-tool-copy";
+    btn.title = "复制输出";
+    btn.textContent = "⧉";
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      navigator.clipboard.writeText(btn.dataset.text || "").then(() => {
+        btn.textContent = "已复制";
+        setTimeout(() => (btn.textContent = "⧉"), 1200);
+      });
+    });
+    return btn;
+  }
+  function addToolCopyButton(card, output, cmd) {
+    if (!card) return;
+    const head = card.querySelector(".tool-head");
+    if (!head) return;
+    let btn = head.querySelector(".btn-tool-copy");
+    if (!btn) { btn = makeToolCopyBtn(); head.appendChild(btn); }
+    const c = (cmd || "").trim();
+    const o = output || "";
+    btn.dataset.text = c ? `$ ${c}\n\n${o}` : o;
+  }
   function shellResult(p) {
     const card = document.createElement("div");
     card.className = "msg msg-tool";
     const head = document.createElement("div");
     head.className = "tool-head";
-    head.innerHTML = `<b>$</b> ${escapeHtml(p.cmd || "")}`;
+    head.innerHTML = `<b>$</b> ${escapeHtml(p.cmd || "")}<span class="tool-dur">${p.duration_ms != null ? " ⏱ " + formatDur(p.duration_ms) : ""}</span>`;
     const out = document.createElement("div");
     out.className = "tool-result " + (p.exit === 0 ? "ok" : "err");
     out.textContent = (p.output || "").split("\n").slice(0, 40).join("\n");
+    addToolStatus(card, p.exit === 0);
+    addToolCopyButton(card, p.output, p.cmd);
     card.append(head, out);
     flow.appendChild(card);
-    state.currentAssistant = null;
+    flushTextBlock();
   }
   // dsh 文件 diff 卡片：+/- 行内联着色
   function fileDiff(p) {
@@ -696,7 +834,7 @@ case "goal_round": break;
     });
     card.append(head, body);
     flow.appendChild(card);
-    state.currentAssistant = null;
+    flushTextBlock();
     mcOnFileChange(p.path);
   }
 
@@ -1099,7 +1237,7 @@ case "goal_round": break;
   function updateCwdLabel(cwd) {
     const label = $("cwd-label");
     if (!label) return;
-     label.textContent = cwd ? ICO_FOLDER + " " + cwd : "";
+     label.innerHTML = cwd ? ICO_FOLDER + " " + escapeHtml(cwd) : "";
     label.title = cwd ? "当前会话工作目录: " + cwd : "";
   }
 
@@ -1152,6 +1290,8 @@ case "goal_round": break;
     localStorage.setItem("newbee.sid", sid);
     loadTiming(sid);
     resetStreamState();
+    // 恢复该会话的输入草稿（未发送文字刷新/切会话不丢）
+    restoreDraft();
     // 权限条是 flow 之外的独立 DOM：切会话必须先收起，否则 A 的确认请求
     // 挂在 B 的界面上，用户一点就把回复发给了错误的会话
     hidePermission();
@@ -1175,7 +1315,7 @@ case "goal_round": break;
     // 同步会话工作目录：切会话后立即反映到侧栏标签 + 底部状态栏
     updateCwdLabel(sessionState.cwd || null);
     state.cwd = sessionState.cwd || null;
-    // 同步会话忙碌状态：切到正在跑任务的会话时，UI 立即反映（中断/转向按钮、busy 圆点）
+      // 同步会话忙碌状态：切到正在跑任务的会话时，UI 立即反映（中断/排队按钮、busy 圆点）
     setBusy(sessionState.busy === true);
     // 切回正在等待权限确认的会话时恢复确认条（permission_ask 事件在切走期间已错过）
     if (sessionState.awaiting_permission === true) showPermission("该会话正在等待权限确认（代码执行请求）");
@@ -1199,7 +1339,7 @@ case "goal_round": break;
         <div class="wc-item"><b>Ctrl+K</b><span>快速命令</span></div>
         <div class="wc-item"><b>Ctrl+M</b><span>Mission Control 面板</span></div>
         <div class="wc-item"><b>Esc</b><span>中断 AI 执行</span></div>
-        <div class="wc-item"><b>Steering</b><span>AI 工作时发消息可转向</span></div>
+          <div class="wc-item"><b>排队</b><span>AI 忙时发消息自动排队执行</span></div>
       </div>
     `;
     flowEl.appendChild(card);
@@ -1208,6 +1348,8 @@ case "goal_round": break;
   // 点击“新会话”先把 UI 切到空白会话（断掉旧 ws、清屏、显示欢迎卡），
   // RPC/求值器 boot 在后台完成；不再让用户点完干等 1-3s。
   function prepareNewSessionUI(cwd, sid) {
+    // 新建会话：不恢复任何草稿（避免旧会话残留文字串台）
+    try { localStorage.removeItem("newbee.draft." + sid); } catch (e) {}
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
     if (state.ws) {
       state.ws.onclose = null;
@@ -1294,6 +1436,7 @@ case "goal_round": break;
 
   function renderHistory(msgs) {
     MC._replaying = true;
+    replayToolCards = {}; // 新一轮回放前重置，避免跨会话/翻页串卡
     allHistoryMsgs = msgs.filter(Boolean);
 
     if (allHistoryMsgs.length > HISTORY_PAGE) {
@@ -1309,8 +1452,200 @@ case "goal_round": break;
     MC._replaying = false;
     MC.steps = [];
     renderMCSteps();
+    initInfiniteHistory();
     scrollBottom(true);
   }
+
+  // 回放专用静态工具卡（不走 toolStart/toolResult 状态机，避免顺序错乱）
+  function renderReplayTool(name, title, code, result, ok) {
+    const card = document.createElement("div");
+    card.className = "msg msg-tool";
+    const head = document.createElement("div");
+    head.className = "tool-head";
+    head.innerHTML = `<b>${escapeHtml(name || "tool")}</b> <span class="diffstat">${escapeHtml(title || "")}</span>`;
+    const codeEl = document.createElement("pre");
+    const src = (code || "").split("\n").slice(0, 12).join("\n");
+    const isElixir = name === "run_elixir";
+    codeEl.className = `tool-code${isElixir ? " tool-code-elixir" : ""} hidden`;
+    if (isElixir) { codeEl.dataset.language = "elixir"; codeEl.innerHTML = highlightElixir(src); }
+    else codeEl.textContent = src;
+    const res = document.createElement("div");
+    res.className = "tool-result " + (ok ? "ok" : "err") + " hidden";
+    res.textContent = (result || "").split("\n").slice(0, 30).join("\n");
+    card.append(head, codeEl, res);
+    head.style.cursor = "pointer";
+    head.addEventListener("click", () => {
+      const open = codeEl.classList.contains("hidden");
+      codeEl.classList.toggle("hidden", !open);
+      res.classList.toggle("hidden", !open);
+      head.querySelector(".tool-chev")?.remove();
+      if (!open) return;
+      const chev = document.createElement("span");
+      chev.className = "tool-chev";
+      chev.textContent = " ▾";
+      chev.style.color = "var(--nb-label-caption)";
+      head.appendChild(chev);
+    });
+    flow.appendChild(card);
+    return card;
+  }
+
+  // 提问卡片：text / single（单选）/ multi（多选）/ buttons（按钮组）
+  function renderAskCard(question, options, kind, createdAt) {
+    const d = el("msg-ask", "");
+    d.classList.add("ask-card");
+    const qWrap = document.createElement("div");
+    qWrap.className = "ask-question";
+    qWrap.textContent = question || "（问题为空）";
+    d.appendChild(qWrap);
+
+    const opts = Array.isArray(options) ? options.filter(o => o && (o.label || o.value)) : [];
+    const k = kind === "single" || kind === "multi" || kind === "buttons" ? kind : (opts.length ? "buttons" : "text");
+
+    if (opts.length && k !== "text") {
+      const box = document.createElement("div");
+      box.className = "ask-options " + k;
+
+      if (k === "single" || k === "multi") {
+        opts.forEach((o) => {
+          const lab = document.createElement("label");
+          lab.className = "ask-opt";
+          const cb = document.createElement("input");
+          cb.type = k === "multi" ? "checkbox" : "radio";
+          cb.name = k === "multi" ? "askm_" + (createdAt || "x") : "asks_" + (createdAt || "x");
+          cb.value = o.value || o.label || "";
+          lab.appendChild(cb);
+          const span = document.createElement("span");
+          span.textContent = o.label || o.value;
+          lab.appendChild(span);
+          box.appendChild(lab);
+        });
+        const send = document.createElement("button");
+        send.className = "ask-send";
+        send.type = "button";
+        send.textContent = k === "multi" ? "提交选择" : "确认";
+        send.addEventListener("click", () => {
+          const picked = Array.from(box.querySelectorAll("input:checked")).map(i => i.value);
+          answerAsk(picked.length ? (k === "multi" ? picked : picked[0]) : null);
+        });
+        box.appendChild(send);
+      } else { // buttons
+        opts.forEach((o) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "ask-btn";
+          b.textContent = o.label || o.value;
+          b.addEventListener("click", () => answerAsk(o.value != null ? o.value : o.label));
+          box.appendChild(b);
+        });
+      }
+      d.appendChild(box);
+    } else {
+      const box = document.createElement("div");
+      box.className = "ask-options text";
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.className = "ask-input";
+      inp.placeholder = "输入回答…";
+      const send = document.createElement("button");
+      send.type = "button";
+      send.className = "ask-send";
+      send.textContent = "回答";
+      send.addEventListener("click", () => {
+        const v = inp.value.trim();
+        if (v) answerAsk(v);
+      });
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && inp.value.trim()) answerAsk(inp.value.trim());
+      });
+      box.append(inp, send);
+      d.appendChild(box);
+    }
+    return d;
+  }
+
+  // 把提问卡片变为"已回答"态：移除输入控件，显示用户回答
+  function markAskAnswered(d, answer) {
+    if (!d) return;
+    d.querySelectorAll(".ask-options, .ask-input, .ask-send, .ask-btn, .ask-opt").forEach(el => el.remove());
+    const ans = document.createElement("div");
+    ans.className = "ask-answer";
+    const label = document.createElement("b");
+    label.textContent = "已回答: ";
+    ans.appendChild(label);
+    ans.appendChild(document.createTextNode(answer == null ? "（已跳过）" : String(answer)));
+    d.appendChild(ans);
+  }
+
+  // 提交回答：塞入输入框并直接发送（复用 send() 发送链路），并标记卡片已回答
+  function answerAsk(value) {
+    const inp = document.getElementById("input");
+    const text = typeof value === "string" ? value : (value == null ? "" : JSON.stringify(value));
+    if (inp) {
+      inp.value = text;
+      autoGrow();
+    }
+    document.querySelectorAll(".msg-ask").forEach((el) => markAskAnswered(el, value));
+    if (text.trim()) send();
+    else line("notice", "已跳过问题");
+  }
+
+
+  // 媒体上屏：渲染图片/音频/视频卡片（实时事件与历史回放共用）
+  function renderMediaShow(p) {
+    const d = el("msg-media", "");
+    d.dataset.mediaId = p.media_id || "";
+    const kind = p.kind || (p.url || "").match(/\.(png|jpe?g|gif|webp|svg)/i) ? "image" : "other";
+    const head = document.createElement("div");
+    head.className = "media-head";
+    head.innerHTML = `<span class="media-kind">${escapeHtml(kind)}</span><span class="media-name">${escapeHtml(p.name || "")}</span><span class="media-size">${escapeHtml(p.size ? fmtBytes(p.size) : "")}</span>`;
+    d.appendChild(head);
+    const body = document.createElement("div");
+    body.className = "media-body";
+    if (p.caption) {
+      const cap = document.createElement("div");
+      cap.className = "media-caption";
+      cap.textContent = p.caption;
+      d.appendChild(cap);
+    }
+    if (kind === "image") {
+      const img = document.createElement("img");
+      img.src = p.url + (p.url.includes("?") ? "&" : "?") + "_t=" + Date.now();
+      img.alt = p.caption || p.name || "媒体";
+      img.className = "nb-zoomable";
+      img.addEventListener("click", (e) => { e.stopPropagation(); openLightbox(img.src, img.alt); });
+      body.appendChild(img);
+    } else if (kind === "audio") {
+      const au = document.createElement("audio");
+      au.controls = true;
+      au.preload = "metadata";
+      au.src = p.url + "?_t=" + Date.now();
+      body.appendChild(au);
+    } else if (kind === "video") {
+      const vd = document.createElement("video");
+      vd.controls = true;
+      vd.preload = "metadata";
+      vd.src = p.url + "?_t=" + Date.now();
+      body.appendChild(vd);
+    } else {
+      const a = document.createElement("a");
+      a.href = p.url;
+      a.className = "media-download";
+      a.textContent = "⬇ 下载 " + (p.name || "文件");
+      body.appendChild(a);
+    }
+    d.appendChild(body);
+    flow.appendChild(d);
+    scrollBottom();
+  }
+
+  function fmtBytes(n) {
+    if (n == null || isNaN(n)) return "";
+    if (n >= 1048576) return (n/1048576).toFixed(1) + "MB";
+    if (n >= 1024) return (n/1024).toFixed(1) + "KB";
+    return n + "B";
+  }
+
 
   function renderOneMsg(m) {
     if (m.role === "user") {
@@ -1327,11 +1662,34 @@ case "goal_round": break;
         d.dataset.open = "0";
         renderReasoningBody(d);
       }
-      if (m.content) { const d = el("msg-assistant", m.content, true); bindCopyButtons(d); }
-      (m.toolCalls || []).forEach((tc) => toolStart({ name: tc.name, title: tc.title, code: tc.code }));
+      if (m.content) {
+        const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d);
+        // 回放：有 tool_calls 时 usage 留给工具卡（底部统计），纯文本回复才贴气泡
+        if (replayPendingUsage && !(m.toolCalls || []).length) { attachUsageToBubble(d, replayPendingUsage); replayPendingUsage = null; }
+      }
+      (m.toolCalls || []).forEach((tc) => { const card = renderReplayTool(tc.name, tc.title, tc.code, "", true); if (tc.id) replayToolCards[tc.id] = card; });
+    } else if (m.role === "ask") {
+      const c = m.content || {};
+      renderAskCard(c.question || "", c.options || [], c.kind || "text", c.created_at || null);
+    } else if (m.role === "media") {
+      renderMediaShow(m.content || {});
+    } else if (m.role === "usage") {
+      if (m.usage) replayPendingUsage = typeof m.usage === "string" ? JSON.parse(m.usage) : m.usage;
     } else if (m.role === "tool") {
       const ok = !(m.content || "").startsWith("✗");
-      toolResult(m.content, ok);
+      const host = (m.toolCallId && replayToolCards[m.toolCallId]) || null;
+      if (host) {
+        const resEl = host.querySelector(".tool-result");
+        if (resEl) { resEl.classList.add(ok ? "ok" : "err"); resEl.textContent = (m.content || "").split("\n").slice(0, 30).join("\n"); }
+        addToolStatus(host, ok);
+        addToolCopyButton(host, m.content, host.querySelector(".tool-code")?.textContent || "");
+        // 回放：usage 行先于 tool 行到达（transcript 顺序），此时贴到工具卡
+        if (replayPendingUsage && !host.querySelector(":scope > .tool-usage")) {
+          attachToolUsageToCard(host, replayPendingUsage);
+          replayPendingUsage = null;
+        }
+        delete replayToolCards[m.toolCallId];
+      } else { renderReplayTool("tool", "", "", m.content, ok); }
     } else if (m.role === "archive") {
       const d = el("msg-archive", "");
       const segs = m.segments || [];
@@ -1363,112 +1721,57 @@ case "goal_round": break;
     flowEl.insertBefore(btn, flowEl.firstChild);
   }
 
+  let loadingEarlier = false; // 防重入
   async function loadEarlier() {
-    const btn = $("load-more");
-    if (btn) btn.remove();
-    const flowEl = $("flow");
+    if (loadingEarlier || historyOffset <= 0) return;
+    loadingEarlier = true;
+    try {
+      const flowEl = $("flow");
+      const transcriptEl = $("transcript");
+      const oldHeight = transcriptEl.scrollHeight;
 
-    // 记录当前滚动位置
-    const transcriptEl = $("transcript");
-    const oldHeight = transcriptEl.scrollHeight;
+      // 先摘走旧按钮（避免被当旧内容一起摘走）
+      const oldBtn = $("load-more");
+      if (oldBtn) oldBtn.remove();
 
-    MC._replaying = true;
-    const newSkip = Math.max(0, historyOffset - HISTORY_PAGE);
-    const start = newSkip;
-    const end = historyOffset;
-    historyOffset = newSkip;
+      // 把当前已显示的内容整体摘下来（顺序保持）
+      const oldNodes = Array.from(flowEl.childNodes);
+      flowEl.innerHTML = ""; // 清空 flow 本身保留
 
-    // 在顶部插入旧消息（需要先收集 DOM 节点再插入）
-    const fragment = document.createDocumentFragment();
-    const tempFlow = document.createElement("div");
-    
-    // 暂存当前 flow 内容
-    const existingNodes = Array.from(flowEl.childNodes);
-    
-    // 清空 flow，渲染旧消息到 fragment
-    // 简化方案：直接在前面追加（DOM 顺序可能不完全对，但功能正确）
-    allHistoryMsgs.slice(start, end).forEach((m) => { renderOneMsg(m); });
+      const newSkip = Math.max(0, historyOffset - HISTORY_PAGE);
+      const start = newSkip;
+      const end = historyOffset;
+      historyOffset = newSkip;
 
-    MC._replaying = false;
+      // 更早消息渲染进空 flow：appendChild 天然从头到尾顺序正确
+      MC._replaying = true;
+      allHistoryMsgs.slice(start, end).forEach((m) => { renderOneMsg(m); });
+      MC._replaying = false;
 
-    // 保持滚动位置（看到的是同一条消息）
-    requestAnimationFrame(() => {
-      transcriptEl.scrollTop = transcriptEl.scrollHeight - oldHeight;
+      // 把原有内容整体挂回末尾（更早的在顶部，旧内容在下方）
+      oldNodes.forEach((n) => flowEl.appendChild(n));
+
+      // 补偿高度差，视觉上当前内容不动
+      requestAnimationFrame(() => {
+        transcriptEl.scrollTop = transcriptEl.scrollHeight - oldHeight;
+      });
+
+      // 仍有更早消息则在最前放按钮
+      if (historyOffset > 0) renderLoadMoreBtn(historyOffset);
+    } finally {
+      loadingEarlier = false;
+    }
+  }
+
+  // 触顶自动加载（窗口式渐进：向上滚到顶自动加载更早对话）
+  function initInfiniteHistory() {
+    const t = $("transcript");
+    if (!t || t.dataset.infinityBound) return;
+    t.dataset.infinityBound = "1";
+    t.addEventListener("scroll", () => {
+      if (historyOffset <= 0 || loadingEarlier || state.busy) return;
+      if (t.scrollTop <= 40) loadEarlier();
     });
-
-    // 如果还有更早的消息，重新显示按钮
-    if (historyOffset > 0) {
-      renderLoadMoreBtn(historyOffset);
-    }
-  }
-
-  function renderOneMsg(m) {
-    if (m.role === "user") {
-      if (m.images && m.images.length) renderUserLine(m.content, m.images);
-      else line("user", m.content);
-    }
-    else if (m.role === "assistant") {
-      if (m.reasoning) {
-        const d = el("msg-reasoning", "");
-        d.dataset.thinkText = m.reasoning;
-        d.dataset.open = "0";
-        renderReasoningBody(d);
-      }
-      if (m.content) { const d = el("msg-assistant", m.content, true); bindCopyButtons(d); }
-      (m.toolCalls || []).forEach((tc) => toolStart({ name: tc.name, title: tc.title, code: tc.code }));
-    } else if (m.role === "tool") {
-      const ok = !(m.content || "").startsWith("✗");
-      toolResult(m.content, ok);
-    }
-  }
-
-  function renderLoadMoreBtn(remaining) {
-    const flowEl = $("flow");
-    const btn = document.createElement("div");
-    btn.className = "load-more-btn";
-    btn.id = "load-more";
-    btn.innerHTML = `<button class="btn-ghost" style="margin:8px auto;display:block;font-size:12px">↑ 加载更早 ${remaining} 条消息</button>`;
-    btn.addEventListener("click", () => loadEarlier());
-    flowEl.insertBefore(btn, flowEl.firstChild);
-  }
-
-  async function loadEarlier() {
-    const btn = $("load-more");
-    if (btn) btn.remove();
-    const flowEl = $("flow");
-
-    // 记录当前滚动位置
-    const transcriptEl = $("transcript");
-    const oldHeight = transcriptEl.scrollHeight;
-
-    MC._replaying = true;
-    const newSkip = Math.max(0, historyOffset - HISTORY_PAGE);
-    const start = newSkip;
-    const end = historyOffset;
-    historyOffset = newSkip;
-
-    // 在顶部插入旧消息（需要先收集 DOM 节点再插入）
-    const fragment = document.createDocumentFragment();
-    const tempFlow = document.createElement("div");
-    
-    // 暂存当前 flow 内容
-    const existingNodes = Array.from(flowEl.childNodes);
-    
-    // 清空 flow，渲染旧消息到 fragment
-    // 简化方案：直接在前面追加（DOM 顺序可能不完全对，但功能正确）
-    allHistoryMsgs.slice(start, end).forEach((m) => { renderOneMsg(m); });
-
-    MC._replaying = false;
-
-    // 保持滚动位置（看到的是同一条消息）
-    requestAnimationFrame(() => {
-      transcriptEl.scrollTop = transcriptEl.scrollHeight - oldHeight;
-    });
-
-    // 如果还有更早的消息，重新显示按钮
-    if (historyOffset > 0) {
-      renderLoadMoreBtn(historyOffset);
-    }
   }
 
   // ── 图片附件（上传 / 粘贴 / 预览）──
@@ -1530,10 +1833,23 @@ case "goal_round": break;
       images.forEach(url => {
         const img = document.createElement("img");
         img.src = url;
+        img.className = "nb-zoomable";
+        img.addEventListener("click", (e) => { e.stopPropagation(); openLightbox(img.src, img.alt || "图片"); });
         wrap.appendChild(img);
       });
       d.appendChild(wrap);
     }
+    // 用户消息复制按钮
+    if (text) {
+      const cBtn = document.createElement("button");
+      cBtn.type = "button";
+      cBtn.className = "msg-copy";
+      cBtn.title = "复制消息";
+      cBtn.textContent = "\u29C9";
+      cBtn.onclick = () => { navigator.clipboard.writeText(text).then(() => { cBtn.textContent = "已复制"; setTimeout(() => cBtn.textContent = "\u29C9", 1500); }); };
+      d.appendChild(cBtn);
+    }
+    scrollBottom();
     scrollBottom();
   }
 
@@ -1559,15 +1875,15 @@ case "goal_round": break;
     const text = input.value.trim();
     const images = state.attachments.map(x => x.dataUrl);
     if ((!text && images.length === 0) || !state.sid) return;
-    const wasSteering = state.busy;
-    if (!wasSteering && text) lastUserPrompt = text;
-    if (wasSteering) {
-      // 转向模式：先中断当前 turn
-      interrupt();
-      line("notice", "⤳ 转向：中断当前操作，执行新指令");
+    if (state.busy) {
+      // 排队模式：当前任务完成后由服务端按顺序自动执行
+      line("notice", "⏳ 已加入队列：当前任务完成后自动执行");
+    } else if (text) {
+      lastUserPrompt = text;
     }
     input.value = "";
     autoGrow();
+    saveDraft(""); // 已发送：清空草稿
     // 回显：文本 + 图片
     scrollBottom(true);
     renderUserLine(text, images);
@@ -1577,6 +1893,7 @@ case "goal_round": break;
       applyPromptTitle(text, images);
     }
     state.busy = true; setBusy(true);
+    resetTurnUsage();
     clearAttachments();
     try {
       if (images.length > 0) {
@@ -1642,9 +1959,21 @@ case "goal_round": break;
       return "auto";
     };
 
-    function renderModels(p) {
+    function renderModels(p, filter) {
       mbox.innerHTML = "";
-      (p.models || []).forEach((m) => {
+      const q = (filter == null ? "" : String(filter)).trim().toLowerCase();
+      const list = (p.models || []).filter((m) => {
+        if (!q) return true;
+        return String(m).toLowerCase().includes(q);
+      });
+      if (!list.length) {
+        const empty = document.createElement("div");
+        empty.className = "model-empty";
+        empty.textContent = q ? ("没有匹配 \"" + q + "\" 的模型") : "暂无可用模型";
+        mbox.appendChild(empty);
+        return;
+      }
+      list.forEach((m) => {
         const o = document.createElement("div");
         const isSel = (p.name === pending.provider) && (m === pending.model);
         o.className = "model-opt" + (isSel ? " current" : "");
@@ -1717,6 +2046,23 @@ case "goal_round": break;
       };
     }
 
+    // ── 模型模糊搜索：本地过滤，不请求后端 ──
+    const searchInput = $("model-search");
+    if (searchInput) {
+      searchInput.value = "";
+      // 输入即过滤当前厂商的模型列表
+      searchInput.oninput = () => {
+        const p = providerData.get(currentProvider)
+          || providers.find((x) => x && x.name === currentProvider);
+        if (p) renderModels(p, searchInput.value);
+      };
+      // Esc 清空并失焦；Enter 选中第一个高亮
+      searchInput.onkeydown = (e) => {
+        if (e.key === "Escape") { searchInput.value = ""; searchInput.blur(); const p = providerData.get(currentProvider) || providers.find((x) => x && x.name === currentProvider); if (p) renderModels(p); }
+        if (e.key === "Enter") { const first = mbox.querySelector(".model-opt"); if (first) first.click(); }
+      };
+    }
+
     const def = providers.find((p) => p.name === curProvider) || providers[0];
     if (def) renderModels(def);
 
@@ -1771,9 +2117,10 @@ case "goal_round": break;
     $("interrupt").classList.toggle("hidden", !b);
     const sendBtn = $("send");
     sendBtn.disabled = false;
-    sendBtn.textContent = b ? "转向" : "发送";
-    sendBtn.title = b ? "中断当前 turn 并发送新指令" : "发送";
-    sendBtn.classList.toggle("btn-steer", b);
+    // 图标按钮：不动 innerHTML，只用 class/title 表达状态
+    sendBtn.classList.toggle("queuing", b);
+    sendBtn.title = b ? "加入队列：当前任务完成后自动执行" : "发送";
+    sendBtn.setAttribute("aria-label", sendBtn.title);
     if (b) {
       showTurnStatus();
       // AI 开始工作时，自动展开 MC 步骤 tab（如果 MC 已打开）
@@ -1826,6 +2173,104 @@ case "goal_round": break;
       $("usage-label").textContent = `${fmtContext(u.context_tokens)}/${fmtContext(u.context_window)}`;
     }
   }
+  function usageFields(u) {
+    if (!u || typeof u !== "object") return null;
+    const prompt = u.prompt_tokens ?? u.input_tokens ?? 0;
+    const completion = u.completion_tokens ?? u.output_tokens ?? 0;
+    const total = u.total_tokens ?? (prompt + completion);
+    const cached = u.cache_read_tokens ?? u.cached_tokens ?? u.cache_read_input_tokens ?? (u.prompt_tokens_details && (u.prompt_tokens_details.cached_tokens ?? u.prompt_tokens_details.cache_read_tokens)) ?? 0;
+    const hit = prompt > 0 ? (cached / prompt) * 100 : null;
+    const model = u.model || u.model_name || "";
+    return { prompt, completion, total, cached, hit, model };
+  }
+  function fmtTokShort(n) {
+    if (n == null || isNaN(n)) return "0";
+    if (n < 1000) return String(n);
+    if (n < 1e6) return (Math.round(n/100)/10).toFixed(1).replace(/\.0$/, "") + "K";
+    return (Math.round(n/1e5)/10).toFixed(1).replace(/\.0$/, "") + "M";
+  }
+  function bubbleUsageLabel(f) {
+    const pct = f.hit == null ? "-" : (f.hit > 99.995 ? "100.00" : f.hit.toFixed(2)) + "%";
+    return `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${fmtTokShort(f.cached)} (${pct})`;
+  }
+  function ensureUsageBar(bubble) {
+    if (!bubble) return null;
+    let bar = bubble.querySelector(":scope > .msg-usage");
+    if (bar) return bar;
+    bar = document.createElement("div");
+    bar.className = "msg-usage";
+    bubble.appendChild(bar);
+    return bar;
+  }
+  function attachUsageToBubble(bubble, u) {
+    const f = usageFields(u);
+    if (!bubble || !f) return;
+    const bar = ensureUsageBar(bubble);
+    const label = bubbleUsageLabel(f);
+    bar.innerHTML = "";
+    const left = document.createElement("span");
+    left.className = "msg-usage-stats";
+    left.textContent = label;
+    left.title = `prompt=${f.prompt} completion=${f.completion} total=${f.total} cached=${f.cached} hit=${f.hit == null ? "-" : f.hit.toFixed(2)+"%"}`;
+    bar.appendChild(left);
+    bubble.dataset.hasUsage = "1";
+  }
+  function handleBubbleUsage(u) {
+    if (!u) return;
+    try {
+      if (!state.turnUsage) state.turnUsage = { prompt: 0, completion: 0, cached: 0, count: 0, model: "" };
+      const f = usageFields(u);
+      if (f) {
+        state.turnUsage.prompt += f.prompt || 0;
+        state.turnUsage.completion += f.completion || 0;
+        state.turnUsage.cached += f.cached || 0;
+        state.turnUsage.count += 1;
+        if (f.model) state.turnUsage.model = f.model;
+        state.turnUsageDetails.push({ ...f, raw: u });
+        state.lastLLMUsage = u;
+        state.lastUsageSeq = (state.lastUsageSeq || 0) + 1;
+      }
+    } catch (e) {}
+    let target = state.currentAssistant;
+    if (!target || !document.body.contains(target)) {
+      const assistants = flow.querySelectorAll(".msg-assistant.msg-boxed");
+      for (let i = assistants.length - 1; i >= 0; i--) {
+        if (assistants[i].dataset.hasUsage !== "1") { target = assistants[i]; break; }
+      }
+      if (!target && assistants.length) target = assistants[assistants.length - 1];
+    }
+    if (target) {
+      attachUsageToBubble(target, u);
+      if (state.turnUsage && state.turnUsage.count > 1) {
+        const bar = target.querySelector(":scope > .msg-usage");
+        if (bar) bar.title = `本轮累计 ${state.turnUsage.count} 次请求 · 输入 ${fmtTokShort(state.turnUsage.prompt)} · 输出 ${fmtTokShort(state.turnUsage.completion)} · 缓存 ${fmtTokShort(state.turnUsage.cached)}`;
+      }
+    } else {
+      state._pendingUsage = u;
+    }
+    // 若正有工具卡在等用量（乱序到达），也顺带补上
+    try {
+      if (state.currentToolCard && !state.currentToolCard.querySelector(":scope > .tool-usage") && state.lastLLMUsage) {
+        attachToolUsageToCard(state.currentToolCard);
+      }
+    } catch (e) {}
+  }
+  function attachToolUsageToCard(card, u) {
+    const f = usageFields(u || state.lastLLMUsage);
+    if (!card || !f) return;
+    if (card.querySelector(":scope > .tool-usage")) return;
+    const isShared = state.lastAttachedSeq === state.lastUsageSeq && state.lastUsageSeq !== 0;
+    const bar = document.createElement("div");
+    bar.className = "tool-usage";
+    const left = document.createElement("span");
+    left.className = "tool-usage-stats";
+    const pct = f.hit == null ? "-" : (f.hit > 99.995 ? "100.00" : f.hit.toFixed(2)) + "%";
+    left.textContent = (isShared ? "同上次请求 · " : "") + `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${fmtTokShort(f.cached)} (${pct})`;
+    left.title = `prompt=${f.prompt} completion=${f.completion} total=${f.total} cached=${f.cached} hit=${f.hit == null ? "-" : f.hit.toFixed(2)+"%"}`;
+    bar.appendChild(left);
+    card.appendChild(bar);
+    state.lastAttachedSeq = state.lastUsageSeq;
+  }
   function scrollBottom(force) {
     if (force) state.stickBottom = true;
     if (!state.stickBottom) {
@@ -1836,13 +2281,60 @@ case "goal_round": break;
     transcript.scrollTop = transcript.scrollHeight;
     $("to-bottom").classList.remove("show");
   }
+  // ── 输入草稿自动保存（localStorage）：刷新/切会话后恢复未发送的文字 ──
+  function draftKey() { return "newbee.draft." + (state.sid || "none"); }
+  function saveDraft(v) {
+    try {
+      if (state.sid && v) localStorage.setItem(draftKey(), v);
+      else if (state.sid && !v) localStorage.removeItem(draftKey());
+    } catch (e) {}
+  }
+  function restoreDraft() {
+    try {
+      const d = state.sid && localStorage.getItem(draftKey());
+      if (d) {
+        input.value = d;
+        autoGrow();
+      }
+    } catch (e) {}
+  }
   function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 160) + "px"; }
   function escapeHtml(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
+  // ── 图片点击放大（lightbox）──
+  let lightboxEl = null;
+  function openLightbox(src, alt) {
+    closeLightbox();
+    const mask = document.createElement("div");
+    mask.className = "nb-lightbox";
+    const img = document.createElement("img");
+    img.src = src; img.alt = alt || "";
+    mask.appendChild(img);
+    mask.addEventListener("click", closeLightbox);
+    document.body.appendChild(mask);
+    lightboxEl = mask;
+  }
+  function closeLightbox() {
+    if (lightboxEl) { lightboxEl.remove(); lightboxEl = null; }
+  }
+  function bindZoomable(root) {
+    if (!root) return;
+    root.querySelectorAll("img").forEach((img) => {
+      if (img.dataset.zoomBound) return;
+      img.dataset.zoomBound = "1";
+      img.classList.add("nb-zoomable");
+      img.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openLightbox(img.src, img.alt || "图片");
+      });
+    });
+  }
+
   // 代码块复制按钮（dsh MarkdownText codeLabels: copy/copied）
   function bindCopyButtons(root) {
+    bindZoomable(root);
     root.querySelectorAll(".md-copy").forEach((btn) => {
       if (btn.dataset.bound) return;
       btn.dataset.bound = "1";
@@ -1863,33 +2355,35 @@ case "goal_round": break;
   };
 
   // ── 思考强度段选器（7 档，输入框旁）──
-  const EFFORT_LEVELS = ["off", "auto", "low", "medium", "high", "xhigh", "max"];
-  const effortWrap = $("effort-segments");
-  if (effortWrap) {
-    const renderSegs = (active) => {
-      effortWrap.innerHTML = "";
-      EFFORT_LEVELS.forEach((lv) => {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "effort-seg" + (lv === active ? " active" : "");
-        b.textContent = lv;
-        b.dataset.level = lv;
-        b.onclick = async () => {
-          renderSegs(lv);
-          if (!state.sid) return;
-          try {
-            await rpc("session.setEffort", { sessionId: state.sid, effort: lv });
-          } catch (err) {
-            line("error", "设置思考强度失败: " + err.message);
-          }
-        };
-        effortWrap.appendChild(b);
-      });
-    };
-    // resume 时按会话恢复选中档（nil → auto）
-    window.__restoreEffort = (effort) => renderSegs(effort || "auto");
-    renderSegs("auto");
-  }
+   const EFFORT_LEVELS = ["none", "auto", "low", "medium", "high", "xhigh", "max"];
+   const EFFORT_LABELS = {none:"关", auto:"自动", low:"低", medium:"中", high:"高", xhigh:"很高", max:"最高"};
+   const effortWrap = $("effort-segments");
+   if (effortWrap) {
+     const renderSegs = (active) => {
+       effortWrap.innerHTML = "";
+       EFFORT_LEVELS.forEach((lv) => {
+         const b = document.createElement("button");
+         b.type = "button";
+         b.className = "effort-seg" + (lv === active ? " active" : "");
+         b.textContent = EFFORT_LABELS[lv] || lv;
+         b.title = lv;
+         b.dataset.level = lv;
+         b.onclick = async () => {
+           renderSegs(lv);
+           if (!state.sid) return;
+           try {
+             await rpc("session.setEffort", { sessionId: state.sid, effort: lv });
+           } catch (err) {
+             line("error", "设置思考强度失败: " + err.message);
+           }
+         };
+         effortWrap.appendChild(b);
+       });
+     };
+     // resume 时按会话恢复选中档（nil → auto）
+     window.__restoreEffort = (effort) => renderSegs(effort || "auto");
+     renderSegs("auto");
+   }
 
   $("send").onclick = send;
   $("attach-btn").onclick = () => $("file-input").click();
@@ -1915,7 +2409,10 @@ case "goal_round": break;
   $("model-label").onclick = openModels;
   $("model-cancel").onclick = () => $("model-modal").classList.add("hidden");
   // model-confirm 的 onclick 在 openModels 里动态绑定（每次打开重新捕获 pending）
-  input.addEventListener("input", autoGrow);
+  input.addEventListener("input", () => {
+    autoGrow();
+    saveDraft(input.value);
+  });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
@@ -1963,39 +2460,42 @@ case "goal_round": break;
     if (st.context_tokens > 0 && st.context_window > 0) {
       $("usage-label").textContent = `${fmtContext(st.context_tokens)}/${fmtContext(st.context_window)}`;
     }
+    // 左侧：目录 + 进度 + 耗时 + token（口径：服务端 usage 为会话累计值）
     const u = st.usage || {};
+    const promptTok = u.prompt_tokens || 0;
     const cacheRead = u.cache_read_tokens || u.cached_tokens
       || (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
-    const uncachedIn = u.uncached_prompt_tokens != null ? u.uncached_prompt_tokens
-      : ((u.prompt_tokens || 0) - cacheRead > 0 ? (u.prompt_tokens || 0) - cacheRead : 0);
     const outTok = u.completion_tokens || u.output_tokens || 0;
-    const inTok = cacheRead + uncachedIn + (u.cache_write_tokens || 0);
-    // 缓存命中率：累计 cache_read ÷ 累计 prompt_tokens（与 TUI 口径一致；服务端 usage 按 key 累加，prompt 含 cached）
-    const promptTok = u.prompt_tokens || 0;
     const cacheHit = promptTok > 0 ? Math.min(100, cacheRead * 100 / promptTok) : null;
     if (st && st.cwd !== undefined) {
       state.cwd = st.cwd || null;
       updateCwdLabel(state.cwd);
     }
     const cwd0 = state.cwd || "";
-     const left = [cwd0 ? (ICO_FOLDER + " " + cwd0) : "newbee"];
+    const left = [];
+     if (cwd0) left.push(`<span title="newbee 当前工作目录">${ICO_FOLDER} ${escapeHtml(cwd0)}</span>`);
+    else left.push('<span title="newbee 工作区">newbee</span>');
     const turns = st.turns || 0, steps = st.steps || 0;
-    if (turns > 0 || steps > 0) left.push(`${turns} 轮 · ${steps} 步`);
-    // LLM/工具耗时（dsh: LLM Xs · 工具 Ys）
+    if (turns > 0 || steps > 0) left.push(`<span title="回合数（每发一条消息算 1 轮）· 步骤数（每次工具调用算 1 步）">${turns} 轮 · ${steps} 步</span>`);
     const tm = state.timing;
     const llmMs = tm.llmMs + (tm.llmStart !== null ? Date.now() - tm.llmStart : 0);
     const toolMs = tm.toolMs + (tm.toolStart !== null ? Date.now() - tm.toolStart : 0);
-    if (llmMs > 0 || toolMs > 0) left.push(`LLM ${fmtDur(llmMs)} · 工具 ${fmtDur(toolMs)}`);
-    // 首 token · 速率（dsh: 首 token Zs · T tok/s）
+    if (llmMs > 0 || toolMs > 0) left.push(`<span title="模型生成累计耗时 · 工具执行累计耗时">LLM ${fmtDur(llmMs)} · 工具 ${fmtDur(toolMs)}</span>`);
     const spd = [];
-    if (tm.ftCount > 0) spd.push(`首 token ${fmtDur(tm.ftSum / tm.ftCount)}`);
-    if (llmMs > 0 && tm.outTok > 0) spd.push(`${(tm.outTok / (llmMs / 1000)).toFixed(1)} tok/s`);
+    if (tm.ftCount > 0) spd.push(`<span title="平均首 token 耗时（多次请求平均）">首 token ${fmtDur(tm.ftSum / tm.ftCount)}</span>`);
+    if (llmMs > 0 && tm.outTok > 0) spd.push(`<span title="输出 token 数 ÷ LLM 耗时">${(tm.outTok / (llmMs / 1000)).toFixed(1)} tok/s</span>`);
     if (spd.length) left.push(spd.join(" · "));
-    if (cacheHit !== null) left.push(`缓存 ${cacheHit.toFixed(1).replace(/\.0$/, "")}%`);
-    if (inTok > 0 || outTok > 0) left.push(`入 ${fmtTok(inTok)} · 出 ${fmtTok(outTok)}`);
+    if (cacheHit !== null) left.push(`<span title="缓存命中率 = 命中缓存的 token ÷ 总输入 token（会话累计）">缓存 ${cacheHit.toFixed(1).replace(/\.0$/, "")}%</span>`);
+    if (promptTok > 0 || outTok > 0) left.push(`<span title="累计输入 token（prompt_tokens）· 累计输出 token（completion_tokens）">输入 ${fmtTok(promptTok)} · 输出 ${fmtTok(outTok)}</span>`);
     $("stats-left").innerHTML = left.join(" | ");
-    const stTxt = st.busy ? '<span class="st-busy">● 运行中</span>' : '<span class="st-ok">● 空闲</span>';
-    $("stats-right").innerHTML = `${stTxt} bind:${st.bindings || 0} ${escapeHtml(st.policy || "")}`;
+    // 右侧：状态 + bind + 策略
+    const qn = st.queued || 0;
+    const stTxt = st.busy
+      ? `<span class="st-busy" title="Agent 正在运行">● 运行中${qn > 0 ? " · 排队 " + qn : ""}</span>`
+      : '<span class="st-ok" title="Agent 空闲">● 空闲</span>';
+    const bindTxt = st.bindings || 0;
+    const policyTxt = escapeHtml(st.policy || "");
+    $("stats-right").innerHTML = `${stTxt} <span title="会话绑定变量数">bind:${bindTxt}</span> <span title="权限策略：lenient=放行 / ask=询问 / deny=拒绝">${policyTxt}</span>`;
   }
 
   // ── 环境进化控制台 ──
@@ -2796,16 +3296,103 @@ case "goal_round": break;
   }
 
 
-  // 文件路径点击 → 显示 diff
-  document.addEventListener("click", (e) => {
-    if (e.target.classList.contains("file-ref")) {
-      const path = e.target.dataset.path;
-      if (path) {
-        if (!MC.open) setMCOpen(true);
-        showFileDiff(path);
-      }
+  // 文件路径点击 → 当前会话工作区内只读查看
+  const fileViewer = { path: null, content: "", markdown: false, mode: "source" };
+
+  async function openFileViewer(path) {
+    const modal = $("file-viewer");
+    fileViewer.path = path;
+    fileViewer.content = "";
+    fileViewer.markdown = false;
+    $("file-viewer-name").textContent = path;
+    $("file-viewer-meta").textContent = "正在读取…";
+    $("file-viewer-body").innerHTML = '<div class="file-viewer-state">正在读取…</div>';
+    $("file-viewer-modes").classList.add("hidden");
+    modal.classList.remove("hidden");
+
+    try {
+      const file = await rpc("files.read", { sessionId: state.sid, path });
+      fileViewer.path = file.path;
+      fileViewer.content = file.content || "";
+      fileViewer.language = file.language || "text";
+      fileViewer.markdown = !!file.markdown;
+      fileViewer.mode = fileViewer.markdown ? "preview" : "source";
+      $("file-viewer-name").textContent = file.path;
+      $("file-viewer-meta").textContent = `${fileViewer.language} · ${fmtBytes(file.bytes || 0)}`;
+      $("file-viewer-modes").classList.toggle("hidden", !fileViewer.markdown);
+      renderFileViewer();
+    } catch (error) {
+      $("file-viewer-meta").textContent = "读取失败";
+      $("file-viewer-body").innerHTML = `<div class="file-viewer-state error">${escapeHtml(error.message)}</div>`;
     }
+  }
+
+  function renderFileViewer() {
+    const body = $("file-viewer-body");
+    $("file-viewer-modes").querySelectorAll(".file-viewer-mode").forEach((button) => {
+      button.classList.toggle("current", button.dataset.mode === fileViewer.mode);
+    });
+
+    if (fileViewer.markdown && fileViewer.mode === "preview") {
+      body.className = "file-viewer-body file-viewer-markdown";
+      body.innerHTML = renderMarkdown(fileViewer.content);
+      bindCopyButtons(body);
+    } else {
+      body.className = "file-viewer-body file-viewer-source";
+      renderSourceView(body, fileViewer.content, fileViewer.language);
+    }
+  }
+
+// 源码视图：整段 hljs 高亮 + 独立行号栏（同步滚动，避免多行 token 被逐行截断）
+  function renderSourceView(container, code, language) {
+    container.innerHTML = "";
+    const gutter = document.createElement("div");
+    gutter.className = "file-source-gutter";
+    const scroller = document.createElement("pre");
+    scroller.className = "file-source-pre";
+    const codeEl = document.createElement("code");
+    codeEl.innerHTML = highlightSource(code, language);
+    scroller.appendChild(codeEl);
+    const lineCount = code.split("\n").length;
+    for (let n = 1; n <= lineCount; n++) {
+      const no = document.createElement("span");
+      no.textContent = n;
+      gutter.appendChild(no);
+    }
+    container.appendChild(gutter);
+    container.appendChild(scroller);
+  }
+
+
+  function closeFileViewer() { $("file-viewer").classList.add("hidden"); }
+
+  $("file-viewer-close").addEventListener("click", closeFileViewer);
+  $("file-viewer").addEventListener("mousedown", (e) => { if (e.target === $("file-viewer")) closeFileViewer(); });
+  $("file-viewer-modes").addEventListener("click", (e) => {
+    const button = e.target.closest(".file-viewer-mode");
+    if (!button) return;
+    fileViewer.mode = button.dataset.mode;
+    renderFileViewer();
   });
+  $("file-viewer-copy").addEventListener("click", () => {
+    navigator.clipboard.writeText(fileViewer.content).then(() => {
+      const button = $("file-viewer-copy");
+      button.textContent = "已复制";
+      setTimeout(() => { button.textContent = "复制"; }, 1200);
+    });
+  });
+  $("file-viewer-diff").addEventListener("click", () => {
+    if (!fileViewer.path) return;
+    closeFileViewer();
+    if (!MC.open) setMCOpen(true);
+    showFileDiff(fileViewer.path);
+  });
+
+  document.addEventListener("click", (e) => {
+    const ref = e.target.closest(".file-ref");
+    if (ref && ref.dataset.path) openFileViewer(ref.dataset.path);
+  });
+
 
   // ── 命令面板 (Command Palette) ──
   const CMD_LIST = [
@@ -2937,7 +3524,21 @@ case "goal_round": break;
       if (tok) localStorage.setItem("newbee.token", tok);
       else localStorage.removeItem("newbee.token");
     } catch (e) {}
+    updateLogoutBtn();
   }
+  // 已登录（有 token）时显示登出按钮；登出/未登录时隐藏
+  function updateLogoutBtn() {
+    const b = $("logout-btn");
+    if (b) b.classList.toggle("hidden", !state.token);
+  }
+  async function doLogout() {
+    try { await rpc("auth.logout", {}); } catch (e) { /* 即使失败也本地登出 */ }
+    if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
+    setToken(null);
+    updateLogoutBtn();
+    showLogin();
+  }
+
   function showLogin() {
     const ov = $("login-overlay");
     if (ov) ov.classList.remove("hidden");
@@ -2956,11 +3557,16 @@ case "goal_round": break;
     if (msg) { el.textContent = msg; el.classList.remove("hidden"); }
     else { el.textContent = ""; el.classList.add("hidden"); }
   }
-  async function refreshCaptcha() {
+  let captchaLastRefresh = 0;
+  const CAPTCHA_MIN_INTERVAL_MS = 30_000; // 验证码最短展示 30s，避免频繁换图
+  async function refreshCaptcha(force) {
+    const now = Date.now();
+    if (!force && captchaLastRefresh && now - captchaLastRefresh < CAPTCHA_MIN_INTERVAL_MS) return;
     try {
       const r = await rpc("auth.captcha", {});
       const img = $("login-captcha-img");
       if (img && r.svg) {
+        captchaLastRefresh = now;
         img.dataset.captchaId = r.captchaId;
         img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(r.svg)));
       }
@@ -2983,12 +3589,28 @@ case "goal_round": break;
       setToken(r.token);
       hideLogin();
       bootApp();
+      maybePromptWebAuthnRegister();
     } catch (e) {
       loginError(e.message || "登录失败");
-      refreshCaptcha();
+      refreshCaptcha(true); // 旧验证码提交一次即焚，失败必须强制换新
       const capEl = $("login-captcha");
       if (capEl) capEl.value = "";
     }
+  }
+
+  // 密码登录成功后：设备支持且无凭据 → 主动提示注册通行密钥
+  async function maybePromptWebAuthnRegister() {
+    if (!webAuthnSupported()) return;
+    try {
+      const r = await rpc("webauthn.has_credentials", {});
+      if (r.has_credentials) return;
+      setTimeout(() => {
+        if (confirm("🎉 登录成功！\n\n这台设备支持指纹/面容登录。是否现在注册通行密钥？\n注册后下次可一键登录，无需密码。")) {
+          const name = prompt("给这台设备起个名字：", "我的设备");
+          if (name !== null) doWebAuthnRegister(name || "我的设备");
+        }
+      }, 800);
+    } catch (e) { /* 忽略 */ }
   }
   function initLogin() {
     const sub = $("login-submit");
@@ -2998,6 +3620,355 @@ case "goal_round": break;
     for (const id of ["login-password", "login-captcha"]) {
       const el = $(id);
       if (el) el.addEventListener("keydown", (e) => { if (e.key === "Enter") submitLogin(); });
+    }
+    const lo = $("logout-btn");
+    if (lo) lo.addEventListener("click", doLogout);
+    initWebAuthn();
+    initPairLogin();
+  }
+
+  // ── 扫码授权登录（手机替电脑"盖章"）──
+  // 二维码只含服务器基址+配对码；配对码由服务端从 ETS 核对、一次性消费，不经 RPC 回传。
+  var pairPollTimer = 0;
+  var pairCurrentId = null;
+
+  function pairIsMobile() {
+    return window.matchMedia("(max-width: 768px)").matches ||
+      /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || "");
+  }
+  function pairQRSupported() { return typeof window.qrcode === "function"; }
+  function pairOrigin() { return location.origin; }
+
+  function initPairLogin() {
+    if (pairIsMobile()) return; // 手机端是"盖章的人"，不显示扫码块
+    var sec = $("pair-section");
+    if (!sec) return;
+    sec.classList.remove("hidden");
+    var btn = $("pair-show");
+    var loginBox = $("login-box");
+    if (btn) btn.addEventListener("click", function() {
+      var box = $("pair-box");
+      if (box.classList.contains("hidden")) {
+        startPairLogin();
+        if (loginBox) loginBox.classList.add("pair-open");
+      } else {
+        stopPairLogin();
+        box.classList.add("hidden");
+        if (loginBox) loginBox.classList.remove("pair-open");
+      }
+    });
+    var refresh = $("pair-refresh");
+    if (refresh) refresh.addEventListener("click", function(){ startPairLogin(); });
+    // 点二维码本体也可刷新（重新生成新码）
+    var qrBox = document.querySelector(".pair-qr");
+    if (qrBox) qrBox.addEventListener("click", function(){ startPairLogin(); });
+  }
+
+  var pairAutoTimer = 0;   // 到期自动换新码
+  var pairAutoArmed = false;
+
+  async function startPairLogin() {
+    stopPairLogin();
+    pairAutoArmed = true;
+    await newPairCode();          // 初始手动：立即出一张
+  }
+
+  // 生成一张新二维码；manual=false 表示"到期自动续"
+  async function newPairCode(manual) {
+    if (pairPollTimer) { clearInterval(pairPollTimer); pairPollTimer = 0; }
+    var box = $("pair-box");
+    var qrEl = document.querySelector(".pair-qr");
+    var refreshBtn = $("pair-refresh");
+    box.classList.remove("hidden");
+    refreshBtn.classList.add("hidden");
+    qrEl.innerHTML = "";
+    pairSetStatus(manual === false ? "二维码已过期，正在自动刷新…" : "正在生成二维码…");
+    try {
+      var r = await rpc("pair.create", {});
+      var pairingId = r.pairing_id;
+      pairCurrentId = pairingId;
+      // 二维码塞配对码 code（一次性、仅服务端核对），绝不能塞 pairing_id
+      var url = pairOrigin() + "/pair?c=" + encodeURIComponent(r.code);
+      renderPairQR(qrEl, url);
+      pairSetStatus("用已登录的手机扫码，确认后这台电脑即可登录（点击二维码可刷新）");
+      var ttl = r.ttl_ms || 150000;
+      var deadline = Date.now() + ttl;
+      pairPollTimer = setInterval(function(){ pollPair(pairingId, deadline); }, 1500);
+      // 到期自动换新码（提前 2s，避开边界）；只排一次，生成后再排下一次
+      schedulePairAuto(ttl);
+    } catch (e) {
+      pairSetStatus("生成失败: " + (e.message || e));
+      refreshBtn.classList.remove("hidden");
+    }
+  }
+
+  function schedulePairAuto(ttl) {
+    if (pairAutoTimer) clearTimeout(pairAutoTimer);
+    pairAutoTimer = setTimeout(function(){
+      // 扫码块仍开着且未被拒绝/授权时，自动续一张新码
+      if (pairAutoArmed && pairCurrentId) { newPairCode(false); }
+    }, Math.max((ttl || 150000) - 2000, 10000));
+  }
+
+  function renderPairQR(el, text) {
+    if (!pairQRSupported()) {
+      el.innerHTML = "";
+      var a = document.createElement("a");
+      a.href = text; a.textContent = text; a.style.wordBreak = "break-all";
+      el.appendChild(a);
+      return;
+    }
+    try {
+      var qr = window.qrcode(0, "M");
+      qr.addData(text);
+      qr.make();
+      el.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+      var svg = el.querySelector("svg");
+      if (svg) { svg.removeAttribute("width"); svg.removeAttribute("height"); }
+    } catch (e) { el.textContent = text; }
+  }
+
+  async function pollPair(pairingId, deadline) {
+    if (pairingId !== pairCurrentId) { stopPairLogin(); return; }
+    if (Date.now() > deadline) {
+      // 交给自动刷新；仅提示，不清会话
+      pairSetStatus("二维码已过期，正在自动刷新…");
+      return;
+    }
+    try {
+      var r = await rpc("pair.status", { pairing_id: pairingId });
+      if (pairingId !== pairCurrentId) return;
+      if (r.status === "approved" && r.token) {
+        stopPairLogin();
+        pairSetStatus("✓ 已授权，正在登录…");
+        setToken(r.token);
+        hideLogin();
+        bootApp();
+      } else if (r.status === "scanned") {
+        pairSetStatus("手机已扫码，请在手机上确认…");
+      } else if (r.status === "denied") {
+        stopPairLogin();
+        pairSetStatus("手机已拒绝，请重新生成");
+        $("pair-refresh").classList.remove("hidden");
+      } else if (r.status === "expired") {
+        // 自动刷新接管：schedulePairAuto 会很快换上新码，这里只提示
+        pairSetStatus("二维码已过期，正在自动刷新…");
+      }
+    } catch (e) {
+      stopPairLogin();
+      pairSetStatus("配对已失效，请刷新");
+      $("pair-refresh").classList.remove("hidden");
+    }
+  }
+
+  function pairSetStatus(msg) {
+    var el = $("pair-status");
+    if (el) el.textContent = msg;
+  }
+  function stopPairLogin() {
+    if (pairPollTimer) { clearInterval(pairPollTimer); pairPollTimer = 0; }
+    if (pairAutoTimer) { clearTimeout(pairAutoTimer); pairAutoTimer = 0; }
+    pairAutoArmed = false;
+    pairCurrentId = null;
+  }
+
+
+  // ── WebAuthn 指纹/面容登录 ──
+
+  function webAuthnSupported() {
+    return window.PublicKeyCredential !== undefined && typeof window.PublicKeyCredential === "function";
+  }
+
+  // ArrayBuffer → base64url（无 padding），用于 WebAuthn 字段回传服务端
+  function b64urlEncode(buf) {
+    return btoa(String.fromCharCode(...new Uint8Array(buf)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  async function initWebAuthn() {
+    if (!webAuthnSupported()) return;
+
+    try {
+      const r = await rpc("webauthn.has_credentials", {});
+      if (r.has_credentials) {
+        $("webauthn-section").classList.remove("hidden");
+        $("webauthn-login").addEventListener("click", doWebAuthnLogin);
+        $("webauthn-manage-link").addEventListener("click", (e) => { e.preventDefault(); showWebAuthnManage(); });
+      } else {
+        // 没有凭据：检查是否已登录（有 token），已登录则显示"注册通行密钥"入口
+        if (state.token) {
+          showWebAuthnRegisterHint();
+        }
+      }
+    } catch (e) {
+      console.warn("WebAuthn 初始化失败:", e);
+    }
+  }
+
+  function showWebAuthnRegisterHint() {
+    // 已登录但无凭据：在登录界面显示注册提示（不遮挡主流程，仅提示）
+    console.log("[WebAuthn] 已登录但无凭据，可在设置中注册通行密钥");
+  }
+
+  async function doWebAuthnLogin() {
+    try {
+      loginError("");
+      const ch = await rpc("webauthn.login_challenge", {});
+
+      const publicKey = {
+        challenge: Uint8Array.from(atob(ch.challenge.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
+        timeout: ch.timeout,
+        rpId: ch.rp_id,
+        allowCredentials: ch.allow_credentials.map(c => ({
+          type: c.type,
+          id: Uint8Array.from(atob(c.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0))
+        })),
+        userVerification: ch.user_verification
+      };
+
+      const assertion = await navigator.credentials.get({ publicKey });
+
+      const r = await rpc("webauthn.login", {
+        challenge_id: ch.challenge_id,
+        credential_id: b64urlEncode(assertion.rawId),
+        authenticator_data: b64urlEncode(assertion.response.authenticatorData),
+        signature: b64urlEncode(assertion.response.signature),
+        client_data_json: b64urlEncode(assertion.response.clientDataJSON)
+      });
+
+      setToken(r.token);
+      hideLogin();
+      bootApp();
+    } catch (e) {
+      if (e.name === "NotAllowedError") {
+        loginError("指纹/面容验证未完成：可能是用户取消，或浏览器因证书不受信任/域名不匹配直接拒绝了请求（详见浏览器控制台）");
+      } else {
+        loginError((e.name || "Error") + ": " + (e.message || "指纹/面容登录失败"));
+      }
+    }
+  }
+
+  async function showWebAuthnManage() {
+    // 简单弹窗：列出凭据 + 删除 + 注册新凭据
+    const modal = document.createElement("div");
+    modal.className = "webauthn-modal-overlay";
+    modal.innerHTML = `
+      <div class="webauthn-modal">
+        <div class="webauthn-modal-header">
+          <h3>通行密钥管理</h3>
+          <button class="webauthn-modal-close">×</button>
+        </div>
+        <div class="webauthn-modal-body">
+          <div id="webauthn-cred-list" class="webauthn-cred-list">加载中...</div>
+          <button id="webauthn-register-new" class="btn-primary" style="width:100%;margin-top:16px;">注册新设备</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // 加载凭据列表
+    loadWebAuthnCredentials();
+
+    // 关闭
+    modal.querySelector(".webauthn-modal-close").addEventListener("click", () => modal.remove());
+    modal.addEventListener("click", (e) => { if (e.target === modal) modal.remove(); });
+
+    // 注册新设备
+    modal.querySelector("#webauthn-register-new").addEventListener("click", async () => {
+      const name = prompt("给这台设备起个名字（如：我的 iPhone）:", "未命名设备");
+      if (!name) return;
+      await doWebAuthnRegister(name);
+      modal.remove();
+    });
+  }
+
+  async function loadWebAuthnCredentials() {
+    try {
+      const r = await rpc("webauthn.list", {});
+      const listEl = document.getElementById("webauthn-cred-list");
+      if (r.credentials.length === 0) {
+        listEl.innerHTML = "<div class='webauthn-empty'>暂无已注册的设备</div>";
+        return;
+      }
+      listEl.innerHTML = r.credentials.map(c => `
+        <div class="webauthn-cred-item">
+          <div class="webauthn-cred-info">
+            <div class="webauthn-cred-name">${c.name}</div>
+            <div class="webauthn-cred-meta">
+              注册于 ${new Date(c.created_at).toLocaleDateString()}
+              ${c.last_used_at ? " · 最近使用 " + new Date(c.last_used_at).toLocaleDateString() : ""}
+            </div>
+          </div>
+          <button class="btn-ghost webauthn-cred-delete" data-cred-id="${c.credential_id}">删除</button>
+        </div>
+      `).join("");
+
+      // 绑定删除按钮
+      listEl.querySelectorAll(".webauthn-cred-delete").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          if (!confirm("确定删除这台设备的通行密钥吗？删除后该设备将无法用指纹/面容登录。")) return;
+          await rpc("webauthn.delete", { credential_id: btn.dataset.credId });
+          loadWebAuthnCredentials();
+        });
+      });
+    } catch (e) {
+      console.error("加载凭据列表失败:", e);
+      const listEl = document.getElementById("webauthn-cred-list");
+      if (listEl) {
+        listEl.innerHTML = "<div class='webauthn-empty'>加载失败: " + (e.message || "未知错误") + "</div>";
+        if (String(e.message).includes("\u672a\u767b\u5f55")) {
+          const overlay = listEl.closest(".webauthn-modal-overlay");
+          if (overlay) overlay.remove();
+        }
+      }
+    }
+  }
+
+  async function doWebAuthnRegister(name) {
+    try {
+      const ch = await rpc("webauthn.register_challenge", { name });
+
+      const publicKey = {
+        challenge: Uint8Array.from(atob(ch.challenge.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
+        rp: ch.rp,
+        user: {
+          id: Uint8Array.from(atob(ch.user.id.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)),
+          name: ch.user.name,
+          displayName: ch.user.display_name
+        },
+        pubKeyCredParams: ch.pub_key_cred_params,
+        timeout: ch.timeout,
+        attestation: ch.attestation,
+        authenticatorSelection: ch.authenticator_selection
+      };
+
+      const credential = await navigator.credentials.create({ publicKey });
+
+      await rpc("webauthn.register", {
+        challenge_id: ch.challenge_id,
+        credential_id: b64urlEncode(credential.rawId),
+        attestation_object: b64urlEncode(credential.response.attestationObject),
+        client_data_json: b64urlEncode(credential.response.clientDataJSON)
+      });
+
+      alert("✅ 通行密钥注册成功！下次登录可使用指纹/面容。");
+    } catch (e) {
+      if (e.name === "NotAllowedError") {
+        // NotAllowedError 不一定是用户取消：浏览器在证书不受信任（自签/告警页放行）、
+        // RP ID 与站点不匹配、或用户超时未操作时都抛这个错。给出可操作的信息而不是误导。
+        const hint = "浏览器没有弹出指纹/面容验证就拒绝了通行密钥。\n\n" +
+          "常见原因：\n" +
+          "1. 当前站点证书不受信任（自签名证书，浏览器地址栏有⚠警告）；\n" +
+          "2. 访问域名与证书/RP ID 不匹配（如 nip.io 直连内网 IP）；\n" +
+          "3. 验证弹窗超时未操作。\n\n" +
+          "请改用受信任的证书（或反向代理）访问本服务后再注册。\n" +
+          "浏览器详情: " + (e.message || "NotAllowedError");
+        alert("通行密钥注册被浏览器拒绝\n\n" + hint);
+      } else if (e.name === "InvalidStateError") {
+        alert("这台设备已注册过通行密钥，无需重复注册。");
+      } else {
+        alert("注册失败: " + (e.name || "Error") + ": " + (e.message || e));
+      }
     }
   }
 
@@ -3024,6 +3995,7 @@ case "goal_round": break;
   // ── 启动 ──
   (async () => {
     initLogin();
+    updateLogoutBtn();
     let needAuth = false;
     try {
       const host = await rpc("host.describe", {});
@@ -3044,3 +4016,38 @@ case "goal_round": break;
     }
   })().catch((e) => line("error", `启动失败: ${e.message}`));
 })();
+
+
+// ── 手机端适配增强 ──
+(function() {
+  function isMobile() { return window.matchMedia("(max-width: 768px)").matches; }
+
+  // 手机端每次加载都强制收起侧栏：
+  // 避免延续桌面/上次的"展开态"，否则全屏遮罩(z-index:35)会常驻盖住 composer，
+  // 导致按钮可见但点不了（点击全被遮罩拦截）。
+  if (isMobile()) {
+    document.getElementById("app").classList.add("sidebar-collapsed");
+    var ex = document.getElementById("sidebar-expand");
+    if (ex) ex.classList.remove("hidden");
+  }
+
+  // 遮罩/侧栏外点击关闭（手机端）：
+  // 点在任何 #sidebar 外的内容区时收起；但排除侧栏内 toggle 触发（它本来就会收起）
+  document.addEventListener("click", function(e) {
+    var app = document.getElementById("app");
+    if (!isMobile() || app.classList.contains("sidebar-collapsed")) return;
+    var t = e.target;
+    if (!t.closest || t.closest("#sidebar") || t.closest("#sidebar-expand")) return;
+    // 输入区/思考强度等是操作区，点击不应收起侧栏
+    if (t.closest("#composer") || t.closest(".composer-effort")) return;
+    applySidebar(true, true);
+  });
+
+  // 播放时旋转到横屏提醒（可选，轻量）
+  window.addEventListener("resize", function() {
+    if (isMobile()) {
+      // no-op: 保持 CSS 响应
+    }
+  });
+})();
+

@@ -1,18 +1,32 @@
 defmodule Newbee.Plugins.RepoMap do
   @moduledoc """
-  工程结构图 (DESIGN §3.6)：注入紧凑的模块签名大纲而非整文件，
-  模型凭图定位，再对目标区域精确取细节。
+  工程结构图：生成紧凑模块签名/文件树，用于定位后再精读目标文件。
 
-  v2：引用图重要性排序——统计模块间静态引用（含 alias 展开），
-  被引用多的模块给全签名（Tier1），其余收进单行索引（Tier2）。
-  相比 v1 按文件名截断：全模块覆盖、核心模块必现、总字节更省、输出确定。
+  按引用图重要性排序：统计模块间静态引用（含 alias 展开）；
+  被引用多的模块给全签名（Tier1），其余收进单行索引（Tier2），输出确定。
   非 Elixir 工程退化为目录树。
+
+  ## 函数清单
+  - `build(root \\\\ ".", opts \\\\ []) :: String.t()` — 构建工程结构图（紧凑字符串）。非 Elixir 工程退化为目录树。
+    选项：`:tier1_max_bytes` —— Tier1 区字节预算（默认 14_000）。
+
+  增量缓存（§3.6）：以 mix.exs + lib 全部文件的 mtime 指纹为 key，
+  工程未变更时直接复用缓存，不重复 AST 解析。
+
+  ## 可跑示例
+      Newbee.Plugins.RepoMap.build(".")
+      Newbee.Plugins.RepoMap.build(".", tier1_max_bytes: 8_000)
+
   """
 
-  @tier1_min 8               # 无论多大预算，Top-8 必给全签名
-  @tier1_max_bytes 14_000    # Tier1 区默认字节预算（预算内贪心装填）
-  @sigs_per_module 15        # 每个 Tier1 模块最多展示的签名数
-  @doc_bytes 80              # moduledoc 截断长度
+  # 无论多大预算，Top-8 必给全签名
+  @tier1_min 8
+  # Tier1 区默认字节预算（预算内贪心装填）
+  @tier1_max_bytes 14_000
+  # 每个 Tier1 模块最多展示的签名数
+  @sigs_per_module 15
+  # moduledoc 截断长度
+  @doc_bytes 80
 
   @cache_dir Path.join(System.user_home!(), ".newbee/cache")
 
@@ -112,7 +126,8 @@ defmodule Newbee.Plugins.RepoMap do
         line = doc |> String.split("\n") |> hd()
         %{acc | doc: acc.doc || line}
 
-      {kind, _, [head | _]}, acc when kind in [:def, :defp, :defmacro, :defmacrop, :defdelegate, :defguard, :defguardp] ->
+      {kind, _, [head | _]}, acc
+      when kind in [:def, :defp, :defmacro, :defmacrop, :defdelegate, :defguard, :defguardp] ->
         %{acc | defs: [sig(to_string(kind), head) | acc.defs]}
 
       {kind, _, [fields]}, acc when kind in [:defstruct, :defexception] and is_list(fields) ->

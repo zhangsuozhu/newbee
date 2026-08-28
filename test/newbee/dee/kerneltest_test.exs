@@ -314,6 +314,35 @@ defmodule Newbee.Agent.LoopTest do
       if fun, do: fun.(messages, on_text), else: {:error, :script_exhausted}
     end
   end
+
+  @tag timeout: 60_000
+  test "恢复含 usage/media 审计行的 transcript：请求历史过滤掉（Incorrect role information 根因）" do
+    {:ok, ev} = Evaluator.start(mode: :local)
+
+    sid = Integer.to_string(:erlang.unique_integer([:positive])) <> "_audit_rows"
+    s = Newbee.Session.open(sid)
+    Newbee.Session.append(s, %{"role" => "user", "content" => "hi"})
+    Newbee.Session.append(s, %{"role" => "usage", "usage" => %{"total_tokens" => 10}})
+    Newbee.Session.append(s, %{"role" => "assistant", "content" => "看图", "tool_calls" => []})
+    Newbee.Session.append(s, %{"role" => "media", "content" => %{"url" => "/tmp/x.png"}})
+    Newbee.Session.append(s, %{"role" => "usage", "usage" => %{"total_tokens" => 20}})
+
+    script = [
+      fn messages, _t ->
+        roles = messages |> Enum.map(& &1["role"]) |> Enum.uniq()
+        refute "usage" in roles, "usage 审计行泄漏进请求历史"
+        refute "media" in roles, "media 审计行泄漏进请求历史"
+        assert Enum.any?(messages, &(&1["role"] == "assistant" and &1["content"] == "看图"))
+        {:ok, %{"role" => "assistant", "content" => "ok", "tool_calls" => []}, %{}}
+      end
+    ]
+
+    {:ok, kernel} =
+      Loop.start_link(client: %{}, evaluator: ev, session_id: sid, client_fun: scripted(script))
+
+    assert {:text, "ok"} = Loop.submit(kernel, "继续")
+    File.rm(s.transcript)
+  end
 end
 
 :ok

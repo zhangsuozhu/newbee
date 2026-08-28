@@ -30,8 +30,20 @@ defmodule Mix.Tasks.Newbee.Doctor do
     IO.puts("API key: #{key_hint}（#{String.slice(client.api_key || "", 0, 8)}…）")
 
     IO.puts("内置插件: #{length(Newbee.Plugins.list())} 个")
+
+    contract_status =
+      case Newbee.Environment.ToolContract.validate_builtins() do
+        :ok -> "通过"
+        {:error, _} -> "失败"
+      end
+
+    IO.puts("工具合同: " <> contract_status)
     env = if Process.whereis(Newbee.Environment.Coordinator), do: Newbee.Environment.Coordinator.current(), else: nil
-    IO.puts("Environment: #{if env, do: "rev #{env.revision} · active #{map_size(env.active)} 插件 · autonomy=#{env.autonomy}", else: "未启动"}")
+
+    IO.puts(
+      "Environment: #{if env, do: "rev #{env.revision} · active #{map_size(env.active)} 插件 · autonomy=#{env.autonomy}", else: "未启动"}"
+    )
+
     IO.puts("会话: #{length(Newbee.Session.list())} 个")
     IO.puts("规则: #{length(Newbee.DEE.Rules.list())} 条")
     IO.puts("Bundles（基因库）: #{length(Newbee.GlobalStore.bundles())} 个")

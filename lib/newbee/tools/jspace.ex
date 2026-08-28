@@ -1,36 +1,44 @@
 defmodule Newbee.Tools.JSpace do
   @moduledoc """
-  J-Space 工作区台账工具：把模型的内层工作区外部化为持久 ledger
-  （goal/core/verified/open/next），跨会话与压缩存活（DESIGN §5.3/§6.5）。
+  长任务台账工具：把 goal/core/verified/open/next 持久化，跨压缩与会话恢复。
+  复杂多步任务使用；简单任务不要创建 ledger。
 
-  - `note` 更新台账：goal/core/next 替换，verified/open/checkpoint 编号追加
-  - `seam` 每个 seam（子任务完成/工具调用/写文件/检查点）重读台账
-  - `ship` 登记"即将交付"的检查项，交付前逐项核验
-  - `resume` 长间隔（压缩/会话边界）后重读：前提 + invariants + 全台账
-  - ledger 按会话存 `~/.newbee/jspace/<session>.md`（全局，不污染仓库；
-    测试/自定义可设 NEWBEE_JSPACE_DIR 覆盖根目录）
+  ## 函数清单
+  - `note(fields, session \\\\ nil) :: String.t()` — 更新台账；`fields` 是含 `goal/core/next/verified/open/checkpoint` 的关键字列表。
+  - `read(session \\\\ nil) :: String.t() | nil` — 读取 ledger 原文；不存在返回 `nil`。
+  - `seam(session \\\\ nil) :: String.t()` — 子任务边界重读 ledger；不存在返回开账提示。
+  - `ship(path, checks \\\\ [], session \\\\ nil) :: String.t()` — 登记交付路径和检查项。
+  - `resume(session \\\\ nil) :: String.t()` — 返回恢复协议与 ledger 原文。
+  - `clear(session \\\\ nil) :: :ok` — 删除指定 ledger。
+  - `exists?(session \\\\ nil) :: boolean()` — ledger 是否存在。
+
+  ## 可跑示例
+      ledger = Newbee.Tools.JSpace.note([goal: "统一工具说明", next: "核对真实签名"])
+      body = Newbee.Tools.JSpace.read()
+      body = Newbee.Tools.JSpace.seam()
+      confirmation = Newbee.Tools.JSpace.ship("docs/tool-contracts.md", ["编译", "测试"])
+      recovery = Newbee.Tools.JSpace.resume()
+      true = Newbee.Tools.JSpace.exists?()
+      :ok = Newbee.Tools.JSpace.clear()
   """
 
-  @doc "ledger 根目录（可用 NEWBEE_JSPACE_DIR 覆盖，默认 ~/.newbee/jspace）。"
-  def root do
+  defp root do
     System.get_env("NEWBEE_JSPACE_DIR") || Path.join(System.user_home!(), ".newbee/jspace")
   end
 
-  @doc "ledger 文件路径（按会话；无会话回退 default）。"
-  def ledger_path(session \\ nil) do
+  defp ledger_path(session) do
     id = session || current_session() || "default"
     Path.join(root(), "#{id}.md")
   end
 
-  @doc "当前活动会话 id（经 Host 回主 VM 查询 kernel 登记的会话；无会话返回 nil）。"
-  def current_session do
+  defp current_session do
     Newbee.Host.call(Newbee.Session, :current_id, [])
   end
 
-  @doc "ledger 是否存在。"
+  @doc "ledger 是否存在；session 省略时使用当前会话。"
   def exists?(session \\ nil), do: File.regular?(ledger_path(session))
 
-  @doc "读取 ledger 全文；不存在返回 nil。"
+  @doc "读取 ledger 原文；不存在返回 nil。session 省略时使用当前会话。"
   def read(session \\ nil) do
     case File.read(ledger_path(session)) do
       {:ok, body} -> body
@@ -66,7 +74,7 @@ defmodule Newbee.Tools.JSpace do
     end
   end
 
-  @doc "登记即将交付的检查项（交付前逐项核验）。返回确认文本。"
+  @doc "登记交付路径与检查项；返回确认文本。参数顺序是 path, checks, session。"
   def ship(path, checks \\ [], session \\ nil) when is_list(checks) do
     body = read(session) || initial_ledger()
     list = Enum.map_join(checks, "\n", &"    - [ ] #{&1}")

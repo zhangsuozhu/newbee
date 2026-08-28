@@ -1,13 +1,27 @@
 defmodule Newbee.Tools.Structural do
   @moduledoc """
-  双轨编辑的结构轨 (DESIGN §2/M2)：AST 级编辑。
-  与锚点轨（Tools.Edit）互补：Edit 是行级文本锚点，本模块用 Sourceror
-  解析出的行列元数据做结构化插入/替换，落盘后统一 format。
+  Elixir 结构编辑工具：按模块和函数定位 AST 级插入/替换。
+  与快照行号文本轨（`Tools.Edit`）互补：本模块用 Sourceror
+  解析出的行列元数据做结构化插入/替换，落盘后统一 `Code.format_string!`。
+
+  ## 函数清单
+  - `list_functions(path :: String.t(), module :: module()) :: {:ok, [String.t()]} | {:error, :module_not_found}` — 列 `defmodule` 内 `def/defp` 签名，如 `["def hello/1", "defp helper/0"]`。
+  - `insert_function(path, module, def_code :: String.t()) :: {:ok, :inserted} | {:error, %{reason: :syntax_error, hint: String.t()}} | {:error, :module_not_found}` — 在模块最后一个 `end` 前插入函数源码，自动缩进 2 空格。语法错误的 def_code 返回 `{:error, %{reason: :syntax_error, hint: ...}}` 而非静默成功。
+  - `replace_function(path, module, name :: atom(), arity :: integer(), new_code :: String.t()) :: {:ok, :replaced} | {:error, :function_not_found | :module_not_found}` — 按 `name/arity` 定位整段定义换新，按原列缩进。
+  - `format(path :: String.t()) :: {:ok, :formatted} | {:error, reason}` — `Code.format_string!` 格式化后回写。
+
+  ## 可跑示例
+      {:ok, sigs} = Newbee.Tools.Structural.list_functions("lib/my.ex", My.Module)
+      {:ok, :inserted} = Newbee.Tools.Structural.insert_function("lib/my.ex", My.Module, "def hello(name), do: \"hi\"")
+      {:ok, :replaced} = Newbee.Tools.Structural.replace_function("lib/my.ex", My.Module, :hello, 1, "def hello(name), do: String.upcase(name)")
+      {:ok, :formatted} = Newbee.Tools.Structural.format("lib/my.ex")
+
   """
 
   @doc "在模块末尾（最后一个 end 之前）插入函数源码。"
   def insert_function(path, module, def_code) do
-    with {:ok, src} <- File.read(path),
+    with :ok <- validate_syntax(def_code),
+         {:ok, src} <- File.read(path),
          {:ok, quoted} <- Sourceror.parse_string(src),
          {:ok, mod_meta} <- find_module_meta(quoted, module) do
       end_line = mod_meta[:end_line]
@@ -197,9 +211,13 @@ defmodule Newbee.Tools.Structural do
     formatted = IO.iodata_to_binary(Code.format_string!(src)) <> "\n"
     File.write!(path, formatted)
   rescue
-    # 格式化失败就原样落盘（不因为 format 丢编辑）
     _ -> File.write!(path, src)
   end
-end
 
-:ok
+  defp validate_syntax(code) do
+    case Code.string_to_quoted(code) do
+      {:ok, _} -> :ok
+      {:error, {_line, error, _token}} -> {:error, %{reason: :syntax_error, hint: "def_code 语法错误: " <> inspect(error)}}
+    end
+  end
+end

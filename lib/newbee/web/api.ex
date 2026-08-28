@@ -27,8 +27,28 @@ defmodule Newbee.Web.Api do
   # ── RPC envelope ──
 
   post "/:method" do
+    # 注入 origin 供 WebAuthn 使用（从请求 Host + Scheme 推导）
+    scheme = if conn.scheme == :https, do: "https", else: "http"
+    host = conn.host || "localhost"
+    port_str = if conn.port in [80, 443], do: "", else: ":#{conn.port}"
+    origin = "#{scheme}://#{host}#{port_str}"
+    Newbee.Web.WebAuthn.set_origin(origin)
+
     rpc_id = get_in(conn.body_params, ["rpcId"]) || "-"
     payload = get_in(conn.body_params, ["payload"]) || %{}
+
+    payload =
+      case get_req_header(conn, "authorization") do
+        ["Bearer " <> tok | _] -> Map.put(payload, "__token__", String.trim(tok))
+        _ -> payload
+      end
+
+    # 注入 User-Agent 供扫码授权页展示"请求设备"摘要
+    payload =
+      case get_req_header(conn, "user-agent") do
+        [ua | _] -> Map.put(payload, "__ua__", ua)
+        _ -> payload
+      end
 
     case safe_dispatch(method, payload) do
       {:ok, value} ->
@@ -112,6 +132,175 @@ defmodule Newbee.Web.Api do
   end
 
   defp dispatch_rpc("auth.logout", _p), do: {:ok, %{logged_out: true}}
+
+  # ── WebAuthn 指纹/面容登录 ──
+
+  defp dispatch_rpc("webauthn.has_credentials", _p) do
+    {:ok, %{has_credentials: Newbee.Web.WebAuthn.has_credentials?()}}
+  end
+
+  defp dispatch_rpc("webauthn.list", _p) do
+    {:ok, %{credentials: Newbee.Web.WebAuthn.list_credentials()}}
+  end
+
+  defp dispatch_rpc("webauthn.register_challenge", p) do
+    name = Map.get(p, "name", "未命名设备")
+
+    case Newbee.Web.WebAuthn.registration_challenge(name) do
+      {:ok, opts} -> {:ok, opts}
+      {:error, code, msg} -> {:error, code, msg}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.register", p) do
+    with {:ok, challenge_id} <- fetch_param(p, "challenge_id"),
+         {:ok, attestation_object} <- fetch_param(p, "attestation_object"),
+         {:ok, client_data_json} <- fetch_param(p, "client_data_json"),
+         {:ok, cred_id} <- fetch_param(p, "credential_id") do
+      case Newbee.Web.WebAuthn.register(challenge_id, attestation_object, client_data_json, cred_id) do
+        {:ok, result} -> {:ok, result}
+        {:error, code, msg} -> {:error, code, msg}
+      end
+    else
+      {:error, :missing_param} -> {:error, "bad_request", "缺少必需参数"}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.delete", p) do
+    case fetch_param(p, "credential_id") do
+      {:ok, cred_id} ->
+        case Newbee.Web.WebAuthn.delete_credential(cred_id) do
+          :ok -> {:ok, %{deleted: true}}
+          {:error, code, msg} -> {:error, code, msg}
+        end
+
+      {:error, :missing_param} ->
+        {:error, "bad_request", "缺少 credential_id"}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.login_challenge", _p) do
+    case Newbee.Web.WebAuthn.authentication_challenge() do
+      {:ok, opts} -> {:ok, opts}
+      {:error, code, msg} -> {:error, code, msg}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.login", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        with {:ok, challenge_id} <- fetch_param(p, "challenge_id"),
+             {:ok, cred_id} <- fetch_param(p, "credential_id"),
+             {:ok, auth_data} <- fetch_param(p, "authenticator_data"),
+             {:ok, sig} <- fetch_param(p, "signature"),
+             {:ok, client_data_json} <- fetch_param(p, "client_data_json") do
+          case Newbee.Web.WebAuthn.authenticate(challenge_id, cred_id, auth_data, sig, client_data_json) do
+            {:ok, _} ->
+              {:ok, token} = Newbee.Web.Auth.issue_token()
+              Newbee.Web.Auth.record_success(ip)
+              {:ok, %{token: token}}
+
+            {:error, code, msg} ->
+              Newbee.Web.Auth.record_fail(ip)
+              {:error, code, msg}
+          end
+        else
+          {:error, :missing_param} -> {:error, "bad_request", "缺少必需参数"}
+        end
+
+      {:error, _ms} ->
+        {:error, "locked", "操作过于频繁，请稍后重试"}
+    end
+  end
+
+  defp dispatch_rpc("webauthn.login", p),
+    do: dispatch_rpc("webauthn.login", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # ── 扫码授权登录（手机替电脑"盖章"）──
+  # 安全核心：配对码只存在于手机的授权 URL，绝不经这些 RPC 回传或出现在二维码里。
+  # 电脑端仅凭 pairing_id 轮询；手机端凭已登录会话 + pairing_id 授权。
+
+  # 电脑端：创建配对，拿到 pairing_id（轮询凭证）。二维码内容由前端用服务器基址生成。
+  defp dispatch_rpc("pair.create", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        {:ok, %{pairing_id: pairing_id, code: code}} =
+          Newbee.Web.Pair.create(%{ua: Map.get(p, "__ua__", ""), ip: ip_to_s(ip)})
+
+        {:ok, %{pairing_id: pairing_id, code: code, ttl_ms: Newbee.Web.Pair.ttl_ms()}}
+
+      {:error, ms} ->
+        {:error, "locked", ~s"操作过于频繁，请 #{div(ms, 1000)} 秒后重试"}
+    end
+  end
+
+  defp dispatch_rpc("pair.create", p),
+    do: dispatch_rpc("pair.create", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # 电脑端：轮询配对状态。approved 时一次性返回 token（读出即焚）。
+  defp dispatch_rpc("pair.status", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        case Newbee.Web.Pair.status(Map.get(p, "pairing_id", "")) do
+          {:ok, data} -> {:ok, data}
+          {:error, code, msg} -> {:error, code, msg}
+        end
+
+      {:error, _ms} ->
+        {:error, "locked", "操作过于频繁，请稍后重试"}
+    end
+  end
+
+  defp dispatch_rpc("pair.status", p),
+    do: dispatch_rpc("pair.status", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # 手机端：进入授权页后复核配对有效性。
+  defp dispatch_rpc("pair.phone_status", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        case Newbee.Web.Pair.phone_status(Map.get(p, "pairing_id", "")) do
+          {:ok, data} -> {:ok, data}
+          {:error, code, msg} -> {:error, code, msg}
+        end
+
+      {:error, _ms} ->
+        {:error, "locked", "操作过于频繁，请稍后重试"}
+    end
+  end
+
+  defp dispatch_rpc("pair.phone_status", p),
+    do: dispatch_rpc("pair.phone_status", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # 手机端：点"允许"，为电脑签发登录 token。
+  defp dispatch_rpc("pair.confirm", %{"__remote_ip__" => ip} = p) do
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        case Newbee.Web.Pair.confirm(Map.get(p, "pairing_id", ""), %{ua: Map.get(p, "__ua__", "")}) do
+          {:ok, data} ->
+            Newbee.Web.Auth.record_success(ip)
+            {:ok, data}
+
+          {:error, code, msg} ->
+            Newbee.Web.Auth.record_fail(ip)
+            {:error, code, msg}
+        end
+
+      {:error, ms} ->
+        {:error, "locked", ~s"操作过于频繁，请 #{div(ms, 1000)} 秒后重试"}
+    end
+  end
+
+  defp dispatch_rpc("pair.confirm", p),
+    do: dispatch_rpc("pair.confirm", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+
+  # 手机端：点"拒绝"。
+  defp dispatch_rpc("pair.deny", p) do
+    case Newbee.Web.Pair.deny(Map.get(p, "pairing_id", "")) do
+      {:ok, data} -> {:ok, data}
+      {:error, code, msg} -> {:error, code, msg}
+    end
+  end
+
 
   # 会话域
   defp dispatch_rpc("session.list", p) do
@@ -221,6 +410,20 @@ defmodule Newbee.Web.Api do
     with {:ok, pid} <- find_session(sid) do
       Newbee.Web.Session.interrupt(pid)
       {:ok, %{interrupted: true}}
+    end
+  end
+
+  # ── 媒体上屏域 ──
+  defp dispatch_rpc("media.list", %{"sessionId" => sid}) do
+    case Newbee.Media.list(sid) do
+      {:ok, items} -> {:ok, %{items: json_safe(items)}}
+    end
+  end
+
+  defp dispatch_rpc("media.delete", %{"sessionId" => sid, "mediaId" => media_id}) do
+    case Newbee.Media.delete(sid, media_id) do
+      :ok -> {:ok, %{deleted: media_id}}
+      {:error, code, msg} -> {:error, code, msg}
     end
   end
 
@@ -775,6 +978,42 @@ defmodule Newbee.Web.Api do
     _ -> {:ok, %{files: []}}
   end
 
+  @file_preview_max_bytes 1_048_576
+
+  defp dispatch_rpc("files.read", %{"sessionId" => sid, "path" => path})
+       when is_binary(sid) and is_binary(path) do
+    root = Newbee.Session.cwd(sid) || File.cwd!()
+
+    with :ok <- validate_preview_path(path),
+         {:ok, real_root} <- canonical_path(root),
+         {:ok, real_path} <- canonical_path(Path.join(real_root, path)),
+         true <- within_root?(real_path, real_root),
+         {:ok, stat} <- File.stat(real_path),
+         true <- stat.type == :regular,
+         true <- stat.size <= @file_preview_max_bytes,
+         {:ok, content} <- File.read(real_path),
+         true <- String.valid?(content) and not String.contains?(content, <<0>>) do
+      {:ok,
+       %{
+         path: Path.relative_to(real_path, real_root),
+         content: content,
+         bytes: stat.size,
+         language: preview_language(real_path),
+         markdown: String.downcase(Path.extname(real_path)) in [".md", ".markdown"]
+       }}
+    else
+      false -> {:error, "file_forbidden", "文件不在当前工作区、不是文本文件或超过 1 MiB"}
+      {:error, :enoent} -> {:error, "file_not_found", "文件不存在"}
+      {:error, :bad_path} -> {:error, "file_forbidden", "只允许查看当前工作区内的相对路径"}
+      {:error, reason} -> {:error, "file_read_error", inspect(reason)}
+    end
+  rescue
+    _ -> {:error, "file_read_error", "无法读取文件"}
+  end
+
+  defp dispatch_rpc("files.read", _),
+    do: {:error, "bad_request", "需要 sessionId 和 path 字段"}
+
   # ── 变更影响分析 ──
 
   defp dispatch_rpc("git.impact", _p) do
@@ -993,6 +1232,73 @@ defmodule Newbee.Web.Api do
 
   defp tail(v, n), do: v |> to_string() |> tail(n)
 
+  defp validate_preview_path(path) do
+    trimmed = String.trim(path)
+
+    if trimmed != "" and Path.type(trimmed) == :relative and not String.contains?(trimmed, <<0>>),
+      do: :ok,
+      else: {:error, :bad_path}
+  end
+
+  defp canonical_path(path) do
+    case System.cmd("readlink", ["-f", "--", Path.expand(path)], stderr_to_stdout: true) do
+      {resolved, 0} -> {:ok, String.trim(resolved)}
+      _ -> {:error, :enoent}
+    end
+  end
+
+  defp within_root?(path, root), do: path == root or String.starts_with?(path, root <> "/")
+
+  defp preview_language(path) do
+    case String.downcase(Path.extname(path)) do
+      ".ex" -> "elixir"
+      ".exs" -> "elixir"
+      ".js" -> "javascript"
+      ".mjs" -> "javascript"
+      ".cjs" -> "javascript"
+      ".ts" -> "typescript"
+      ".mts" -> "typescript"
+      ".cts" -> "typescript"
+      ".jsx" -> "jsx"
+      ".tsx" -> "tsx"
+      ".java" -> "java"
+      ".kt" -> "kotlin"
+      ".kts" -> "kotlin"
+      ".c" -> "c"
+      ".h" -> "c"
+      ".cc" -> "cpp"
+      ".cpp" -> "cpp"
+      ".cxx" -> "cpp"
+      ".hh" -> "cpp"
+      ".hpp" -> "cpp"
+      ".hxx" -> "cpp"
+      ".cs" -> "csharp"
+      ".css" -> "css"
+      ".scss" -> "scss"
+      ".less" -> "less"
+      ".html" -> "html"
+      ".htm" -> "html"
+      ".xml" -> "xml"
+      ".vue" -> "html"
+      ".svelte" -> "html"
+      ".json" -> "json"
+      ".jsonc" -> "json"
+      ".md" -> "markdown"
+      ".markdown" -> "markdown"
+      ".yml" -> "yaml"
+      ".yaml" -> "yaml"
+      ".toml" -> "toml"
+      ".sh" -> "shell"
+      ".bash" -> "shell"
+      ".zsh" -> "shell"
+      ".py" -> "python"
+      ".pyw" -> "python"
+      ".rs" -> "rust"
+      ".go" -> "go"
+      ext -> String.trim_leading(ext, ".") || "text"
+    end
+  end
+
   defp git_cmd(args) do
     case System.cmd("git", args, stderr_to_stdout: true) do
       {out, 0} -> {:ok, out}
@@ -1155,7 +1461,8 @@ defmodule Newbee.Web.Api do
           do: %{
             name: get_in(c, ["function", "name"]),
             title: args_field(c, "title"),
-            code: args_field(c, "code")
+            code: args_field(c, "code"),
+            id: c["id"]
           }
 
     %{
@@ -1166,8 +1473,22 @@ defmodule Newbee.Web.Api do
     }
   end
 
-  defp history_msg(%{"role" => "tool", "content" => c}) when is_binary(c),
-    do: %{role: "tool", content: String.slice(c, 0, 4000)}
+  defp history_msg(%{"role" => "tool", "tool_call_id" => tcid, "content" => c}) when is_binary(c),
+    do: %{role: "tool", content: String.slice(c, 0, 4000), toolCallId: tcid}
+
+  # 兼容无 tool_call_id 的旧记录：仅内容，前端按孤结果兜底渲染
+
+  defp history_msg(%{"role" => "ask", "content" => c}) when is_map(c),
+    do: %{role: "ask", content: json_safe(c)}
+
+  defp history_msg(%{"role" => "ask", "content" => c}) when is_binary(c),
+    do: %{role: "ask", content: %{question: c, options: [], kind: "text"}}
+
+  defp history_msg(%{"role" => "media", "content" => c}) when is_map(c),
+    do: %{role: "media", content: json_safe(c)}
+
+  defp history_msg(%{"role" => "usage", "usage" => u}) when is_map(u),
+    do: %{role: "usage", usage: json_safe(u)}
 
   defp history_msg(_), do: nil
 
@@ -1438,4 +1759,17 @@ defmodule Newbee.Web.Api do
   defp json_safe(v) when is_atom(v), do: to_string(v)
   defp json_safe(v) when is_binary(v) or is_number(v) or is_boolean(v) or is_nil(v), do: v
   defp json_safe(v), do: inspect(v)
+
+  # IP tuple → 字符串（扫码授权页展示用）
+  defp ip_to_s(ip) when is_tuple(ip), do: ip |> Tuple.to_list() |> Enum.join(".")
+  defp ip_to_s(ip) when is_binary(ip), do: ip
+  defp ip_to_s(_), do: ""
+
+  defp fetch_param(map, key) do
+    case Map.get(map, key) do
+      nil -> {:error, :missing_param}
+      val when is_binary(val) -> {:ok, val}
+      _ -> {:error, :missing_param}
+    end
+  end
 end

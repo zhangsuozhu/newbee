@@ -11,7 +11,11 @@ defmodule Mix.Tasks.Newbee.Web do
     --keyfile PATH      自己的私钥
     --redirect          另起 HTTP→HTTPS 308 重定向（需配 --https）
     --redirect-port N   重定向用的 HTTP 端口（默认 80）
-    --set-password      交互式设置/修改登录密码（远程访问的凭证）
+    --set-password [PW] 设置/更新登录密码（显式传参永远生效）：
+                        不跟值交互式输入；跟值直接设置（如 --set-password h4njhmC）
+    --reset-password    同 --set-password 不跟值（别名，兼容旧习惯）
+
+    不带密码参数启动时，密码从 ~/.newbee/web/auth.json 持久化恢复
     --password PW       直接设置密码（脚本/测试用）
 
   ## 安全模型
@@ -27,6 +31,8 @@ defmodule Mix.Tasks.Newbee.Web do
   def run(args) do
     Newbee.Cwd.apply!()
 
+    {inline_pw, args} = extract_inline_password(args)
+
     {opts, _argv, _} =
       OptionParser.parse(args,
         strict: [
@@ -37,15 +43,20 @@ defmodule Mix.Tasks.Newbee.Web do
           keyfile: :string,
           redirect: :boolean,
           redirect_port: :integer,
-          set_password: :boolean,
-          password: :string
+          set_password: :keep,
+          password: :string,
+          reset_password: :keep
         ]
       )
 
+    opts =
+      case inline_pw do
+        nil -> opts
+        pw -> Keyword.put(opts, :password, pw)
+      end
+
     port = Keyword.get(opts, :port, 4173)
     host = parse_host(Keyword.get(opts, :host, "127.0.0.1"))
-
-    maybe_set_password(opts)
 
     ensure_distributed!(port)
     Mix.Task.run("app.start")
@@ -59,6 +70,9 @@ defmodule Mix.Tasks.Newbee.Web do
       |> maybe_put(:keyfile, Keyword.get(opts, :keyfile))
 
     {:ok, _} = Newbee.Web.Server.start_link(server_opts)
+
+    # 密码设置放在端口绑定成功之后：避免“密码已改写但服务没起来”的不一致窗口
+    maybe_set_password(opts)
 
     if redirect? and https? do
       rport = Keyword.get(opts, :redirect_port, 80)
@@ -103,10 +117,17 @@ defmodule Mix.Tasks.Newbee.Web do
 
   defp host_str({a, b, c, d}),
     do:
-      Integer.to_string(a) <> "." <> Integer.to_string(b) <> "." <> Integer.to_string(c) <> "." <> Integer.to_string(d)
+      Integer.to_string(a) <>
+        "." <> Integer.to_string(b) <> "." <> Integer.to_string(c) <> "." <> Integer.to_string(d)
 
   defp host_str(ip) when is_tuple(ip), do: ip |> :inet.ntoa() |> to_string()
 
+  # 语义（用户钦定）：显式传参永远生效——
+  #   --set-password=PW / --set-password PW → 用 PW 覆盖
+  #   --set-password（不跟值）→ 交互式输入并覆盖
+  #   不带任何密码参数 → 从 ~/.newbee/web/auth.json 持久化恢复
+  # --reset-password 保留为别名（交互式覆盖），行为与裸 --set-password 一致。
+  # 时序：本函数在端口绑定成功之后调用，避免"密码已改写但服务没起来"。
   defp maybe_set_password(opts) do
     cond do
       pw = Keyword.get(opts, :password) ->
@@ -116,20 +137,27 @@ defmodule Mix.Tasks.Newbee.Web do
         end
 
       Keyword.get(opts, :set_password, false) ->
-        pw1 = prompt_password("设置登录密码（≥6 位）: ")
-        pw2 = prompt_password("再次输入确认: ")
+        set_password_interactive!("设置登录密码（≥6 位）: ")
 
-        if pw1 == pw2 do
-          case Newbee.Web.Auth.set_password(pw1) do
-            :ok -> Mix.shell().info("[newbee.web] 登录密码已设置")
-            {:error, msg} -> Mix.raise("设置密码失败: " <> msg)
-          end
-        else
-          Mix.raise("两次输入不一致")
-        end
+      Keyword.get(opts, :reset_password, false) ->
+        set_password_interactive!("重置登录密码（≥6 位）: ")
 
       true ->
         :ok
+    end
+  end
+
+  defp set_password_interactive!(prompt) do
+    pw1 = prompt_password(prompt)
+    pw2 = prompt_password("再次输入确认: ")
+
+    if pw1 == pw2 do
+      case Newbee.Web.Auth.set_password(pw1) do
+        :ok -> Mix.shell().info("[newbee.web] 登录密码已设置/更新，所有已登录会话已吊销")
+        {:error, msg} -> Mix.raise("设置密码失败: " <> msg)
+      end
+    else
+      Mix.raise("两次输入不一致")
     end
   end
 
@@ -141,6 +169,27 @@ defmodule Mix.Tasks.Newbee.Web do
     IO.puts(:standard_error, "")
     String.trim(line || "")
   end
+
+  # --set-password 支持内联值（--set-password PW / --set-password=PW 直接设置密码），
+  # 不带值时保持原有交互式输入。返回 {密码或 nil, 其余参数}。
+  def extract_inline_password(args), do: extract_pw(args, nil, [])
+
+  defp extract_pw([], pw, rest), do: {pw, Enum.reverse(rest)}
+
+  defp extract_pw(["--set-password=" <> v | t], nil, acc), do: extract_pw(t, v, acc)
+
+  defp extract_pw(["--set-password", v | t], nil, acc) when v != "" do
+    if String.starts_with?(v, "--") do
+      extract_pw(t, nil, [v, "--set-password" | acc])
+    else
+      extract_pw(t, v, acc)
+    end
+  end
+
+  defp extract_pw(["--set-password" | t], nil, acc),
+    do: extract_pw(t, nil, ["--set-password" | acc])
+
+  defp extract_pw([h | t], pw, acc), do: extract_pw(t, pw, [h | acc])
 
   defp ensure_distributed!(port) do
     unless Node.alive?() do

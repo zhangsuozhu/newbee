@@ -1,10 +1,46 @@
 defmodule Newbee.Tools.Fs do
   @moduledoc """
-  文件系统工具 (DESIGN §3.2 代码 IO)：模型在 DEE 里调用的读写 API。
+  文件系统写入/删除/目录工具；通用只读优先 `Newbee.read/1`。
 
   - 写操作**先进暂存区**（Newbee.Staging），用户 /approve 统一落盘——
     宽松沙箱的"可回滚"承诺（§8）；
   - 读操作直接返回内容，路径限制在当前工程树内（§8 工作目录隔离）。
+
+  ## 函数清单
+  - `read(path)` — 读文件，返回 `{:ok, content} | {:error, reason}`。
+  - `read!(path)` — 读文件，不存在抛 `File.Error`。
+  - `write(path, content)` — 暂存写，返回条目 `id`（integer）或 `:direct`；需 `/approve` 才落盘。
+  - `write!(path, content)` — 直接落盘（危险，绕过暂存），成功 `:ok`，并触发内联 diff 事件。
+  - `append!(path, content)` — 追加写，直接落盘，`:ok`。
+  - `rm(path)` — 删除文件，返回 `:ok | {:error, reason}`。
+  - `rm_rf(path)` — 递归删除（高危，记审计），返回 `{:ok, [deleted]} | {:error, reason}`。
+  - `exists?(path)` — 文件是否存在，`boolean`。
+  - `guard_path(path)` — 工作目录隔离校验，合法 `:ok`，非法返回 `{:error, %{reason: :out_of_bounds, hint: _}}`。
+  - `guard_path!(path)` — bang 版本；非法路径抛 `ArgumentError`。
+  - `ls(dir)` — 列目录一层，返回 `[entry]`（目录带 `/`）或 `{:error, reason}`。
+  - `tree(root \\\\ ".")` — 遍历工程树（跳过 `_build/deps/.git/node_modules/cover`），返回相对路径 `[String.t()]`。
+  - `size(path)` — 文件字节数，`non_neg_integer()`，不存在返回 `0`。
+
+  ## 可跑示例
+      {:ok, c} = Newbee.Tools.Fs.read("README.md")
+      c = Newbee.Tools.Fs.read!("mix.exs")
+      id_or_direct = Newbee.Tools.Fs.write("tmp/hello.txt", "hello")
+      :ok = Newbee.Tools.Fs.write!("tmp/a.txt", "direct")
+      :ok = Newbee.Tools.Fs.append!("tmp/log.txt", "line\n")
+      true = Newbee.Tools.Fs.exists?("mix.exs")
+      :ok = Newbee.Tools.Fs.guard_path("tmp/safe.txt")
+      :ok = Newbee.Tools.Fs.guard_path!("tmp/safe.txt")
+      Newbee.Tools.Fs.ls("lib/newbee/tools")
+      Newbee.Tools.Fs.tree(".") |> Enum.take(3)
+      Newbee.Tools.Fs.size("mix.exs")
+      :ok = Newbee.Tools.Fs.rm("tmp/hello.txt")
+      {:ok, _deleted} = Newbee.Tools.Fs.rm_rf("tmp/generated")
+
+  ## 注意
+  - `write/2` 经 `Newbee.Host` 代理回主 VM 的 `Staging`；未启动时降级为 `:direct`。
+  - `write!/2` 直接落盘并经 `Host.emit` 发 `:file_diff`；`append!/2` 直接追加，当前不发 diff 事件。
+  - `guard_path/1` 返回结构化边界错误；`guard_path!/1` 限制写入 `File.cwd!()` 树或 `~/.newbee` 内，其余抛错；但 `File.write!` 仍可绕过，硬隔离由审计/快照兜底。
+
   """
 
   @doc "读文件。返回 {:ok, content} | {:error, reason}。"
@@ -20,17 +56,17 @@ defmodule Newbee.Tools.Fs do
   注意：求值器节点上没有 Staging 进程——经 Newbee.Host 代理回主 VM（§3.4），
   主 VM 无暂存区（app 未启动）时降级直接落盘。"
   def write(path, content) do
-    guard_path!(path)
+    with :ok <- guard_path(path) do
+      case Newbee.Host.call(Newbee.Staging, :stage, [path, content, :fs_write]) do
+        id when is_integer(id) ->
+          id
 
-    case Newbee.Host.call(Newbee.Staging, :stage, [path, content, :fs_write]) do
-      id when is_integer(id) ->
-        id
-
-      _ ->
-        # 主 VM 暂存区不可用（badrpc / 未启动）：直接落盘
-        File.mkdir_p!(Path.dirname(path))
-        File.write!(path, content)
-        :direct
+        _ ->
+          # 主 VM 暂存区不可用（badrpc / 未启动）：直接落盘
+          File.mkdir_p!(Path.dirname(path))
+          File.write!(path, content)
+          :direct
+      end
     end
   end
 
@@ -54,15 +90,15 @@ defmodule Newbee.Tools.Fs do
 
   @doc "删除文件。返回 :ok | {:error, reason}。"
   def rm(path) do
-    guard_path!(path)
-    File.rm(path)
+    with :ok <- guard_path(path), do: File.rm(path)
   end
 
   @doc "递归删除（高风险，记审计）。"
   def rm_rf(path) do
-    guard_path!(path)
-    Newbee.Host.emit(:audit, {:audit, :dangerous_code, ["File.rm_rf!", path]})
-    File.rm_rf(path)
+    with :ok <- guard_path(path) do
+      Newbee.Host.emit(:audit, {:audit, :dangerous_code, ["File.rm_rf!", path]})
+      File.rm_rf(path)
+    end
   end
 
   # 内联 diff 事件（§5.1）：节点上经 Host 代理回主 VM 总线
@@ -79,13 +115,13 @@ defmodule Newbee.Tools.Fs do
 
   @doc """
   工作目录隔离（§8）：写入类操作限制在当前工程树或 ~/.newbee 内，
-  其余路径抛 ArgumentError。
+  非 bang 操作返回结构化错误；bang 操作仍抛 `ArgumentError`。
 
   注意这是**软边界**：模型仍可在 run_elixir 里直接 File.write! 绕开——
   它约束的是推荐 API，真正的硬隔离由宽松档位的审计/快照兜底（§8）。
   长输出可写到工程内 `.newbee-tmp/` 或 `~/.newbee/`。
   """
-  def guard_path!(path) do
+  def guard_path(path) do
     expanded = Path.expand(path)
     root = Path.expand(File.cwd!())
     newbee = Path.join(System.user_home!(), ".newbee") |> Path.expand()
@@ -98,8 +134,19 @@ defmodule Newbee.Tools.Fs do
     if ok? do
       :ok
     else
-      raise ArgumentError,
-            "拒绝写入工程树外路径: #{path}（长输出可写到工程内 .newbee-tmp/ 或 ~/.newbee/）"
+      {:error,
+       %{
+         reason: :out_of_bounds,
+         hint: "拒绝写入工程树外路径: #{path}（长输出可写到工程内 .newbee-tmp/ 或 ~/.newbee/）"
+       }}
+    end
+  end
+
+  @doc "工作目录隔离的 bang 版本；非法路径抛 ArgumentError。"
+  def guard_path!(path) do
+    case guard_path(path) do
+      :ok -> :ok
+      {:error, %{hint: hint}} -> raise ArgumentError, hint
     end
   end
 

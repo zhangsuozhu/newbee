@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=newbee
+Comment=Self-contained newbee agent runtime
+Exec=newbee
+Icon=newbee
+Terminal=true
+Type=Application
+Categories=Utility;

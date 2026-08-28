@@ -4,8 +4,11 @@ defmodule Newbee.Web.AuthTest do
   alias Newbee.Web.Auth
 
   setup do
-    # 触发惰性建表后再清空；HOME 用真实值（auth.json/sessions.json 写在 ~/.newbee/web，
-    # 测试密码互不冲突，且本测试不涉及真实用户数据）。限流/锁定按独立 IP 隔离。
+    # HOME 隔离：auth.json/sessions.json 写进临时目录，绝不触碰真实 ~/.newbee/web/
+    # （历史事故：本测试曾把用户真实密码覆盖为测试值）。限流/锁定按独立 IP 隔离。
+    sandbox = Newbee.TestSupport.WebTmpHome.enter("auth_test")
+    on_exit(fn -> Newbee.TestSupport.WebTmpHome.restore(sandbox) end)
+
     Auth.password_set?()
     if :ets.whereis(:newbee_web_auth) != :undefined do
       :ets.delete_all_objects(:newbee_web_auth)
@@ -108,6 +111,32 @@ defmodule Newbee.Web.AuthTest do
       assert Enum.at(codes, 5) |> elem(1) == "locked"
       cap = Auth.gen_captcha()
       assert {:error, "locked", _} = Auth.login(%{"password" => "hunter22", "captchaId" => cap.id, "captcha" => cap.text}, ip)
+    end
+  end
+  describe "认证表跨进程存活（回归：表随请求进程销毁导致 token 丢失）" do
+    test "短命进程签发的 token，进程退出后仍可校验" do
+      parent = self()
+
+      pid =
+        spawn(fn ->
+          {:ok, tok} = Auth.issue_token()
+          send(parent, {:tok, tok})
+        end)
+
+      tok =
+        receive do
+          {:tok, t} -> t
+        after
+          2000 -> flunk("未收到 token")
+        end
+
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 2000
+      Process.sleep(20)
+
+      # 表必须仍存在且 token 可校验
+      assert :ets.whereis(:newbee_web_auth) != :undefined
+      assert Auth.check_token(tok) == :ok
     end
   end
 end

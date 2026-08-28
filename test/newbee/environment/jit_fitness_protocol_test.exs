@@ -15,7 +15,7 @@ defmodule Newbee.Environment.JitTest do
   end
 
   test "热模式进 need 队列，不热的不编译（§8.5 避免过度工程）" do
-    hot_events = List.duplicate(%{topic: :tool_start, data: %{name: "hot_pattern"}, tokens: 10_000}, 10)
+    hot_events = List.duplicate(%{topic: :tool_start, data: %{name: "hot_pattern"}, tokens: 30_000}, 10)
     cold_events = [%{topic: :tool_start, data: %{name: "once"}, tokens: 10}]
 
     needs = Jit.hot_needs(hot_events ++ cold_events)
@@ -33,7 +33,7 @@ defmodule Newbee.Environment.JitTest do
           %{"source" => "sleeping_rule", "rules" => [%{"id" => "jspace-outer"}]}
         ]
       },
-      tokens: 6_000
+      tokens: 150_000
     }
 
     assert [need] = Jit.hot_needs([event])

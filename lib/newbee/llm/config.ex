@@ -1,4 +1,6 @@
 defmodule Newbee.LLM.Config do
+  require Logger
+
   @moduledoc """
   模型配置 (model.json)。schema 学习 prime-agent 的 models.json：
 
@@ -35,7 +37,9 @@ defmodule Newbee.LLM.Config do
     unless provider, do: raise("model.json: 未知 provider #{inspect(provider_name)}")
 
     Newbee.LLM.Client.new(
+      provider: provider_name,
       base_url: provider["baseUrl"],
+      api: get_in(provider, ["modelApis", model]) || provider["api"] || "openai-completions",
       model: model,
       api_key: expand_env(provider["apiKey"]),
       reasoning_effort: role_cfg["reasoningEffort"],
@@ -130,7 +134,7 @@ defmodule Newbee.LLM.Config do
           }
         end,
         max_concurrency: 8,
-        timeout: 10_000,
+        timeout: 30_000,
         on_timeout: :kill_task
       )
       |> Enum.map(fn
@@ -141,7 +145,6 @@ defmodule Newbee.LLM.Config do
     default = get_in(cfg, ["roles", "default"]) || %{}
     %{providers: providers, current: %{provider: default["provider"], model: default["model"]}}
   end
-
 
   @doc """
   切换默认模型（/model <id>）：
@@ -255,6 +258,7 @@ defmodule Newbee.LLM.Config do
       _ when force ->
         # 强制刷新：同步拉取
         do_fetch_and_cache(name, provider, key)
+
       _ ->
         # 无缓存非强制：返回静态列表（不自动拉取）
         static_models(provider)
@@ -347,18 +351,80 @@ defmodule Newbee.LLM.Config do
         []
       end
 
-    case Req.get(url, headers: headers, receive_timeout: 8_000) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
+    result =
+      if URI.parse(url).host == "openrouter.ai" do
+        openrouter_get(url, headers)
+      else
+        req_get(url, headers)
+      end
+
+    case result do
+      {:ok, body} ->
         {:ok, body}
 
-      _ ->
+      other ->
+        Logger.warning("model_catalog: fetch failed for " <> url <> ": " <> inspect(other))
         :error
     end
-  rescue
-    _ -> :error
-  catch
-    _, _ -> :error
   end
+
+  defp openrouter_get(url, headers) do
+    auth_args = Enum.flat_map(headers, fn {key, value} -> ["--header", key <> ": " <> value] end)
+    args = ["--silent", "--show-error", "--fail", "--max-time", "30"] ++ auth_args ++ [url]
+
+    case System.cmd("curl", args, stderr_to_stdout: true) do
+      {body, 0} ->
+        case Jason.decode(body) do
+          {:ok, decoded} -> {:ok, decoded}
+          {:error, error} -> {:error, {:invalid_json, Exception.message(error)}}
+        end
+
+      {output, status} ->
+        {:error, {:curl_failed, status, String.slice(output, 0, 200)}}
+    end
+  rescue
+    error -> {:error, {:curl_exception, Exception.message(error)}}
+  end
+
+  # Finch can hang on OpenRouter under transparent-proxy/fake-IP setups.
+  defp req_get(url, headers) do
+    case Req.get(url, headers: headers, receive_timeout: 30_000) do
+      {:ok, %Req.Response{status: st} = resp} when st in 200..299 -> {:ok, resp.body}
+      {:ok, %Req.Response{status: st}} -> {:error, {:http_status, st}}
+      {:error, _e} -> httpc_get(url, headers)
+    end
+  end
+
+  defp httpc_get(url, headers) do
+    _ = Application.ensure_all_started(:inets)
+    _ = Application.ensure_all_started(:ssl)
+
+    req =
+      {String.to_charlist(url), Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)}
+
+    try do
+      :httpc.set_options(ssl: [verify: :verify_peer, cacerts: :public_key.cacerts_get()])
+
+      case :httpc.request(:get, req, [timeout: 30_000, connect_timeout: 10_000], body_format: :binary) do
+        {:ok, {{_, 200, _}, _, body}} ->
+          case Jason.decode(body) do
+            {:ok, decoded} -> {:ok, decoded}
+            {:error, error} -> {:error, {:invalid_json, Exception.message(error)}}
+          end
+
+        {:ok, {{_, st, _}, _, _body}} ->
+          {:error, {:http_status, st}}
+
+        {:error, e} ->
+          {:error, e}
+      end
+    rescue
+      e -> {:error, {:httpc_exception, Exception.message(e)}}
+    catch
+      k, r -> {:error, {:httpc_thrown, {k, r}}}
+    end
+  end
+
   # ── internals ──
 
   defp resolve_path do

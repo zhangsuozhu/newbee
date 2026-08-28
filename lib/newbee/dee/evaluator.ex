@@ -41,8 +41,9 @@ defmodule Newbee.DEE.Evaluator do
   @peer_boot_timeout 60_000
   @rpc_boot_timeout 60_000
   @reboot_cooldown 5_000
-  # rpc 总上限：async_call + nb_yield 轮询（长任务不误判节点死亡）
-  @rpc_long_timeout 300_000
+  # cell 自身决定 deadline；默认无限等待但始终可由会话 interrupt 取消。
+  # RPC 不再另设墙钟截止，否则会返回错误却让远端副作用继续执行。
+
   # 等待在途 standby boot 完成的上限 / boot 失败后的重试间隔
   @standby_wait_timeout 60_000
   @standby_retry_ms 1_000
@@ -106,6 +107,7 @@ defmodule Newbee.DEE.Evaluator do
 
     # 会话工作目录：boot 后在求值节点上 cd（Fs/Run 工具都以节点 cwd 为根）
     cwd_opt = Keyword.get(opts, :cwd)
+
     state =
       case mode do
         :local ->
@@ -138,22 +140,24 @@ defmodule Newbee.DEE.Evaluator do
   # ── calls ──
 
   @impl true
-  def handle_call({:eval, code, opts}, _from, state) do
+  def handle_call({:eval, code, opts}, {caller, _tag}, state) do
     t0 = System.monotonic_time(:millisecond)
     Newbee.DebugLog.log(:eval, "start code=#{String.slice(code, 0, 120) |> inspect()}")
 
     # active key 是本地 evaluator GenServer pid；远端 worker 用它把当前 task
     # 注册回主 VM，Esc 无需等待这个已阻塞的 GenServer 处理 mailbox。
-    opts = Keyword.merge(opts, interrupt_key: self(), interrupt_node: Node.self())
+    # caller 是会话 kernel（或直接 API 调用者），self() 是本 Evaluator；
+    # 任一退出时 cell 必须同步取消，否则默认无限任务会脱离会话生命周期继续运行。
+    opts =
+      Keyword.merge(opts,
+        interrupt_key: self(),
+        interrupt_node: Node.self(),
+        cancel_owners: Enum.uniq([caller, self()])
+      )
 
     result =
       case remote_call(primary_target(state), {:eval, code, opts}) do
         {:ok, result} ->
-          {:reply, result, state}
-
-        {:timeout, result} ->
-          # rpc 超时（长任务/远端卡住）：不重试不切节点——副作用可能已执行，
-          # 重跑会重复；原样把超时错误返回给调用方。
           {:reply, result, state}
 
         :dead ->
@@ -168,9 +172,6 @@ defmodule Newbee.DEE.Evaluator do
               send(self(), :ensure_standby)
               {:reply, Map.put(result, :node_restarted, true), s}
 
-            {:timeout, result} ->
-              {:reply, result, state}
-
             :dead ->
               # 双死：冷却防抖重建
               Newbee.DebugLog.log(:eval, "standby also dead, full reboot")
@@ -179,9 +180,6 @@ defmodule Newbee.DEE.Evaluator do
               case remote_call(primary_target(s), {:eval, code, opts}) do
                 {:ok, result} ->
                   {:reply, Map.put(result, :node_restarted, true), s}
-
-                {:timeout, result} ->
-                  {:reply, result, s}
 
                 :dead ->
                   {:reply,
@@ -245,6 +243,7 @@ defmodule Newbee.DEE.Evaluator do
   def handle_call({:set_cwd, cwd}, _from, state) when is_binary(cwd) do
     targets = [primary_target(state), state.standby] |> Enum.reject(&is_nil/1)
     results = Enum.map(targets, &remote_call(&1, {:set_cwd, cwd}))
+
     if Enum.all?(results, &match?({:ok, :ok}, &1)) do
       {:reply, :ok, %{state | cwd: cwd}}
     else
@@ -618,34 +617,17 @@ defmodule Newbee.DEE.Evaluator do
   end
 
   defp remote_call(%{node: node, worker: w}, msg) when is_pid(w) do
-    # async_call + nb_yield 轮询（总上限 @rpc_long_timeout）：
-    # rpc.call 的 10s 硬超时曾把长任务（sleep 30s 等）误判为节点死亡，
-    # 切 standby/重启导致 ① 报 unavailable ② 副作用重复执行（回归事故）。
-    # 超时不重试不切节点：返回 {:timeout, result}，由上层原样回给调用方。
+    # 远端 GenServer.call 使用 cell 自身的 deadline。RPC 层只负责区分节点死亡，
+    # 不叠加第二个截止；后者会在任务仍运行时向用户谎报超时，并可能造成重复副作用。
     ref = :rpc.async_call(node, GenServer, :call, [w, msg, :infinity])
 
-    case nb_yield_poll(ref, @rpc_long_timeout) do
+    case :rpc.nb_yield(ref, :infinity) do
       {:value, {:badrpc, reason}} ->
         Newbee.DebugLog.log(:rpc, "badrpc #{inspect(reason)} msg=#{msg_name(msg)}")
         :dead
 
       {:value, result} ->
         {:ok, result}
-
-      :timeout ->
-        Newbee.DebugLog.log(:rpc, "rpc timeout after #{@rpc_long_timeout}ms msg=#{msg_name(msg)}")
-        {:timeout, %{status: :error, error: "evaluator rpc timeout after #{@rpc_long_timeout}ms", output: ""}}
-    end
-  end
-
-  # nb_yield 分步轮询，避免一次阻塞太久（结果到达即返回，毫秒级轮询无开销）。
-  defp nb_yield_poll(ref, total) do
-    step = min(total, 5_000)
-
-    case :rpc.nb_yield(ref, step) do
-      {:value, _} = v -> v
-      :timeout when total > step -> nb_yield_poll(ref, total - step)
-      :timeout -> :timeout
     end
   end
 
@@ -670,6 +652,7 @@ defmodule Newbee.DEE.Evaluator do
     if :persistent_term.get({Newbee.Host, :main_node}, nil) == nil and Node.alive?() do
       :persistent_term.put({Newbee.Host, :main_node}, Node.self())
     end
+
     unless Node.alive?() do
       name = String.to_atom("newbee_#{:crypto.strong_rand_bytes(8) |> Base.encode32(case: :lower, padding: false)}")
 
@@ -708,5 +691,6 @@ defmodule Newbee.DEE.Evaluator do
     end)
     |> Enum.each(&:os.unsetenv(String.to_charlist(&1)))
   end
+
   def set_cwd(server \\ __MODULE__, cwd), do: GenServer.call(server, {:set_cwd, cwd}, @rpc_boot_timeout)
 end

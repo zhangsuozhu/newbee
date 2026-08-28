@@ -7,6 +7,10 @@ defmodule Newbee.Web.AuthGateTest do
   @opts Newbee.Web.Router.init([])
 
   setup do
+    # HOME 隔离：测试的 set_password/issue_token 落在临时目录，不触碰真实凭据
+    sandbox = Newbee.TestSupport.WebTmpHome.enter("auth_gate_test")
+    on_exit(fn -> Newbee.TestSupport.WebTmpHome.restore(sandbox) end)
+
     Auth.password_set?()
     if :ets.whereis(:newbee_web_auth) != :undefined, do: :ets.delete_all_objects(:newbee_web_auth)
     # 每个测试后恢复回环（免认证），避免污染其它测试
@@ -91,6 +95,34 @@ defmodule Newbee.Web.AuthGateTest do
     test "免认证直接放行" do
       conn = post_rpc("session.list", %{"limit" => 1})
       assert conn.status == 200
+    end
+  end
+
+  describe "auth.logout 吊销 token" do
+    setup do
+      Newbee.Web.Router.set_bind_ip({0, 0, 0, 0})
+      :ok = Auth.set_password("hunter22")
+      :ok
+    end
+
+    test "登出后旧 token 失效（服务端吊销）" do
+      {:ok, tok} = Auth.issue_token()
+      # 登出前有效
+      assert :ok = Auth.check_token(tok)
+      conn = post_rpc("session.list", %{"limit" => 1}, tok)
+      assert conn.status == 200
+
+      # 调 auth.logout（免认证前缀，但带 Bearer header → __token__ 注入 → 真吊销）
+      out = post_rpc("auth.logout", %{}, tok)
+      assert out.status == 200
+      body = Jason.decode!(out.resp_body)
+      assert body["result"]["ok"]["logged_out"] == true
+
+      # 吊销后：ETS 层已失效
+      assert {:error, :invalid} = Auth.check_token(tok)
+      # 再用旧 token 访问 → 401
+      conn2 = post_rpc("session.list", %{"limit" => 1}, tok)
+      assert conn2.status == 401
     end
   end
 end

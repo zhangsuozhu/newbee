@@ -168,30 +168,24 @@ defmodule Newbee.Web.Session do
     model = Newbee.Session.model(sid)
 
     base =
-      if provider do
-        try do
-          {:ok, Newbee.LLM.Config.client_for("default", provider: provider)}
-        rescue
-          e -> {:error, "provider 「#{provider}」未配置: #{Exception.message(e)}"}
-        end
-      else
-        try do
-          {:ok, Newbee.LLM.Config.client_for()}
-        rescue
-          e -> {:error, Exception.message(e)}
-        end
+      try do
+        opts =
+          []
+          |> then(fn opts -> if provider, do: Keyword.put(opts, :provider, provider), else: opts end)
+          |> then(fn opts -> if model, do: Keyword.put(opts, :model, model), else: opts end)
+
+        {:ok, Newbee.LLM.Config.client_for("default", opts)}
+      rescue
+        e ->
+          prefix = if provider, do: "provider 「#{provider}」未配置: ", else: ""
+          {:error, prefix <> Exception.message(e)}
       end
 
     with {:ok, client} <- base,
          client <-
-           (case model do
-              nil -> client
-              model -> %{client | model: model}
-            end),
-         client <-
            (case Newbee.Session.effort(sid) do
               nil -> client
-              e -> %{client | reasoning_effort: e}
+              e -> %{client | reasoning_effort: normalize_effort(e)}
             end) do
       {:ok, %{client | interrupt_scope: Newbee.LLM.Client.new_interrupt_scope()}}
     end
@@ -377,20 +371,28 @@ defmodule Newbee.Web.Session do
 
   @impl true
   def handle_cast({:prompt, text}, %{busy: true} = st) do
-    {:noreply, %{st | queue: :queue.in({:text, text}, st.queue)}}
+    queue = :queue.in({:text, text}, st.queue)
+    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
+    {:noreply, %{st | queue: queue}}
   end
 
   def handle_cast({:prompt_images, data_urls, text}, %{busy: true} = st) do
-    {:noreply, %{st | queue: :queue.in({:images, data_urls, text}, st.queue)}}
+    queue = :queue.in({:images, data_urls, text}, st.queue)
+    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
+    {:noreply, %{st | queue: queue}}
   end
 
   # kernel 仍在后台 boot：先入队，boot 完成后按顺序提交（用户无需等待或重试）
   def handle_cast({:prompt, text}, %{booting: true} = st) do
-    {:noreply, %{st | queue: :queue.in({:text, text}, st.queue)}}
+    queue = :queue.in({:text, text}, st.queue)
+    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
+    {:noreply, %{st | queue: queue}}
   end
 
   def handle_cast({:prompt_images, data_urls, text}, %{booting: true} = st) do
-    {:noreply, %{st | queue: :queue.in({:images, data_urls, text}, st.queue)}}
+    queue = :queue.in({:images, data_urls, text}, st.queue)
+    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
+    {:noreply, %{st | queue: queue}}
   end
 
   def handle_cast({:prompt_images, data_urls, text}, st) do
@@ -403,6 +405,13 @@ defmodule Newbee.Web.Session do
 
   def handle_cast(:interrupt, st) do
     if st.kernel && Process.alive?(st.kernel), do: Newbee.Agent.Loop.interrupt(st.kernel)
+
+    # 中断 = 停止当前 + 清空排队（用户按停止的意图是不再继续跑后续指令）；
+    # 清空数广播给前端提示。
+    n = :queue.len(st.queue)
+    st = %{st | queue: :queue.new()}
+    if n > 0, do: broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
+
     {:noreply, st}
   end
 
@@ -539,7 +548,7 @@ defmodule Newbee.Web.Session do
     {:reply, {:ok, %{applied: applied}}, %{st | client: client}}
   end
 
-  @effort_levels ~w(off auto low medium high xhigh max)
+  @effort_levels ~w(none low medium high xhigh max)
 
   defp normalize_effort(e)
 
@@ -548,6 +557,7 @@ defmodule Newbee.Web.Session do
 
     cond do
       e in ["", "default", "auto"] -> nil
+      e == "off" -> "none"
       e in @effort_levels -> e
       true -> nil
     end
@@ -614,12 +624,8 @@ defmodule Newbee.Web.Session do
     save_stats(st)
     broadcast_turn_end(st.sid, result)
 
-    case :queue.out(st.queue) do
-      {{:value, {:text, t}}, q} -> {:noreply, do_submit(%{st | queue: q}, t)}
-      {{:value, {:images, urls, t}}, q} -> {:noreply, do_submit_images(%{st | queue: q}, urls, t)}
-      {{:value, other}, q} -> {:noreply, do_submit(%{st | queue: q}, other)}
-      {:empty, _} -> {:noreply, %{st | busy: false}}
-    end
+    # 队列驱动：循环出队直到真正开启 turn（/ 命令不开 turn，单条出队会卡住后续排队输入）
+    {:noreply, dispatch_pending(%{st | busy: false})}
   end
 
   def handle_info(_, st), do: {:noreply, st}
@@ -683,12 +689,15 @@ defmodule Newbee.Web.Session do
   end
 
   defp run_shell_notice(st, cmd) do
+    t0 = System.monotonic_time(:millisecond)
     result = Newbee.Tools.Run.sh(cmd, timeout: 300_000)
+    duration_ms = System.monotonic_time(:millisecond) - t0
 
     broadcast(st.sid, :shell_result, %{
       cmd: cmd,
       output: String.slice(result.output, 0, 8000),
-      exit: result.exit
+      exit: result.exit,
+      duration_ms: duration_ms
     })
 
     st
@@ -830,7 +839,8 @@ defmodule Newbee.Web.Session do
     {kind, payload} =
       case result do
         {:done, summary} -> {:done, %{summary: summary}}
-        {:ask, q} -> {:ask, %{question: q}}
+        {:ask, q, options, kind} -> {:ask, %{question: q, options: options || [], kind: kind || "text"}}
+        {:ask, q} -> {:ask, %{question: q, options: [], kind: "text"}}
         {:text, body} -> {:text_end, %{body: body}}
         {:error, e} -> {:error, %{message: inspect(e)}}
         {:interrupted, _} -> {:interrupted, %{}}
@@ -878,7 +888,10 @@ defmodule Newbee.Web.Session do
   defp encode_event({:turn_end, kind, ms}), do: %{result: kind, ms: ms}
   defp encode_event({:goal_start, text}), do: %{text: text}
   defp encode_event({:goal_done, summary}), do: %{summary: summary}
-  defp encode_event({:goal_ask, q}), do: %{question: q}
+  defp encode_event({:ask, q, options, kind}), do: %{question: q, options: options || [], kind: kind || "text"}
+  defp encode_event({:ask, q}), do: %{question: q, options: [], kind: "text"}
+  defp encode_event({:goal_ask, q, options, kind}), do: %{question: q, options: options || [], kind: kind || "text"}
+  defp encode_event({:goal_ask, q}), do: %{question: q, options: [], kind: "text"}
   defp encode_event({:goal_round, n}), do: %{round: n}
   defp encode_event({:goal_retry, n}), do: %{retry: n}
   defp encode_event({:goal_cancelled, why}), do: %{reason: inspect(why)}

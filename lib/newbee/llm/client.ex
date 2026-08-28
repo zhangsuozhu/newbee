@@ -14,24 +14,34 @@ defmodule Newbee.LLM.Client do
 
   @derive {Inspect, except: [:api_key]}
   defstruct model: @default_model,
+            provider: "openrouter",
             api_key: nil,
             base_url: @default_base_url,
+            api: "openai-completions",
             reasoning_effort: nil,
             vision: true,
             context_window: nil,
-            interrupt_scope: nil
+            interrupt_scope: nil,
+            req_options: []
 
   def new(opts \\ []) do
     %__MODULE__{
       model: Keyword.get(opts, :model, @default_model),
+      provider: Keyword.get(opts, :provider, "openrouter"),
       api_key: Keyword.get(opts, :api_key, System.get_env("OPENROUTER_API_KEY")),
       base_url: Keyword.get(opts, :base_url, @default_base_url),
-      reasoning_effort: Keyword.get(opts, :reasoning_effort),
+      api: Keyword.get(opts, :api, "openai-completions"),
+      reasoning_effort: normalize_reasoning_effort(Keyword.get(opts, :reasoning_effort)),
       vision: Keyword.get(opts, :vision, true),
       context_window: Keyword.get(opts, :context_window),
-      interrupt_scope: Keyword.get(opts, :interrupt_scope)
+      interrupt_scope: Keyword.get(opts, :interrupt_scope),
+      req_options: Keyword.get(opts, :req_options, [])
     }
   end
+
+  @doc "将旧版关闭值 off 迁移为上游 API 接受的 none。"
+  def normalize_reasoning_effort("off"), do: "none"
+  def normalize_reasoning_effort(effort), do: effort
 
   @doc "获取模型上下文窗口；显式配置优先，否则查询 provider 元数据，失败回退 256K。"
   def context_window(%__MODULE__{context_window: n}) when is_integer(n) and n > 0, do: n
@@ -68,7 +78,16 @@ defmodule Newbee.LLM.Client do
          n when is_integer(n) and n > 0 <- model["context_length"] || model[:context_length] do
       n
     else
-      _ -> @default_context_window
+      _ ->
+        n = @default_context_window
+
+        Newbee.DebugLog.log(
+          :llm,
+          "context_window probe failed model=" <> client.model <> ", fallback " <> Integer.to_string(n) <>
+            "（provider /models 未返回 context_length，建议 model.json contextWindows 显式配置）"
+        )
+
+        n
     end
   rescue
     _ -> @default_context_window
@@ -106,13 +125,24 @@ defmodule Newbee.LLM.Client do
 
       started_at = System.monotonic_time(:millisecond)
       result = await_stream_chat(worker, monitor, ref, client)
-      observe_provider(result, client, started_at, "stream_chat")
+      observe_provider(result, client, started_at, "stream_chat", messages)
       result
     end
   end
 
   # Req.request/1 在收到首个响应前可能同步等待连接/首 token，
   # 所以整个请求放到可杀的 worker；调用方每 50ms 检查一次 Esc 标志。
+  defp stream_chat_request(%__MODULE__{api: "openai-responses"} = client, messages, on_text, _on_reasoning) do
+    case Newbee.LLM.Responses.request(client, messages, Newbee.Codec.tools()) do
+      {:ok, message, _usage} = ok ->
+        if message["content"] != "", do: on_text.(message["content"])
+        ok
+
+      error ->
+        error
+    end
+  end
+
   defp stream_chat_request(%__MODULE__{} = client, messages, on_text, on_reasoning) do
     Newbee.DebugLog.log(:llm, "start model=#{client.model} messages=#{length(messages)}")
     t0 = System.monotonic_time(:millisecond)
@@ -125,15 +155,17 @@ defmodule Newbee.LLM.Client do
       stream_options: %{include_usage: true}
     }
 
+    effort = normalize_reasoning_effort(client.reasoning_effort)
+
     body =
-      if client.reasoning_effort,
-        do: Map.put(body, :reasoning_effort, client.reasoning_effort),
+      if effort,
+        do: Map.put(body, :reasoning_effort, effort),
         else: body
 
     # receive_timeout 是"相邻两块数据的间隔"。serverless 端点冷启动（唤醒实例）
     # 实测 ~38s 才出首 token，30s 必然误超时再重试（等待翻倍）；120s 覆盖冷启动。
     build_req = fn body ->
-      Req.new(
+      [
         url: client.base_url <> "/chat/completions",
         method: :post,
         headers: [
@@ -146,7 +178,9 @@ defmodule Newbee.LLM.Client do
         finch: [pool_timeout: 30_000, conn_max_idle_time: 300_000, conn_opts: [transport_opts: [timeout: 30_000]]],
         retry: false,
         into: :self
-      )
+      ]
+      |> Keyword.merge(client.req_options)
+      |> Req.new()
     end
 
     result =
@@ -232,18 +266,24 @@ defmodule Newbee.LLM.Client do
       %{
         model: client.model,
         messages: messages,
-        stream: false,
-        temperature: Keyword.get(opts, :temperature, 0.2)
+        stream: false
       }
+      |> maybe_put_body(:temperature, Keyword.get(opts, :temperature, 0.2))
       |> maybe_put_body(:logprobs, Keyword.get(opts, :logprobs))
-      |> maybe_put_body(:top_logprobs, Keyword.get(opts, :top_logprobs, 20))
-      |> maybe_put_body(:reasoning_effort, client.reasoning_effort)
+      |> maybe_put_body(:top_logprobs, Keyword.get(opts, :top_logprobs))
+      |> maybe_put_body(:reasoning_effort, normalize_reasoning_effort(client.reasoning_effort))
       |> Map.merge(Keyword.get(opts, :extra, %{}))
+
+    body =
+      case Keyword.get(opts, :tools) do
+        tools when is_list(tools) and tools != [] -> Map.put(body, :tools, tools)
+        _ -> body
+      end
 
     t0 = System.monotonic_time(:millisecond)
 
     req =
-      Req.new(
+      [
         url: client.base_url <> "/chat/completions",
         method: :post,
         headers: [
@@ -254,16 +294,18 @@ defmodule Newbee.LLM.Client do
         json: body,
         receive_timeout: 120_000,
         retry: false
-      )
+      ]
+      |> Keyword.merge(client.req_options)
+      |> Req.new()
 
     result =
       case complete_req(req, @overload_retries) do
         {:ok, %{status: 200} = resp} ->
-          case Jason.decode(resp.body) do
-            {:ok, %{"choices" => [choice | _]}} ->
+          case decode_body(resp.body) do
+            {:ok, %{"choices" => [choice | _]} = body_map} ->
               content = get_in(choice, ["message", "content"]) || ""
               logprobs = choice["logprobs"]
-              usage = normalize_usage(choice["usage"] || %{})
+              usage = normalize_usage(choice["usage"] || body_map["usage"] || %{})
               {:ok, content, %{usage: usage, logprobs: logprobs}}
 
             {:ok, %{"error" => err}} ->
@@ -285,14 +327,18 @@ defmodule Newbee.LLM.Client do
       "complete done in #{System.monotonic_time(:millisecond) - t0}ms result=#{elem(result, 0)}"
     )
 
-    observe_provider(result, client, t0, "complete")
+    observe_provider(result, client, t0, "complete", messages)
     result
   end
 
   defp maybe_put_body(body, _k, nil), do: body
   defp maybe_put_body(body, k, v), do: Map.put(body, k, v)
 
-  defp observe_provider(result, client, started_at, task_type) do
+  defp observe_provider(result, client, started_at, task_type, messages) do
+    usage = result_usage(result)
+
+    log_cache_hit(client, usage, task_type, messages)
+
     {success, tokens, output_bytes} =
       case result do
         {:ok, message, usage} when is_map(message) ->
@@ -317,6 +363,11 @@ defmodule Newbee.LLM.Client do
     _ -> :ok
   end
 
+  @doc false
+  def result_usage({:ok, _value, %{usage: usage}}) when is_map(usage), do: usage
+  def result_usage({:ok, _value, usage}) when is_map(usage), do: usage
+  def result_usage(_), do: %{}
+
   defp usage_tokens(usage) when is_map(usage) do
     usage["total_tokens"] || usage[:total_tokens] ||
       (usage["prompt_tokens"] || usage[:prompt_tokens] || 0) +
@@ -324,6 +375,43 @@ defmodule Newbee.LLM.Client do
   end
 
   defp usage_tokens(_), do: 0
+
+  # ── 缓存命中诊断（临时功能：每请求后台打印一次，验证/调优后移除）──
+  # 打印：task_type / prompt_tokens / cache_read / 命中率（cache_read / prompt）
+  defp log_cache_hit(client, usage, task_type, messages) when is_map(usage) do
+    Newbee.DebugLog.log(:llm, cache_hit_line(client, usage, task_type, messages))
+  rescue
+    _ -> :ok
+  end
+
+  @doc false
+  def cache_hit_line(%__MODULE__{} = client, usage, task_type, messages \\ nil)
+      when is_map(usage) do
+    prompt = usage["prompt_tokens"] || usage[:prompt_tokens] || 0
+    cache_read = usage["cache_read_tokens"] || usage[:cache_read_tokens] || 0
+
+    hit_rate =
+      if is_number(prompt) and prompt > 0 do
+        "#{Float.round(100 * (cache_read / prompt), 1)}%"
+      else
+        "n/a"
+      end
+
+    cnt = if is_list(messages), do: length(messages), else: 0
+    sys = if is_list(messages), do: Enum.count(messages, fn m -> (m["role"] || m[:role]) == "system" end), else: 0
+    his = if cnt > 0, do: max(cnt - sys - 1, 0), else: 0
+
+    token_line = "prompt=#{prompt} prompt_read=#{cache_read} rate=#{hit_rate}"
+
+    line =
+      if cnt > 0 and sys >= 0 do
+        token_line <> " msg_count=#{cnt} (sys=#{sys} his=#{his})"
+      else
+        token_line
+      end
+
+    "cache-hit provider=#{client.provider} model=#{client.model} task=#{task_type} " <> line
+  end
 
   # 429/5xx 过载重试（非流式版，无 SSE drain 需求）
   defp complete_req(req, 0), do: Req.request(req)
@@ -589,7 +677,7 @@ defmodule Newbee.LLM.Client do
         |> maybe_usage(chunk)
 
       {:ok, %{"usage" => usage}} ->
-        %{acc | usage: usage || acc.usage}
+        %{acc | usage: if(is_map(usage), do: normalize_usage(usage), else: acc.usage)}
 
       {:ok, %{"error" => err}} ->
         %{acc | error: inspect(err)}
@@ -652,6 +740,11 @@ defmodule Newbee.LLM.Client do
 
   defp maybe_put_usage(usage, _key, nil), do: usage
   defp maybe_put_usage(usage, key, value), do: Map.put(usage, key, value)
+
+  # Req 默认 decode_body: true——真实 HTTP 响应 body 已被解码为 map；
+  # decode_body: false（或插桩）时是二进制。两态都兼容。
+  defp decode_body(b) when is_binary(b), do: Jason.decode(b)
+  defp decode_body(m) when is_map(m), do: {:ok, m}
 
   defp apply_delta(acc, delta, on_text, on_reasoning) do
     # 注意：OpenRouter 等在 reasoning 阶段常带 "content": ""——空串也是 binary，

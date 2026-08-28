@@ -62,7 +62,6 @@ defmodule Newbee.DEE.Result do
         💡 修复建议：函数收到的参数类型/数量没有匹配任何子句。先用 `IO.inspect(value, label: "value")` 检查实际值，并为预期类型增加匹配或兜底子句。
         """
 
-
       String.contains?(error, "MatchError") and String.contains?(error, "%{") ->
         """
 
@@ -87,10 +86,24 @@ defmodule Newbee.DEE.Result do
         💡 修复建议：操作超时。可尝试：1) 拆分大操作为小步骤；2) 增加 timeout 参数；3) 如果是 shell 命令，检查是否有交互式输入阻塞。
         """
 
+      String.contains?(error, "Kernel.to_string/1") and
+          (String.contains?(error, "CompileError") or String.contains?(error, "undefined variable")) ->
+        """
+
+        💡 修复建议：这是生成 Elixir 源码时的二阶插值错误。目标源码中的插值在当前 cell 提前执行了。请先调用 `Newbee.Tools.Edit.source_literal(source)` 生成安全字符串表达式，再拼入写文件代码。
+        """
+
+      String.contains?(error, "MismatchedDelimiterError") and
+          (String.contains?(error, "heredoc") or String.contains?(error, "terminator")) ->
+        """
+
+        💡 修复建议：这是 heredoc 或 sigil 分隔符嵌套冲突。不要继续手工更换分隔符；请调用 `Newbee.Tools.Edit.source_literal(source)` 生成不会与目标内容冲突的字符串表达式。
+        """
+
       String.contains?(error, "SyntaxError") or String.contains?(error, "CompileError") ->
         """
 
-        💡 修复建议：先定位错误报告中的行号和列号，检查括号、逗号、`do/end` 及字符串边界；可用 `Code.format_string!(code)` 验证代码结构。
+        💡 修复建议：先定位错误报告中的行号和列号，检查括号、逗号、`do/end` 及字符串边界；生成源码时先用 `Newbee.Tools.Edit.source_literal/1` 避免二阶插值和分隔符嵌套。可用 `Code.format_string!(code)` 验证代码结构。
         """
 
       true ->

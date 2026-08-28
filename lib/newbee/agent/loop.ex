@@ -470,8 +470,15 @@ defmodule Newbee.Agent.Loop do
     {{:done, summary}, %{state | goal: nil}}
   end
 
+  defp after_turn({:ask, question, options, kind}, state) do
+    # 目标保留：用户回答后的 submit 出口会自动续跑。
+    # goal_ask 事件携带 options/kind（前端渲染交互控件）；submit 返回值保持 2-tuple 兼容（CLI/TUI）。
+    emit(state, {:goal_ask, question, options, kind})
+    {{:ask, question}, %{state | goal: %{state.goal | error_retries: 0}}}
+  end
+
   defp after_turn({:ask, question}, state) do
-    # 目标保留：用户回答后的 submit 出口会自动续跑
+    # 兼容旧版 2-tuple（历史事件流）
     emit(state, {:goal_ask, question})
     {{:ask, question}, %{state | goal: %{state.goal | error_retries: 0}}}
   end
@@ -581,11 +588,18 @@ defmodule Newbee.Agent.Loop do
     on_text = fn delta -> emit(state, {:text, delta}) end
     on_reasoning = fn delta -> emit(state, {:reasoning, delta}) end
 
+    # I1：记录本次路由请求的可缓存前缀快照（Archive 摘要路径消费）。
+    # 标准 LLM client + 会话才写；注入函数/无会话 no-op。
+    Newbee.RequestEnvelope.record(state.session, state.client, state.messages)
+
     case call_client(state.client_fun, state.messages, on_text, on_reasoning) do
       {:ok, msg, usage} ->
         Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
         emit(state, {:usage, Map.put(usage, "model", client_model(state.client))})
         state = %{state | usage: merge_usage(state.usage, usage)}
+        # 用量持久化（UI 历史回放）：附加到 assistant 消息私有字段，
+        # 仅前端 history 消费；发模型的 messages 不含 _usage（见 request_messages）
+        msg = Map.put(msg, "_usage", usage)
 
         # 上游（DeepSeek/OpenRouter 系）拒绝 content 为空的 assistant 消息（400）：
         # 模型偶发返回"空正文且无工具调用"（只吐思考流/空串），该消息一旦落进
@@ -623,13 +637,13 @@ defmodule Newbee.Agent.Loop do
                       inject_prompt(state, reminder, %{
                         source: "sleeping_rule",
                         reason: "模型可见正文或隐藏思考流命中沉睡规则",
-                        timing: "next_user_turn",
+                        timing: "current_turn_retry",
                         step: step,
                         trigger: visible_rule_trigger(msg["content"] || "", hits),
                         rules: rule_audit_details(hits)
                       })
 
-                    {{:text, msg["content"]}, state}
+                    run_turn(state, step + 1)
                 end
 
               {blocks, cleaned} ->
@@ -839,8 +853,24 @@ defmodule Newbee.Agent.Loop do
 
             "ask" ->
               question = call.args["question"] || ""
-              emit(state, {:ask, question})
+              options = call.args["options"]
+              kind = call.args["kind"] || "text"
+              emit(state, {:ask, question, options, kind})
               tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => "（等待用户回答）"}
+              # ask 问题必须落盘：刷新/新设备后前端凭 role=ask 记录恢复提问卡片（§5.3）
+              if state.session do
+                Newbee.Session.append(state.session, %{
+                  "role" => "ask",
+                  "content" => %{
+                    "question" => question,
+                    "options" => options || [],
+                    "kind" => kind,
+                    "tool_call_id" => call.id,
+                    "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+                  }
+                })
+              end
+
               {:halt, {:halt, {:ask, question}, push_msg(state, tool_msg)}}
 
             other ->
@@ -886,6 +916,15 @@ defmodule Newbee.Agent.Loop do
   # 顺带丢弃空 assistant 消息（否则整段历史请求被上游 400 拒）。
   defp repair_history(messages) do
     messages = Enum.reject(messages, &empty_assistant_msg?/1)
+    # transcript 会混入 UI 审计行：`role=usage`（token 用量）、`role=media`
+    # （图片上屏记录，见 push_msg/Media.append）。它们只供前端回放，写入时有
+    # 意不进 state.messages；恢复路径必须同等过滤，否则请求带非法角色，OpenAI
+    # 兼容上游整单拒绝（400 "Incorrect role information"，Console Go/GLM 实测）。
+    messages =
+      Enum.reject(messages, fn m ->
+        not Map.has_key?(m, "tool_call_id") and
+          m["role"] not in ["system", "user", "assistant", "tool"]
+      end)
 
     {chunks, pending} =
       Enum.map_reduce(messages, [], fn msg, pending ->
@@ -1237,8 +1276,20 @@ defmodule Newbee.Agent.Loop do
 
   defp push_msg(state, msg) do
     msg = sanitize_msg(msg)
-    if state.session, do: Newbee.Session.append(state.session, msg)
-    %{state | messages: state.messages ++ [msg]}
+
+    # 用量行（UI 回放）：带 _usage 的 assistant 消息落盘时拆成两条——
+    # ① 独立 usage 行（前端 history 消费）；② 干净 assistant 消息（进 state.messages，
+    # 发给模型的历史绝不含 _usage，避免污染请求体）。
+    if state.session && is_map(msg) && msg["_usage"] do
+      usage = Map.get(msg, "_usage")
+      Newbee.Session.append(state.session, %{"role" => "usage", "usage" => usage})
+      clean = Map.delete(msg, "_usage")
+      Newbee.Session.append(state.session, clean)
+      %{state | messages: state.messages ++ [clean]}
+    else
+      if state.session, do: Newbee.Session.append(state.session, msg)
+      %{state | messages: state.messages ++ [msg]}
+    end
   end
 
   # 兜底：任何入会话消息都必须是合法 UTF-8，否则 Jason 编码崩溃
@@ -1319,16 +1370,20 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp compact_state(state, retain_target) do
+    # base = 本会话 system 基底（messages 头部，不进 transcript）。
+    # 传给 Archive：摘要请求走 envelope 重放真实请求前缀（详见 prefix-cache 方案）。
+    base = hd(state.messages)
+
     opts = [
       retain: retain_target,
       client: state.client,
+      envelope: Newbee.RequestEnvelope.load(state.session),
       trigger: if(retain_target <= 64, do: "manual", else: "auto")
     ]
 
     case Newbee.Archive.compact(state.session, opts) do
       {:ok, %{view: view, archived: n}} ->
         # view = [汇总消息 | 近期原文]；头部补回本会话 system 基底（不进 transcript）
-        base = hd(state.messages)
         messages = [base | view] |> repair_history()
 
         messages =

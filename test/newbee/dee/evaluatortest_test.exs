@@ -34,6 +34,10 @@ defmodule Newbee.DEE.EvaluatorTest do
     assert Enum.any?(Evaluator.bindings_summary(ev), &(&1.name == :good))
   end
 
+  test "默认 cell 不设置固定墙钟截止" do
+    assert Newbee.DEE.EvalWorker.default_timeout() == :infinity
+  end
+
   test "超时返回错误", %{ev: ev} do
     r = Evaluator.eval(ev, "Process.sleep(:infinity)", timeout: 100)
     assert r.status == :error
@@ -47,6 +51,16 @@ defmodule Newbee.DEE.EvaluatorTest do
     assert :ok = Evaluator.interrupt(ev)
     assert %{status: :error, error: "interrupted"} = Task.await(task, 5_000)
     assert %{status: :ok, value: "2"} = Evaluator.eval(ev, "1 + 1")
+  end
+
+  test "调用者死亡会取消无限 cell，worker 仍可复用", %{ev: ev} do
+    caller = spawn(fn -> Evaluator.eval(ev, "Process.sleep(:infinity)") end)
+    assert wait_until(fn -> is_pid(Newbee.DEE.EvalWorker.active_pid(ev)) end, 5_000)
+
+    Process.exit(caller, :kill)
+
+    follow_up = Task.async(fn -> Evaluator.eval(ev, "1 + 1") end)
+    assert %{status: :ok, value: "2"} = Task.await(follow_up, 5_000)
   end
 
   test "bindings_summary 只给摘要不给内容", %{ev: ev} do
