@@ -13,3 +13,18 @@
 {"call":"Fs.read(sqlite3.c)","tool":"fs","scenario":"读超大9MB文件","outcome":"ok","detail":"\"/******************************************************************************\\n** This file is an amalgamation of many separate C source files from SQLite\\n** version 3.45.2.  By combining all the individual C code fi"}
 {"call":"Fs.write(f, [1,2,3])","tool":"fs","scenario":"write 内容为list非string","outcome":"other","detail":"7490"}
 {"call":"Fs.rm_rf(不存在)","tool":"fs","scenario":"rm_rf 不存在目录","outcome":"ok","detail":"[]"}
+{"call":"patch PUT 30|31","tool":"edit","scenario":"PUT 替换单行(带上下文,正确)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30.a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch PUT <30|29","tool":"edit","scenario":"PUT< 行前插入(正确)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30.a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch PUT 30(无ctx)","tool":"edit","scenario":"PUT 缺少上下文锚点","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30.a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch 内容无+","tool":"edit","scenario":"内容行忘写+(未以+开头)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30.a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch hash=deadbeef","tool":"edit","scenario":"锚点hash捏造","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 31.91c9bfaf（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch 30hash|31hash","tool":"edit","scenario":"锚点缺#号","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch DELETE","tool":"edit","scenario":"操作名误用DELETE(应为CUT)","outcome":"error_returned","detail":"ERROR: \"内容行必须以 + 开头（第 1 个操作附近）；若这是新节头请检查 [path#tag] 格式 [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch PUT 30#|31#","tool":"edit","scenario":"PUT 替换单行(#分隔,正确)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30#a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch PUT <30#|29#","tool":"edit","scenario":"PUT< 行前插入(#分隔,正确)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30#a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch CUT 30#|31#","tool":"edit","scenario":"CUT 删除行(#分隔,正确)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30#a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch 99#|31#","tool":"edit","scenario":"行号错配(99行用30的hash)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 99#a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch 30#=34#","tool":"edit","scenario":"范围替换用=分隔(应为..)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30#a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch 无[","tool":"edit","scenario":"节头缺[方括号]","outcome":"error_returned","detail":"ERROR: \"补丁必须以节头 [path#tag] 开头，或内容行以 + 开头 [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch 不存在文件","tool":"edit","scenario":"节头文件不存在","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 1#c23e17f6（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
+{"call":"patch +空","tool":"edit","scenario":"内容行仅+(空内容)","outcome":"error_returned","detail":"ERROR: \"锚点格式错误: 30#a70c40f9（应为 N.#8位hash） [Newbee.Tools.Edit.ParseError]\""}
