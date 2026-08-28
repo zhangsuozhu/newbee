@@ -161,21 +161,6 @@ defmodule Mix.Tasks.Newbee.Web do
     end
   end
 
-  # 显式重置：覆盖现有密码并吊销全部已登录会话
-  defp reset_password! do
-    pw1 = prompt_password("重置登录密码（≥6 位）: ")
-    pw2 = prompt_password("再次输入确认: ")
-
-    if pw1 == pw2 do
-      case Newbee.Web.Auth.set_password(pw1) do
-        :ok -> Mix.shell().info("[newbee.web] 登录密码已重置，所有已登录会话已吊销")
-        {:error, msg} -> Mix.raise("重置密码失败: " <> msg)
-      end
-    else
-      Mix.raise("两次输入不一致")
-    end
-  end
-
   defp prompt_password(prompt) do
     IO.write(:standard_error, prompt)
     :io.setopts(:standard_io, echo: false)
