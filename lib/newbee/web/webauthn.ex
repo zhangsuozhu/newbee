@@ -53,6 +53,12 @@ defmodule Newbee.Web.WebAuthn do
   # ── 注册 ──
 
   def registration_challenge(name \\ "未命名设备") do
+    with :ok <- ensure_webauthn_origin() do
+      do_registration_challenge(name)
+    end
+  end
+
+  defp do_registration_challenge(name) do
     challenge =
       Wax.new_registration_challenge(
         origin: origin(),
@@ -60,7 +66,6 @@ defmodule Newbee.Web.WebAuthn do
         attestation: "none",
         user_verification: "preferred"
       )
-
     challenge_id = store_challenge(challenge, {:register, name})
 
     {:ok,
@@ -132,6 +137,12 @@ defmodule Newbee.Web.WebAuthn do
         {Base.url_decode64!(cred_id, padding: false), public_key}
       end)
 
+    with :ok <- ensure_webauthn_origin() do
+      do_authentication_challenge(allow_creds)
+    end
+  end
+
+  defp do_authentication_challenge(allow_creds) do
     challenge =
       Wax.new_authentication_challenge(
         origin: origin(),
@@ -198,6 +209,33 @@ defmodule Newbee.Web.WebAuthn do
 
   def set_origin(origin) when is_binary(origin) do
     Process.put({__MODULE__, :origin}, origin)
+  end
+
+  # WebAuthn 规范要求 RP ID 必须是有效域名（不能是 IP 地址）。用 IP 直接访问
+  # WebUI 时（如 https://192.168.0.8:5151），rp_id=:auto 推导出的 RP ID 是裸 IP，
+  # 浏览器在 navigator.credentials.create/get 阶段直接抛
+  # "This is an invalid domain."。这里在服务端提前拦截，返回可操作的引导。
+  defp ensure_webauthn_origin do
+    host = URI.parse(origin()).host || ""
+
+    if ip_literal?(host) do
+      {:error, "invalid_domain",
+       "当前通过 IP 地址（#{host}）访问，浏览器禁止在该站点使用通行密钥（指纹/面容）。" <>
+         "请改用域名/主机名访问本服务后再试，例如 http://<主机名>.local 或配置的域名。"}
+    else
+      :ok
+    end
+  end
+
+  defp ip_literal?(host) do
+    charlist = String.to_charlist(host)
+
+    cond do
+      match?({:ok, {_, _, _, _}}, :inet.parse_ipv4_address(charlist)) -> true
+      match?({:ok, {_, _, _, _, _, _, _, _}}, :inet.parse_ipv6_address(charlist)) -> true
+      String.starts_with?(host, "[") -> true
+      true -> false
+    end
   end
 
   # 挑战存储
@@ -282,3 +320,4 @@ defmodule Newbee.Web.WebAuthn do
 
   defp ensure_table, do: create_table()
 end
+

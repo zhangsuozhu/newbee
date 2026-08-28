@@ -36,8 +36,7 @@ defmodule Newbee.Web.SessionModelRestoreTest do
         else: System.delete_env("NEWBEE_MODEL_JSON")
 
       File.rm_rf!(root)
-      File.rm(Path.join([System.user_home!(), ".newbee/sessions", sid <> ".jsonl"]))
-      File.rm_rf!(Path.join([System.user_home!(), ".newbee/session-artifacts", sid]))
+      Newbee.Session.delete(sid)
     end)
 
     assert {:ok, client} = Newbee.Web.Session.client_for_session(sid)

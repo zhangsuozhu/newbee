@@ -49,6 +49,27 @@ defmodule Newbee.Web.Socket do
     {:push, [{:text, frame}], st}
   end
 
+  def handle_info(
+        {:newbee_event, :collab_event, %{"session_ids" => session_ids} = event},
+        %{sid: sid} = st
+      )
+      when is_list(session_ids) do
+    if sid in session_ids do
+      frame =
+        Jason.encode_to_iodata!(%{
+          type: "group_event",
+          groupId: event["group_id"],
+          eventId: event["event_id"],
+          topic: event["topic"],
+          payload: json_safe(event["payload"])
+        })
+
+      {:push, [{:text, frame}], st}
+    else
+      {:ok, st}
+    end
+  end
+
   # 系统级进化事件下行（与具体 session 无关；前端进化面板消费）
   @evo_topics ~w(evolution_published evolution_rejected release_observation
                   change_requested change_building change_evaluated change_canary

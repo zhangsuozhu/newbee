@@ -19,8 +19,7 @@ defmodule Newbee.ArchiveTest do
   end
 
   defp cleanup(id) do
-    File.rm(Path.join(System.user_home!(), ".newbee/sessions/#{id}.jsonl"))
-    File.rm_rf(Path.join(System.user_home!(), ".newbee/session-artifacts/#{id}"))
+    Newbee.Session.delete(id)
   end
 
   defp feed(s, msgs) do

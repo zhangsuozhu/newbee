@@ -38,6 +38,7 @@ defmodule Newbee.CommandsTest do
 
     assert {:resume_picker, metas} = Commands.handle("/resume", %{say: fn _ -> :ok end})
     assert Enum.any?(metas, &(&1.id == s.id))
+    Newbee.Session.delete(id)
   end
 
   test "/resume 精确 id 与前缀都返回 {:resume, id}" do
@@ -50,6 +51,7 @@ defmodule Newbee.CommandsTest do
     assert resumed == s.id
     assert {:resume, resumed2} = Commands.handle("/resume #{pref}", %{say: fn _ -> :ok end})
     assert resumed2 == s.id
+    Newbee.Session.delete(id)
   end
 
   test "@文件 展开为内容块（不存在则原样保留）" do

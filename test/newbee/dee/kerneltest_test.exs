@@ -118,7 +118,7 @@ defmodule Newbee.Agent.LoopTest do
       )
 
     assert {:text, "ok"} = Loop.submit(kernel, "继续")
-    File.rm(s.transcript)
+    Newbee.Session.delete(sid)
   end
 
   test "模型返回空正文且无工具调用：不给历史落空 assistant（上游 400 根因）" do
@@ -197,7 +197,7 @@ defmodule Newbee.Agent.LoopTest do
       )
 
     assert {:text, "fine"} = Loop.submit(kernel, "继续")
-    File.rm(s.transcript)
+    Newbee.Session.delete(sid)
   end
 
   test "恢复会话逐字复用首次 system prompt" do
@@ -231,6 +231,7 @@ defmodule Newbee.Agent.LoopTest do
       )
 
     assert {:text, "two"} = Loop.submit(resumed, "second")
+    Newbee.Session.delete(sid)
   end
 
   test "Esc 中断：client 返回 {:interrupted, content} 时 turn 立即终止" do
@@ -341,7 +342,7 @@ defmodule Newbee.Agent.LoopTest do
       Loop.start_link(client: %{}, evaluator: ev, session_id: sid, client_fun: scripted(script))
 
     assert {:text, "ok"} = Loop.submit(kernel, "继续")
-    File.rm(s.transcript)
+    Newbee.Session.delete(sid)
   end
 end
 

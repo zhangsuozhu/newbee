@@ -19,9 +19,7 @@ defmodule Newbee.SessionTest do
 
     for f <- Path.wildcard(Path.join(root, "test_*.jsonl")),
         Regex.match?(~r{/test_\d+\.jsonl$}, f) do
-      File.rm(f)
-
-      File.rm_rf(Path.join(System.user_home!(), ".newbee/session-artifacts/#{Path.basename(f, ".jsonl")}"))
+      Newbee.Session.delete(Path.basename(f, ".jsonl"))
     end
   end
 

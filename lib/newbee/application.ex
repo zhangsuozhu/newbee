@@ -20,7 +20,13 @@ defmodule Newbee.Application do
         if Mix.env() == :test do
           []
         else
-          [Newbee.Environment.Coordinator, Newbee.Environment.ContextQuality.Collector, Newbee.Daemon, Newbee.HotReloader]
+          [
+            Newbee.Collaboration.Coordinator,
+            Newbee.Environment.Coordinator,
+            Newbee.Environment.ContextQuality.Collector,
+            Newbee.Daemon,
+            Newbee.HotReloader
+          ]
         end
 
     # Web 认证/挑战表：由 Application 主进程持有，避免随 Plug 请求进程退出而销毁

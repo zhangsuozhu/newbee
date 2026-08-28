@@ -1437,7 +1437,23 @@ collaboration.workspaces = "dedicated"
 
 ---
 
-## 18. 总结
+## 18. 实现进度
+
+当前已落地 P0/P1 以及 P2 的基础任务能力：
+
+- P0/P1：群组、成员、消息的单写者 Coordinator；EventStore 持久化与重放；HTTP RPC；WebSocket 群事件；WebUI 群组工作台；父会话 spawn 子会话。
+- P2 基础：Task 创建、分派成员、状态更新（accepted/running/blocked/succeeded/failed/cancelled）、进度/结果字段、任务事件重放和 WebUI 任务栏。
+- P2 完整闭环：指派后自动投递结构化任务到目标会话；`Newbee.Tools.Collaboration` 提供 report/send_message/tasks；终态结果一次性回收通知创建者。
+- P3 基础：任务 lease/claim 防重复领取；群组 running/paused/cancelled 状态控制；WebUI 提供暂停/恢复和未分配任务领取。
+- P3 协作安全闭环：只有协调会话可修改群状态；claim 会绑定 lease_owner/lease_until/attempt 并投递到领取者；owner 可在 30-3600 秒范围续租；任务终态向创建者会话一次性回收结构化结果。
+- 自动分派：任务创建并指定成员时，Coordinator 立即把结构化任务提示投递到目标 Web.Session 队列（忙时排队、空闲直接执行）；任务提示带来源标记与 group/task/session id。
+- 模型工具：`Newbee.Tools.Collaboration`（已注册内置插件）供子会话调用——report 更新任务状态/进度/结果，send_message 发群消息，tasks 查询列表。
+- 当前仍未落地：显式 wake/queue 分档调参、dedicated worktree 隔离和显式 integrate 流程；当前 lease/claim/renew、群状态权限和结果回收已作为基础保护落地。
+
+
+实现验证以代码测试为准：协作领域/API/Socket 专项测试覆盖消息双向传递、命令和消息幂等、成员权限、任务状态机、重启恢复与群事件帧。
+
+## 19. 总结
 
 会话群的本质是 **可恢复的多会话协作调度**，不是聊天 UI 的扩展。正确的落点是：
 

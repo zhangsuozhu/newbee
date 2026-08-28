@@ -241,6 +241,13 @@ const flow = $("flow");
     lastLLMUsage: null,
     lastUsageSeq: 0,
     lastAttachedSeq: 0,
+    groups: [],
+    activeGroupId: null,
+    activeGroup: null,
+    groupMessages: [],
+    groupTasks: [],
+    groupBySession: {},
+    selectedSessions: new Set(),
   };
 
   // ── 会话统计持久化（按 sessionId 存 localStorage，刷新/重连后保留）──
@@ -334,6 +341,7 @@ const flow = $("flow");
         onEvent(frame.kind, frame.payload || {});
       }
       else if (frame.type === "system") pushEvoEvent(frame.topic, frame.payload);
+      else if (frame.type === "group_event") onGroupEvent(frame);
     };
     ws.onopen = () => {
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
@@ -840,6 +848,319 @@ case "goal_round": break;
 
 
 
+
+  // ── 会话协作：分组留在左侧，当前会话过程保持在中间，协作信息进入 Mission Control ──
+  function rebuildGroupIndex() {
+    state.groupBySession = {};
+    (state.groups || []).forEach((group) => {
+      (group.members || []).forEach((member) => {
+        state.groupBySession[member.session_id] = { group, member };
+      });
+    });
+  }
+
+  function currentGroupRef() {
+    return state.sid ? state.groupBySession[state.sid] || null : null;
+  }
+
+  function sessionDisplayName(sessionId) {
+    const session = (state.allSessions || []).find((s) => s.id === sessionId);
+    if (session) return session.title || session.id;
+    const ref = state.groupBySession[sessionId];
+    return ref && ref.member && ref.member.role ? `${ref.member.role} · ${sessionId.slice(-6)}` : sessionId;
+  }
+
+  async function loadGroups() {
+    if (!state.sid) return;
+    try {
+      const result = await rpc("group.list", {});
+      state.groups = result.groups || [];
+    } catch (e) {
+      state.groups = [];
+    }
+    rebuildGroupIndex();
+    renderSessionList();
+    await loadActiveGroup();
+  }
+
+  async function loadActiveGroup() {
+    const ref = currentGroupRef();
+    const delegate = $("delegate-session");
+    if (!ref) {
+      state.activeGroupId = null;
+      state.activeGroup = null;
+      state.groupMessages = [];
+      state.groupTasks = [];
+      if (delegate) delegate.classList.add("hidden");
+      renderCollaborationPane();
+      renderCollaborationTasks();
+      return;
+    }
+
+    state.activeGroupId = ref.group.group_id;
+    if (delegate) {
+      delegate.classList.toggle("hidden", ref.group.coordinator_session_id !== state.sid);
+    }
+
+    try {
+      const [group, messages, tasks] = await Promise.all([
+        rpc("group.get", { groupId: ref.group.group_id, sessionId: state.sid }),
+        rpc("collab.message.list", { groupId: ref.group.group_id, sessionId: state.sid, limit: 200 }),
+        rpc("group.task.list", { groupId: ref.group.group_id, sessionId: state.sid }),
+      ]);
+      if (!state.sid || state.activeGroupId !== ref.group.group_id) return;
+      state.activeGroup = group;
+      state.groupMessages = messages.messages || [];
+      state.groupTasks = tasks.tasks || [];
+    } catch (e) {
+      state.activeGroup = null;
+      state.groupMessages = [];
+      state.groupTasks = [];
+    }
+    renderCollaborationPane();
+    renderCollaborationTasks();
+  }
+
+  function renderCollaborationPane() {
+    const list = $("mc-collab-list");
+    const members = $("mc-collab-members");
+    const recipient = $("mc-collab-recipient");
+    if (!list || !members || !recipient) return;
+
+    const group = state.activeGroup;
+    if (!group) {
+      $("mc-collab-title").textContent = "协作消息";
+      members.innerHTML = "";
+      recipient.innerHTML = "";
+      list.innerHTML = '<div class="collab-empty">当前是普通会话。勾选多个会话可组成工作组。</div>';
+      $("mc-collab-input").disabled = true;
+      $("mc-collab-send").disabled = true;
+      return;
+    }
+
+    $("mc-collab-title").textContent = group.title || "协作消息";
+    $("mc-collab-input").disabled = false;
+    $("mc-collab-send").disabled = false;
+    members.innerHTML = (group.members || []).map((member) => {
+      const active = member.session_id === state.sid ? " active" : "";
+      return `<button class="collab-member${active}" data-session="${escapeHtml(member.session_id)}"><span class="sess-dot ${member.state === "working" ? "busy" : "online"}"></span><b>${escapeHtml(sessionDisplayName(member.session_id))}</b><small>${escapeHtml(member.role || "worker")}</small></button>`;
+    }).join("");
+    members.querySelectorAll("[data-session]").forEach((button) => {
+      button.onclick = () => resume(button.dataset.session);
+    });
+
+    recipient.innerHTML = '<option value="">发给所有协作会话</option>' +
+      (group.members || []).filter((m) => m.session_id !== state.sid).map((m) =>
+        `<option value="${escapeHtml(m.session_id)}">发给：${escapeHtml(sessionDisplayName(m.session_id))}</option>`
+      ).join("");
+
+    const messages = state.groupMessages || [];
+    list.innerHTML = messages.length ? messages.map((message) => {
+      const target = message.to_session_id ? sessionDisplayName(message.to_session_id) : "所有协作会话";
+      const mine = message.sender_session_id === state.sid ? " mine" : "";
+      const at = message.created_at ? new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+      return `<article class="collab-message${mine}"><div class="collab-message-head"><b>${escapeHtml(sessionDisplayName(message.sender_session_id))}</b><span>→ ${escapeHtml(target)}</span><time>${escapeHtml(at)}</time></div><div>${escapeHtml(message.body || "")}</div></article>`;
+    }).join("") : '<div class="collab-empty">还没有协作消息</div>';
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function taskStatusLabel(status) {
+    return ({ pending: "未开始", assigned: "已分派", accepted: "已接受", running: "进行中", blocked: "受阻", succeeded: "已完成", failed: "失败", cancelled: "已取消" })[status] || status || "未开始";
+  }
+
+  function renderCollaborationTasks() {
+    const list = $("mc-task-list");
+    const create = $("mc-task-new");
+    if (!list || !create) return;
+    const group = state.activeGroup;
+    create.disabled = !group;
+    if (!group) {
+      $("mc-task-title").textContent = "工作项";
+      list.innerHTML = '<div class="collab-empty">当前会话没有工作组</div>';
+      return;
+    }
+
+    $("mc-task-title").textContent = `${group.title || "工作组"} · 工作项`;
+    const tasks = state.groupTasks || [];
+    list.innerHTML = tasks.length ? tasks.map((task) => {
+      const owner = task.assigned_session_id ? sessionDisplayName(task.assigned_session_id) : "未分配";
+      const progress = task.progress ? `<div class="collab-task-progress">${escapeHtml(String(task.progress))}</div>` : "";
+      const claim = !task.assigned_session_id && task.status === "pending" ? `<button class="btn-ghost" data-claim="${escapeHtml(task.task_id)}">领取</button>` : "";
+      return `<article class="collab-task ${escapeHtml(task.status || "pending")}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(task.status))}</div>${progress}${claim}</article>`;
+    }).join("") : '<div class="collab-empty">暂无工作项</div>';
+    list.querySelectorAll("[data-claim]").forEach((button) => {
+      button.onclick = async () => {
+        try {
+          await rpc("group.task.claim", { groupId: group.group_id, taskId: button.dataset.claim, sessionId: state.sid });
+          await loadActiveGroup();
+        } catch (e) { line("error", "领取工作项失败: " + e.message); }
+      };
+    });
+  }
+
+  function openGroupModal() {
+    const ids = Array.from(state.selectedSessions || []);
+    if (!ids.length) {
+      line("error", "请先勾选要一起工作的会话");
+      return;
+    }
+    if (state.sid && !ids.includes(state.sid)) ids.unshift(state.sid);
+    state.pendingGroupMembers = ids;
+    $("group-name-input").value = "";
+    $("group-goal-input").value = "";
+    $("group-member-chips").innerHTML = ids.map((id) => `<span>${escapeHtml(sessionDisplayName(id))}</span>`).join("");
+    $("group-modal").classList.remove("hidden");
+    window.setTimeout(() => $("group-name-input").focus(), 0);
+  }
+
+  async function createGroup() {
+    if (!state.sid) return;
+    const ids = state.pendingGroupMembers || [];
+    const title = $("group-name-input").value.trim();
+    const goal = $("group-goal-input").value.trim();
+    if (!title && !goal) { $("group-goal-input").focus(); return; }
+    const button = $("group-modal-confirm");
+    button.disabled = true;
+    try {
+      const group = await rpc("group.create", { sessionId: state.sid, title, goal, commandId: `group-create-${Date.now()}` });
+      for (const sid of ids.filter((id) => id !== state.sid)) {
+        await rpc("group.member.add", { groupId: group.group_id, actorSessionId: state.sid, parentSessionId: state.sid, sessionId: sid, role: "worker", commandId: `group-add-${group.group_id}-${sid}` });
+      }
+      state.selectedSessions.clear();
+      $("group-modal").classList.add("hidden");
+      await Promise.all([loadSessions(), loadGroups()]);
+      switchMCTab("collaboration");
+      setMCOpen(true);
+    } catch (e) {
+      line("error", "组成工作组失败: " + e.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function openDelegateModal() {
+    const ref = currentGroupRef();
+    if (!ref || ref.group.coordinator_session_id !== state.sid) return;
+    $("delegate-name").value = "";
+    $("delegate-task").value = "";
+    $("delegate-acceptance").value = "";
+    $("delegate-modal").classList.remove("hidden");
+    window.setTimeout(() => $("delegate-task").focus(), 0);
+  }
+
+  async function delegateSession() {
+    const ref = currentGroupRef();
+    const title = $("delegate-task").value.trim();
+    if (!ref || !title) { $("delegate-task").focus(); return; }
+    const button = $("delegate-confirm");
+    button.disabled = true;
+    try {
+      const result = await rpc("group.member.delegate", {
+        groupId: ref.group.group_id,
+        parentSessionId: state.sid,
+        name: $("delegate-name").value.trim() || title.slice(0, 40),
+        title,
+        description: title,
+        acceptance: $("delegate-acceptance").value.trim(),
+        role: "worker",
+        commandId: `delegate-${Date.now()}`,
+      });
+      $("delegate-modal").classList.add("hidden");
+      await Promise.all([loadSessions(), loadGroups()]);
+      await resume(result.sessionId);
+    } catch (e) {
+      line("error", "启动协作会话失败: " + e.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function openTaskModal() {
+    if (!state.activeGroup) return;
+    $("task-name").value = "";
+    $("task-description").value = "";
+    $("task-owner").innerHTML = '<option value="">暂不分配</option>' + (state.activeGroup.members || []).map((member) => `<option value="${escapeHtml(member.session_id)}">${escapeHtml(sessionDisplayName(member.session_id))}</option>`).join("");
+    $("task-modal").classList.remove("hidden");
+    $("task-name").focus();
+  }
+
+  async function createCollaborationTask() {
+    const title = $("task-name").value.trim();
+    if (!state.activeGroup || !title) { $("task-name").focus(); return; }
+    const button = $("task-confirm");
+    button.disabled = true;
+    try {
+      await rpc("group.task.create", {
+        groupId: state.activeGroup.group_id,
+        sessionId: state.sid,
+        assignedSessionId: $("task-owner").value || null,
+        title,
+        description: $("task-description").value.trim(),
+        commandId: `task-create-${Date.now()}`,
+      });
+      $("task-modal").classList.add("hidden");
+      await loadActiveGroup();
+    } catch (e) { line("error", "创建工作项失败: " + e.message); }
+    finally { button.disabled = false; }
+  }
+
+  async function sendCollaborationMessage() {
+    const inputEl = $("mc-collab-input");
+    const body = inputEl.value.trim();
+    if (!body || !state.activeGroup) return;
+    try {
+      await rpc("collab.message.send", {
+        groupId: state.activeGroup.group_id,
+        senderSessionId: state.sid,
+        toSessionId: $("mc-collab-recipient").value || null,
+        kind: "chat",
+        body,
+        commandId: `collab-message-${Date.now()}`,
+      });
+      inputEl.value = "";
+      await loadActiveGroup();
+    } catch (e) { line("error", "发送协作消息失败: " + e.message); }
+  }
+
+  async function removeSessionFromGroup(session) {
+    const ref = state.groupBySession[session.id];
+    if (!ref) return;
+    try {
+      await rpc("group.member.remove", {
+        groupId: ref.group.group_id,
+        actorSessionId: ref.group.coordinator_session_id,
+        sessionId: session.id,
+        commandId: `group-remove-${Date.now()}`,
+      });
+      await loadGroups();
+    } catch (e) { line("error", "移出工作组失败: " + e.message); }
+  }
+
+  async function onGroupEvent() {
+    await Promise.all([loadSessions(), loadGroups()]);
+  }
+
+  function exitGroupMode() {
+    // 兼容旧调用：协作不再切换成独立页面。
+  }
+
+  function initGroups() {
+    $("new-group").onclick = openGroupModal;
+    $("group-modal-cancel").onclick = () => $("group-modal").classList.add("hidden");
+    $("group-modal-confirm").onclick = createGroup;
+    $("delegate-session").onclick = openDelegateModal;
+    $("delegate-cancel").onclick = () => $("delegate-modal").classList.add("hidden");
+    $("delegate-confirm").onclick = delegateSession;
+    $("task-cancel").onclick = () => $("task-modal").classList.add("hidden");
+    $("task-confirm").onclick = createCollaborationTask;
+    $("mc-task-new").onclick = openTaskModal;
+    $("mc-collab-refresh").onclick = loadActiveGroup;
+    $("mc-collab-send").onclick = sendCollaborationMessage;
+    $("mc-collab-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendCollaborationMessage(); }
+    });
+  }
+
   function showPermission(preview) {
     $("perm-preview").textContent = preview || "";
     $("permission-bar").classList.remove("hidden");
@@ -897,56 +1218,51 @@ case "goal_round": break;
     box.innerHTML = "";
     const kw = sessionFilter.trim().toLowerCase();
     const all = state.allSessions || [];
-    // 过滤：仅按关键字（title/id）。服务端已懒落盘——磁盘会话都有首条消息，
-    // 0 消息的只可能是刚建好未落盘的当前会话（本地条目），正常显示
-    const items = all.filter((s) => {
-      if (kw && !String(s.title || "").toLowerCase().includes(kw) && !String(s.id).toLowerCase().includes(kw)) return false;
-      return true;
-    });
-    if (items.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "session-empty";
-      empty.textContent = kw ? "没有匹配「" + kw + "」的会话" : "暂无会话";
-      box.appendChild(empty);
-      return;
-    }
-    // 同步侧栏当前工作目录标签（renderSessionList 由 loadSessions 全量刷新时调用）
-    const cur = (state.allSessions || []).find((s) => s.id === state.sid);
-    if (cur && typeof updateCwdLabel === "function") updateCwdLabel(cur.cwd || null);
-    items.forEach((s) => {
+    const visible = (s) => !kw || String(s.title || "").toLowerCase().includes(kw) || String(s.id).toLowerCase().includes(kw);
+    const rendered = new Set();
+    const addItem = (s, child, ref) => {
+      if (!visible(s)) return;
+      rendered.add(s.id);
       const item = document.createElement("div");
-      item.className = "session-item" + (s.id === state.sid ? " active" : "");
-      const fallback = (s.messages || 0) === 0 ? "新会话" : s.id;
-      const title = String(s.title || fallback).replace(/\s+/g, " ").trim().slice(0, 40) || "(未命名)";
+      item.className = "session-item" + (child ? " session-child" : "") + (s.id === state.sid ? " active" : "");
+      const title = String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\s+/g, " ").trim().slice(0, 40) || "(未命名)";
       const stCls = s.busy ? "busy" : (s.running ? "online" : "offline");
+      const role = ref && ref.role ? ref.role : "会话";
+      const selected = state.selectedSessions && state.selectedSessions.has(s.id) ? " checked" : "";
       const cwdShort = s.cwd ? (() => { const p = String(s.cwd).replace(/\\$/, ""); return p.split("/").filter(Boolean).pop() || p; })() : null;
-       item.innerHTML = `<span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>`;
+      item.innerHTML = `<label class="session-select"><input type="checkbox" data-select-session="${escapeHtml(s.id)}"${selected}><span class="session-select-mark"></span></label><span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}${child ? `<span class="session-role">${escapeHtml(role)}</span>` : ""}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>`;
       item.dataset.sid = s.id;
-      item.onclick = (e) => {
-        if (e.target.classList.contains("menu-btn")) return; // 点 ⋯ 不切换会话
-        if (state.creatingSession) return; // 新会话创建中，避免并发切换覆盖
-        resume(s.id);
-      };
-      // ⋯ 菜单钮
-      const btn = document.createElement("button");
-      btn.className = "menu-btn";
-      btn.textContent = "⋯";
-      btn.title = "更多操作";
+      item.onclick = (e) => { if (e.target.closest(".session-select") || e.target.classList.contains("menu-btn")) return; if (!state.creatingSession) resume(s.id); };
+      const checkbox = item.querySelector("[data-select-session]");
+      checkbox.onchange = () => { if (!state.selectedSessions) state.selectedSessions = new Set(); checkbox.checked ? state.selectedSessions.add(s.id) : state.selectedSessions.delete(s.id); updateSelectedSessionCount(); };
+      const btn = document.createElement("button"); btn.className = "menu-btn"; btn.textContent = "⋯"; btn.title = "更多操作";
       btn.onclick = (e) => { e.stopPropagation(); openSessionMenu(e, s); };
-      item.appendChild(btn);
-      box.appendChild(item);
+      item.appendChild(btn); box.appendChild(item);
+    };
+    const findSession = (id) => all.find((s) => s.id === id) || { id, title: id, messages: 0, running: false, busy: false };
+    (state.groups || []).forEach((group) => {
+      const members = group.members || [];
+      if (!members.length) return;
+      const head = members.find((m) => m.session_id === group.coordinator_session_id) || members[0];
+      if (visible(findSession(head.session_id))) { const label = document.createElement("div"); label.className = "session-group-label"; label.textContent = group.title || group.goal || "会话群"; box.appendChild(label); }
+      addItem(findSession(head.session_id), false, head);
+      members.filter((m) => m.session_id !== head.session_id).forEach((m) => addItem(findSession(m.session_id), true, m));
     });
-    // 分页：还有未加载的会话时显示“加载更多”
-    const loaded = (state.allSessions || []).length;
-    const total = state.sessionsTotal || loaded;
-    if (loaded < total) {
-      const more = document.createElement("button");
-      more.className = "session-more";
-      more.textContent = state.loadingMoreSessions ? "加载中…" : `加载更多（已加载 ${loaded}/${total}）`;
-      more.disabled = !!state.loadingMoreSessions;
-      more.onclick = loadMoreSessions;
-      box.appendChild(more);
-    }
+    const others = all.filter((s) => !rendered.has(s.id) && visible(s));
+    if (others.length) { const label = document.createElement("div"); label.className = "session-group-label other"; label.textContent = "其他会话"; box.appendChild(label); others.forEach((s) => addItem(s, false, null)); }
+    if (!box.children.length) { const empty = document.createElement("div"); empty.className = "session-empty"; empty.textContent = kw ? "没有匹配「" + kw + "」的会话" : "暂无会话"; box.appendChild(empty); }
+    const cur = all.find((s) => s.id === state.sid); if (cur && typeof updateCwdLabel === "function") updateCwdLabel(cur.cwd || null);
+    updateSelectedSessionCount();
+    const loaded = all.length, total = state.sessionsTotal || loaded;
+    if (loaded < total) { const more = document.createElement("button"); more.className = "session-more"; more.textContent = state.loadingMoreSessions ? "加载中…" : `加载更多（已加载 ${loaded}/${total}）`; more.disabled = !!state.loadingMoreSessions; more.onclick = loadMoreSessions; box.appendChild(more); }
+  }
+
+  function updateSelectedSessionCount() {
+    const n = state.selectedSessions ? state.selectedSessions.size : 0;
+    const label = $("selected-session-count");
+    if (label) label.textContent = n ? `${n} 个已选` : "选择会话组成工作组";
+    const button = $("new-group");
+    if (button) button.disabled = n === 0;
   }
 
   // 轻量刷新会话运行状态：只更新已渲染列表项的状态点，不重建 DOM（避免闪烁）。
@@ -974,15 +1290,20 @@ case "goal_round": break;
   function openSessionMenu(e, s) {
     menuSession = s;
     const menu = $("session-menu");
+    const remove = $("session-menu-remove-group");
+    const ref = state.groupBySession && state.groupBySession[s.id];
+    const canRemove = !!ref && ref.group.coordinator_session_id !== s.id;
+    if (remove) remove.classList.toggle("hidden", !canRemove);
     menu.classList.remove("hidden");
     const rect = e.currentTarget.getBoundingClientRect();
-    const mw = 150, mh = 80;
+    const mw = 150, mh = canRemove ? 112 : 80;
     let x = rect.right + 4, y = rect.top;
     if (x + mw > window.innerWidth) x = rect.left - mw - 4;
     if (y + mh > window.innerHeight) y = window.innerHeight - mh - 8;
     menu.style.left = x + "px";
     menu.style.top = y + "px";
   }
+
   function closeSessionMenu() {
     $("session-menu").classList.add("hidden");
     menuSession = null;
@@ -992,7 +1313,8 @@ case "goal_round": break;
   });
 
   $("session-menu").addEventListener("click", async (e) => {
-    const act = e.target.dataset.act;
+    const action = e.target.closest("[data-act]");
+    const act = action && action.dataset.act;
     if (!act || !menuSession) return;
     const s = menuSession;
     closeSessionMenu();
@@ -1006,12 +1328,14 @@ case "goal_round": break;
         if (s.id === state.sid) $("session-title").textContent = title;
         await loadSessions();
       } catch (err) { line("error", "重命名失败: " + err.message); }
+    } else if (act === "remove-group") {
+      await removeSessionFromGroup(s);
     } else if (act === "delete") {
       const title = String(s.title || s.id).slice(0, 40);
       confirmDialog("删除会话「" + title + "」？此操作不可恢复。", async () => {
         try {
           await rpc("session.delete", { sessionId: s.id });
-          clearTiming(s.id); // 清理本地 timing 缓存
+          clearTiming(s.id);
           if (s.id === state.sid) {
             state.sid = null;
             localStorage.removeItem("newbee.sid");
@@ -1286,6 +1610,7 @@ case "goal_round": break;
   async function resume(sid) {
     const seq = ++resumeSeq;
     const stale = () => seq !== resumeSeq || state.sid !== sid;
+    exitGroupMode();
     state.sid = sid;
     localStorage.setItem("newbee.sid", sid);
     loadTiming(sid);
@@ -1321,6 +1646,7 @@ case "goal_round": break;
     if (sessionState.awaiting_permission === true) showPermission("该会话正在等待权限确认（代码执行请求）");
     connect();
     loadSessions();
+    loadGroups();
     const firstUser = (hist.messages || []).find(m => m && m.role === "user");
     const title = firstUser ? String(firstUser.content || "").replace(/\s+/g, " ").trim().slice(0, 48) : "";
     $("session-title").textContent = title || (hasUserMessage ? sid : "新会话");
@@ -3970,6 +4296,8 @@ case "goal_round": break;
     initCmdPalette();
     initGlobalKeys();
     initAtComplete();
+    initGroups();
+    await loadGroups();
     const host = await rpc("host.describe", {});
     $("model-label").textContent = host.model || "(no model)";
     if (!state.sid) {

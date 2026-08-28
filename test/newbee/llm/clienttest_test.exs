@@ -37,11 +37,11 @@ defmodule Newbee.LLM.ClientTest do
   end
 
   test "cache-hit 日志包含厂家模型与 token/条数拆分" do
-    client = Client.new(provider: "guoyu", model: "gpt-5.6-sol", api_key: "test")
+    client = Client.new(provider: "sample-provider", model: "sample-model-1", api_key: "test")
     usage = %{"prompt_tokens" => 4_392, "cache_read_tokens" => 3_840, "cache_write_tokens" => 0}
 
     assert Client.cache_hit_line(client, usage, "stream_chat") ==
-             "cache-hit provider=guoyu model=gpt-5.6-sol task=stream_chat " <>
+             "cache-hit provider=sample-provider model=sample-model-1 task=stream_chat " <>
                "prompt=4392 prompt_read=3840 rate=87.4%"
   end
 
