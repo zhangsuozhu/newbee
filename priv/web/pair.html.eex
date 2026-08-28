@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>扫码登录授权 · newbee</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
+  .pair-card { max-width:420px; width:100%; margin:16px; padding:28px 24px; border-radius:18px;
+    background:var(--card,#16181d); border:1px solid var(--border,#2a2e37); box-shadow:0 8px 40px rgba(0,0,0,.35); }
+  .pair-brand { display:flex; align-items:center; gap:10px; font-size:20px; font-weight:600; margin-bottom:6px; }
+  .pair-title { font-size:22px; font-weight:700; margin:14px 0 4px; }
+  .pair-sub { color:var(--muted,#8b93a3); font-size:13px; margin-bottom:18px; line-height:1.6; }
+  .pair-dev { background:var(--bg2,#0f1115); border:1px solid var(--border,#2a2e37); border-radius:12px;
+    padding:12px 14px; margin-bottom:20px; font-size:13px; }
+  .pair-dev .row { display:flex; justify-content:space-between; gap:12px; padding:4px 0; }
+  .pair-dev .k { color:var(--muted,#8b93a3); flex-shrink:0; }
+  .pair-dev .v { text-align:right; word-break:break-all; }
+  .pair-actions { display:flex; gap:12px; }
+  .pair-actions button { flex:1; padding:13px 0; border-radius:12px; font-size:15px; cursor:pointer; border:none; }
+  .pair-approve { background:var(--accent,#4f7cff); color:#fff; font-weight:600; }
+  .pair-deny { background:transparent; border:1px solid var(--border,#2a2e37) !important; color:var(--fg,#e6e9ef); }
+  .pair-msg { text-align:center; padding:24px 0 8px; font-size:15px; line-height:1.7; }
+  .pair-msg.ok { color:#3fb96b; } .pair-msg.err { color:#e5636f; }
+  .pair-err-card { color:#e5636f; text-align:center; padding:18px 0 6px; line-height:1.7; }
+  .pair-hint { text-align:center; color:var(--muted,#8b93a3); font-size:12px; margin-top:18px; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+<script>window.AUTH_REQUIRED = <%= auth_required %>;</script>
+<div class="pair-card">
+  <div class="pair-brand">
+    <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8.5 5v8L12 21l-8.5-5V8L12 3z"/><path d="M8.5 10.5h7M8.5 13.5h7"/></svg>
+    <span>newbee</span>
+  </div>
+
+  <%= if ok do %>
+    <div class="pair-title">登录授权</div>
+    <div class="pair-sub">有设备请求登录你的 newbee。请确认这是你本人正在使用的电脑，再点击"允许登录"。</div>
+
+    <div class="pair-dev">
+      <div class="row"><span class="k">请求设备</span><span class="v"><%= ua_short %></span></div>
+      <div class="row"><span class="k">IP 地址</span><span class="v"><%= ip %></span></div>
+      <div class="row"><span class="k">发起时间</span><span class="v"><%= time_ago %></span></div>
+    </div>
+
+    <div id="pair-check" class="pair-msg">正在校验你的手机登录状态…</div>
+
+    <div id="pair-actions" class="pair-actions hidden">
+      <button id="pair-deny" class="pair-deny">拒绝</button>
+      <button id="pair-approve" class="pair-approve">允许登录</button>
+    </div>
+
+    <div id="pair-result" class="pair-msg hidden"></div>
+  <% else %>
+    <div class="pair-title">无法完成授权</div>
+    <div class="pair-err-card"><%= error %></div>
+    <div class="pair-hint">请回到电脑，刷新二维码后重新扫码</div>
+  <% end %>
+</div>
+
+<%= if ok do %>
+<script>
+window.PAIRING_ID = <%= pairing_id_json %>;
+(function(){
+  var resultEl = document.getElementById("pair-result");
+  var checkEl  = document.getElementById("pair-check");
+  var actionsEl= document.getElementById("pair-actions");
+  function showResult(msg, ok) {
+    checkEl.classList.add("hidden"); actionsEl.classList.add("hidden");
+    resultEl.classList.remove("hidden");
+    resultEl.className = "pair-msg " + (ok ? "ok" : "err");
+    resultEl.textContent = msg;
+  }
+  function rpc(method, payload) {
+    var token = null;
+    try { token = localStorage.getItem("newbee.token"); } catch(e) {}
+    var headers = { "content-type": "application/json" };
+    if (token) headers["authorization"] = "Bearer " + token;
+    return fetch("/api/" + method, { method:"POST", headers:headers,
+      body: JSON.stringify({ rpcId:"pair-"+Date.now(), method:method, payload:payload||{} }) })
+      .then(function(res){ return res.text(); })
+      .then(function(text){ var b = JSON.parse(text);
+        if (b.result && "ok" in b.result) return b.result.ok;
+        var err = b.result && b.result.error;
+        throw new Error(err ? err.message : ("请求失败: "+method)); });
+  }
+  // 手机必须处于已登录会话，才能充当"盖章的人"
+  function b64urlEncode(buf) {
+    return btoa(String.fromCharCode.apply(null, new Uint8Array(buf)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function webAuthnSupported() {
+    return window.PublicKeyCredential !== undefined && typeof window.PublicKeyCredential === "function";
+  }
+  // 手机本地指纹/面容登录：拿 challenge -> navigator.credentials.get -> 换 token 存 localStorage
+  function webauthnQuickLogin() {
+    checkEl.textContent = "请用指纹/面容验证身份…";
+    return rpc("webauthn.login_challenge", {}).then(function(ch){
+      var publicKey = {
+        challenge: Uint8Array.from(atob(ch.challenge.replace(/-/g, "+").replace(/_/g, "/")), function(c){ return c.charCodeAt(0); }),
+        timeout: ch.timeout,
+        rpId: ch.rp_id,
+        allowCredentials: ch.allow_credentials.map(function(c){ return {
+          type: c.type,
+          id: Uint8Array.from(atob(c.id.replace(/-/g, "+").replace(/_/g, "/")), function(x){ return x.charCodeAt(0); })
+        }; }),
+        userVerification: ch.user_verification
+      };
+      return navigator.credentials.get({ publicKey: publicKey }).then(function(assertion){
+        return rpc("webauthn.login", {
+          challenge_id: ch.challenge_id,
+          credential_id: b64urlEncode(assertion.rawId),
+          authenticator_data: b64urlEncode(assertion.response.authenticatorData),
+          signature: b64urlEncode(assertion.response.signature),
+          client_data_json: b64urlEncode(assertion.response.clientDataJSON)
+        });
+      });
+    }).then(function(r){
+      try { localStorage.setItem("newbee.token", r.token); } catch(e) {}
+      return r.token;
+    });
+  }
+
+  // 已登录后：复核配对并亮出授权按钮（auth_required 由服务端注入，无需再请求 host.describe）
+  function proceedAuthorize() {
+    return new Promise(function(resolve, reject){
+      if (!window.AUTH_REQUIRED) { showResult("当前为本地免认证模式，无需扫码授权。", false); resolve(); return; }
+      rpc("pair.phone_status", { pairing_id: window.PAIRING_ID }).then(function(){
+        checkEl.classList.add("hidden");
+        actionsEl.classList.remove("hidden");
+        resolve();
+      }, reject);
+    });
+  }
+
+  var token = null;
+  try { token = localStorage.getItem("newbee.token"); } catch(e) {}
+  if (token) {
+    // 有 token：先当已登录走授权；若 token 已失效（401），自动降级走未登录流程
+    proceedAuthorize().catch(function(e){
+      if (e && e.message === "未登录或会话已过期") {
+        try { localStorage.removeItem("newbee.token"); } catch(_) {}
+        startUnauthenticated();
+      } else {
+        showResult(e.message || "校验失败，请重新扫码", false);
+      }
+    });
+  } else {
+    startUnauthenticated();
+  }
+
+  function startUnauthenticated() {
+    if (!webAuthnSupported()) {
+      showResult("这台手机尚未登录 newbee。\n请先用手机登录一次，再扫码授权。", false);
+      return;
+    }
+    startQuickLogin();
+  }
+
+  function startQuickLogin() {
+    // 未登录但支持指纹/面容：先快捷登录，成功后**自动完成授权**（生物识别本身即"本人在场"证明）
+    rpc("webauthn.has_credentials", {}).then(function(r){
+      if (!r.has_credentials) {
+        showResult("这台手机尚未登录 newbee，也未注册指纹/面容。\n请先用密码在手机登录一次。", false);
+        return;
+      }
+      return webauthnQuickLogin().then(function(){
+        checkEl.textContent = "✓ 身份已确认，正在为电脑授权…";
+        // 自动给电脑授权，无需再点按钮
+        return rpc("pair.phone_status", { pairing_id: window.PAIRING_ID }).then(function(){
+          return rpc("pair.confirm", { pairing_id: window.PAIRING_ID });
+        }).then(function(){
+          showResult("✓ 已通过指纹/面容登录并授权，电脑端正在登录…", true);
+        });
+      }).catch(function(e){
+        if (e && e.name === "NotAllowedError") {
+          // 用户取消指纹/面容 → 给密码兜底
+          showPasswordLogin();
+        } else {
+          showResult((e && e.message) || "指纹/面容登录失败", false);
+          showPasswordLogin(true);
+        }
+      });
+    }).catch(function(e){ showResult((e && e.message) || "校验失败，请重新扫码", false); });
+  }
+
+  // 密码兜底登录：登录成功后自动完成授权
+  function showPasswordLogin(append) {
+    checkEl.classList.add("hidden");
+    actionsEl.classList.add("hidden");
+    var box = document.getElementById("pair-pw");
+    if (box) { box.classList.remove("hidden"); return; }
+    box = document.createElement("div");
+    box.id = "pair-pw";
+    box.innerHTML = '<div class="pair-sub" style="margin:14px 0 10px">或用密码登录本机（登录后自动授权电脑）：</div>' +
+      '<input id="pair-pw-in" type="password" placeholder="密码" style="width:100%;padding:12px;border-radius:10px;border:1px solid var(--border,#2a2e37);background:var(--bg2,#0f1115);color:var(--fg,#e6e9ef);font-size:15px;box-sizing:border-box" />' +
+      '<button id="pair-pw-btn" class="pair-approve" style="width:100%;margin-top:10px;padding:12px;border-radius:10px;border:none;font-size:15px;cursor:pointer">登录并授权电脑</button>';
+    document.querySelector(".pair-card").appendChild(box);
+    function doPw() {
+      var pw = document.getElementById("pair-pw-in").value;
+      rpc("auth.login", { password: pw }).then(function(r){
+        try { localStorage.setItem("newbee.token", r.token); } catch(_) {}
+        return rpc("pair.phone_status", { pairing_id: window.PAIRING_ID }).then(function(){
+          return rpc("pair.confirm", { pairing_id: window.PAIRING_ID });
+        });
+      }).then(function(){
+        showResult("✓ 已登录并授权，电脑端正在登录…", true);
+        box.classList.add("hidden");
+      }).catch(function(e){ showResult(e.message || "密码登录失败", false); });
+    }
+    document.getElementById("pair-pw-btn").addEventListener("click", doPw);
+    document.getElementById("pair-pw-in").addEventListener("keydown", function(ev){ if (ev.key === "Enter") doPw(); });
+  }
+
+  document.getElementById("pair-approve").addEventListener("click", function(){
+    rpc("pair.confirm", { pairing_id: window.PAIRING_ID })
+      .then(function(){ showResult("✓ 已允许，电脑端正在登录…", true); })
+      .catch(function(e){ showResult(e.message || "授权失败，请重新扫码", false); });
+  });
+  document.getElementById("pair-deny").addEventListener("click", function(){
+    rpc("pair.deny", { pairing_id: window.PAIRING_ID })
+      .then(function(){ showResult("已拒绝该登录请求。", true); })
+      .catch(function(){ showResult("已拒绝。", true); });
+  });
+})();
+</script>
+<% end %>
+</body>
+</html>
