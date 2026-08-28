@@ -1,11 +1,11 @@
 defmodule Newbee.Tools.Http do
   @moduledoc """
-  HTTP 工具 (DESIGN §3.2 工具库)：GET/POST 封装，超时 + 响应截断。
+  HTTP POST/headers/status 工具；简单 GET 只取正文优先 `Newbee.read/1`。
   URL 读取也可用统一寻址 `Newbee.read/1`（§3.2）。
 
   ## 函数清单
-  - `get(url, headers \\ []) :: {:ok, %{status: integer(), body: String.t()}} | {:error, reason}` — GET 请求。错误区分 `{:error, %{reason: :invalid_url}}`（URL 格式错误）vs `{:error, %{reason: :network_error}}`（网络错误）vs `{:error, %{reason: :request_failed}}`（其他错误）。
-  - `post(url, json, headers \\ []) :: {:ok, %{status, body}} | {:error, reason}` — POST，`json` 可为 `map`（自动 `Jason.encode!`）或 `String.t()`。
+  - `get(url, headers \\\\ []) :: {:ok, %{status: integer(), body: String.t()}} | {:error, reason}` — GET 请求。错误区分 `{:error, %{reason: :invalid_url}}`（URL 格式错误）vs `{:error, %{reason: :network_error}}`（网络错误）vs `{:error, %{reason: :request_failed}}`（其他错误）。
+  - `post(url, json, headers \\\\ []) :: {:ok, %{status, body}} | {:error, reason}` — POST，`json` 可为 `map`（自动 `Jason.encode!`）或 `String.t()`。
 
   内部经 `Req`，默认超时 30_000ms，响应体超 512KB 截断。
 

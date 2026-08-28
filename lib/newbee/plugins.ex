@@ -24,7 +24,6 @@ defmodule Newbee.Plugins do
     {:tool, "tool.scaffold", Newbee.Tools.Scaffold, [:shell, :fs]},
     {:tool, "tool.introspect", Newbee.Tools.Introspect, []},
     {:tool, "tool.hotreload", Newbee.Tools.HotReload, []},
-    
     {:workflow, "workflow.jspace", Newbee.Tools.JSpace, [:fs]},
     {:projection, "projection.repomap", Newbee.Plugins.RepoMap, [:fs]},
     {:provider, "provider.openrouter", Newbee.Plugins.Provider.OpenRouter, [:net]}
@@ -92,7 +91,7 @@ defmodule Newbee.Plugins do
     end)
   end
 
-  @doc "prompt 注入用的一行签名清单（渐进式披露；价签由 Fitness 投影补充）。"
+  @doc "prompt 注入用的一行能力索引（tool/workflow/projection/provider；价签由 Fitness 补充）。"
   def prompt_section(tags \\ %{}) do
     list()
     |> Enum.map_join("\n", fn t ->
@@ -102,7 +101,7 @@ defmodule Newbee.Plugins do
     end)
     |> case do
       "" -> ""
-      body -> "\n## 工具清单（一行签名；按需 Newbee.read(\"tool://模块名\") 取全文）\n" <> body <> "\n"
+      body -> "\n## 能力索引（每项一行；按需 Newbee.read(\"tool://模块名\") 取全文）\n" <> body <> "\n"
     end
   end
 

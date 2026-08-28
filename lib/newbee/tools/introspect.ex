@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Introspect do
   @moduledoc """
-  内省工具 (DESIGN §3.2 内省)：模块导出、beam chunk、类型信息。
+  Elixir 模块内省工具：查询真实导出、moduledoc 和 BEAM 信息。
   模型用它了解已加载模块的 API，不必读源码。
 
   ## 函数清单

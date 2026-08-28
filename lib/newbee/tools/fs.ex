@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Fs do
   @moduledoc """
-  文件系统工具 (DESIGN §3.2 代码 IO)：模型在 DEE 里调用的读写 API。
+  文件系统写入/删除/目录工具；通用只读优先 `Newbee.read/1`。
 
   - 写操作**先进暂存区**（Newbee.Staging），用户 /approve 统一落盘——
     宽松沙箱的"可回滚"承诺（§8）；
@@ -18,25 +18,28 @@ defmodule Newbee.Tools.Fs do
   - `guard_path(path)` — 工作目录隔离校验，合法 `:ok`，非法返回 `{:error, %{reason: :out_of_bounds, hint: _}}`。
   - `guard_path!(path)` — bang 版本；非法路径抛 `ArgumentError`。
   - `ls(dir)` — 列目录一层，返回 `[entry]`（目录带 `/`）或 `{:error, reason}`。
-  - `tree(root \\ ".")` — 遍历工程树（跳过 `_build/deps/.git/node_modules/cover`），返回相对路径 `[String.t()]`。
+  - `tree(root \\\\ ".")` — 遍历工程树（跳过 `_build/deps/.git/node_modules/cover`），返回相对路径 `[String.t()]`。
   - `size(path)` — 文件字节数，`non_neg_integer()`，不存在返回 `0`。
 
   ## 可跑示例
       {:ok, c} = Newbee.Tools.Fs.read("README.md")
       c = Newbee.Tools.Fs.read!("mix.exs")
-      id = Newbee.Tools.Fs.write("tmp/hello.txt", "hello")
+      id_or_direct = Newbee.Tools.Fs.write("tmp/hello.txt", "hello")
       :ok = Newbee.Tools.Fs.write!("tmp/a.txt", "direct")
       :ok = Newbee.Tools.Fs.append!("tmp/log.txt", "line\n")
       true = Newbee.Tools.Fs.exists?("mix.exs")
+      :ok = Newbee.Tools.Fs.guard_path("tmp/safe.txt")
+      :ok = Newbee.Tools.Fs.guard_path!("tmp/safe.txt")
       Newbee.Tools.Fs.ls("lib/newbee/tools")
       Newbee.Tools.Fs.tree(".") |> Enum.take(3)
       Newbee.Tools.Fs.size("mix.exs")
       :ok = Newbee.Tools.Fs.rm("tmp/hello.txt")
+      {:ok, _deleted} = Newbee.Tools.Fs.rm_rf("tmp/generated")
 
   ## 注意
   - `write/2` 经 `Newbee.Host` 代理回主 VM 的 `Staging`；未启动时降级为 `:direct`。
-  - `write!/2` / `append!/2` 直接落盘并经 `Host.emit` 发 `:file_diff`。
-  - `guard_path!/1` 限制写入 `File.cwd!()` 树或 `~/.newbee` 内，其余抛错；但 `File.write!` 仍可绕过，硬隔离由审计/快照兜底。
+  - `write!/2` 直接落盘并经 `Host.emit` 发 `:file_diff`；`append!/2` 直接追加，当前不发 diff 事件。
+  - `guard_path/1` 返回结构化边界错误；`guard_path!/1` 限制写入 `File.cwd!()` 树或 `~/.newbee` 内，其余抛错；但 `File.write!` 仍可绕过，硬隔离由审计/快照兜底。
 
   """
 
@@ -139,6 +142,7 @@ defmodule Newbee.Tools.Fs do
     end
   end
 
+  @doc "工作目录隔离的 bang 版本；非法路径抛 ArgumentError。"
   def guard_path!(path) do
     case guard_path(path) do
       :ok -> :ok
