@@ -9,7 +9,7 @@
 [![Elixir](https://img.shields.io/badge/Elixir-1.18%2B-4e2a8e?logo=elixir)](https://elixir-lang.org)
 [![OTP](https://img.shields.io/badge/OTP-29-red?logo=erlang)](https://www.erlang.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Design](https://img.shields.io/badge/design-911_lines-blue)](DESIGN.md)
+[![Design](https://img.shields.io/badge/design-736_lines-blue)](DESIGN.md)
 
 <p align="center">
   <b>长期存活 · 版本化 · 可回退 · 自我进化</b><br/>
@@ -137,44 +137,6 @@
 
 ---
 
-## 🧰 工具调用约定 / Tool Contracts
-
-模型对外仍只看到 `run_elixir` / `done` / `ask`。环境内工具遵循一套稳定约定：
-
-- **文本局部编辑只有一个入口**：`Newbee.Tools.Edit.show/2` + `patch/1`。读取返回一次文件快照 tag 和普通行号；补丁使用 `PUT N..M`、`CUT N..M`、`PUT <N`、`PUT >N`。旧逐行 hash 和 `Edit.V2` 已删除。
-- **并发安全不靠逐行 hash**：节头 `[path#tag]` 校验完整文件快照；文件变化时拒绝并重新 `show`。
-- **安全生成 Elixir 源码**：包含插值、sigil 或 heredoc 时，先用 `Newbee.Tools.Edit.source_literal/1` 包装目标文本，避免外层 cell 提前插值或分隔符嵌套。
-- **可恢复错误是值**：工具返回 `{:error, %{reason: atom(), hint: String.t(), ...}}`；带 `!` 的函数保留 Elixir 的抛异常语义。
-- **命令结果符合常见直觉**：`Run.sh/2` 返回 `%{exit, exit_code, output}`；`exit_code` 是 `exit` 的别名。
-- **简单 GET 优先统一读取**：只要正文时用 `Newbee.read("https://...")`；需要 POST、headers、status 或网络错误分类时用 `Newbee.Tools.Http`。
-- **避免重复入口**：Scaffold 只做工程创建/依赖；编译测试用 Run。长命令使用 `Run.sh(..., timeout: ms)`，没有 `sh_long` 或项目专用 Django helper。
-- **按需说明不重复**：`Newbee.read("tool://模块名")` 展示用途/示例和编译器真实签名；内部 `@doc false` 函数不会暴露给模型。
-
-Edit 完整协议、错误类别和示例见 [`docs/edit-design.md`](docs/edit-design.md)。
-
-新增或自动生成模型可见工具时，必须使用 `Newbee.Environment.ToolContract.template/2` 并通过激活门；完整规范见 [`docs/tool-development-contract.md`](docs/tool-development-contract.md)。
-
----
-
-## 📦 免安装分发 — AppImage（带去任何 Linux 直接跑）
-
-把 newbee 连同 OTP/Elixir/全部依赖打进单个可执行文件（约 86MB），
-目标机器无需安装任何工具链：
-
-```bash
-# 构建（在开发机）
-bin/appimage/build.sh
-
-# 产物 dist/newbee-x86_64.AppImage 拷到目标机器
-./newbee-x86_64.AppImage            # 首次运行自动初始化 + 编译，之后秒启
-APPIMAGE_EXTRACT_AND_RUN=1 ./newbee-x86_64.AppImage   # 无 FUSE 环境
-```
-
-> 完整说明：构建原理、参数、模板、故障排查见
-> [`docs/appimage-packaging.md`](docs/appimage-packaging.md)
-
----
-
 ## ⚡ 快速开始 / Quick Start
 
 ```bash
@@ -224,7 +186,7 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 - `Esc` 中断执行 · `Ctrl-C` 清输入/退出 · `Ctrl-L` 重绘 · `PgUp/PgDn` 翻屏
 - `Ctrl-T` 切换窗格(绑定/事件日志/工具块/输入队列) · 括号粘贴 · 状态栏(模型/工程/token/绑定/策略)
 
-**命令 / Commands:** `/model` `/bindings` `/tokens` `/rules` `/dump` `/resume` `/reset` `/approve` `/reject` `/log` `/snapshot` `/rollback` `/evolve` `/policy` `/genes` `/bench` `/goal` `/diff` `/undo` `/session` `/init` `/tools` `/permissions` `/compact` `/quit` `/archive [关键词]` `/attach` `/status` `/image <路径>` `/new` `/bundles` `/autonomy <档>` `/environment <sub>` · TUI 内 `/reasoning` 切换思考流 · `@文件` 引用 · `!shell` 执行
+**命令 / Commands:** `/model` `/bindings` `/tokens` `/rules` `/dump` `/resume` `/reset` `/approve` `/reject` `/log` `/snapshot` `/rollback` `/evolve` `/policy` `/genes` `/bench` `/goal` `/diff` `/undo` `/session` `/init` `/tools` `/permissions` `/compact` `/quit` · TUI 内 `/reasoning` 切换思考流 · `@文件` 引用 · `!shell` 执行
 
 *Single-column streaming, reasoning in grey, tool blocks, audit events — all flowing. Every keybinding you expect, plus project-aware superpowers.*
 
@@ -243,16 +205,6 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 # 设置后每次访问：密码 + SVG 验证码登录拿 token → Bearer 认证
 ```
 
-**功能：** 会话管理（多会话 + busy/排队状态）、流式对话（token 用量/缓存命中率气泡、
-思考强度 7 档热切、图片上传/粘贴、`@文件` 引用补全）、长会话渐进加载（分页拉历史）、
-Mission Control 面板（文件追踪 + step 时间线 + diff + 进化事件流 + 手动触发进化）、
-git 操作（diff / checkpoint 打点 `[checkpoint] <desc>` / PR）、文件浏览。
-
-**传输架构：** `POST /api/<method>` JSON-RPC 信封（`rpcId/payload` → `result.ok|error`，
-异常/exit 兜底回错误信封不裸 500）+ WebSocket 下行事件流（`GET /ws?session=<sid>`，
-text/tool/usage/progress/rule_hit… 实时帧；上行 `interrupt/permission/prompt/promptImage`）。
-busy 期间输入入队（前端显示排队数），turn 结束自动消化；`interrupt` 停止当前并清空排队。
-
 **安全模型：**
 - **本地（回环地址）免认证** —— 绑定 `127.0.0.1` 时全放行，开发零摩擦
 - **远程（非回环）强制认证** —— 除登录接口外一律要求 `Authorization: Bearer <token>`（WebSocket 用 `?token=`），未登录 `401`
@@ -267,6 +219,8 @@ busy 期间输入入队（前端显示排队数），turn 结束自动消化；`
 
 ## 📦 项目结构 / Project Structure
 
+## 📦 项目结构 / Project Structure
+
 ```
 lib/newbee/
 ├── agent/          # Worker / Adapter / Explorer / Loop / Protocol / Progress
@@ -274,14 +228,13 @@ lib/newbee/
 ├── environment/    # Coordinator / Store / Manifest / Release / Revision
 │                  # Plugin* / Generation / EvaluatorPool / Antibodies
 │                  # Verifier / PPT / Fitness / JIT / Autonomy / Projection
-├── llm/            # Client (OpenRouter SSE) / Config / Responses API 适配
-├── web/            # WebUI: Router / Api(RPC) / Socket(WS) / Session / Auth
+├── llm/            # Client (OpenRouter SSE) / Config
 ├── plugins/        # RepoMap / Provider.OpenRouter (无凭证适配器)
 ├── tools/          # Fs / Edit / Structural / Run / Git / Search / ...
 ├── tui/            # Screen / Cards / History / Key / Highlight
 └── host/           # Shell (Ring 0) — 凭证/边界/审计
 
-~/.newbee/jspace/   # J-Space 长任务台账（可用 NEWBEE_JSPACE_DIR 覆盖）
+priv/jspace/        # J-Space 工作台账 (long-task ledger)
 .newbee/            # 项目权威快照 (被 gitignore，重启完整恢复)
 ```
 
@@ -296,8 +249,8 @@ mix newbee.bench                   # 真实 LLM 公开基准
 mix newbee.doctor                  # 工具链/配置/目录体检
 ```
 
-- 全套件 **280+** 测试通过 (OTP 29 + Elixir 1.20，历史实测 282–284/287)，`acceptance` 单跑 12/12 全过；2026-08 又新增 Edit / TCE / archive / web 等测试
-- *Full suite 280+ passing (historic 282–284/287), acceptance 12/12 green in isolation; plus Edit / TCE / archive / web suites added in 2026-08.*
+- 全套件 **282–284/287** 通过 (OTP 29 + Elixir 1.20)，`acceptance` 单跑 12/12 全过
+- *Full suite 282–284/287 passing, acceptance 12/12 green in isolation.*
 
 ---
 
