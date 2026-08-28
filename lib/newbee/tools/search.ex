@@ -5,8 +5,8 @@ defmodule Newbee.Tools.Search do
 
   ## 函数清单
   - `grep(pattern, dir \\ ".", opts \\ [])` — 递归内容搜索，`pattern` 为正则字符串。
-    返回 `[{path, line_no, line}]`（默认最多 100 条，`opts[:max]` 可调）。单文件先 `File.read`，>5MB 或含 `<<0>>` 的二进制跳过。
-  - `find(name, dir \\ ".")` — 按文件名片段查找，返回 `[path]`。
+  - `grep(pattern, dir \\ ".", opts \\ [])` — 递归内容搜索，`pattern` 为正则字符串。
+    返回 `[{path, line_no, line}]`（默认最多 100 条，`opts[:max]` 可调）。非法正则返回 `{:error, %{reason: :invalid_regex, hint: ...}}`。单文件先 `File.read`，>5MB 或含 `<<0>>` 的二进制跳过。
 
   内部 `list_files/1` 优先用 `git ls-files -co --exclude-standard`（秒级白名单），失败回退 `Path.wildcard`.
 
@@ -23,19 +23,25 @@ defmodule Newbee.Tools.Search do
   @doc "递归内容搜索。返回 [{path, line_no, line}]（默认最多 100 条命中）。"
   def grep(pattern, dir \\ ".", opts \\ []) when is_binary(pattern) do
     max = Keyword.get(opts, :max, 100)
-    re = Regex.compile!(pattern)
-    files = list_files(dir)
 
-    files
-    |> Enum.reduce_while([], fn f, acc ->
-      if length(acc) >= max do
-        {:halt, acc}
-      else
-        hits = grep_file(f, re, max - length(acc))
-        {:cont, acc ++ hits}
-      end
-    end)
-    |> Enum.take(max)
+    case Regex.compile(pattern) do
+      {:ok, re} ->
+        files = list_files(dir)
+
+        files
+        |> Enum.reduce_while([], fn f, acc ->
+          if length(acc) >= max do
+            {:halt, acc}
+          else
+            hits = grep_file(f, re, max - length(acc))
+            {:cont, acc ++ hits}
+          end
+        end)
+        |> Enum.take(max)
+
+      {:error, reason} ->
+        {:error, %{reason: :invalid_regex, hint: "正则编译失败: " <> inspect(reason)}}
+    end
   end
 
   # 一次 File.read 替代 File.stat + File.stream（慢速双调用）——

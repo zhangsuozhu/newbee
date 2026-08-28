@@ -6,7 +6,7 @@ defmodule Newbee.Tools.Structural do
 
   ## 函数清单
   - `list_functions(path :: String.t(), module :: module()) :: {:ok, [String.t()]} | {:error, :module_not_found}` — 列 `defmodule` 内 `def/defp` 签名，如 `["def hello/1", "defp helper/0"]`。
-  - `insert_function(path, module, def_code :: String.t()) :: {:ok, :inserted} | {:error, reason}` — 在模块最后一个 `end` 前插入函数源码，自动缩进 2 空格。
+  - `insert_function(path, module, def_code :: String.t()) :: {:ok, :inserted} | {:error, %{reason: :syntax_error | :module_not_found, hint: ...}}` — 在模块最后一个 `end` 前插入函数源码，自动缩进 2 空格。语法错误的 def_code 返回 `{:error, %{reason: :syntax_error, hint: ...}}` 而非静默成功。
   - `replace_function(path, module, name :: atom(), arity :: integer(), new_code :: String.t()) :: {:ok, :replaced} | {:error, :function_not_found | :module_not_found}` — 按 `name/arity` 定位整段定义换新，按原列缩进。
   - `format(path :: String.t()) :: {:ok, :formatted} | {:error, reason}` — `Code.format_string!` 格式化后回写。
 
@@ -20,7 +20,8 @@ defmodule Newbee.Tools.Structural do
 
   @doc "在模块末尾（最后一个 end 之前）插入函数源码。"
   def insert_function(path, module, def_code) do
-    with {:ok, src} <- File.read(path),
+    with :ok <- validate_syntax(def_code),
+         {:ok, src} <- File.read(path),
          {:ok, quoted} <- Sourceror.parse_string(src),
          {:ok, mod_meta} <- find_module_meta(quoted, module) do
       end_line = mod_meta[:end_line]
@@ -207,12 +208,20 @@ defmodule Newbee.Tools.Structural do
   end
 
   defp write_formatted(path, src) do
-    formatted = IO.iodata_to_binary(Code.format_string!(src)) <> "\n"
+    formatted = IO.iodata_to_binary(Code.format_string!(src)) <> "
+"
     File.write!(path, formatted)
   rescue
-    # 格式化失败就原样落盘（不因为 format 丢编辑）
     _ -> File.write!(path, src)
   end
+
+  defp validate_syntax(code) do
+    case Code.string_to_quoted(code) do
+      {:ok, _} -> :ok
+      {:error, {_line, error, _token}} -> {:error, %{reason: :syntax_error, hint: "def_code 语法错误: " <> inspect(error)}}
+    end
+  end
+
 end
 
 :ok

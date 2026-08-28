@@ -212,7 +212,7 @@ defmodule Newbee.Tools.Edit do
       [a] ->
         case Regex.run(@anchor_re, a) do
           [_, n, h] -> {String.to_integer(n), h, nil}
-          _ -> raise ParseError, message: "锚点格式错误: #{a}（应为 N.#8位hash）"
+          _ -> raise ParseError, message: "锚点格式错误: " <> a <> "（应为 行号.#8位hash，如 3.#a1b2c3d4，注意点号后必须跟井号）"
         end
 
       [a, b] ->

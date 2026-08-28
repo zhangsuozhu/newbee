@@ -3,7 +3,7 @@ defmodule Newbee.Tools.Run do
   命令执行工具 (DESIGN §3.2)：超时 + 输出上限，结果返回 exit code 与输出。
 
   ## 函数清单
-  - `sh(cmd, opts \\ [])` — 在工程根下执行 shell 命令，返回 `%{exit: integer() | :timeout | :denied, output: String.t()}`。
+  - `sh(cmd, opts \\ [])` — 在工程根下执行 shell 命令，返回 `%{exit: integer() | :timeout | :denied, exit_code: integer() | :timeout | :denied, output: String.t()}`（exit_code 为 exit 的别名，向后兼容）。
     选项：`timeout:` 毫秒（默认 120_000），`cd` 固定为 `File.cwd!()`，`MIX_ENV=test`。
   - `sh_long(cmd, opts \\ [])` — `sh` 的长超时版，默认 180_000ms，适合 harness/全量测试。
   - `mix_compile(opts \\ [])` — `mix compile`，返回 `{:ok, output} | {:error, output}`。
@@ -33,8 +33,8 @@ defmodule Newbee.Tools.Run do
   @doc "在工程根下执行 shell 命令。返回 %{exit, output}。"
   def sh(cmd, opts \\ []) do
     case gate(cmd) do
+      {:deny, msg} -> %{exit: :denied, exit_code: :denied, output: msg}
       :allow -> do_sh(cmd, opts)
-      {:deny, msg} -> %{exit: :denied, output: msg}
     end
   end
 
@@ -56,25 +56,33 @@ defmodule Newbee.Tools.Run do
   end
 
   defp do_sh(cmd, opts) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
+    timeout = Keyword.get(opts, :timeout, 60_000)
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-c", cmd],
-          cd: File.cwd!(),
-          stderr_to_stdout: true,
-          env: [{"MIX_ENV", "test"}]
-        )
+        try do
+          System.cmd("sh", ["-c", cmd], stderr_to_stdout: true)
+        rescue
+          e -> {Exception.message(e), 127}
+        end
       end)
 
-    case Task.yield(task, timeout) do
+    case Task.yield(task, timeout) || Task.shutdown(task) do
       {:ok, {out, code}} ->
-        %{exit: code, output: truncate(out)}
-
+        %{exit: code, exit_code: code, output: truncate(out)}
+      {:exit, _} ->
+        %{exit: :timeout, exit_code: :timeout, output: ""}
       nil ->
-        Task.shutdown(task, :brutal_kill)
-        %{exit: :timeout, output: ""}
+        %{exit: :timeout, exit_code: :timeout, output: ""}
     end
+  end
+  def django_test(args \\ "apps.ha_bridge", opts \\ []) do
+    py = if System.find_executable("python3.11"), do: "python3.11", else: "python3"
+    sh(py <> " BackCode/manage.py test " <> args, opts)
+  end
+
+  @doc "Long-running variant: default 180s for harness run-group."
+  def sh_long(cmd, opts \\ []) do
+    sh(cmd, Keyword.put_new(opts, :timeout, 180_000))
   end
 
   @doc "跑 mix compile。返回 {:ok, output} | {:error, output}。"
@@ -95,17 +103,6 @@ defmodule Newbee.Tools.Run do
     cmd = "mix format --check-formatted " <> Enum.join(files, " ")
     result = sh(cmd)
     if result.exit == 0, do: {:ok, result.output}, else: {:error, result.output}
-  end
-
-  @doc "Django test helper: auto picks python3.11 when cgi missing."
-  def django_test(args \\ "apps.ha_bridge", opts \\ []) do
-    py = if System.find_executable("python3.11"), do: "python3.11", else: "python3"
-    sh(py <> " BackCode/manage.py test " <> args, opts)
-  end
-
-  @doc "Long-running variant: default 180s for harness run-group."
-  def sh_long(cmd, opts \\ []) do
-    sh(cmd, Keyword.put_new(opts, :timeout, 180_000))
   end
 
   defp truncate(s) when byte_size(s) <= @max_output, do: s
