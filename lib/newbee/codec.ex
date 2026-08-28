@@ -12,7 +12,7 @@ defmodule Newbee.Codec do
         description:
           "在长期存活的 Elixir 环境(DEE)中执行任意 Elixir 代码。" <>
             "变量绑定跨调用持久（像 IEx）；可调用 Newbee.Tools.Fs/Run 等工具库与任意已加载模块。" <>
-            "返回值与 stdout 会被压缩回填；大结果请存入变量后续引用，或写文件后局部读取。",
+            "返回值与 stdout 会被压缩回填；大结果请存入变量后续引用，或写文件后局部读取。生成包含 Elixir 插值、sigil 或 heredoc 的源码时，先用 Newbee.Tools.Edit.source_literal/1 生成安全字符串表达式，避免二阶插值和同分隔符嵌套。",
         parameters: %{
           type: "object",
           properties: %{
@@ -39,13 +39,22 @@ defmodule Newbee.Codec do
       type: "function",
       function: %{
         name: "ask",
-        description: "需要用户确认或澄清时调用，会暂停等待用户回答。可附带 options（预置选项）与 kind 交互形态：text=纯文本问题、single=单选、multi=多选、buttons=按钮。options 每项为 {label, value}。使用 times：complex decision 用 buttons/single；多选筛选用 multi；简单澄清用 text。",
+        description:
+          "需要用户确认或澄清时调用，会暂停等待用户回答。可附带 options（预置选项）与 kind 交互形态：text=纯文本问题、single=单选、multi=多选、buttons=按钮。options 每项为 {label, value}。使用 times：complex decision 用 buttons/single；多选筛选用 multi；简单澄清用 text。",
         parameters: %{
           type: "object",
           properties: %{
             question: %{type: "string", description: "向用户提出的问题"},
-            kind: %{type: "string", enum: ["text", "single", "multi", "buttons"], description: "交互形态：text（默认）/ single / multi / buttons"},
-            options: %{type: "array", description: "预置选项 [{label, value}]", items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}}
+            kind: %{
+              type: "string",
+              enum: ["text", "single", "multi", "buttons"],
+              description: "交互形态：text（默认）/ single / multi / buttons"
+            },
+            options: %{
+              type: "array",
+              description: "预置选项 [{label, value}]",
+              items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}
+            }
           },
           required: ["question"]
         }

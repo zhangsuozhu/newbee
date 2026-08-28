@@ -1,4 +1,4 @@
-# Edit v2：面向大模型的版本化文件编辑事务
+# Edit：面向大模型的版本化文件编辑事务
 
 > 状态：**已实现**（2026-08，PR #12 stage B + PR #17 clean_hash）。
 > 落位：`lib/newbee/tools/edit/v2.ex`（补丁层）+ `lib/newbee/tools/edit/snapshot_store.ex`（快照仓库）+
@@ -362,7 +362,7 @@ Newbee.Tools.Edit.Result          稳定结果和错误结构
 
 不能只凭单次主观体验决定默认格式。需要做同模型、同任务、同工具集的对照实验：
 
-- v1：逐行哈希锚点对；
+- 已删除的旧协议：逐行哈希锚点对；
 - v2：文件快照 + 原始行范围；
 - replace：快照 + 精确旧内容替换。
 

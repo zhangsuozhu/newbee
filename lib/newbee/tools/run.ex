@@ -3,7 +3,7 @@ defmodule Newbee.Tools.Run do
   命令执行工具 (DESIGN §3.2)：超时 + 输出上限，结果返回 exit code 与输出。
 
   ## 函数清单
-  - `sh(cmd, opts \\ [])` — 在工程根下执行 shell 命令，返回 `%{exit: integer() | :timeout | :denied, output: String.t()}`。
+  - `sh(cmd, opts \\ [])` — 在工程根下执行 shell 命令，返回 `%{exit: integer() | :timeout | :denied, exit_code: integer() | :timeout | :denied, output: String.t()}`。
     选项：`timeout:` 毫秒（默认 120_000），`cd` 固定为 `File.cwd!()`，`MIX_ENV=test`。
   - `sh_long(cmd, opts \\ [])` — `sh` 的长超时版，默认 180_000ms，适合 harness/全量测试。
   - `mix_compile(opts \\ [])` — `mix compile`，返回 `{:ok, output} | {:error, output}`。
@@ -12,11 +12,11 @@ defmodule Newbee.Tools.Run do
   - `django_test(args \\ "apps.ha_bridge", opts \\ [])` — Django 场景：自动选 `python3.11`（无 `cgi` 时）跑 `BackCode/manage.py test`。
 
   ## 权限与截断
-  - 高危命令（`rm -rf /`, `git push` 等）受 `Newbee.Permissions` 档位（`:lenient`/`:ask`/`:deny`）拦截，拦截时返回 `%{exit: :denied, output: msg}`。
+  - 高危命令（`rm -rf /`, `git push` 等）受 `Newbee.Permissions` 档位（`:lenient`/`:ask`/`:deny`）拦截，拦截时返回 `%{exit: :denied, exit_code: :denied, output: msg}`。
   - 输出超 32KB 自动截断为头尾各 16KB + `… [输出截断]`。
 
   ## 可跑示例
-      %{exit: 0, output: out} = Newbee.Tools.Run.sh("ls -la")
+      %{exit: 0, exit_code: 0, output: out} = Newbee.Tools.Run.sh("ls -la")
       %{exit: 0} = Newbee.Tools.Run.sh("mix compile", timeout: 30_000)
       {:ok, out} = Newbee.Tools.Run.mix_compile()
       {:ok, out} = Newbee.Tools.Run.mix_test(["test/newbee/difftest_test.exs"])
@@ -30,11 +30,11 @@ defmodule Newbee.Tools.Run do
 
   @dangerous_re ~r/(rm\s+.*-rf|rm\s+-r\s+\/|git\s+push|rm\s+-rf\s+\/)/i
 
-  @doc "在工程根下执行 shell 命令。返回 %{exit, output}。"
+  @doc "在工程根下执行 shell 命令。返回 %{exit, exit_code, output}；exit_code 是 exit 的直觉别名。"
   def sh(cmd, opts \\ []) do
     case gate(cmd) do
       :allow -> do_sh(cmd, opts)
-      {:deny, msg} -> %{exit: :denied, output: msg}
+      {:deny, msg} -> %{exit: :denied, exit_code: :denied, output: msg}
     end
   end
 
@@ -69,11 +69,11 @@ defmodule Newbee.Tools.Run do
 
     case Task.yield(task, timeout) do
       {:ok, {out, code}} ->
-        %{exit: code, output: truncate(out)}
+        %{exit: code, exit_code: code, output: truncate(out)}
 
       nil ->
         Task.shutdown(task, :brutal_kill)
-        %{exit: :timeout, output: ""}
+        %{exit: :timeout, exit_code: :timeout, output: ""}
     end
   end
 
