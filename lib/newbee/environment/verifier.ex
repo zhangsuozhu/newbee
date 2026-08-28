@@ -76,7 +76,8 @@ defmodule Newbee.Environment.Verifier do
     # 5. Longitudinal
     layers = Map.put(layers, :longitudinal, longitudinal_layer(release))
 
-    required_now = Enum.reject(required, &(&1 in [:canary, :cross_project, :independent_release, :full_replay, :human_signoff]))
+    required_now =
+      Enum.reject(required, &(&1 in [:canary, :cross_project, :independent_release, :full_replay, :human_signoff]))
 
     failed =
       for layer <- required_now,
@@ -128,7 +129,7 @@ defmodule Newbee.Environment.Verifier do
   defp run_self_test(%Release{} = release, _opts) do
     # 编译候选模块并运行 contract self_test（无 self_test 实现视为通过静态子集）
     Enum.reduce_while(release.source_files, :ok, fn {name, source}, _acc ->
-      case Newbee.Environment.PluginContract.validate_source(source) do
+      case Newbee.Environment.PluginContract.validate_source(source, release.kind) do
         {:ok, %{module: mod}} ->
           if function_exported?(mod, :self_test, 1) do
             case apply(mod, :self_test, [%{}]) do
@@ -357,7 +358,14 @@ defmodule Newbee.Environment.Verifier do
       end)
 
     best = scores |> Enum.max_by(fn {_i, s} -> s end, fn -> {0, 0} end) |> elem(0)
-    %{best: best, ranking: scores |> Enum.sort_by(fn {_i, s} -> -s end) |> Enum.map(&elem(&1, 0)), scores: scores, comparisons: length(pairs), method: :full_pairwise}
+
+    %{
+      best: best,
+      ranking: scores |> Enum.sort_by(fn {_i, s} -> -s end) |> Enum.map(&elem(&1, 0)),
+      scores: scores,
+      comparisons: length(pairs),
+      method: :full_pairwise
+    }
   end
 
   defp parse_scores(text) do

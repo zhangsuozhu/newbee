@@ -11,6 +11,8 @@ defmodule Newbee.Environment.PluginContract do
     一切 effect 经 runtime wrapper 创建和登记（见 PluginSupervisor）。
   """
 
+  alias Newbee.Environment.ToolContract
+
   @callback id() :: String.t()
   @callback version() :: String.t()
   @callback describe() :: map()
@@ -70,14 +72,22 @@ defmodule Newbee.Environment.PluginContract do
   编译在调用进程内进行（不热载到全局代码路径之外的东西——Code.compile_string
   只在编译期求值模块体）。
   """
-  def validate_source(source) when is_binary(source) do
+  def validate_source(source), do: validate_source(source, :tool)
+
+  def validate_source(source, kind) when is_binary(source) do
     try do
       Code.put_compiler_option(:ignore_module_conflict, true)
       [{mod, _bin}] = Code.compile_string(source)
 
       case envelope(mod) do
-        {:ok, env} -> {:ok, %{module: mod, envelope: env}}
-        {:error, reasons} -> {:error, reasons}
+        {:ok, env} ->
+          case validate_kind(mod, env, kind, source) do
+            :ok -> {:ok, %{module: mod, envelope: env}}
+            {:error, reasons} -> {:error, [{:tool_contract, reasons}]}
+          end
+
+        {:error, reasons} ->
+          {:error, reasons}
       end
     rescue
       e -> {:error, [{:compile, Exception.message(e)}]}
@@ -85,6 +95,9 @@ defmodule Newbee.Environment.PluginContract do
       Code.put_compiler_option(:ignore_module_conflict, false)
     end
   end
+
+  defp validate_kind(mod, env, :tool, source), do: ToolContract.validate_module(mod, env, source)
+  defp validate_kind(_mod, _env, _kind, _source), do: :ok
 
   defp describe_field(mod, field) do
     case mod.describe() do

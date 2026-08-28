@@ -152,6 +152,8 @@
 
 Edit 完整协议、错误类别和示例见 [`docs/edit-design.md`](docs/edit-design.md)。
 
+新增或自动生成模型可见工具时，必须使用 `Newbee.Environment.ToolContract.template/2` 并通过激活门；完整规范见 [`docs/tool-development-contract.md`](docs/tool-development-contract.md)。
+
 ---
 
 ## 📦 免安装分发 — AppImage（带去任何 Linux 直接跑）

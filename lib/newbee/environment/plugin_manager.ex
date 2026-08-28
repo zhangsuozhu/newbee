@@ -12,8 +12,7 @@ defmodule Newbee.Environment.PluginManager do
   纯函数 + 磁盘，无独立状态——active 指针归 Coordinator/Manifest。
   """
 
-  alias Newbee.Environment.{PluginContract, Release, Store}
-
+  alias Newbee.Environment.{PluginContract, Release, Store, ToolContract}
 
   # ── 物化 ──
 
@@ -126,7 +125,8 @@ defmodule Newbee.Environment.PluginManager do
     available = available || all_plugin_ids()
 
     with :ok <- validate_dependencies(release, available),
-         :ok <- validate_sources(release) do
+         :ok <- validate_sources(release),
+         :ok <- validate_builtin_contract(release) do
       :ok
     end
   end
@@ -146,7 +146,7 @@ defmodule Newbee.Environment.PluginManager do
   defp validate_sources(%Release{source_files: files, kind: kind}) do
     errors =
       Enum.flat_map(files, fn {name, source} ->
-        case PluginContract.validate_source(source) do
+        case PluginContract.validate_source(source, kind) do
           {:ok, _} -> []
           {:error, reasons} -> [{name, reasons}]
         end
@@ -159,6 +159,16 @@ defmodule Newbee.Environment.PluginManager do
       true -> :ok
     end
   end
+
+  defp validate_builtin_contract(%Release{kind: :tool, source_files: files, plugin_id: plugin_id})
+       when map_size(files) == 0 do
+    case Newbee.Plugins.module_for_plugin_id(plugin_id) do
+      nil -> {:error, {:unknown_builtin_tool, plugin_id}}
+      module -> ToolContract.validate_builtin(module)
+    end
+  end
+
+  defp validate_builtin_contract(_release), do: :ok
 
   @doc "全部已知 plugin_id（builtin + 项目 store + 全局 store）。"
   def all_plugin_ids do
@@ -269,12 +279,22 @@ defmodule Newbee.Environment.PluginManager do
 
   defp visit(%Release{} = r, by_id, order, seen, stack) do
     cond do
-      r.plugin_id in stack -> throw(:cyclic)
-      MapSet.member?(seen, r.plugin_id) -> {order, seen}
+      r.plugin_id in stack ->
+        throw(:cyclic)
+
+      MapSet.member?(seen, r.plugin_id) ->
+        {order, seen}
+
       true ->
         {order, seen} =
           Enum.reduce(r.dependencies, {order, seen}, fn dep, {o, s} ->
-            dep_id = dep |> then(fn {id, _} -> id; id -> id end) |> to_string()
+            dep_id =
+              dep
+              |> then(fn
+                {id, _} -> id
+                id -> id
+              end)
+              |> to_string()
 
             case Map.fetch(by_id, dep_id) do
               {:ok, dep_r} -> visit(dep_r, by_id, o, s, [r.plugin_id | stack])
