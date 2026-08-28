@@ -53,6 +53,12 @@ defmodule Newbee.Web.WebAuthn do
   # ── 注册 ──
 
   def registration_challenge(name \\ "未命名设备") do
+    with :ok <- ensure_webauthn_origin() do
+      do_registration_challenge(name)
+    end
+  end
+
+  defp do_registration_challenge(name) do
     challenge =
       Wax.new_registration_challenge(
         origin: origin(),
@@ -92,22 +98,27 @@ defmodule Newbee.Web.WebAuthn do
          {:ok, client_data_json} <- Base.url_decode64(client_data_json_b64, padding: false),
          {:ok, {auth_data, _attestation}} <- Wax.register(attestation_object, client_data_json, challenge) do
       credential_id = auth_data.attested_credential_data.credential_id
+      credential_id_b64 = Base.url_encode64(credential_id, padding: false)
       public_key = auth_data.attested_credential_data.credential_public_key
 
-      cfg = read_config()
+      if cred_id != credential_id_b64 do
+        {:error, "bad_request", "凭据 ID 与注册数据不一致"}
+      else
+        cfg = read_config()
 
-      new_cred = %{
-        "name" => name,
-        "public_key" => :erlang.term_to_binary(public_key) |> Base.encode64(),
-        "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
-        "last_used_at" => nil
-      }
+        new_cred = %{
+          "name" => name,
+          "public_key" => :erlang.term_to_binary(public_key) |> Base.encode64(),
+          "created_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+          "last_used_at" => nil
+        }
 
-      new_cfg = put_in(cfg, ["credentials"], Map.put(credentials(), cred_id, new_cred))
-      write_config(new_cfg)
+        new_cfg = put_in(cfg, ["credentials"], Map.put(credentials(), credential_id_b64, new_cred))
+        write_config(new_cfg)
 
-      Logger.info("[newbee.web] WebAuthn 凭据已注册: #{name}")
-      {:ok, %{credential_id: cred_id}}
+        Logger.info("[newbee.web] WebAuthn 凭据已注册: #{name}")
+        {:ok, %{credential_id: credential_id_b64}}
+      end
     else
       {:error, :challenge_not_found} ->
         {:error, "bad_challenge", "挑战已过期或不存在，请重试"}
@@ -132,6 +143,12 @@ defmodule Newbee.Web.WebAuthn do
         {Base.url_decode64!(cred_id, padding: false), public_key}
       end)
 
+    with :ok <- ensure_webauthn_origin() do
+      do_authentication_challenge(allow_creds)
+    end
+  end
+
+  defp do_authentication_challenge(allow_creds) do
     challenge =
       Wax.new_authentication_challenge(
         origin: origin(),
@@ -198,6 +215,54 @@ defmodule Newbee.Web.WebAuthn do
 
   def set_origin(origin) when is_binary(origin) do
     Process.put({__MODULE__, :origin}, origin)
+  end
+
+  # WebAuthn 两层硬约束（浏览器强制，服务端无法绕过）：
+  # 1. RP ID 必须是有效域名，不能是 IP 字面量。裸 IP 访问（如 https://192.168.0.8:5151）
+  #    时 rp_id=:auto 推导出裸 IP，浏览器在 navigator.credentials.create/get 阶段直接拒绝。
+  # 2. 页面必须是受信任的安全上下文。自签证书站点用户跳过告警后能浏览页面，
+  #    但 WebAuthn 调用仍被浏览器拒绝（NotAllowedError），用户看到的"注册已取消"实为浏览器拒绝。
+  #    nip.io/sslip.io 这类"IP 嵌入域名"通常正配合自签证书使用，是同一失败模式。
+  # 这里在服务端提前拦截，避免用户走完流程才撞上浏览器静默失败。
+  defp ensure_webauthn_origin do
+    host = URI.parse(origin()).host || ""
+
+    cond do
+      ip_literal?(host) ->
+        {:error, "invalid_domain",
+         "当前通过 IP 地址（#{host}）访问，浏览器禁止在该站点使用通行密钥（指纹/面容）。" <>
+           "请在受信任的域名下使用：本机可用 http://localhost:<端口>（localhost 属安全上下文）；" <>
+           "远程请用受 CA 信任的证书（--certfile/--keyfile）配合真实域名，或经反向代理终止 TLS。"}
+
+      wildcard_dns?(host) ->
+        {:error, "invalid_domain",
+         "当前通过通配 DNS 域名（#{host}）访问。这类域名通常配合自签证书使用，" <>
+           "浏览器即使跳过证书告警仍会拒绝通行密钥（指纹/面容）请求——这不是您取消了操作。" <>
+           "解决办法：给 #{host} 配一张受信任的证书（如 Let's Encrypt，可用 --certfile/--keyfile 挂载），" <>
+           "或经受信反向代理访问后再注册。"}
+
+      true ->
+        :ok
+    end
+  end
+
+  # nip.io / sslip.io 等通配 DNS：把 IP 编进域名（192.168.0.8.nip.io → 192.168.0.8）。
+  # 域名虽合法，但这类场景几乎必然伴随自签证书，WebAuthn 会被浏览器拒绝，提前拦截。
+  defp wildcard_dns?(host) do
+    Enum.any?(["nip.io", "sslip.io"], fn suffix ->
+      host == suffix or String.ends_with?(host, "." <> suffix)
+    end)
+  end
+
+  defp ip_literal?(host) do
+    charlist = String.to_charlist(host)
+
+    cond do
+      match?({:ok, {_, _, _, _}}, :inet.parse_ipv4_address(charlist)) -> true
+      match?({:ok, {_, _, _, _, _, _, _, _}}, :inet.parse_ipv6_address(charlist)) -> true
+      String.starts_with?(host, "[") -> true
+      true -> false
+    end
   end
 
   # 挑战存储
