@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Edit.SnapshotStore do
   @moduledoc """
-  会话级文件快照存储（Edit v2，docs/edit-v2-design.md §4.1/§9）。
+  会话级文件快照存储（Edit，docs/edit-design.md §4.1/§9）。
 
   record 记录完整规范化文本，返回 12 hex 会话标签；
   fetch/mark_seen/promote 供 v2 补丁层做版本校验与已读范围约束。

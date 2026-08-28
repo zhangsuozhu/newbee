@@ -137,6 +137,21 @@
 
 ---
 
+## 🧰 工具调用约定 / Tool Contracts
+
+模型对外仍只看到 `run_elixir` / `done` / `ask`。环境内工具遵循一套稳定约定：
+
+- **文本局部编辑只有一个入口**：`Newbee.Tools.Edit.show/2` + `patch/1`。读取返回一次文件快照 tag 和普通行号；补丁使用 `PUT N..M`、`CUT N..M`、`PUT <N`、`PUT >N`。旧逐行 hash 和 `Edit.V2` 已删除。
+- **并发安全不靠逐行 hash**：节头 `[path#tag]` 校验完整文件快照；文件变化时拒绝并重新 `show`。
+- **安全生成 Elixir 源码**：包含插值、sigil 或 heredoc 时，先用 `Newbee.Tools.Edit.source_literal/1` 包装目标文本，避免外层 cell 提前插值或分隔符嵌套。
+- **可恢复错误是值**：工具返回 `{:error, %{reason: atom(), hint: String.t(), ...}}`；带 `!` 的函数保留 Elixir 的抛异常语义。
+- **命令结果符合常见直觉**：`Run.sh/2` 返回 `%{exit, exit_code, output}`；`exit_code` 是 `exit` 的别名。
+- **简单 GET 优先统一读取**：只要正文时用 `Newbee.read("https://...")`；需要 POST、headers、status 或网络错误分类时用 `Newbee.Tools.Http`。
+
+Edit 完整协议、错误类别和示例见 [`docs/edit-design.md`](docs/edit-design.md)。
+
+---
+
 ## 📦 免安装分发 — AppImage（带去任何 Linux 直接跑）
 
 把 newbee 连同 OTP/Elixir/全部依赖打进单个可执行文件（约 86MB），

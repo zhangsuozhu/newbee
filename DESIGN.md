@@ -254,10 +254,10 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 
 - **代码 IO**：读/写/追加/复制/移动/删除/遍历工程树（`tool` 插件：`Fs`）。
 - **双轨编辑**：
-  - **文本轨 · 哈希锚点编辑**（`Edit`）：`show` 生成 `N#hash|` 行锚点；`patch` 按锚点对（目标行+相邻上下文）定位，数错行自动重定位、对不上整体拒绝、多节补丁原子落盘。消灭 string-not-found 重试循环这个最大 token 黑洞。
-  - **文本轨 v2 · 快照范围编辑**（`Edit.V2`，2026-08 落地）：`show` 返回 `[path#tag]` 快照标签 + 连续行号视图；`PUT N..M / PUT <N / PUT >N / CUT N..M` 全部指向原快照行号——stale/越界/未读/重叠/no-op 一律拒绝，多节预检全过后原子落盘。彻底消灭行号漂移重试。
+  - **文本轨 · 文件快照 + 行号范围**（`Edit`）：唯一公开 API 是 `show/2`、`patch/1`、`source_literal/1`。`show` 返回文件级 `[path#tag]` 快照标签和普通行号；`PUT N..M / PUT <N / PUT >N / CUT N..M` 全部指向原快照。文件变化（stale）、越界、未读范围、重叠和 no-op 一律拒绝，多节预检全过后原子落盘。模型不再手抄逐行 hash。
+  - **安全源码字面量**（`Edit.source_literal/1`）：动态选择目标内容中不存在的 raw sigil 分隔符；全部冲突时回退普通转义字符串，避免二阶插值和 heredoc/sigil 同分隔符嵌套。
   - **结构轨 · Sourceror**（`Structural`）：保留格式注释的 AST 重写，按 `模块::def` 定位替换。选 Elixir 的最大技术红利。
-  - 分工：Elixir 工程走结构轨，其余文本走锚点轨。
+  - 分工：Elixir 语义级修改优先结构轨；普通文本局部修改走 Edit；新文件或整文件重写走 Fs。
 - **热加载**（`HotReload`，2026-08 落地）：`replace/load_file/purge/unload/status`——源码/BEAM 热替换（软 purge，`force: true` 硬 purge），`target: :main` 经 RPC 作用主节点，调试-生效秒级闭环免重启。
 - **运行**：`Run`（mix/elixir/shell）、编译、测试。
 - **工程**：`Scaffold`（mix new、deps、脚手架）。
@@ -267,6 +267,7 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 - **记忆/状态**：全局与项目级持久状态读写（自动脱敏剥离密钥）。
 - **大对象逐出**（`ArtifactRef`）：大 binding 自动逐出为 artifact 引用（`%ArtifactRef{ref: ...}`），模型持引用可按需拉回——长期会话不因大对象撑爆绑定。
 - **数据工具**：`Json`/`Http`/`Search`/`Git`/`Diff`。
+- **工具错误契约**：可恢复错误统一返回 `{:error, %{reason: atom(), hint: String.t(), ...}}`；bang 函数保留 Elixir 抛异常语义。`Run.sh` 返回 `%{exit, exit_code, output}`，`exit_code` 是 `exit` 的直觉别名。简单 URL GET 优先 `Newbee.read/1`，需 POST/headers/status 时使用 `Http`。
 - **工作协议**：`JSpace`（§6.4）、`BestTool`（显式不确定性聚合）。
 - **宿主桥**：`Newbee.Host.*` 类型化请求——调模型、代理消息、审计、调度。模型能改造环境的一切，物理上碰不到宿主的心脏：**宽松策略管"行为"，宿主契约管"能力"，后者不依赖模型自觉。**
 
@@ -598,7 +599,7 @@ worker rollback_request / health 失败 / 错误率超阈 / verifier 判退化 /
 | 6 | 推理固化 | 认知 JIT（§8.5），直至零 token |
 | 7 | 异步后台 | adapter/索引构建不占主循环预算 |
 | 8 | 增量 diff 上下文 | 只看 delta 不看全文 |
-| 9 | 哈希锚点编辑 | `Edit` 插件，消灭编辑失败重试循环 |
+| 9 | 快照行号编辑 | `Edit` 插件：一次文件 tag + 普通行号范围，兼顾直觉与 stale 安全 |
 | 10 | 沉睡规则 | `rule` release + live 拦截（§6.3），平时零 context |
 | 11 | 价签系统 | ReleaseObservation 投影（§3.3），省 token 成为模型的显式决策 |
 | 12 | 渐进式披露 | 一行签名清单 → 判定相关后 `Newbee.read/1` 取全文，永不注入全量文档 |
