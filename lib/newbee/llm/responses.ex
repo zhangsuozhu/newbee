@@ -145,6 +145,7 @@ defmodule Newbee.LLM.Responses do
 
   defp reasoning(nil), do: nil
   defp reasoning("max"), do: %{effort: "high"}
+  defp reasoning("off"), do: %{effort: "none"}
   defp reasoning(effort), do: %{effort: effort}
 
   defp maybe_put(map, _key, nil), do: map
