@@ -958,10 +958,15 @@ case "goal_round": break;
     list.innerHTML = messages.length ? messages.map((message) => {
       const target = message.to_session_id ? sessionDisplayName(message.to_session_id) : "所有协作会话";
       const mine = message.sender_session_id === state.sid ? " mine" : "";
+      const badge = message.delivery && message.delivery !== "notify" ? ` <em class="collab-dbadge">${escapeHtml(deliveryLabel(message.delivery))}</em>` : "";
       const at = message.created_at ? new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-      return `<article class="collab-message${mine}"><div class="collab-message-head"><b>${escapeHtml(sessionDisplayName(message.sender_session_id))}</b><span>→ ${escapeHtml(target)}</span><time>${escapeHtml(at)}</time></div><div>${escapeHtml(message.body || "")}</div></article>`;
+      return `<article class="collab-message${mine}"><div class="collab-message-head"><b>${escapeHtml(sessionDisplayName(message.sender_session_id))}</b><span>→ ${escapeHtml(target)}</span>${badge}<time>${escapeHtml(at)}</time></div><div>${escapeHtml(message.body || "")}</div></article>`;
     }).join("") : '<div class="collab-empty">还没有协作消息</div>';
     list.scrollTop = list.scrollHeight;
+  }
+
+  function deliveryLabel(d) {
+    return ({ notify: "仅通知", queue: "排队处理", wake: "立即处理" })[d] || "仅通知";
   }
 
   function taskStatusLabel(status) {
@@ -1114,6 +1119,7 @@ case "goal_round": break;
         senderSessionId: state.sid,
         toSessionId: $("mc-collab-recipient").value || null,
         kind: "chat",
+        delivery: ($("mc-collab-delivery") || {}).value || "notify",
         body,
         commandId: `collab-message-${Date.now()}`,
       });

@@ -2,8 +2,9 @@ defmodule Newbee.Collaboration.Coordinator do
   @moduledoc """
   会话群协作域的单写者：持久化群组、成员与消息，并从 EventStore 重放恢复。
 
-  首版消息语义为可靠 notify：事件先落盘，再经 Bus 广播给 WebSocket。模型
-  自动 wake、任务 lease 与 worktree 集成在后续阶段接入，不改变本模块 API。
+  消息语义为可靠事件：先落盘，再按 delivery 调度——notify 只进时间线，
+  queue/wake 投递给目标会话的模型运行时（忙时排队，不强行打断当前 turn）。
+  任务 lease 与 worktree 集成在后续阶段接入，不改变本模块 API。
   """
 
   use GenServer
@@ -13,6 +14,7 @@ defmodule Newbee.Collaboration.Coordinator do
   @default_root Path.join(System.user_home!(), ".newbee/collaboration")
   @roles ~w(coordinator worker reviewer observer)
   @message_kinds ~w(chat question task_assign task_progress task_result artifact system error)
+  @deliveries ~w(notify queue wake)
 
   defstruct store: nil, path: nil, groups: %{}, commands: MapSet.new()
 
@@ -214,7 +216,7 @@ defmodule Newbee.Collaboration.Coordinator do
         "sender_session_id" => attrs["sender_session_id"],
         "to_session_id" => attrs["to_session_id"],
         "kind" => attrs["kind"],
-        "delivery" => "notify",
+        "delivery" => attrs["delivery"],
         "body" => attrs["body"],
         "created_at" => now_iso()
       }
@@ -223,6 +225,7 @@ defmodule Newbee.Collaboration.Coordinator do
       {:ok, persisted} = append(state, event)
       next = apply_event(state, persisted)
       broadcast(persisted, next.groups[group_id])
+      dispatch_message(message, next.groups[group_id])
       {:reply, {:ok, message}, next}
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
@@ -768,6 +771,7 @@ defmodule Newbee.Collaboration.Coordinator do
   defp normalize_message(attrs) when is_map(attrs) do
     sender = clean(attrs["sender_session_id"] || attrs[:sender_session_id])
     kind = clean(attrs["kind"] || attrs[:kind]) || "chat"
+    delivery = clean(attrs["delivery"] || attrs[:delivery]) || "notify"
     body = clean(attrs["body"] || attrs[:body])
 
     cond do
@@ -776,6 +780,9 @@ defmodule Newbee.Collaboration.Coordinator do
 
       kind not in @message_kinds ->
         {:error, "bad_request", "未知消息类型"}
+
+      delivery not in @deliveries ->
+        {:error, "bad_request", "未知投递方式，只支持 notify / queue / wake"}
 
       is_nil(body) ->
         {:error, "bad_request", "消息内容不能为空"}
@@ -789,6 +796,7 @@ defmodule Newbee.Collaboration.Coordinator do
            "sender_session_id" => sender,
            "to_session_id" => clean(attrs["to_session_id"] || attrs[:to_session_id]),
            "kind" => kind,
+           "delivery" => delivery,
            "body" => body,
            "message_id" => clean(attrs["message_id"] || attrs[:message_id]),
            "command_id" => clean(attrs["command_id"] || attrs[:command_id])
@@ -841,7 +849,21 @@ defmodule Newbee.Collaboration.Coordinator do
     end
   end
 
+  # notify 只进时间线（不打扰模型）；queue/wake 投给目标会话运行时：
+  # 忙时运行时自行排队，空闲立即处理。重启重放不走 dispatch（事件流即事实）。
+  defp dispatch_message(%{"delivery" => d} = message, group) when d in ["queue", "wake"] do
+    target = message["to_session_id"] || group["coordinator_session_id"]
+
+    case Newbee.Web.Session.lookup(target) do
+      {:ok, pid} -> Newbee.Web.Session.collaboration_message(pid, message)
+      _ -> :ok
+    end
+  end
+
+  defp dispatch_message(_message, _group), do: :ok
+
   defp dispatch_task(%{"assigned_session_id" => nil}), do: :ok
+
 
   defp dispatch_task(task) do
     case Newbee.Web.Session.lookup(task["assigned_session_id"]) do

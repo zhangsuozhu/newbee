@@ -1,0 +1,15 @@
+{"call":"Fs.read(corpus/elixir_reader.ex)","tool":"fs","scenario":"read 存在文件","outcome":"ok","detail":"\"defmodule Newbee do\\n  @moduledoc \\\"\\\"\\\"\\n  统一寻址读取 (DESIGN §3.2)：`Newbee.read/1` 通吃文件、目录、URL 与内部 scheme。\\n  只教模型一个接口。\\n\\n  scheme 一览:\\n    - 裸路径        → 文件或目录\\n    - `file://`     → 文件\\n    - `tool://M`    → 模块文档（@modu"}
+{"call":"Fs.ls(corpus)","tool":"fs","scenario":"ls 目录","outcome":"other","detail":"[\"elixir_reader.ex\", \"python_polib.py\", \"c_aarch64_init.c\", \"js_undici_index.js\", \"c_stdio.h\", \"_edit_doc.md\", \"_edit_test.exs\", \"s01_samples/\", \"results.jsonl\"]"}
+{"call":"Fs.tree(s01_samples)","tool":"fs","scenario":"tree 遍历子目录","outcome":"other","detail":"[\"c_sqlite3.c\", \"py_cert_generator.py\", \"py_transfer_channel_rule.py\"]"}
+{"call":"Fs.exists?(corpus/elixir_reader.ex)","tool":"fs","scenario":"exists? 存在","outcome":"other","detail":"true"}
+{"call":"Fs.exists?(corpus/nope.ex)","tool":"fs","scenario":"exists? 不存在","outcome":"other","detail":"false"}
+{"call":"Fs.write(corpus/new1.txt,'hi')","tool":"fs","scenario":"write 新文件","outcome":"other","detail":"7426"}
+{"call":"Fs.read(不存在)","tool":"fs","scenario":"read 不存在文件","outcome":"error_returned","detail":"ERROR: :enoent"}
+{"call":"Fs.read!(不存在)","tool":"fs","scenario":"read! 不存在(抛错)","outcome":"error_returned","detail":"ERROR: \"could not read file \\\"/home/alanx/data/git/newbee/tool_stress_test/nope.ex\\\": no such file or directory\""}
+{"call":"Fs.ls(不存在)","tool":"fs","scenario":"ls 不存在目录","outcome":"error_returned","detail":"ERROR: :enoent"}
+{"call":"Fs.ls(文件)","tool":"fs","scenario":"ls 文件当目录","outcome":"error_returned","detail":"ERROR: :enotdir"}
+{"call":"Fs.rm(不存在)","tool":"fs","scenario":"write!/rm 不存在文件","outcome":"error_returned","detail":"ERROR: :enoent"}
+{"call":"Fs.write(/etc/x,'x')","tool":"fs","scenario":"写越界路径(/etc)","outcome":"error_returned","detail":"ERROR: \"拒绝写入工程树外路径: /etc/newbee_x（长输出可写到工程内 .newbee-tmp/ 或 ~/.newbee/）\""}
+{"call":"Fs.read(sqlite3.c)","tool":"fs","scenario":"读超大9MB文件","outcome":"ok","detail":"\"/******************************************************************************\\n** This file is an amalgamation of many separate C source files from SQLite\\n** version 3.45.2.  By combining all the individual C code fi"}
+{"call":"Fs.write(f, [1,2,3])","tool":"fs","scenario":"write 内容为list非string","outcome":"other","detail":"7490"}
+{"call":"Fs.rm_rf(不存在)","tool":"fs","scenario":"rm_rf 不存在目录","outcome":"ok","detail":"[]"}

@@ -117,6 +117,11 @@
       <div id="mc-collab-list" class="collab-message-list"></div>
       <div class="collab-composer">
         <select id="mc-collab-recipient" title="消息接收者"></select>
+        <select id="mc-collab-delivery" title="投递方式：仅通知不唤醒模型；排队处理会传给对方 AI；立即处理在对方空闲时马上开始">
+          <option value="notify">仅通知</option>
+          <option value="queue">排队处理</option>
+          <option value="wake">立即处理</option>
+        </select>
         <textarea id="mc-collab-input" rows="2" placeholder="给协作会话发消息…"></textarea>
         <button id="mc-collab-send" class="btn-primary">发送</button>
       </div>

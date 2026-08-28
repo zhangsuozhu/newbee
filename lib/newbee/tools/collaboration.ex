@@ -26,6 +26,15 @@ defmodule Newbee.Tools.Collaboration do
     Newbee.Host.call(Newbee.Collaboration.Coordinator, :tasks, [group_id])
   end
 
+  @doc """
+  向群成员发送消息。
+
+  选项 `:delivery` 控制投递方式：
+
+    * `:notify` - 只写入协作时间线，不打扰目标会话的模型
+    * `:queue`  - 投递给目标会话，忙时排队、空闲立即处理（默认预算安全）
+    * `:wake`   - 语义同 `:queue`，不强行打断当前工具调用
+  """
   def send_message(group_id, session_id, body, opts \\ []) do
     attrs = %{
       "sender_session_id" => session_id,
@@ -33,7 +42,8 @@ defmodule Newbee.Tools.Collaboration do
       "kind" => to_string(Keyword.get(opts, :kind, :chat)),
       "body" => body,
       "message_id" => Keyword.get(opts, :message_id),
-      "command_id" => Keyword.get(opts, :command_id)
+      "command_id" => Keyword.get(opts, :command_id),
+      "delivery" => to_string(Keyword.get(opts, :delivery, :notify))
     }
 
     Newbee.Host.call(Newbee.Collaboration.Coordinator, :send_message, [group_id, attrs])

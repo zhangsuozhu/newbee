@@ -476,7 +476,8 @@ defmodule Newbee.Web.Api do
       "kind" => blank_to_nil(p["kind"]) || "chat",
       "body" => body,
       "message_id" => p["messageId"],
-      "command_id" => p["commandId"]
+      "command_id" => p["commandId"],
+      "delivery" => blank_to_nil(p["delivery"]) || "notify"
     }
 
     case Newbee.Collaboration.Coordinator.send_message(group_id, attrs) do
