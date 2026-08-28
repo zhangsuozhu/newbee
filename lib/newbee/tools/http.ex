@@ -32,10 +32,10 @@ defmodule Newbee.Tools.Http do
   defp request(method, url, json, headers) do
     # 先校验 URL 格式
     case URI.parse(url) do
-      %URI{scheme: nil} ->
-        {:error, %{reason: :invalid_url, hint: "URL 缺少 scheme（如 http:// 或 https://）: " <> url}}
+      %URI{scheme: scheme} when scheme not in ["http", "https"] ->
+        {:error, %{reason: :invalid_url, hint: "URL scheme 必须是 http 或 https: " <> url}}
 
-      %URI{host: nil} ->
+      %URI{host: host} when host in [nil, ""] ->
         {:error, %{reason: :invalid_url, hint: "URL 缺少 host: " <> url}}
 
       _uri ->
@@ -70,4 +70,4 @@ defmodule Newbee.Tools.Http do
   rescue
     e -> {:error, %{reason: :request_failed, hint: "请求异常: " <> Exception.message(e)}}
   end
-  end
+end

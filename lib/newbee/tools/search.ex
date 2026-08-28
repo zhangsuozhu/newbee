@@ -5,8 +5,8 @@ defmodule Newbee.Tools.Search do
 
   ## 函数清单
   - `grep(pattern, dir \\ ".", opts \\ [])` — 递归内容搜索，`pattern` 为正则字符串。
-  - `grep(pattern, dir \\ ".", opts \\ [])` — 递归内容搜索，`pattern` 为正则字符串。
     返回 `[{path, line_no, line}]`（默认最多 100 条，`opts[:max]` 可调）。非法正则返回 `{:error, %{reason: :invalid_regex, hint: ...}}`。单文件先 `File.read`，>5MB 或含 `<<0>>` 的二进制跳过。
+  - `find(name, dir \\ ".")` — 按文件名片段查找，返回 `[path]`。
 
   内部 `list_files/1` 优先用 `git ls-files -co --exclude-standard`（秒级白名单），失败回退 `Path.wildcard`.
 
@@ -20,7 +20,7 @@ defmodule Newbee.Tools.Search do
 
   @skip ~r{/(_build|deps|\.git|node_modules|cover)/}
 
-  @doc "递归内容搜索。返回 [{path, line_no, line}]（默认最多 100 条命中）。"
+  @doc "递归内容搜索。成功返回命中列表；非法正则返回 {:error, %{reason: :invalid_regex, hint: _}}。"
   def grep(pattern, dir \\ ".", opts \\ []) when is_binary(pattern) do
     max = Keyword.get(opts, :max, 100)
 
@@ -85,9 +85,7 @@ defmodule Newbee.Tools.Search do
     dir = Path.expand(dir)
 
     # 优先用 git ls-files（秒级，白名单），失败回退到 wildcard + 过滤
-    case System.cmd("git", ["ls-files", "-co", "--exclude-standard", dir],
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("git", ["ls-files", "-co", "--exclude-standard", dir], stderr_to_stdout: true) do
       {out, 0} ->
         out
         |> String.split("\n", trim: true)

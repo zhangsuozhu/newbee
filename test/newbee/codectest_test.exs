@@ -27,6 +27,10 @@ defmodule Newbee.CodecTest do
   test "无 tool_calls 返回空列表" do
     assert Codec.extract_tool_calls(%{"content" => "hi"}) == []
   end
-end
 
-:ok
+  test "run_elixir 提示包含安全源码字面量用法" do
+    tool = Enum.find(Codec.tools(), &(&1.function.name == "run_elixir"))
+    assert tool.function.description =~ "Edit.source_literal/1"
+    assert tool.function.description =~ "heredoc"
+  end
+end

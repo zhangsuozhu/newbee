@@ -17,7 +17,7 @@ defmodule Newbee.Tools.Json do
 
   """
 
-  @doc "解析 JSON 字符串。返回 {:ok, value} | {:error, reason}。"
+  @doc "解析 JSON。成功返回 {:ok, value}；非法 JSON 返回带 line/column/position 的结构化错误。"
   def decode(text) when is_binary(text) do
     case Jason.decode(text) do
       {:ok, _} = ok ->
@@ -32,6 +32,7 @@ defmodule Newbee.Tools.Json do
         err
     end
   end
+
   @doc "编码为 JSON 字符串（美化可选）。"
   def encode(value, pretty \\ false) do
     if pretty, do: Jason.encode!(value, pretty: true), else: Jason.encode!(value)
@@ -66,15 +67,18 @@ defmodule Newbee.Tools.Json do
 
   defp line_col_from_pos(data, pos) do
     lines = String.split(data, "\n")
+
     {line, col} =
       Enum.reduce_while(lines, {1, 0}, fn line_str, {ln, acc_pos} ->
-        line_len = String.length(line_str) + 1
+        line_len = byte_size(line_str) + 1
+
         if acc_pos + line_len > pos do
           {:halt, {ln, pos - acc_pos + 1}}
         else
           {:cont, {ln + 1, acc_pos + line_len}}
         end
       end)
+
     {line, col}
   end
 end

@@ -6,7 +6,7 @@ defmodule Newbee.Tools.Structural do
 
   ## 函数清单
   - `list_functions(path :: String.t(), module :: module()) :: {:ok, [String.t()]} | {:error, :module_not_found}` — 列 `defmodule` 内 `def/defp` 签名，如 `["def hello/1", "defp helper/0"]`。
-  - `insert_function(path, module, def_code :: String.t()) :: {:ok, :inserted} | {:error, %{reason: :syntax_error | :module_not_found, hint: ...}}` — 在模块最后一个 `end` 前插入函数源码，自动缩进 2 空格。语法错误的 def_code 返回 `{:error, %{reason: :syntax_error, hint: ...}}` 而非静默成功。
+  - `insert_function(path, module, def_code :: String.t()) :: {:ok, :inserted} | {:error, %{reason: :syntax_error, hint: String.t()}} | {:error, :module_not_found}` — 在模块最后一个 `end` 前插入函数源码，自动缩进 2 空格。语法错误的 def_code 返回 `{:error, %{reason: :syntax_error, hint: ...}}` 而非静默成功。
   - `replace_function(path, module, name :: atom(), arity :: integer(), new_code :: String.t()) :: {:ok, :replaced} | {:error, :function_not_found | :module_not_found}` — 按 `name/arity` 定位整段定义换新，按原列缩进。
   - `format(path :: String.t()) :: {:ok, :formatted} | {:error, reason}` — `Code.format_string!` 格式化后回写。
 
@@ -208,8 +208,7 @@ defmodule Newbee.Tools.Structural do
   end
 
   defp write_formatted(path, src) do
-    formatted = IO.iodata_to_binary(Code.format_string!(src)) <> "
-"
+    formatted = IO.iodata_to_binary(Code.format_string!(src)) <> "\n"
     File.write!(path, formatted)
   rescue
     _ -> File.write!(path, src)
@@ -221,7 +220,4 @@ defmodule Newbee.Tools.Structural do
       {:error, {_line, error, _token}} -> {:error, %{reason: :syntax_error, hint: "def_code 语法错误: " <> inspect(error)}}
     end
   end
-
 end
-
-:ok
