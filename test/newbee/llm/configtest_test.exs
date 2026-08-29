@@ -38,11 +38,6 @@ defmodule Newbee.LLM.ConfigTest do
     refute Newbee.LLM.Config.client_for("default").api_key == "<redacted>"
   end
 
-  test "调用点存在性：provider 配置完整" do
-    cfg = Newbee.LLM.Config.load()
-    assert cfg["providers"]["guoyu"]["apiKey"] != "${prime:guoyu}"
-    assert is_binary(cfg["providers"]["guoyu"]["apiKey"])
-  end
 
   test "未知角色回退 default" do
     c1 = Newbee.LLM.Config.client_for("nonexistent")

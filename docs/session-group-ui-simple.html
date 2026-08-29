@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>newbee · 极简工作组界面</title>
+<style>
+:root{--bg:#f7f8fa;--panel:#fff;--line:#e3e6eb;--text:#20242b;--muted:#7b8491;--blue:#3269df;--blue-bg:#edf3ff;--green:#218952;--shadow:0 12px 36px rgba(25,35,55,.12)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}.app{height:100vh;display:grid;grid-template-columns:270px 1fr;overflow:hidden}.side{background:var(--panel);border-right:1px solid var(--line);padding:16px 12px;display:flex;flex-direction:column;gap:14px}.brand{font-size:17px;font-weight:750;padding:2px 8px 8px}.new{width:100%;border:0;border-radius:9px;background:var(--blue);color:#fff;padding:10px;font-weight:650}.side-title{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:12px;padding:4px 8px}.select-hint{color:var(--muted);font-size:11px;padding:0 8px}.sessions{display:flex;flex-direction:column;gap:3px;overflow:auto}.session{display:flex;align-items:flex-start;gap:8px;width:100%;padding:9px 8px;border:0;border-radius:8px;background:transparent;text-align:left;color:var(--text)}.session:hover{background:#f1f3f6}.session.selected{background:var(--blue-bg);box-shadow:inset 3px 0 var(--blue)}.session input{margin-top:4px;accent-color:var(--blue)}.session-body{min-width:0}.session-name{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-meta{display:block;color:var(--muted);font-size:11px}.group-action{margin-top:auto;border-top:1px solid var(--line);padding-top:14px}.group-action button{width:100%}.main{display:flex;flex-direction:column;min-width:0}.top{height:60px;background:var(--panel);border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 24px;gap:12px}.title{font-weight:700;flex:1}.top-note{color:var(--muted);font-size:12px}.conversation{flex:1;overflow:auto;padding:34px 24px}.conversation-inner{max-width:850px;margin:auto}.bubble{max-width:720px;margin:0 0 18px;padding:14px 17px;border-radius:13px;background:var(--panel);border:1px solid var(--line)}.bubble.user{margin-left:auto;background:var(--blue-bg);border-color:#d5e2ff}.bubble small{display:block;color:var(--muted);font-size:11px;margin-bottom:5px}.composer{border-top:1px solid var(--line);background:var(--panel);padding:14px 24px;display:flex;gap:9px}.composer input{flex:1;border:1px solid var(--line);border-radius:9px;padding:11px 13px;outline:0}.composer input:focus{border-color:var(--blue)}.send{border:0;border-radius:9px;padding:0 18px;background:var(--blue);color:#fff}.overlay{position:fixed;inset:0;background:rgba(20,28,44,.3);display:none;align-items:center;justify-content:center;padding:20px}.overlay.show{display:flex}.dialog{width:min(480px,100%);background:#fff;border-radius:15px;padding:23px;box-shadow:var(--shadow)}.dialog h2{margin:0 0 6px;font-size:18px}.dialog p{color:var(--muted);margin:0 0 18px}.dialog label{display:block;font-size:12px;font-weight:650;margin:12px 0 6px}.dialog textarea{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px;resize:vertical;outline:0}.dialog textarea:focus{border-color:var(--blue)}.chosen{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.chip{background:var(--blue-bg);color:var(--blue);border-radius:20px;padding:4px 9px;font-size:12px}.actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}.btn{border:1px solid var(--line);background:#fff;border-radius:9px;padding:8px 14px}.btn.primary{border:0;background:var(--blue);color:#fff}.work-strip{display:none;background:var(--blue-bg);border-bottom:1px solid #d5e2ff;padding:10px 24px;color:var(--blue);font-size:13px}.work-strip.show{display:block}.work-strip b{margin-right:8px}@media(max-width:700px){.app{grid-template-columns:1fr}.side{display:none}.top{padding:0 14px}.conversation{padding:20px 14px}.composer{padding:10px 14px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">✦ newbee</div>
+    <button class="new" id="newSession">＋ 新会话</button>
+    <div>
+      <div class="side-title"><span>会话</span><span id="selectedCount">0 个已选</span></div>
+      <div class="select-hint">勾选几个会话，可让它们一起完成一件事</div>
+      <div class="sessions">
+        <label class="session"><input type="checkbox"><span class="session-body"><span class="session-name">登录接口讨论</span><span class="session-meta">今天 10:00 · 20 条</span></span></label>
+        <label class="session"><input type="checkbox"><span class="session-body"><span class="session-name">认证测试</span><span class="session-meta">今天 09:40 · 16 条</span></span></label>
+        <label class="session"><input type="checkbox"><span class="session-body"><span class="session-name">代码审查</span><span class="session-meta">昨天 18:20 · 31 条</span></span></label>
+        <label class="session"><input type="checkbox"><span class="session-body"><span class="session-name">数据库迁移</span><span class="session-meta">昨天 15:10 · 12 条</span></span></label>
+      </div>
+    </div>
+    <div class="group-action"><button class="btn primary" id="makeGroup">把选中的会话组成工作组</button></div>
+  </aside>
+  <main class="main">
+    <header class="top"><div class="title" id="topTitle">登录接口讨论</div><span class="top-note" id="topNote">普通会话</span></header>
+    <div class="work-strip" id="workStrip"><b>工作组正在工作</b><span id="stripText">3 个会话正在共同完成：重构认证系统</span></div>
+    <section class="conversation"><div class="conversation-inner" id="messages">
+      <div class="bubble user"><small>我</small>请分析一下当前登录接口有哪些问题。</div>
+      <div class="bubble"><small>AI</small>我已经找到两个问题：错误处理不统一，以及过期凭证的边界情况缺少测试。</div>
+      <div class="bubble user"><small>我</small>请继续处理，并让其他会话一起帮忙。</div>
+      <div class="bubble"><small>AI</small>可以。请在左侧勾选要一起工作的会话，然后点击“把选中的会话组成工作组”。</div>
+    </div></section>
+    <footer class="composer"><input id="message" placeholder="输入消息…"><button class="send" id="send">发送</button></footer>
+  </main>
+</div>
+<div class="overlay" id="overlay"><div class="dialog"><h2>让这些会话一起工作</h2><p>它们会保留各自原来的显示方式，只是共同完成下面这一件事。</p><div class="chosen" id="chosen"></div><label for="goal">要一起完成什么？</label><textarea id="goal" rows="4" placeholder="例如：重构认证系统，并补齐测试"></textarea><div class="actions"><button class="btn" id="cancel">取消</button><button class="btn primary" id="start">开始工作</button></div></div></div>
+<script>
+const $=id=>document.getElementById(id);const checks=[...document.querySelectorAll('.session input')];
+function selected(){return checks.filter(x=>x.checked)}
+function update(){const n=selected().length; $('selectedCount').textContent=n+' 个已选';checks.forEach(x=>x.closest('.session').classList.toggle('selected',x.checked))}
+checks.forEach(x=>x.onchange=update);
+$('makeGroup').onclick=()=>{const xs=selected();if(!xs.length){alert('请先勾选至少一个会话');return} $('chosen').innerHTML=xs.map(x=>'<span class="chip">'+x.parentElement.querySelector('.session-name').textContent+'</span>').join('');$('overlay').classList.add('show');$('goal').focus()};
+$('cancel').onclick=()=>$('overlay').classList.remove('show');$('overlay').onclick=e=>{if(e.target===$('overlay'))$('overlay').classList.remove('show')};
+$('start').onclick=()=>{const goal=$('goal').value.trim()||'共同完成当前工作';$('overlay').classList.remove('show');$('workStrip').classList.add('show');$('stripText').textContent=selected().length+' 个会话正在共同完成：'+goal;$('topNote').textContent='工作组';$('topTitle').textContent='共同工作';$('messages').insertAdjacentHTML('beforeend','<div class="bubble"><small>系统</small>工作组已开始。每个会话仍然可以单独打开查看，协作进展会显示在各自会话中。</div>')};
+$('newSession').onclick=()=>alert('这里创建一个普通会话');$('send').onclick=()=>{const i=$('message');if(i.value.trim()){ $('messages').insertAdjacentHTML('beforeend','<div class="bubble user"><small>我</small>'+i.value.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+'</div>');i.value=''}};
+$('message').onkeydown=e=>{if(e.key==='Enter')$('send').click()};update();
+</script>
+</body>
+</html>

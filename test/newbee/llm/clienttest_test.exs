@@ -37,11 +37,11 @@ defmodule Newbee.LLM.ClientTest do
   end
 
   test "cache-hit 日志包含厂家模型与 token/条数拆分" do
-    client = Client.new(provider: "guoyu", model: "gpt-5.6-sol", api_key: "test")
+    client = Client.new(provider: "sample-provider", model: "sample-model-1", api_key: "test")
     usage = %{"prompt_tokens" => 4_392, "cache_read_tokens" => 3_840, "cache_write_tokens" => 0}
 
     assert Client.cache_hit_line(client, usage, "stream_chat") ==
-             "cache-hit provider=guoyu model=gpt-5.6-sol task=stream_chat " <>
+             "cache-hit provider=sample-provider model=sample-model-1 task=stream_chat " <>
                "prompt=4392 prompt_read=3840 rate=87.4%"
   end
 
@@ -107,6 +107,47 @@ defmodule Newbee.LLM.ClientTest do
     out = Client.format_error({:http_error, 429, "rate limited"})
     assert out =~ "HTTP 429"
     assert out =~ "自动重试"
+  end
+
+  test "cache_key 注入：client 带 key 时请求体含 prompt_cache_key，缺失则不含" do
+    test_pid = self()
+
+    plug = fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:req_body, Jason.decode!(body)})
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"role" => "assistant", "content" => "ok"}}]})
+    end
+
+    with_key =
+      Newbee.LLM.Client.new(
+        model: "test/m",
+        api_key: "t",
+        base_url: "http://localhost",
+        cache_key: "newbee-session-abc",
+        req_options: [plug: plug, retry: false]
+      )
+
+    {:ok, "ok", _} = Client.complete(with_key, [%{"role" => "user", "content" => "hi"}])
+    assert_received {:req_body, body}
+    assert body["prompt_cache_key"] == "newbee-session-abc"
+
+    without_key =
+      Newbee.LLM.Client.new(
+        model: "test/m",
+        api_key: "t",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    {:ok, "ok", _} = Client.complete(without_key, [%{"role" => "user", "content" => "hi"}])
+    assert_received {:req_body, body2}
+    refute Map.has_key?(body2, "prompt_cache_key")
+  end
+
+  test "normalize_usage：prompt_tokens_details.cached_tokens 透传（Sub2API 命中形态）" do
+    u = Client.normalize_usage(%{"prompt_tokens" => 100, "prompt_tokens_details" => %{"cached_tokens" => 80}})
+    assert u["cache_read_tokens"] == 80
+    assert u["uncached_prompt_tokens"] == 20
   end
 
   test "complete 带 tools：请求体含 tools（前缀缓存命中要求）" do

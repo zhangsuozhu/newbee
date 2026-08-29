@@ -217,7 +217,20 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 
 ---
 
-## 📦 项目结构 / Project Structure
+## 🧰 工具调用约定 / Tool Contracts
+
+模型对外仍只看到 `run_elixir` / `done` / `ask`。环境内工具遵循一套稳定约定：
+
+- **文本局部编辑只有一个入口**：`Newbee.Tools.Edit.show/2` + `patch/1`。读取返回一次文件快照 tag 和普通行号；补丁使用 `PUT N..M`、`CUT N..M`、`PUT <N`、`PUT >N`。旧逐行 hash 和 `Edit.V2` 已删除。
+- **安全生成 Elixir 源码**：包含插值、sigil 或 heredoc 时，先用 `Newbee.Tools.Edit.source_literal/1` 包装目标文本，避免外层 cell 提前插值或分隔符嵌套。
+- **可恢复错误是值**：工具返回 `{:error, %{reason: atom(), hint: String.t(), ...}}`；带 `!` 的函数保留 Elixir 的抛异常语义。
+- **简单 GET 优先统一读取**：只要正文时用 `Newbee.read("https://...")`；需要 POST、headers、status 或网络错误分类时用 `Newbee.Tools.Http`。
+- **避免重复入口**：Scaffold 只做工程创建/依赖；编译测试用 Run。长命令使用 `Run.sh(..., timeout: ms)`，没有 `sh_long` 或项目专用 Django helper。
+- **按需说明不重复**：`Newbee.read("tool://模块名")` 展示用途/示例和编译器真实签名。
+
+Edit 完整协议、错误类别和示例见 [`docs/edit-design.md`](docs/edit-design.md)。
+
+---
 
 ## 📦 项目结构 / Project Structure
 
@@ -234,7 +247,7 @@ lib/newbee/
 ├── tui/            # Screen / Cards / History / Key / Highlight
 └── host/           # Shell (Ring 0) — 凭证/边界/审计
 
-priv/jspace/        # J-Space 工作台账 (long-task ledger)
+~/.newbee/jspace/   # J-Space 长任务台账（可用 NEWBEE_JSPACE_DIR 覆盖）
 .newbee/            # 项目权威快照 (被 gitignore，重启完整恢复)
 ```
 

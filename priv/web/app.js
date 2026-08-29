@@ -241,6 +241,14 @@ const flow = $("flow");
     lastLLMUsage: null,
     lastUsageSeq: 0,
     lastAttachedSeq: 0,
+    groups: [],
+    activeGroupId: null,
+    activeGroup: null,
+    groupMessages: [],
+    groupTasks: [],
+    fileAttribution: {},
+    groupBySession: {},
+    selectedSessions: new Set(),
   };
 
   // ── 会话统计持久化（按 sessionId 存 localStorage，刷新/重连后保留）──
@@ -334,6 +342,7 @@ const flow = $("flow");
         onEvent(frame.kind, frame.payload || {});
       }
       else if (frame.type === "system") pushEvoEvent(frame.topic, frame.payload);
+      else if (frame.type === "group_event") onGroupEvent(frame);
     };
     ws.onopen = () => {
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
@@ -455,12 +464,13 @@ case "goal_round": break;
       if (_savedBar && !_savedBar.dataset.reattached) { state.currentAssistant.appendChild(_savedBar); }
       if (state._pendingUsage) { attachUsageToBubble(state.currentAssistant, state._pendingUsage); state._pendingUsage = null; }
       if (state.currentAssistant.dataset.hasUsage !== "1" && state.turnUsage && state.turnUsage.count > 0) {
-        attachUsageToBubble(state.currentAssistant, { prompt_tokens: state.turnUsage.prompt, completion_tokens: state.turnUsage.completion, cache_read_tokens: state.turnUsage.cached, model: state.turnUsage.model });
+        attachUsageToBubble(state.currentAssistant, { prompt_tokens: state.turnUsage.prompt, completion_tokens: state.turnUsage.completion, cache_read_tokens: state.turnUsage.hasUnknown ? null : state.turnUsage.cached, model: state.turnUsage.model });
       }
     }
     if (state.currentAssistant && state.turnUsage && state.turnUsage.count > 1) {
       const bar = state.currentAssistant.querySelector(":scope > .msg-usage");
-      if (bar) bar.title = `本轮累计 ${state.turnUsage.count} 次请求 · 输入 ${fmtTokShort(state.turnUsage.prompt)} · 输出 ${fmtTokShort(state.turnUsage.completion)} · 缓存 ${fmtTokShort(state.turnUsage.cached)}`;
+        const cacheSum = state.turnUsage.hasUnknown ? fmtTokShort(state.turnUsage.cached) + "+?" : fmtTokShort(state.turnUsage.cached);
+        if (bar) bar.title = `本轮累计 ${state.turnUsage.count} 次请求 · 输入 ${fmtTokShort(state.turnUsage.prompt)} · 输出 ${fmtTokShort(state.turnUsage.completion)} · 缓存 ${cacheSum}`;
     }
     archiveReasoning();
     state.currentAssistant = null;
@@ -821,7 +831,9 @@ case "goal_round": break;
     const head = document.createElement("div");
     head.className = "tool-head";
     const st = p.stats || {};
-    head.innerHTML = `<b>✎</b> ${escapeHtml(p.path || "")} <span class="diffstat">+${st.added ?? 0} −${st.removed ?? 0}</span>`;
+    const actor = p.session_id ? sessionDisplayName(p.session_id) : "当前会话";
+    if (p.path && p.session_id) state.fileAttribution[p.path] = { sessionId: p.session_id, name: actor };
+    head.innerHTML = `<b>✎</b> ${escapeHtml(p.path || "")} <span class="diffstat">+${st.added ?? 0} −${st.removed ?? 0}</span><span class="diff-owner">${escapeHtml(actor)}</span>`;
     const body = document.createElement("div");
     body.className = "tool-code";
     (p.diff || []).slice(0, 60).forEach((ln) => {
@@ -840,7 +852,363 @@ case "goal_round": break;
 
 
 
-  function showPermission(preview) {
+
+  // ── 会话协作：分组留在左侧，当前会话过程保持在中间，协作信息进入 Mission Control ──
+  function rebuildGroupIndex() {
+    state.groupBySession = {};
+    (state.groups || []).forEach((group) => {
+      (group.members || []).forEach((member) => {
+        state.groupBySession[member.session_id] = { group, member };
+      });
+    });
+  }
+
+  function currentGroupRef() {
+    return state.sid ? state.groupBySession[state.sid] || null : null;
+  }
+
+  function sessionDisplayName(sessionId) {
+    const session = (state.allSessions || []).find((s) => s.id === sessionId);
+    if (session) return session.title || session.id;
+    const ref = state.groupBySession[sessionId];
+    return ref && ref.member && ref.member.role ? `${ref.member.role} · ${sessionId.slice(-6)}` : sessionId;
+  }
+
+  async function loadGroups() {
+    if (!state.sid) return;
+    try {
+      const result = await rpc("group.list", {});
+      state.groups = result.groups || [];
+    } catch (e) {
+      state.groups = [];
+    }
+    rebuildGroupIndex();
+    renderSessionList();
+    await loadActiveGroup();
+  }
+
+  async function loadActiveGroup() {
+    const ref = currentGroupRef();
+    const delegate = $("delegate-session");
+    if (!ref) {
+      state.activeGroupId = null;
+      state.activeGroup = null;
+      state.groupMessages = [];
+      state.groupTasks = [];
+      if (delegate) delegate.classList.add("hidden");
+      renderCollaborationPane();
+      renderCollaborationTasks();
+      return;
+    }
+
+    state.activeGroupId = ref.group.group_id;
+    if (delegate) {
+      delegate.classList.toggle("hidden", ref.group.coordinator_session_id !== state.sid);
+    }
+
+    try {
+      const [group, messages, tasks] = await Promise.all([
+        rpc("group.get", { groupId: ref.group.group_id, sessionId: state.sid }),
+        rpc("collab.message.list", { groupId: ref.group.group_id, sessionId: state.sid, limit: 200 }),
+        rpc("group.task.list", { groupId: ref.group.group_id, sessionId: state.sid }),
+      ]);
+      if (!state.sid || state.activeGroupId !== ref.group.group_id) return;
+      state.activeGroup = group;
+      state.groupMessages = messages.messages || [];
+      state.groupTasks = tasks.tasks || [];
+    } catch (e) {
+      state.activeGroup = null;
+      state.groupMessages = [];
+      state.groupTasks = [];
+    }
+    renderCollaborationPane();
+    renderCollaborationTasks();
+  }
+
+  function renderCollaborationPane() {
+    const list = $("mc-collab-list");
+    const members = $("mc-collab-members");
+    const recipient = $("mc-collab-recipient");
+    if (!list || !members || !recipient) return;
+
+    const group = state.activeGroup;
+    if (!group) {
+      $("mc-collab-title").textContent = "协作消息";
+      members.innerHTML = "";
+      recipient.innerHTML = "";
+      list.innerHTML = '<div class="collab-empty">当前是普通会话。勾选多个会话可组成工作组。</div>';
+      $("mc-collab-input").disabled = true;
+      $("mc-collab-send").disabled = true;
+      return;
+    }
+
+    $("mc-collab-title").textContent = group.title || "协作消息";
+    $("mc-collab-input").disabled = false;
+    $("mc-collab-send").disabled = false;
+    members.innerHTML = (group.members || []).map((member) => {
+      const active = member.session_id === state.sid ? " active" : "";
+      return `<button class="collab-member${active}" data-session="${escapeHtml(member.session_id)}"><span class="sess-dot ${member.state === "working" ? "busy" : "online"}"></span><b>${escapeHtml(sessionDisplayName(member.session_id))}</b><small>${escapeHtml(member.role || "worker")}</small></button>`;
+    }).join("");
+    members.querySelectorAll("[data-session]").forEach((button) => {
+      button.onclick = () => resume(button.dataset.session);
+    });
+
+    recipient.innerHTML = '<option value="">发给所有协作会话</option>' +
+      (group.members || []).filter((m) => m.session_id !== state.sid).map((m) =>
+        `<option value="${escapeHtml(m.session_id)}">发给：${escapeHtml(sessionDisplayName(m.session_id))}</option>`
+      ).join("");
+
+    const messages = state.groupMessages || [];
+    list.innerHTML = messages.length ? messages.map((message) => {
+      const target = message.to_session_id ? sessionDisplayName(message.to_session_id) : "所有协作会话";
+      const mine = message.sender_session_id === state.sid ? " mine" : "";
+      const badge = message.delivery && message.delivery !== "notify" ? ` <em class="collab-dbadge">${escapeHtml(deliveryLabel(message.delivery))}</em>` : "";
+      const at = message.created_at ? new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+      return `<article class="collab-message${mine}"><div class="collab-message-head"><b>${escapeHtml(sessionDisplayName(message.sender_session_id))}</b><span>→ ${escapeHtml(target)}</span>${badge}<time>${escapeHtml(at)}</time></div><div>${escapeHtml(message.body || "")}</div></article>`;
+    }).join("") : '<div class="collab-empty">还没有协作消息</div>';
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function deliveryLabel(d) {
+    return ({ notify: "仅通知", queue: "排队处理", wake: "立即处理" })[d] || "仅通知";
+  }
+
+  function formatTaskResult(result) {
+    if (result == null) return "";
+    if (typeof result === "string") return result;
+    try { return JSON.stringify(result, null, 2); } catch (_) { return String(result); }
+  }
+
+  function taskStatusLabel(status) {
+    return ({ pending: "未开始", assigned: "已分派", accepted: "已接受", running: "进行中", blocked: "受阻", succeeded: "已完成", failed: "失败", cancelled: "已取消" })[status] || status || "未开始";
+  }
+
+  function renderCollaborationTasks() {
+    const list = $("mc-task-list");
+    const create = $("mc-task-new");
+    if (!list || !create) return;
+    const group = state.activeGroup;
+    create.disabled = !group;
+    if (!group) {
+      $("mc-task-title").textContent = "工作项";
+      list.innerHTML = '<div class="collab-empty">当前会话没有工作组</div>';
+      return;
+    }
+
+    $("mc-task-title").textContent = `${group.title || "工作组"} · 工作项`;
+    const tasks = state.groupTasks || [];
+    list.innerHTML = tasks.length ? tasks.map((task) => {
+      const owner = task.assigned_session_id ? sessionDisplayName(task.assigned_session_id) : "未分配";
+      const status = task.status || "pending";
+      const progress = task.progress ? `<div class="collab-task-progress">进度：${escapeHtml(String(task.progress))}</div>` : "";
+      const result = task.result != null && status !== "pending" && status !== "assigned" ? `<div class="collab-task-result"><strong>${status === "succeeded" ? "结果" : "失败信息"}</strong><div>${escapeHtml(formatTaskResult(task.result))}</div></div>` : "";
+      const claim = !task.assigned_session_id && status === "pending" ? `<button class="btn-ghost" data-claim="${escapeHtml(task.task_id)}">领取</button>` : "";
+      const actions = task.assigned_session_id ? `<div class="collab-task-actions"><button class="btn-ghost" data-open-session="${escapeHtml(task.assigned_session_id)}">查看会话</button><button class="btn-ghost" data-message-session="${escapeHtml(task.assigned_session_id)}">发消息</button></div>` : "";
+      return `<article class="collab-task ${escapeHtml(status)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))}</div>${progress}${result}${claim}${actions}</article>`;
+    }).join("") : '<div class="collab-empty">暂无工作项</div>';
+    list.querySelectorAll("[data-open-session]").forEach((button) => {
+      button.onclick = () => resume(button.dataset.openSession);
+    });
+    list.querySelectorAll("[data-message-session]").forEach((button) => {
+      button.onclick = () => {
+        const recipient = $("mc-collab-recipient");
+        if (recipient) recipient.value = button.dataset.messageSession;
+        switchMCTab("collaboration");
+        $("mc-collab-input").focus();
+      };
+    });
+    list.querySelectorAll("[data-claim]").forEach((button) => {
+      button.onclick = async () => {
+        try {
+          await rpc("group.task.claim", { groupId: group.group_id, taskId: button.dataset.claim, sessionId: state.sid });
+          await loadActiveGroup();
+        } catch (e) { line("error", "领取工作项失败: " + e.message); }
+      };
+    });
+  }
+
+  function openGroupModal() {
+    const ids = Array.from(state.selectedSessions || []);
+    if (!ids.length) {
+      line("error", "请先勾选要一起工作的会话");
+      return;
+    }
+    if (state.sid && !ids.includes(state.sid)) ids.unshift(state.sid);
+    state.pendingGroupMembers = ids;
+    $("group-name-input").value = "";
+    $("group-goal-input").value = "";
+    $("group-member-chips").innerHTML = ids.map((id) => `<span>${escapeHtml(sessionDisplayName(id))}</span>`).join("");
+    $("group-modal").classList.remove("hidden");
+    window.setTimeout(() => $("group-name-input").focus(), 0);
+  }
+
+  async function createGroup() {
+    if (!state.sid) return;
+    const ids = state.pendingGroupMembers || [];
+    const title = $("group-name-input").value.trim();
+    const goal = $("group-goal-input").value.trim();
+    if (!title && !goal) { $("group-goal-input").focus(); return; }
+    const button = $("group-modal-confirm");
+    button.disabled = true;
+    try {
+      const group = await rpc("group.create", { sessionId: state.sid, title, goal, commandId: `group-create-${Date.now()}` });
+      for (const sid of ids.filter((id) => id !== state.sid)) {
+        await rpc("group.member.add", { groupId: group.group_id, actorSessionId: state.sid, parentSessionId: state.sid, sessionId: sid, role: "worker", commandId: `group-add-${group.group_id}-${sid}` });
+      }
+      state.selectedSessions.clear();
+      $("group-modal").classList.add("hidden");
+      await Promise.all([loadSessions(), loadGroups()]);
+      switchMCTab("collaboration");
+      setMCOpen(true);
+    } catch (e) {
+      line("error", "组成工作组失败: " + e.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function openDelegateModal() {
+    const ref = currentGroupRef();
+    if (!ref || ref.group.coordinator_session_id !== state.sid) return;
+    $("delegate-name").value = "";
+    $("delegate-task").value = "";
+    $("delegate-acceptance").value = "";
+    $("delegate-modal").classList.remove("hidden");
+    window.setTimeout(() => $("delegate-task").focus(), 0);
+  }
+
+  async function delegateSession() {
+    const ref = currentGroupRef();
+    const title = $("delegate-task").value.trim();
+    if (!ref || !title) { $("delegate-task").focus(); return; }
+    const button = $("delegate-confirm");
+    button.disabled = true;
+    try {
+      const result = await rpc("group.member.delegate", {
+        groupId: ref.group.group_id,
+        parentSessionId: state.sid,
+        name: $("delegate-name").value.trim() || title.slice(0, 40),
+        title,
+        description: title,
+        acceptance: $("delegate-acceptance").value.trim(),
+        role: "worker",
+        commandId: `delegate-${Date.now()}`,
+      });
+      $("delegate-modal").classList.add("hidden");
+      await Promise.all([loadSessions(), loadGroups()]);
+      await resume(result.sessionId);
+    } catch (e) {
+      line("error", "启动协作会话失败: " + e.message);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function openTaskModal() {
+    if (!state.activeGroup) return;
+    $("task-name").value = "";
+    $("task-description").value = "";
+    $("task-owner").innerHTML = '<option value="">暂不分配</option>' + (state.activeGroup.members || []).map((member) => `<option value="${escapeHtml(member.session_id)}">${escapeHtml(sessionDisplayName(member.session_id))}</option>`).join("");
+    $("task-modal").classList.remove("hidden");
+    $("task-name").focus();
+  }
+
+  async function createCollaborationTask() {
+    const title = $("task-name").value.trim();
+    if (!state.activeGroup || !title) { $("task-name").focus(); return; }
+    const button = $("task-confirm");
+    button.disabled = true;
+    try {
+      await rpc("group.task.create", {
+        groupId: state.activeGroup.group_id,
+        sessionId: state.sid,
+        assignedSessionId: $("task-owner").value || null,
+        title,
+        description: $("task-description").value.trim(),
+        commandId: `task-create-${Date.now()}`,
+      });
+      $("task-modal").classList.add("hidden");
+      await loadActiveGroup();
+    } catch (e) { line("error", "创建工作项失败: " + e.message); }
+    finally { button.disabled = false; }
+  }
+
+  async function sendCollaborationMessage() {
+    const inputEl = $("mc-collab-input");
+    const body = inputEl.value.trim();
+    if (!body || !state.activeGroup) return;
+    try {
+      await rpc("collab.message.send", {
+        groupId: state.activeGroup.group_id,
+        senderSessionId: state.sid,
+        toSessionId: $("mc-collab-recipient").value || null,
+        kind: "chat",
+        delivery: ($("mc-collab-delivery") || {}).value || "notify",
+        body,
+        commandId: `collab-message-${Date.now()}`,
+      });
+      inputEl.value = "";
+      await loadActiveGroup();
+    } catch (e) { line("error", "发送协作消息失败: " + e.message); }
+  }
+
+  async function removeSessionFromGroup(session) {
+    const ref = state.groupBySession[session.id];
+    if (!ref) return;
+    try {
+      await rpc("group.member.remove", {
+        groupId: ref.group.group_id,
+        actorSessionId: ref.group.coordinator_session_id,
+        sessionId: session.id,
+        commandId: `group-remove-${Date.now()}`,
+      });
+      await loadGroups();
+    } catch (e) { line("error", "移出工作组失败: " + e.message); }
+  }
+
+  async function onGroupEvent(frame) {
+    const topic = frame && frame.topic;
+    const payload = (frame && frame.payload) || {};
+    if (topic === "collab_permission_ask" && payload.request_session_id !== state.sid) {
+      showPermission(payload.preview, payload.request_session_id);
+      line("notice", `协作会话 ${sessionDisplayName(payload.request_session_id)} 请求权限，请审批`);
+    } else if (topic === "collab_member_added" && payload.member) {
+      const member = payload.member;
+      if (member.session_id !== state.sid) {
+        line("notice", `模型已派生子代理：${sessionDisplayName(member.session_id)}（${member.role || "worker"}）`);
+      }
+    } else if (topic === "collab_task_created" && payload.task) {
+      const task = payload.task;
+      line("notice", `模型已分派工作项：${task.title || "未命名工作项"}`);
+    } else if (topic === "collab_task_updated" && payload.task && payload.task.status === "succeeded") {
+      line("done", `子代理完成：${payload.task.title || "工作项"}`, true);
+    }
+    await Promise.all([loadSessions(), loadGroups()]);
+  }
+
+  function exitGroupMode() {
+    // 兼容旧调用：协作不再切换成独立页面。
+  }
+
+  function initGroups() {
+    $("new-group").onclick = openGroupModal;
+    $("group-modal-cancel").onclick = () => $("group-modal").classList.add("hidden");
+    $("group-modal-confirm").onclick = createGroup;
+    $("delegate-session").onclick = openDelegateModal;
+    $("delegate-cancel").onclick = () => $("delegate-modal").classList.add("hidden");
+    $("delegate-confirm").onclick = delegateSession;
+    $("task-cancel").onclick = () => $("task-modal").classList.add("hidden");
+    $("task-confirm").onclick = createCollaborationTask;
+    $("mc-task-new").onclick = openTaskModal;
+    $("mc-collab-refresh").onclick = loadActiveGroup;
+    $("mc-collab-send").onclick = sendCollaborationMessage;
+    $("mc-collab-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendCollaborationMessage(); }
+    });
+  }
+
+  function showPermission(preview, requestSessionId) {
+    state.permissionSessionId = requestSessionId || state.sid;
     $("perm-preview").textContent = preview || "";
     $("permission-bar").classList.remove("hidden");
   }
@@ -848,9 +1216,9 @@ case "goal_round": break;
 
   function permission(ok) {
     if (state.ws && state.ws.readyState === 1) {
-      state.ws.send(JSON.stringify({ type: "permission", ok }));
+      state.ws.send(JSON.stringify({ type: "permission", ok, sessionId: state.permissionSessionId || state.sid }));
     } else {
-      rpc("respond", { sessionId: state.sid, permission: ok }).catch(() => {});
+      rpc("respond", { sessionId: state.permissionSessionId || state.sid, permission: ok }).catch(() => {});
     }
     hidePermission();
   }
@@ -897,56 +1265,51 @@ case "goal_round": break;
     box.innerHTML = "";
     const kw = sessionFilter.trim().toLowerCase();
     const all = state.allSessions || [];
-    // 过滤：仅按关键字（title/id）。服务端已懒落盘——磁盘会话都有首条消息，
-    // 0 消息的只可能是刚建好未落盘的当前会话（本地条目），正常显示
-    const items = all.filter((s) => {
-      if (kw && !String(s.title || "").toLowerCase().includes(kw) && !String(s.id).toLowerCase().includes(kw)) return false;
-      return true;
-    });
-    if (items.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "session-empty";
-      empty.textContent = kw ? "没有匹配「" + kw + "」的会话" : "暂无会话";
-      box.appendChild(empty);
-      return;
-    }
-    // 同步侧栏当前工作目录标签（renderSessionList 由 loadSessions 全量刷新时调用）
-    const cur = (state.allSessions || []).find((s) => s.id === state.sid);
-    if (cur && typeof updateCwdLabel === "function") updateCwdLabel(cur.cwd || null);
-    items.forEach((s) => {
+    const visible = (s) => !kw || String(s.title || "").toLowerCase().includes(kw) || String(s.id).toLowerCase().includes(kw);
+    const rendered = new Set();
+    const addItem = (s, child, ref) => {
+      if (!visible(s)) return;
+      rendered.add(s.id);
       const item = document.createElement("div");
-      item.className = "session-item" + (s.id === state.sid ? " active" : "");
-      const fallback = (s.messages || 0) === 0 ? "新会话" : s.id;
-      const title = String(s.title || fallback).replace(/\s+/g, " ").trim().slice(0, 40) || "(未命名)";
+      item.className = "session-item" + (child ? " session-child" : "") + (s.id === state.sid ? " active" : "");
+      const title = String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\s+/g, " ").trim().slice(0, 40) || "(未命名)";
       const stCls = s.busy ? "busy" : (s.running ? "online" : "offline");
+      const role = ref && ref.role ? ref.role : "会话";
+      const selected = state.selectedSessions && state.selectedSessions.has(s.id) ? " checked" : "";
       const cwdShort = s.cwd ? (() => { const p = String(s.cwd).replace(/\\$/, ""); return p.split("/").filter(Boolean).pop() || p; })() : null;
-       item.innerHTML = `<span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>`;
+      item.innerHTML = `<label class="session-select"><input type="checkbox" data-select-session="${escapeHtml(s.id)}"${selected}><span class="session-select-mark"></span></label><span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}${child ? `<span class="session-role">${escapeHtml(role)}</span>` : ""}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>`;
       item.dataset.sid = s.id;
-      item.onclick = (e) => {
-        if (e.target.classList.contains("menu-btn")) return; // 点 ⋯ 不切换会话
-        if (state.creatingSession) return; // 新会话创建中，避免并发切换覆盖
-        resume(s.id);
-      };
-      // ⋯ 菜单钮
-      const btn = document.createElement("button");
-      btn.className = "menu-btn";
-      btn.textContent = "⋯";
-      btn.title = "更多操作";
+      item.onclick = (e) => { if (e.target.closest(".session-select") || e.target.classList.contains("menu-btn")) return; if (!state.creatingSession) resume(s.id); };
+      const checkbox = item.querySelector("[data-select-session]");
+      checkbox.onchange = () => { if (!state.selectedSessions) state.selectedSessions = new Set(); checkbox.checked ? state.selectedSessions.add(s.id) : state.selectedSessions.delete(s.id); updateSelectedSessionCount(); };
+      const btn = document.createElement("button"); btn.className = "menu-btn"; btn.textContent = "⋯"; btn.title = "更多操作";
       btn.onclick = (e) => { e.stopPropagation(); openSessionMenu(e, s); };
-      item.appendChild(btn);
-      box.appendChild(item);
+      item.appendChild(btn); box.appendChild(item);
+    };
+    const findSession = (id) => all.find((s) => s.id === id) || { id, title: id, messages: 0, running: false, busy: false };
+    (state.groups || []).forEach((group) => {
+      const members = group.members || [];
+      if (!members.length) return;
+      const head = members.find((m) => m.session_id === group.coordinator_session_id) || members[0];
+      if (visible(findSession(head.session_id))) { const label = document.createElement("div"); label.className = "session-group-label"; label.textContent = group.title || group.goal || "会话群"; box.appendChild(label); }
+      addItem(findSession(head.session_id), false, head);
+      members.filter((m) => m.session_id !== head.session_id).forEach((m) => addItem(findSession(m.session_id), true, m));
     });
-    // 分页：还有未加载的会话时显示“加载更多”
-    const loaded = (state.allSessions || []).length;
-    const total = state.sessionsTotal || loaded;
-    if (loaded < total) {
-      const more = document.createElement("button");
-      more.className = "session-more";
-      more.textContent = state.loadingMoreSessions ? "加载中…" : `加载更多（已加载 ${loaded}/${total}）`;
-      more.disabled = !!state.loadingMoreSessions;
-      more.onclick = loadMoreSessions;
-      box.appendChild(more);
-    }
+    const others = all.filter((s) => !rendered.has(s.id) && visible(s));
+    if (others.length) { const label = document.createElement("div"); label.className = "session-group-label other"; label.textContent = "其他会话"; box.appendChild(label); others.forEach((s) => addItem(s, false, null)); }
+    if (!box.children.length) { const empty = document.createElement("div"); empty.className = "session-empty"; empty.textContent = kw ? "没有匹配「" + kw + "」的会话" : "暂无会话"; box.appendChild(empty); }
+    const cur = all.find((s) => s.id === state.sid); if (cur && typeof updateCwdLabel === "function") updateCwdLabel(cur.cwd || null);
+    updateSelectedSessionCount();
+    const loaded = all.length, total = state.sessionsTotal || loaded;
+    if (loaded < total) { const more = document.createElement("button"); more.className = "session-more"; more.textContent = state.loadingMoreSessions ? "加载中…" : `加载更多（已加载 ${loaded}/${total}）`; more.disabled = !!state.loadingMoreSessions; more.onclick = loadMoreSessions; box.appendChild(more); }
+  }
+
+  function updateSelectedSessionCount() {
+    const n = state.selectedSessions ? state.selectedSessions.size : 0;
+    const label = $("selected-session-count");
+    if (label) label.textContent = n ? `${n} 个已选` : "选择会话组成工作组";
+    const button = $("new-group");
+    if (button) button.disabled = n === 0;
   }
 
   // 轻量刷新会话运行状态：只更新已渲染列表项的状态点，不重建 DOM（避免闪烁）。
@@ -974,15 +1337,20 @@ case "goal_round": break;
   function openSessionMenu(e, s) {
     menuSession = s;
     const menu = $("session-menu");
+    const remove = $("session-menu-remove-group");
+    const ref = state.groupBySession && state.groupBySession[s.id];
+    const canRemove = !!ref && ref.group.coordinator_session_id !== s.id;
+    if (remove) remove.classList.toggle("hidden", !canRemove);
     menu.classList.remove("hidden");
     const rect = e.currentTarget.getBoundingClientRect();
-    const mw = 150, mh = 80;
+    const mw = 150, mh = canRemove ? 112 : 80;
     let x = rect.right + 4, y = rect.top;
     if (x + mw > window.innerWidth) x = rect.left - mw - 4;
     if (y + mh > window.innerHeight) y = window.innerHeight - mh - 8;
     menu.style.left = x + "px";
     menu.style.top = y + "px";
   }
+
   function closeSessionMenu() {
     $("session-menu").classList.add("hidden");
     menuSession = null;
@@ -992,7 +1360,8 @@ case "goal_round": break;
   });
 
   $("session-menu").addEventListener("click", async (e) => {
-    const act = e.target.dataset.act;
+    const action = e.target.closest("[data-act]");
+    const act = action && action.dataset.act;
     if (!act || !menuSession) return;
     const s = menuSession;
     closeSessionMenu();
@@ -1006,12 +1375,14 @@ case "goal_round": break;
         if (s.id === state.sid) $("session-title").textContent = title;
         await loadSessions();
       } catch (err) { line("error", "重命名失败: " + err.message); }
+    } else if (act === "remove-group") {
+      await removeSessionFromGroup(s);
     } else if (act === "delete") {
       const title = String(s.title || s.id).slice(0, 40);
       confirmDialog("删除会话「" + title + "」？此操作不可恢复。", async () => {
         try {
           await rpc("session.delete", { sessionId: s.id });
-          clearTiming(s.id); // 清理本地 timing 缓存
+          clearTiming(s.id);
           if (s.id === state.sid) {
             state.sid = null;
             localStorage.removeItem("newbee.sid");
@@ -1286,6 +1657,7 @@ case "goal_round": break;
   async function resume(sid) {
     const seq = ++resumeSeq;
     const stale = () => seq !== resumeSeq || state.sid !== sid;
+    exitGroupMode();
     state.sid = sid;
     localStorage.setItem("newbee.sid", sid);
     loadTiming(sid);
@@ -1321,6 +1693,7 @@ case "goal_round": break;
     if (sessionState.awaiting_permission === true) showPermission("该会话正在等待权限确认（代码执行请求）");
     connect();
     loadSessions();
+    loadGroups();
     const firstUser = (hist.messages || []).find(m => m && m.role === "user");
     const title = firstUser ? String(firstUser.content || "").replace(/\s+/g, " ").trim().slice(0, 48) : "";
     $("session-title").textContent = title || (hasUserMessage ? sid : "新会话");
@@ -2178,8 +2551,13 @@ case "goal_round": break;
     const prompt = u.prompt_tokens ?? u.input_tokens ?? 0;
     const completion = u.completion_tokens ?? u.output_tokens ?? 0;
     const total = u.total_tokens ?? (prompt + completion);
-    const cached = u.cache_read_tokens ?? u.cached_tokens ?? u.cache_read_input_tokens ?? (u.prompt_tokens_details && (u.prompt_tokens_details.cached_tokens ?? u.prompt_tokens_details.cache_read_tokens)) ?? 0;
-    const hit = prompt > 0 ? (cached / prompt) * 100 : null;
+    // 缓存字段缺失 = 网关未回报（如 guoyu 未命中时省略 prompt_tokens_details），
+    // 与“真 0”（deepseek 显式回 0）区分：缺失 → cached=null → 显示“未统计”。
+    const cachedRaw = u.cache_read_tokens ?? u.cached_tokens ?? u.cache_read_input_tokens
+      ?? (u.prompt_tokens_details && (u.prompt_tokens_details.cached_tokens ?? u.prompt_tokens_details.cache_read_tokens));
+    const hasCacheInfo = cachedRaw != null;
+    const cached = hasCacheInfo ? cachedRaw : null;
+    const hit = (prompt > 0 && hasCacheInfo) ? (cached / prompt) * 100 : null;
     const model = u.model || u.model_name || "";
     return { prompt, completion, total, cached, hit, model };
   }
@@ -2190,8 +2568,9 @@ case "goal_round": break;
     return (Math.round(n/1e5)/10).toFixed(1).replace(/\.0$/, "") + "M";
   }
   function bubbleUsageLabel(f) {
-    const pct = f.hit == null ? "-" : (f.hit > 99.995 ? "100.00" : f.hit.toFixed(2)) + "%";
-    return `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${fmtTokShort(f.cached)} (${pct})`;
+    const pct = f.hit == null ? "未统计" : ((f.hit > 99.995 ? "100.00" : f.hit.toFixed(2)) + "%");
+    const cacheTxt = f.cached == null ? "-" : fmtTokShort(f.cached);
+    return `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${cacheTxt} (${pct})`;
   }
   function ensureUsageBar(bubble) {
     if (!bubble) return null;
@@ -2225,6 +2604,7 @@ case "goal_round": break;
         state.turnUsage.completion += f.completion || 0;
         state.turnUsage.cached += f.cached || 0;
         state.turnUsage.count += 1;
+        if (f.cached == null) state.turnUsage.hasUnknown = true;
         if (f.model) state.turnUsage.model = f.model;
         state.turnUsageDetails.push({ ...f, raw: u });
         state.lastLLMUsage = u;
@@ -2243,7 +2623,8 @@ case "goal_round": break;
       attachUsageToBubble(target, u);
       if (state.turnUsage && state.turnUsage.count > 1) {
         const bar = target.querySelector(":scope > .msg-usage");
-        if (bar) bar.title = `本轮累计 ${state.turnUsage.count} 次请求 · 输入 ${fmtTokShort(state.turnUsage.prompt)} · 输出 ${fmtTokShort(state.turnUsage.completion)} · 缓存 ${fmtTokShort(state.turnUsage.cached)}`;
+        const cacheSum2 = state.turnUsage.hasUnknown ? fmtTokShort(state.turnUsage.cached) + "+?" : fmtTokShort(state.turnUsage.cached);
+        if (bar) bar.title = `本轮累计 ${state.turnUsage.count} 次请求 · 输入 ${fmtTokShort(state.turnUsage.prompt)} · 输出 ${fmtTokShort(state.turnUsage.completion)} · 缓存 ${cacheSum2}`;
       }
     } else {
       state._pendingUsage = u;
@@ -2264,8 +2645,9 @@ case "goal_round": break;
     bar.className = "tool-usage";
     const left = document.createElement("span");
     left.className = "tool-usage-stats";
-    const pct = f.hit == null ? "-" : (f.hit > 99.995 ? "100.00" : f.hit.toFixed(2)) + "%";
-    left.textContent = (isShared ? "同上次请求 · " : "") + `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${fmtTokShort(f.cached)} (${pct})`;
+    const pct = f.hit == null ? "未统计" : ((f.hit > 99.995 ? "100.00" : f.hit.toFixed(2)) + "%");
+    const cacheTxt = f.cached == null ? "-" : fmtTokShort(f.cached);
+    left.textContent = (isShared ? "同上次请求 · " : "") + `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${cacheTxt} (${pct})`;
     left.title = `prompt=${f.prompt} completion=${f.completion} total=${f.total} cached=${f.cached} hit=${f.hit == null ? "-" : f.hit.toFixed(2)+"%"}`;
     bar.appendChild(left);
     card.appendChild(bar);
@@ -2381,7 +2763,7 @@ case "goal_round": break;
        });
      };
      // resume 时按会话恢复选中档（nil → auto）
-     window.__restoreEffort = (effort) => renderSegs(effort || "auto");
+     window.__restoreEffort = (effort) => renderSegs(effort === "off" ? "none" : (effort || "auto"));
      renderSegs("auto");
    }
 
@@ -2463,10 +2845,14 @@ case "goal_round": break;
     // 左侧：目录 + 进度 + 耗时 + token（口径：服务端 usage 为会话累计值）
     const u = st.usage || {};
     const promptTok = u.prompt_tokens || 0;
-    const cacheRead = u.cache_read_tokens || u.cached_tokens
-      || (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0;
+    // 会话累计口径：与气泡一致，区分“未回报”（缺失）与“真 0”。
+    const cacheRaw = u.cache_read_tokens ?? u.cached_tokens
+      ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens);
+    const hasCacheInfo = cacheRaw != null;
+    const cacheRead = hasCacheInfo ? cacheRaw : 0;
     const outTok = u.completion_tokens || u.output_tokens || 0;
-    const cacheHit = promptTok > 0 ? Math.min(100, cacheRead * 100 / promptTok) : null;
+    const cacheHit = (promptTok > 0 && hasCacheInfo) ? Math.min(100, cacheRead * 100 / promptTok) : null;
+    const cacheMissing = promptTok > 0 && !hasCacheInfo;
     if (st && st.cwd !== undefined) {
       state.cwd = st.cwd || null;
       updateCwdLabel(state.cwd);
@@ -2486,6 +2872,7 @@ case "goal_round": break;
     if (llmMs > 0 && tm.outTok > 0) spd.push(`<span title="输出 token 数 ÷ LLM 耗时">${(tm.outTok / (llmMs / 1000)).toFixed(1)} tok/s</span>`);
     if (spd.length) left.push(spd.join(" · "));
     if (cacheHit !== null) left.push(`<span title="缓存命中率 = 命中缓存的 token ÷ 总输入 token（会话累计）">缓存 ${cacheHit.toFixed(1).replace(/\.0$/, "")}%</span>`);
+    else if (cacheMissing) left.push(`<span title="供应商未回报缓存统计（该模型/网关未命中时不返回缓存字段）">缓存 未统计</span>`);
     if (promptTok > 0 || outTok > 0) left.push(`<span title="累计输入 token（prompt_tokens）· 累计输出 token（completion_tokens）">输入 ${fmtTok(promptTok)} · 输出 ${fmtTok(outTok)}</span>`);
     $("stats-left").innerHTML = left.join(" | ");
     // 右侧：状态 + bind + 策略
@@ -3014,8 +3401,10 @@ case "goal_round": break;
       const stats = f.status === "new"
         ? `<span class="mc-file-added">+${f.added}</span> <span class="mc-file-status">新文件</span>`
         : `<span class="mc-file-added">+${f.added}</span> <span class="mc-file-deleted">-${f.deleted}</span>`;
+      const attribution = state.fileAttribution && state.fileAttribution[f.path];
+      const owner = attribution ? `<span class="mc-file-owner">${escapeHtml(attribution.name)}</span>` : "";
       return `<div class="${cls}" data-path="${escapeHtml(f.path)}" title="点击查看 diff">
-        <div class="mc-file-path">${escapeHtml(f.path)}</div>
+        <div class="mc-file-path">${escapeHtml(f.path)}${owner}</div>
         <div class="mc-file-stats">${stats}</div>
       </div>`;
     }).join("");
@@ -3187,7 +3576,11 @@ case "goal_round": break;
         ["队列", st.queued || 0],
         ["输入 tokens", fmtTok(u.prompt_tokens || 0)],
         ["输出 tokens", fmtTok(u.completion_tokens || 0)],
-        ["缓存命中", u.prompt_tokens > 0 ? (((u.cache_read_tokens || 0) / u.prompt_tokens) * 100).toFixed(1) + "%" : "-"],
+        ["缓存命中", (() => {
+          const cr = u.cache_read_tokens ?? u.cached_tokens ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens);
+          if (u.prompt_tokens > 0 && cr == null) return "未统计";
+          return u.prompt_tokens > 0 ? ((cr || 0) / u.prompt_tokens * 100).toFixed(1) + "%" : "-";
+        })()],
         ["自治档位", st.policy || "-"],
       ];
       let bindingsHtml = "";
@@ -3625,6 +4018,7 @@ case "goal_round": break;
     if (lo) lo.addEventListener("click", doLogout);
     initWebAuthn();
     initPairLogin();
+    initQuickAccess();
   }
 
   // ── 扫码授权登录（手机替电脑"盖章"）──
@@ -3981,6 +4375,8 @@ case "goal_round": break;
     initCmdPalette();
     initGlobalKeys();
     initAtComplete();
+    initGroups();
+    await loadGroups();
     const host = await rpc("host.describe", {});
     $("model-label").textContent = host.model || "(no model)";
     if (!state.sid) {
@@ -3996,6 +4392,7 @@ case "goal_round": break;
   (async () => {
     initLogin();
     updateLogoutBtn();
+    await redeemQuickAccess();
     let needAuth = false;
     try {
       const host = await rpc("host.describe", {});
@@ -4015,6 +4412,124 @@ case "goal_round": break;
       await bootApp();
     }
   })().catch((e) => line("error", `启动失败: ${e.message}`));
+  // ── 手机扫码免登录进入（Quick Access）──
+  // 电脑端已登录 → 生成一次性邀请码 → 二维码 URL 带 ?qk=CODE；
+  // 手机扫码打开后本函数把码换成正式 token，免登录直接进入。
+  function qaQRSupported() { return typeof window.qrcode === "function"; }
+
+  async function redeemQuickAccess() {
+    try {
+      const qk = new URLSearchParams(location.search).get("qk");
+      if (!qk) return;
+      // 清掉 URL 里的码，避免 token 换好后刷新页面又兑一次（码已焚，会报错）
+      const cleanUrl = location.origin + location.pathname;
+      history.replaceState(null, "", cleanUrl);
+      const r = await rpc("quick_access.redeem", { code: qk });
+      if (r && r.token) {
+        setToken(r.token);
+        // 只完成登录态：外层启动块检测到 needAuth && state.token 后会自动 bootApp
+        hideLogin();
+        updateLogoutBtn();
+        return;
+      }
+    } catch (e) {
+      // 码无效/过期：不阻塞，走正常登录流程
+    }
+  }
+
+  function qaIsMobile() {
+    return window.matchMedia("(max-width: 768px)").matches ||
+      /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || "");
+  }
+  function initQuickAccess() {
+    // 手机端不展示"手机扫码"按钮（手机本身就是扫码方）
+    if (qaIsMobile()) return;
+    document.querySelectorAll("#qa-show, .qa-topbar, .qa-top-text").forEach((el) => {
+      el.addEventListener("click", () => openQuickAccess());
+    });
+  }
+
+  // 弹窗状态
+  var qaTimer = 0;
+  var qaCurrent = null;
+  var qaDeadline = 0;
+
+  function openQuickAccess() {
+    const ov = $("qa-overlay");
+    if (!ov) return;
+    ov.classList.remove("hidden");
+    qaGenerate(false);
+    const close = $("qa-close");
+    if (close) close.addEventListener("click", closeQuickAccess);
+    const refresh = $("qa-refresh");
+    if (refresh) refresh.addEventListener("click", () => qaGenerate(true));
+    ov.addEventListener("click", function(e) {
+      if (e.target === ov) closeQuickAccess();
+    });
+  }
+
+  function closeQuickAccess() {
+    const ov = $("qa-overlay");
+    if (ov) ov.classList.add("hidden");
+    if (qaTimer) { clearInterval(qaTimer); qaTimer = 0; }
+    qaCurrent = null;
+    qaDeadline = 0;
+    const refresh = $("qa-refresh");
+    if (refresh) refresh.classList.add("hidden");
+  }
+
+  async function qaGenerate(manual) {
+    if (qaTimer) { clearInterval(qaTimer); qaTimer = 0; }
+    const qrEl = document.querySelector(".qa-qr");
+    const status = $("qa-status");
+    const refresh = $("qa-refresh");
+    const expire = $("qa-expire");
+    if (!qrEl) return;
+    qaSetStatus("正在生成二维码…");
+    if (refresh) refresh.classList.add("hidden");
+    if (expire) expire.textContent = "";
+    try {
+      const r = await rpc("quick_access.create", {});
+      qaCurrent = r.code;
+      var url = location.origin + "/?qk=" + encodeURIComponent(r.code);
+      if (!qaQRSupported()) {
+        qrEl.innerHTML = "";
+        const a = document.createElement("a");
+        a.href = url; a.textContent = url; a.style.wordBreak = "break-all";
+        qrEl.appendChild(a);
+      } else {
+        try {
+          const qr = window.qrcode(0, "M");
+          qr.addData(url);
+          qr.make();
+          qrEl.innerHTML = qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true });
+          const svg = qrEl.querySelector("svg");
+          if (svg) { svg.removeAttribute("width"); svg.removeAttribute("height"); }
+        } catch (e) { qrEl.textContent = url; }
+      }
+      qaDeadline = Date.now() + (r.ttl_ms || 600000);
+      qaSetStatus("用手机扫码，即可免登录打开 newbee");
+      var ttl = r.ttl_ms || 600000;
+      var mm = Math.floor(ttl / 60000), ss = Math.floor(ttl % 60000 / 1000);
+      if (expire) expire.textContent = "有效期 " + mm + " 分 " + ss + " 秒";
+      qaTimer = setInterval(() => {
+        if (Date.now() > qaDeadline) {
+          clearInterval(qaTimer); qaTimer = 0;
+          qaSetStatus("二维码已失效，请点击下方按钮重新生成");
+          if (refresh) refresh.classList.remove("hidden");
+        }
+      }, 1000);
+    } catch (e) {
+      qaSetStatus("生成失败: " + (e.message || e));
+      if (refresh) refresh.classList.remove("hidden");
+    }
+  }
+
+  function qaSetStatus(msg) {
+    const el = $("qa-status");
+    if (el) el.textContent = msg;
+  }
+
 })();
 
 
@@ -4050,4 +4565,3 @@ case "goal_round": break;
     }
   });
 })();
-
