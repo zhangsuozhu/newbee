@@ -48,7 +48,10 @@ defmodule Newbee.LLM.Config do
       context_window:
         provider_context_override(provider, model) || role_cfg["contextWindow"] ||
           provider["contextWindow"],
-      vision: Map.get(role_cfg, "vision", Map.get(provider, "vision", true))
+      vision: Map.get(role_cfg, "vision", Map.get(provider, "vision", true)),
+      # 会话级缓存路由键：显式 opts > 角色配置 cacheKey；nil 时由 Client 从
+      # 进程字典派生（Loop 会话进程 init 时登记），都无则不发送。
+      cache_key: Keyword.get(opts, :cache_key) || role_cfg["cacheKey"]
     )
   end
 

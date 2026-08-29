@@ -22,8 +22,30 @@ defmodule Newbee.LLM.Client do
             vision: true,
             context_window: nil,
             interrupt_scope: nil,
+            cache_key: nil,
             req_options: []
 
+  # ── cache_key 派生 ──
+  # 会话进程（Agent.Loop init/switch_model）在 client 构建前把会话 id 存入
+  # 进程字典；无该上下文（verifier/advisor/工具直调/测试）返回 nil → 不发送。
+  @cache_key_pd_key {:newbee, :llm_cache_key}
+
+  @doc "设置当前进程后续 LLM 请求的会话级缓存路由键（prompt_cache_key）。"
+  def put_cache_key(nil), do: Process.delete(@cache_key_pd_key)
+
+  def put_cache_key(session_id) when is_binary(session_id) do
+    Process.put(@cache_key_pd_key, "newbee-" <> session_id)
+    :ok
+  end
+
+  defp derive_cache_key do
+    case Process.get(@cache_key_pd_key) do
+      v when is_binary(v) -> v
+      _ -> nil
+    end
+  end
+
+  @doc "获取模型上下文窗口；显式配置优先，否则查询 provider 元数据，失败回退 256K。"
   def new(opts \\ []) do
     %__MODULE__{
       model: Keyword.get(opts, :model, @default_model),
@@ -35,6 +57,10 @@ defmodule Newbee.LLM.Client do
       vision: Keyword.get(opts, :vision, true),
       context_window: Keyword.get(opts, :context_window),
       interrupt_scope: Keyword.get(opts, :interrupt_scope),
+      # cache_key：会话级稳定路由键（OpenAI prompt_cache_key 语义；Sub2API/
+      # gpt-5.6 系要求客户端主动携带，缺省不命中）。未显式传入时从进程字典
+      # 派生（Loop init/switch_model 注入），无会话上下文则 nil 不发送。
+      cache_key: Keyword.get_lazy(opts, :cache_key, fn -> derive_cache_key() end),
       req_options: Keyword.get(opts, :req_options, [])
     }
   end
@@ -83,7 +109,10 @@ defmodule Newbee.LLM.Client do
 
         Newbee.DebugLog.log(
           :llm,
-          "context_window probe failed model=" <> client.model <> ", fallback " <> Integer.to_string(n) <>
+          "context_window probe failed model=" <>
+            client.model <>
+            ", fallback " <>
+            Integer.to_string(n) <>
             "（provider /models 未返回 context_length，建议 model.json contextWindows 显式配置）"
         )
 
@@ -147,13 +176,17 @@ defmodule Newbee.LLM.Client do
     Newbee.DebugLog.log(:llm, "start model=#{client.model} messages=#{length(messages)}")
     t0 = System.monotonic_time(:millisecond)
 
-    body = %{
-      model: client.model,
-      messages: messages,
-      tools: Newbee.Codec.tools(),
-      stream: true,
-      stream_options: %{include_usage: true}
-    }
+    body =
+      %{
+        model: client.model,
+        messages: messages,
+        tools: Newbee.Codec.tools(),
+        stream: true,
+        stream_options: %{include_usage: true}
+      }
+      |> put_cache_field(client)
+
+    effort = normalize_reasoning_effort(client.reasoning_effort)
 
     effort = normalize_reasoning_effort(client.reasoning_effort)
 
@@ -262,6 +295,8 @@ defmodule Newbee.LLM.Client do
   def complete(%__MODULE__{} = client, messages, opts \\ []) do
     Newbee.DebugLog.log(:llm, "complete start model=#{client.model} messages=#{length(messages)}")
 
+    effort = normalize_reasoning_effort(client.reasoning_effort)
+
     body =
       %{
         model: client.model,
@@ -271,7 +306,7 @@ defmodule Newbee.LLM.Client do
       |> maybe_put_body(:temperature, Keyword.get(opts, :temperature, 0.2))
       |> maybe_put_body(:logprobs, Keyword.get(opts, :logprobs))
       |> maybe_put_body(:top_logprobs, Keyword.get(opts, :top_logprobs))
-      |> maybe_put_body(:reasoning_effort, normalize_reasoning_effort(client.reasoning_effort))
+      |> maybe_put_body(:reasoning_effort, effort)
       |> Map.merge(Keyword.get(opts, :extra, %{}))
 
     body =
@@ -279,6 +314,7 @@ defmodule Newbee.LLM.Client do
         tools when is_list(tools) and tools != [] -> Map.put(body, :tools, tools)
         _ -> body
       end
+      |> put_cache_field(client)
 
     t0 = System.monotonic_time(:millisecond)
 
@@ -737,6 +773,14 @@ defmodule Newbee.LLM.Client do
         usage
     end
   end
+
+  # cache_key → 请求体 prompt_cache_key（OpenAI 官方字段；其他 provider 按
+  # 未知字段忽略，实测透传无害）。client.cache_key 为 nil 不发送。
+  defp put_cache_field(body, %__MODULE__{cache_key: k}) when is_binary(k) do
+    Map.put(body, :prompt_cache_key, k)
+  end
+
+  defp put_cache_field(body, _client), do: body
 
   defp maybe_put_usage(usage, _key, nil), do: usage
   defp maybe_put_usage(usage, key, value), do: Map.put(usage, key, value)

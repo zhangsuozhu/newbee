@@ -10,6 +10,10 @@ defmodule Newbee.MediaTest do
     File.write!("/tmp/newbee-media-spec/b.mp3", <<0xFF, 0xFB, 0x90>>)
     File.write!("/tmp/newbee-media-spec/c.mp4", <<0x00, 0x00, 0x00, 0x20, "ftypmp42", 0::size(128)>>)
     :ok
+    on_exit(fn ->
+      Newbee.Session.delete(@sid)
+      Newbee.Session.delete("media-tool-test")
+    end)
   end
 
   test "show 上屏图片：落盘 + manifest + transcript" do

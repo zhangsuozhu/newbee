@@ -16,13 +16,29 @@ defmodule Newbee.SessionTest do
 
   defp cleanup_test_sessions do
     root = Path.join(System.user_home!(), ".newbee/sessions")
+    artifacts = Path.join(System.user_home!(), ".newbee/session-artifacts")
 
-    for f <- Path.wildcard(Path.join(root, "test_*.jsonl")),
-        Regex.match?(~r{/test_\d+\.jsonl$}, f) do
-      File.rm(f)
+    # jsonl 侧：建了 transcript 的会话
+    jsonl_ids =
+      for f <- Path.wildcard(Path.join(root, "test_*.jsonl")),
+          Regex.match?(~r{/test_\d+\.jsonl$}, f) do
+        Path.basename(f, ".jsonl")
+      end
 
-      File.rm_rf(Path.join(System.user_home!(), ".newbee/session-artifacts/#{Path.basename(f, ".jsonl")}"))
-    end
+    # artifacts 侧：只 open/save_bindings 没 append 的会话没有 jsonl，也一并清
+    # （目录不存在时跳过，避免 setup 在干净环境崩）
+    artifact_ids =
+      case File.ls(artifacts) do
+        {:ok, dirs} ->
+          for d <- dirs, Regex.match?(~r{^test_\d+$}, d), do: d
+
+        _ ->
+          []
+      end
+
+    (jsonl_ids ++ artifact_ids)
+    |> Enum.uniq()
+    |> Enum.each(&Newbee.Session.delete/1)
   end
 
   test "mark_created 让空会话立即出现在列表" do

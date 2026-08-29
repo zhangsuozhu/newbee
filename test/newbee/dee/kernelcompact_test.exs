@@ -12,8 +12,7 @@ defmodule Newbee.Agent.LoopCompactTest do
     id = "kcomp_#{:erlang.unique_integer([:positive])}"
 
     on_exit(fn ->
-      File.rm(Path.join(System.user_home!(), ".newbee/sessions/#{id}.jsonl"))
-      File.rm_rf(Path.join(System.user_home!(), ".newbee/session-artifacts/#{id}"))
+      Session.delete(id)
       Session.set_current(nil)
     end)
 

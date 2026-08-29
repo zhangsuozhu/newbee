@@ -2278,3 +2278,143 @@ svg.ico {
   cursor: pointer; }
 .pair-refresh:hover { border-color: var(--accent, #4f8cff); color: var(--accent, #4f8cff); }
 .pair-refresh.hidden { display: none; }
+
+/* ── 会话群工作台 ── */
+.group-sidebar { border-top: 1px solid var(--nb-border); padding-top: 8px; }
+.group-sidebar-head { display: flex; align-items: center; padding: 0 4px 5px 6px; color: var(--nb-label-2); font-size: 12px; font-weight: 600; }
+.group-sidebar-head span { flex: 1; }
+.group-list { display: flex; flex-direction: column; gap: 2px; max-height: 172px; overflow-y: auto; margin: 0 -4px; }
+.group-list-empty { padding: 7px 10px; color: var(--nb-label-caption); font-size: 12px; }
+.group-list-item { width: 100%; border: 0; background: transparent; color: var(--nb-label-2); padding: 7px 10px; text-align: left; cursor: pointer; border-radius: 6px; display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 7px; font-family: var(--nb-font); }
+.group-list-item:hover, .group-list-item.active { background: var(--nb-bg-elev); color: var(--nb-label-1); }
+.group-list-item.active { box-shadow: inset 2px 0 0 var(--nb-accent); }
+.group-list-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--nb-green); }
+.group-list-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
+.group-list-meta { color: var(--nb-label-caption); font: 10px var(--nb-mono); }
+.group-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--nb-bg); }
+.group-head { display: flex; align-items: center; gap: 16px; padding: 16px 22px; border-bottom: 1px solid var(--nb-border); background: var(--nb-bg-panel); }
+.group-ident { flex: 1; min-width: 0; }
+.group-title { font-size: 16px; font-weight: 650; color: var(--nb-label-1); }
+.group-goal { margin-top: 2px; color: var(--nb-label-3); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-head-actions { display: flex; align-items: center; gap: 8px; }
+.group-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(190px, 240px) minmax(0, 1fr); }
+.group-members-pane { border-right: 1px solid var(--nb-border); padding: 14px 12px; overflow-y: auto; background: var(--nb-bg-panel); }
+.group-section-title { padding: 0 5px 8px; color: var(--nb-label-caption); font-size: 11px; font-weight: 650; text-transform: uppercase; }
+.group-members { display: flex; flex-direction: column; gap: 4px; }
+.group-member { border: 0; background: transparent; color: var(--nb-label-2); padding: 8px; border-radius: 6px; text-align: left; cursor: pointer; font-family: var(--nb-font); }
+.group-member:hover { background: var(--nb-bg-elev); color: var(--nb-label-1); }
+.group-member-name { display: block; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-member-meta { display: block; margin-top: 2px; color: var(--nb-label-caption); font: 10.5px var(--nb-mono); }
+.group-timeline-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.group-timeline { flex: 1; overflow-y: auto; padding: 22px clamp(18px, 4vw, 52px); display: flex; flex-direction: column; gap: 12px; }
+.group-empty { margin: auto; color: var(--nb-label-caption); text-align: center; }
+.group-message { max-width: 760px; border-left: 2px solid var(--nb-border); padding: 8px 12px; }
+.group-message.mine { border-left-color: var(--nb-accent); }
+.group-message-head { display: flex; gap: 8px; color: var(--nb-label-caption); font-size: 11px; }
+.group-message-kind { font-family: var(--nb-mono); color: var(--nb-accent-soft); }
+.group-message-body { margin-top: 4px; color: var(--nb-label-1); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.group-composer { border-top: 1px solid var(--nb-border); padding: 12px clamp(18px, 4vw, 52px); display: grid; grid-template-columns: minmax(110px, 170px) minmax(0, 1fr) 36px; gap: 8px; align-items: end; background: var(--nb-bg-panel); }
+.group-composer select, .group-composer textarea { border: 1px solid var(--nb-border); background: var(--nb-bg-elev); color: var(--nb-label-1); border-radius: 6px; font: 13px var(--nb-font); outline: none; }
+.group-composer select { min-height: 36px; padding: 0 8px; }
+.group-composer textarea { min-height: 36px; max-height: 120px; resize: none; padding: 8px 10px; }
+.group-composer select:focus, .group-composer textarea:focus { border-color: var(--nb-accent); }
+
+@media (max-width: 768px) {
+  .group-list { max-height: 130px; }
+  .group-head { align-items: flex-start; padding: 12px 14px; }
+  .group-head-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .group-body { grid-template-columns: 1fr; }
+  .group-members-pane { border-right: 0; border-bottom: 1px solid var(--nb-border); max-height: 160px; }
+  .group-members { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .group-timeline { padding: 14px; }
+  .group-composer { padding: 10px 12px; grid-template-columns: 1fr 36px; }
+  .group-composer select { grid-column: 1 / -1; }
+}
+.group-modal-fields { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+.group-modal-fields label { display: flex; flex-direction: column; gap: 5px; color: var(--nb-label-2); font-size: 12px; }
+.group-modal-fields input, .group-modal-fields textarea { width: 100%; border: 1px solid var(--nb-border); border-radius: 6px; background: var(--nb-bg-elev); color: var(--nb-label-1); font: 13px var(--nb-font); padding: 8px 10px; outline: none; resize: vertical; }
+.group-modal-fields input:focus, .group-modal-fields textarea:focus { border-color: var(--nb-accent); }
+.group-task-pane { grid-column: 1 / -1; border-top: 1px solid var(--nb-border); padding: 10px 12px; background: var(--nb-bg-panel); max-height: 170px; overflow-y: auto; }
+.group-task-head { display: flex; justify-content: space-between; align-items: center; color: var(--nb-label-caption); font-size: 11px; font-weight: 650; text-transform: uppercase; }
+.group-tasks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; margin-top: 6px; }
+.group-task { border-left: 2px solid var(--nb-border); padding: 6px 8px; min-width: 0; background: var(--nb-bg-elev); }
+.group-task-title { color: var(--nb-label-1); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-task-meta, .group-task-progress, .group-task-empty { color: var(--nb-label-caption); font: 10.5px var(--nb-mono); margin-top: 2px; overflow-wrap: anywhere; }
+.group-task-empty { padding: 4px; }
+.group-status { color: var(--nb-accent-soft); font: 11px var(--nb-mono); padding: 5px 7px; border: 1px solid var(--nb-border); border-radius: 6px; }
+.group-task-claim { margin-top: 5px; padding: 3px 8px; font-size: 11px; }
+
+/* ── 会话协作列表（保留原会话条目，仅增加层级和选择态）── */
+.session-group-label{padding:9px 8px 4px;color:var(--nb-label-caption);font-size:11px;font-weight:650;border-top:1px solid var(--nb-border);margin-top:5px}
+.session-group-label:first-child{border-top:0;margin-top:0}.session-group-label.other{margin-top:10px}
+.session-child{margin-left:18px!important;width:calc(100% - 18px)!important;border-left:1px solid var(--nb-border);border-radius:0 8px 8px 0}
+.session-role{margin-left:6px;color:var(--nb-label-caption);font-size:10px;font-weight:400}
+.session-select{position:absolute;left:4px;top:9px;z-index:2;display:flex;align-items:center;cursor:pointer;opacity:0;transition:opacity var(--nb-dur)}
+.session-item{padding-left:28px}.session-item:hover .session-select,.session-select:focus-within{opacity:1}
+.session-select input{width:13px;height:13px;margin:0;accent-color:var(--nb-accent);cursor:pointer}.session-select-mark{display:none}
+.session-item:has(.session-select input:checked){box-shadow:inset 2px 0 0 var(--nb-accent);background:var(--nb-bg-elev)}
+.session-group-actions{display:flex;align-items:center;gap:7px;border-top:1px solid var(--nb-border);padding:9px 3px 0;color:var(--nb-label-caption);font-size:11px}
+.session-group-actions span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-group-actions button:disabled{opacity:.45;cursor:default}
+.collab-member-strip{display:flex;flex-wrap:wrap;gap:5px;padding:4px 8px 9px;border-bottom:1px solid var(--nb-border)}
+.collab-member{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:5px 7px;border:1px solid var(--nb-border);border-radius:7px;background:var(--nb-bg-elev);color:var(--nb-label-2);cursor:pointer;font:11px var(--nb-font)}
+.collab-member:hover,.collab-member.active{border-color:var(--nb-accent);color:var(--nb-label-1)}.collab-member small{color:var(--nb-label-caption)}
+.collab-message-list{display:flex;flex-direction:column;gap:7px;padding:8px;overflow:auto;min-height:120px;max-height:calc(100vh - 300px)}
+.collab-message{padding:7px 9px;border-left:2px solid var(--nb-border);background:var(--nb-bg);font-size:12px;color:var(--nb-label-1);overflow-wrap:anywhere}.collab-message.mine{border-left-color:var(--nb-accent)}
+.collab-message-head{display:flex;gap:5px;align-items:center;color:var(--nb-label-caption);font-size:10px;margin-bottom:3px}.collab-message-head b{color:var(--nb-accent-soft)}.collab-message-head time{margin-left:auto;font-family:var(--nb-mono)}
+.collab-composer{border-top:1px solid var(--nb-border);padding:8px;display:flex;flex-direction:column;gap:6px}.collab-composer select,.collab-composer textarea{width:100%;border:1px solid var(--nb-border);border-radius:6px;background:var(--nb-bg-elev);color:var(--nb-label-1);font:12px var(--nb-font);padding:6px;resize:vertical}.collab-composer button{align-self:flex-end;padding:5px 12px;font-size:12px}
+.collab-task-list{display:flex;flex-direction:column;gap:6px;padding:5px 8px}.collab-task{padding:8px;border-left:2px solid var(--nb-border);background:var(--nb-bg);font-size:12px}.collab-task.running{border-left-color:var(--nb-accent)}.collab-task.succeeded{border-left-color:var(--nb-green)}.collab-task.failed{border-left-color:var(--nb-red)}
+.collab-task-title{color:var(--nb-label-1);overflow-wrap:anywhere}.collab-task-meta,.collab-task-progress{color:var(--nb-label-caption);font:10px var(--nb-mono);margin-top:3px;overflow-wrap:anywhere}.collab-task button{margin-top:6px;padding:3px 8px;font-size:11px}.collab-empty{padding:24px 10px;text-align:center;color:var(--nb-label-caption);font-size:12px}
+.session-item{position:relative}.session-item.session-child{margin-left:18px;width:calc(100% - 18px);border-left:1px solid var(--nb-border);border-radius:0 8px 8px 0}.session-item .session-role{margin-left:6px;color:var(--nb-label-caption);font-size:10px;font-weight:400}.session-item .session-select{position:absolute;left:7px;top:10px;z-index:2;opacity:0;cursor:pointer}.session-item:hover .session-select,.session-select:focus-within{opacity:1}.session-select input{width:13px;height:13px;margin:0;accent-color:var(--nb-accent);cursor:pointer}.session-item:has(.session-select input:checked){box-shadow:inset 2px 0 0 var(--nb-accent);background:var(--nb-bg-elev)}
+.session-group-actions{display:flex;align-items:center;gap:7px;border-top:1px solid var(--nb-border);padding:9px 3px 0;color:var(--nb-label-caption);font-size:11px}.session-group-actions span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-group-actions button:disabled{opacity:.45;cursor:default}
+.collab-member-strip{display:flex;flex-wrap:wrap;gap:5px;padding:4px 8px 9px;border-bottom:1px solid var(--nb-border)}.collab-member{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:5px 7px;border:1px solid var(--nb-border);border-radius:7px;background:var(--nb-bg-elev);color:var(--nb-label-2);cursor:pointer;font:11px var(--nb-font)}.collab-member:hover,.collab-member.active{border-color:var(--nb-accent);color:var(--nb-label-1)}.collab-member small{color:var(--nb-label-caption)}
+.collab-message-list{display:flex;flex-direction:column;gap:7px;padding:8px;overflow:auto;min-height:120px;max-height:calc(100vh - 300px)}.collab-message{padding:7px 9px;border-left:2px solid var(--nb-border);background:var(--nb-bg);font-size:12px;color:var(--nb-label-1);overflow-wrap:anywhere}.collab-message.mine{border-left-color:var(--nb-accent)}.collab-message-head{display:flex;gap:5px;align-items:center;color:var(--nb-label-caption);font-size:10px;margin-bottom:3px}.collab-message-head b{color:var(--nb-accent-soft)}.collab-message-head time{margin-left:auto;font-family:var(--nb-mono)}
+.collab-composer{border-top:1px solid var(--nb-border);padding:8px;display:flex;flex-direction:column;gap:6px}.collab-composer select,.collab-composer textarea{width:100%;border:1px solid var(--nb-border);border-radius:6px;background:var(--nb-bg-elev);color:var(--nb-label-1);font:12px var(--nb-font);padding:6px;resize:vertical}.collab-composer button{align-self:flex-end;padding:5px 12px;font-size:12px}.collab-task-list{display:flex;flex-direction:column;gap:6px;padding:5px 8px}.collab-task{padding:8px;border-left:2px solid var(--nb-border);background:var(--nb-bg);font-size:12px}.collab-task.running{border-left-color:var(--nb-accent)}.collab-task.succeeded{border-left-color:var(--nb-green)}.collab-task.failed{border-left-color:var(--nb-red)}.collab-task-title{color:var(--nb-label-1);overflow-wrap:anywhere}.collab-task-meta,.collab-task-progress{color:var(--nb-label-caption);font:10px var(--nb-mono);margin-top:3px;overflow-wrap:anywhere}.collab-task button{margin-top:6px;padding:3px 8px;font-size:11px}.collab-empty{padding:24px 10px;text-align:center;color:var(--nb-label-caption);font-size:12px}
+
+/* 协作消息投递徽标（notify/queue/wake） */
+.collab-dbadge{font-style:normal;font-size:10px;color:#5b6472;border:1px solid #3a4149;border-radius:8px;padding:0 6px;margin-left:4px;white-space:nowrap}
+
+.collab-task-result{margin-top:8px;padding:8px 10px;background:var(--panel-2,#20252b);border-left:2px solid var(--accent,#6ea8fe);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.collab-task-result strong{display:block;margin-bottom:4px;color:var(--fg2,#9aa4b2)}.collab-task-actions{display:flex;gap:6px;margin-top:8px}
+
+.diff-owner,.mc-file-owner{font-size:10px;color:var(--fg2,#9aa4b2);margin-left:8px;border:1px solid var(--line,#3a4149);border-radius:8px;padding:1px 6px;white-space:nowrap}.mc-file-path{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+
+
+/* ── 手机扫码免登录（Quick Access）── */
+.qa-show-btn { display: flex; align-items: center; gap: 6px; align-self: flex-start;
+  padding: 5px 10px; border-radius: 8px; background: transparent; border: 1px solid var(--nb-border);
+  color: var(--nb-label-2); cursor: pointer; font-size: 12px; margin-top: 4px;
+  transition: background var(--nb-dur), color var(--nb-dur), border-color var(--nb-dur); }
+.qa-show-btn:hover { background: var(--nb-bg-elev); color: var(--nb-accent-soft); border-color: var(--nb-accent); }
+.qa-overlay { position: fixed; inset: 0; z-index: 2500; background: rgba(0,0,0,.55);
+  display: flex; align-items: center; justify-content: center; }
+.qa-overlay.hidden { display: none; }
+.qa-box { width: 300px; max-width: calc(100vw - 32px); padding: 22px 24px; border-radius: 14px;
+  background: var(--panel, #171a21); border: 1px solid var(--border, #2a2e3a);
+  box-shadow: 0 8px 40px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 14px;
+  align-items: center; text-align: center; }
+.qa-head { width: 100%; display: flex; align-items: center; justify-content: space-between;
+  font-size: 15px; font-weight: 600; color: var(--fg, #e6e8ee); }
+.qa-head .icon-btn { background: transparent; border: none; color: var(--fg-dim, #9aa0ae); cursor: pointer; }
+.qa-qr { display: inline-flex; padding: 14px; background: #fff; border-radius: 12px; }
+.qa-qr svg { display: block; width: 200px; height: 200px; }
+.qa-qr a { color: #4f8cff; font-size: 12px; word-break: break-all; }
+.qa-status { font-size: 13px; color: var(--fg-dim, #9aa0ae); line-height: 1.6; }
+.qa-expire { font-size: 12px; color: var(--fg-dim, #9aa0ae); }
+.qa-refresh { padding: 8px 18px; border-radius: 8px; font-size: 13px;
+  background: transparent; border: 1px solid var(--border, #2a2e3a); color: var(--fg-dim, #9aa0ae); cursor: pointer; }
+.qa-refresh:hover { border-color: var(--accent, #4f8cff); color: var(--accent, #4f8cff); }
+.qa-refresh.hidden { display: none; }
+
+/* 顶栏手机扫码按钮（与主题切换/Mission Control 同排） */
+.qa-topbar { color: var(--nb-label-2); }
+.qa-topbar:hover { color: var(--nb-accent-soft); }
+/* 顶栏"手机扫码"文字按钮 */
+.qa-top-text { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px;
+  border-radius: 8px; border: 1px solid var(--nb-border); background: transparent;
+  color: var(--nb-label-2); font-size: 12px; cursor: pointer; white-space: nowrap;
+  transition: background var(--nb-dur), color var(--nb-dur), border-color var(--nb-dur); }
+.qa-top-text:hover { background: var(--nb-bg-elev); color: var(--nb-accent-soft); border-color: var(--nb-accent); }
+
+/* 手机端不展示扫码按钮（手机是扫码方） */
+@media (max-width: 768px) {
+  #qa-show { display: none !important; }
+}

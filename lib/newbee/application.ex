@@ -23,6 +23,7 @@ defmodule Newbee.Application do
           []
         else
           [
+            Newbee.Collaboration.Coordinator,
             Newbee.Environment.Coordinator,
             Newbee.Environment.ContextQuality.Collector,
             Newbee.Daemon,
@@ -34,6 +35,7 @@ defmodule Newbee.Application do
     Newbee.Web.Auth.create_table()
     Newbee.Web.WebAuthn.create_table()
     Newbee.Web.Pair.create_table()
+    Newbee.Web.QuickAccess.create_table()
 
     opts = [strategy: :one_for_one, name: Newbee.Supervisor]
     Supervisor.start_link(children, opts)

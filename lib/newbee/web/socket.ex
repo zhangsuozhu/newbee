@@ -25,8 +25,9 @@ defmodule Newbee.Web.Socket do
       {:ok, %{"type" => "interrupt"}} ->
         cast_session(st.sid, &WSession.interrupt/1)
 
-      {:ok, %{"type" => "permission", "ok" => ok}} ->
-        cast_session(st.sid, &WSession.permission_reply(&1, ok))
+      {:ok, %{"type" => "permission", "ok" => ok} = frame} ->
+        target = frame["sessionId"] || st.sid
+        cast_session(target, &WSession.permission_reply(&1, ok))
 
       {:ok, %{"type" => "prompt", "text" => t}} ->
         cast_session(st.sid, &WSession.prompt(&1, t))
@@ -47,6 +48,27 @@ defmodule Newbee.Web.Socket do
   def handle_info({:newbee_event, :web_event, {:web_event, sid, kind, payload}}, %{sid: sid} = st) do
     frame = Jason.encode_to_iodata!(%{type: "event", sessionId: sid, kind: to_string(kind), payload: payload})
     {:push, [{:text, frame}], st}
+  end
+
+  def handle_info(
+        {:newbee_event, :collab_event, %{"session_ids" => session_ids} = event},
+        %{sid: sid} = st
+      )
+      when is_list(session_ids) do
+    if sid in session_ids do
+      frame =
+        Jason.encode_to_iodata!(%{
+          type: "group_event",
+          groupId: event["group_id"],
+          eventId: event["event_id"],
+          topic: event["topic"],
+          payload: json_safe(event["payload"])
+        })
+
+      {:push, [{:text, frame}], st}
+    else
+      {:ok, st}
+    end
   end
 
   # 系统级进化事件下行（与具体 session 无关；前端进化面板消费）

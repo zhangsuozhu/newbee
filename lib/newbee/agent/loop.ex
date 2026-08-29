@@ -124,10 +124,25 @@ defmodule Newbee.Agent.Loop do
 
     # 会话级隔离：每个会话一个中断 scope（注入 client），evaluator 注册到
     # SessionEvaluators（key = 本 Loop pid），interrupt 只作用本会话。
+    # cache_key（prompt_cache_key 路由）：先在进程字典登记会话 id，再构建
+    # client —— Client.new 从进程字典派生。会话在 init 尾部才 open，这里用
+    # opts 的 session_id；无则 nil（CLI 内嵌/测试场景不带 key 也可）。
+    Newbee.LLM.Client.put_cache_key(Keyword.get(opts, :session_id))
+
     client =
       if Map.get(client, :interrupt_scope),
         do: client,
         else: Map.put(client, :interrupt_scope, Newbee.LLM.Client.new_interrupt_scope())
+
+    # client 在外部（web/session.ex client_for_session / CLI）构造好传入——
+    # 那些进程没有进程字典 key，Client.new 派生拿到 nil。这里按会话补齐：
+    # 会话 id 就是缓存路由键的稳定来源，switch_model 已有继承逻辑。
+    client =
+      if Map.get(client, :cache_key) in [nil, ""] and is_binary(Keyword.get(opts, :session_id)) do
+        Map.put(client, :cache_key, "newbee-" <> Keyword.get(opts, :session_id))
+      else
+        client
+      end
 
     if is_pid(evaluator), do: Newbee.SessionEvaluators.register(self(), {evaluator, Map.get(client, :interrupt_scope)})
 
@@ -341,7 +356,16 @@ defmodule Newbee.Agent.Loop do
   def handle_call({:switch_model, client}, _from, state) do
     # 不丢会话/绑定/消息/中断 scope，仅替换后续 turn 所用的 client 与 client_fun。
     # 求值器节点不动，当前 turn 仍用旧 client 完成，下次 submit 即生效。
+    # cache_key 沿用当前会话：client 显式带了就保留，否则继承旧 client 的。
+    # （switch 后的 stream_chat 走 client.cache_key，不再依赖进程字典——
+    # GenServer 进程字典在 init 后可能被清/复用，显式字段更稳。）
     client = Map.put(client, :interrupt_scope, Map.get(state.client, :interrupt_scope))
+
+    client =
+      case {Map.get(client, :cache_key), Map.get(state.client, :cache_key)} do
+        {nil, inherited} when is_binary(inherited) -> Map.put(client, :cache_key, inherited)
+        _ -> client
+      end
 
     client_fun = fn messages, on_text, on_reasoning ->
       Newbee.LLM.Client.stream_chat(client, messages, on_text, on_reasoning)
@@ -1081,6 +1105,22 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
+  # 模型代码在独立 evaluator 节点执行；把不可伪造的当前会话身份短暂注入
+  # evaluator 进程，供 Newbee.Tools.Collaboration.delegate/2 读取，执行后必清除。
+  # 会话身份注入 = 三段独立 eval（put → 裸代码 → delete）。
+  # 不能用 try/after 包裹代码体：Code.eval_string 只收集顶层作用域绑定，
+  # try 块内的赋值不会出现在 new_binding 里——工具代码的绑定全部丢失
+  # （kerneltest 完整循环用例暴露：回填值正常但 x=42 绑定消失）。
+  defp collaboration_context_put(state) do
+    sid = if state.session, do: state.session.id, else: nil
+    root = state.root || (state.session && state.session.dir)
+
+    "Process.put({Newbee.Tools.Collaboration, :context}, %{session_id: " <>
+      inspect(sid) <> ", project_root: " <> inspect(root) <> "})"
+  end
+
+  @collab_context_delete "Process.delete({Newbee.Tools.Collaboration, :context})"
+
   # 权限放行后的真实执行（与 ask 拒绝路径分离，避免重复代码）
   defp execute_run_elixir(state, call, code, title) do
     audit_dangerous(code)
@@ -1090,7 +1130,17 @@ defmodule Newbee.Agent.Loop do
 
     eval_result =
       try do
-        Newbee.DEE.Evaluator.eval(state.evaluator, code)
+        _ = Newbee.DEE.Evaluator.eval(state.evaluator, collaboration_context_put(state))
+
+        result =
+          try do
+            Newbee.DEE.Evaluator.eval(state.evaluator, code)
+          after
+            # 会话身份清理独立成步：裸代码绑定不被吞；delete 失败不影响主结果
+            Newbee.DEE.Evaluator.eval(state.evaluator, @collab_context_delete)
+          end
+
+        result
       rescue
         e ->
           Newbee.DebugLog.log(:tool, "eval raised #{inspect(e)}")

@@ -53,10 +53,17 @@ defmodule Newbee.Tools.Git do
     run(dir, ["clean", "-fd", "lib/", "test/"])
   end
 
-  @doc "worktree 隔离：为子代理开独立工作树。"
-  def worktree_add(path, ref \\ "HEAD"), do: run(".", ["worktree", "add", path, ref])
-  @doc "强制移除指定 Git worktree。"
-  def worktree_remove(path), do: run(".", ["worktree", "remove", "--force", path])
+  @doc "worktree 隔离：为子代理开独立工作树（默认在当前仓库根，ref 默认 HEAD）。"
+  def worktree_add(path, ref \\ "HEAD"), do: worktree_add(".", path, ref)
+
+  @doc "worktree_add/3：在指定根仓库 root 下开独立工作树。"
+  def worktree_add(root, path, ref), do: run(root, ["worktree", "add", path, ref])
+
+  @doc "强制移除指定 Git worktree（默认当前仓库根）。"
+  def worktree_remove(path), do: worktree_remove(".", path)
+
+  @doc "worktree_remove/2：在指定根仓库 root 下强制移除 worktree。"
+  def worktree_remove(root, path), do: run(root, ["worktree", "remove", "--force", path])
 
   defp run(dir, args) do
     case System.cmd("git", ["-C", dir | args], stderr_to_stdout: true) do

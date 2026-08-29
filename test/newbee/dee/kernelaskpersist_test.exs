@@ -49,6 +49,7 @@ defmodule Newbee.Agent.LoopAskPersistTest do
 
     GenServer.stop(kernel)
     GenServer.stop(ev)
+    Newbee.Session.delete(sid)
   end
 
   test "ask 无 options 时默认 text 形态且落盘 options 为空" do
@@ -74,5 +75,6 @@ defmodule Newbee.Agent.LoopAskPersistTest do
 
     GenServer.stop(kernel)
     GenServer.stop(ev)
+    Newbee.Session.delete(sid)
   end
 end
