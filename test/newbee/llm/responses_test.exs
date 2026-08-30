@@ -220,6 +220,214 @@ defmodule Newbee.LLM.ResponsesTest do
     assert full["input"] == history
   end
 
+  test "Responses SSE streams text and reasoning while preserving encrypted reasoning items" do
+    test_pid = self()
+
+    plug = fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+      send(test_pid, {:streaming_request, body})
+
+      payload =
+        [
+          %{"type" => "response.output_text.delta", "delta" => "work"},
+          %{"type" => "response.output_text.delta", "delta" => "ing"},
+          %{
+            "type" => "response.reasoning_summary_text.delta",
+            "delta" => "thinking",
+            "summary_index" => 0
+          },
+          %{
+            "type" => "response.output_item.added",
+            "output_index" => 0,
+            "item" => %{
+              "type" => "function_call",
+              "id" => "fc-1",
+              "call_id" => "call-1",
+              "name" => "run_elixir",
+              "arguments" => ""
+            }
+          },
+          %{
+            "type" => "response.function_call_arguments.delta",
+            "item_id" => "fc-1",
+            "output_index" => 0,
+            "delta" => ~s({"code":)
+          },
+          %{
+            "type" => "response.function_call_arguments.delta",
+            "item_id" => "fc-1",
+            "output_index" => 0,
+            "delta" => ~s("1 + 1"})
+          },
+          %{
+            "type" => "response.output_item.done",
+            "output_index" => 0,
+            "item" => %{
+              "type" => "function_call",
+              "id" => "fc-1",
+              "call_id" => "call-1",
+              "name" => "run_elixir",
+              "arguments" => ~s({"code":"1 + 1"})
+            }
+          },
+          %{
+            "type" => "response.output_item.done",
+            "output_index" => 1,
+            "item" => %{
+              "type" => "reasoning",
+              "id" => "rs-1",
+              "encrypted_content" => "ciphertext",
+              "summary" => [%{"type" => "summary_text", "text" => "thinking"}]
+            }
+          },
+          %{
+            "type" => "response.completed",
+            "response" => %{
+              "id" => "resp-stream-1",
+              "usage" => %{
+                "input_tokens" => 20,
+                "output_tokens" => 5,
+                "total_tokens" => 25,
+                "input_tokens_details" => %{"cached_tokens" => 8}
+              }
+            }
+          }
+        ]
+        |> Enum.map_join(fn event -> "data: " <> Jason.encode!(event) <> "\n\n" end)
+
+      split = div(byte_size(payload), 2)
+      <<first::binary-size(^split), second::binary>> = payload
+
+      conn =
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
+        |> Plug.Conn.send_chunked(200)
+
+      {:ok, conn} = Plug.Conn.chunk(conn, first)
+      {:ok, conn} = Plug.Conn.chunk(conn, second)
+      conn
+    end
+
+    client =
+      Client.new(
+        api: "openai-responses",
+        model: "test/streaming-responses",
+        api_key: "test",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    assert {:ok, message, usage} =
+             Client.stream_chat(
+               client,
+               [user("hi")],
+               fn delta -> send(test_pid, {:text_delta, delta}) end,
+               fn delta -> send(test_pid, {:reasoning_delta, delta}) end
+             )
+
+    assert_received {:streaming_request, body}
+    assert body["stream"] == true
+    assert "reasoning.encrypted_content" in body["include"]
+    assert_received {:text_delta, "work"}
+    assert_received {:text_delta, "ing"}
+    assert_received {:reasoning_delta, "thinking"}
+    assert message["content"] == "working"
+    assert message["reasoning"] == "thinking"
+
+    assert message["tool_calls"] == [
+             %{
+               "id" => "call-1",
+               "type" => "function",
+               "function" => %{"name" => "run_elixir", "arguments" => ~s({"code":"1 + 1"})}
+             }
+           ]
+
+    assert message["_responses_items"] == [
+             %{
+               "type" => "reasoning",
+               "id" => "rs-1",
+               "encrypted_content" => "ciphertext",
+               "summary" => [%{"type" => "summary_text", "text" => "thinking"}]
+             }
+           ]
+
+    assert usage["prompt_tokens"] == 20
+    assert usage["cache_read_tokens"] == 8
+  end
+
+  test "Responses input replays opaque reasoning items before assistant output" do
+    reasoning_item = %{
+      "type" => "reasoning",
+      "id" => "rs-1",
+      "encrypted_content" => "ciphertext",
+      "summary" => []
+    }
+
+    message = %{
+      "role" => "assistant",
+      "content" => "",
+      "_responses_items" => [reasoning_item],
+      "tool_calls" => [
+        %{
+          "id" => "call-1",
+          "type" => "function",
+          "function" => %{"name" => "run_elixir", "arguments" => ~s({"code":"1 + 1"})}
+        }
+      ]
+    }
+
+    assert Responses.input([message]) == [
+             reasoning_item,
+             %{
+               "type" => "function_call",
+               "call_id" => "call-1",
+               "name" => "run_elixir",
+               "arguments" => ~s({"code":"1 + 1"})
+             }
+           ]
+  end
+
+  test "unsupported Responses streaming falls back once and stays on JSON for the endpoint" do
+    test_pid = self()
+    counter = :atomics.new(1, [])
+    model = "test/no-stream-#{System.unique_integer([:positive])}"
+
+    plug = fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+      n = :atomics.add_get(counter, 1, 1)
+      send(test_pid, {:stream_fallback_request, n, body})
+
+      if body["stream"] do
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(
+          400,
+          Jason.encode!(%{"error" => %{"message" => "stream is not supported"}})
+        )
+      else
+        Req.Test.json(conn, response("resp-json-#{n}", "json"))
+      end
+    end
+
+    client =
+      Client.new(
+        api: "openai-responses",
+        model: model,
+        api_key: "test",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    assert {:ok, %{"content" => "json"}, _usage} = Client.stream_chat(client, [user("one")])
+    assert_received {:stream_fallback_request, 1, %{"stream" => true}}
+    assert_received {:stream_fallback_request, 2, %{"stream" => false}}
+
+    assert {:ok, %{"content" => "json"}, _usage} = Client.stream_chat(client, [user("two")])
+    assert_received {:stream_fallback_request, 3, %{"stream" => false}}
+  end
+
   defp user(text), do: %{"role" => "user", "content" => text}
   defp assistant(text), do: %{"role" => "assistant", "content" => text}
 

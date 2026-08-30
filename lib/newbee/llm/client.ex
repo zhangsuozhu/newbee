@@ -134,6 +134,7 @@ defmodule Newbee.LLM.Client do
   catch
     _, _ -> false
   end
+
   def normalize_reasoning_effort("off"), do: "none"
   def normalize_reasoning_effort(effort), do: effort
 
@@ -232,14 +233,10 @@ defmodule Newbee.LLM.Client do
   defp stream_chat_request(%__MODULE__{} = client, messages, on_text, on_reasoning) do
     case client.responses_mode do
       :responses ->
-        case Newbee.LLM.Responses.request(client, messages, Newbee.Codec.tools()) do
-          {:ok, message, _usage} = ok ->
-            if message["content"] != "", do: on_text.(message["content"])
-            ok
-
-          error ->
-            error
-        end
+        Newbee.LLM.Responses.request(client, messages, Newbee.Codec.tools(),
+          on_text: on_text,
+          on_reasoning: on_reasoning
+        )
 
       _ ->
         stream_chat_request_chat(client, messages, on_text, on_reasoning)
