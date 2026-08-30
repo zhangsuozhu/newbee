@@ -40,6 +40,8 @@ defmodule Newbee.Host.Shell do
   def execute_llm_plan(plan, opts \\ []) when is_map(plan), do: execute_request_plan(plan, opts)
 
   def execute_request_plan(plan, opts \\ []) when is_map(plan) do
+    ensure_finch!()
+
     with {:ok, uri} <- parse_url(plan[:url] || plan["url"]),
          :ok <- check_host_whitelist(uri),
          :ok <- check_budget(opts) do
@@ -66,6 +68,14 @@ defmodule Newbee.Host.Shell do
         {:ok, %{status: status, body: body}} -> {:error, {:http, status, body}}
         {:error, reason} -> {:error, reason}
       end
+    end
+  end
+
+  @doc "确保 Req 的默认 Finch 注册表可用（幂等；求值节点可能未引导 :req 应用）。供 Tools.Http 与受控 transport 复用。"
+  def ensure_finch! do
+    case Application.ensure_all_started(:req) do
+      {:ok, _} -> :ok
+      {:error, reason} -> raise "依赖应用启动失败: req — #{inspect(reason)}"
     end
   end
 

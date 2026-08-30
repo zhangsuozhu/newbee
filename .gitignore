@@ -20,3 +20,5 @@ nohup.out
 /dist/
 zsz.sh
 *.local.sh
+
+_build-codex-calls/

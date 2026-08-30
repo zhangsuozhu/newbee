@@ -30,6 +30,10 @@ defmodule Newbee.Tools.Http do
   end
 
   defp request(method, url, json, headers) do
+    # Req 的默认 adapter 是 Finch，注册表 `Req.Finch` 由 `Req.Application` 启动；
+    # 求值节点可能不引导 :req 应用，这里幂等自举（Host.Shell 使用同一条路径）。
+    Newbee.Host.Shell.ensure_finch!()
+
     # 先校验 URL 格式
     case URI.parse(url) do
       %URI{scheme: scheme} when scheme not in ["http", "https"] ->
