@@ -16,9 +16,8 @@ defmodule Newbee do
     - `skill://n`   → 技能片段（~/.newbee/skills 或工程 .newbee/skills）
     - `agent://<id>/<path>` → 子代理结果按路径抠字段
     - `conflict://` → git 合并冲突清单；`conflict://<file>` 冲突块视图
-    - `http(s)://`  → 网页（Req 拉取）
-  """
-
+     - `http(s)://`  → 网页（无凭证公开 GET，经 Newbee.Tools.Http）
+ 
   @doc """
   统一读取。返回 {:ok, content} | {:error, reason}。
 
@@ -241,22 +240,26 @@ defmodule Newbee do
     end
   end
 
-  # URL 读取经受控 transport（§12：域名白名单 + Host 执行网络）+ trust envelope
-  defp read_url(url) do
-    case Newbee.Host.Shell.execute_request_plan(%{url: url, method: "get", headers: [], body: nil}) do
-      {:ok, body} when is_binary(body) ->
+ # URL 读取走无凭证的公开 GET（Newbee.Tools.Http，§12 受控 transport 只服务
+ # provider 凭证通道）；网页阅读不涉及凭证，不应被域名白名单限制。
+ # 仍包 trust envelope 标记来源。
+ defp read_url(url) do
+   case Newbee.Tools.Http.get(url) do
+      {:ok, %{status: status, body: body}} when status in 200..299 and is_binary(body) ->
         content = String.slice(body, 0, 512 * 1024)
         {:ok, Newbee.Trust.envelope(content, "url:" <> url) |> Newbee.Trust.render()}
-
-      {:ok, body} ->
-        {:ok, Newbee.Trust.envelope(inspect(body), "url:" <> url) |> Newbee.Trust.render()}
-
+ 
+      {:ok, %{status: status, body: body}} when is_binary(body) ->
+        {:error, {:http, status, String.slice(body, 0, 300)}}
+ 
       {:error, reason} ->
         {:error, reason}
-    end
-  rescue
-    _ -> {:error, :fetch_failed}
-  end
+ 
+   end
+ rescue
+   _ -> {:error, :fetch_failed}
+ end
+ 
 
   defp read_tool(module_name) do
     # 模块名归一：tool://Newbee.Tools.Edit → :"Elixir.Newbee.Tools.Edit"
