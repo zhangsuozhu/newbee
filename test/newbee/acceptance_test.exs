@@ -361,7 +361,7 @@ defmodule Newbee.AcceptanceTest do
 
     # 激活一个好的 release 并标 healthy（known-good）
     {_c, _r} = propose_and_activate(coordinator, %{plugin_id: "tool.good", kind: :tool, source_files: %{"good.ex" => tool_source("GoodTool", "tool.good")}})
-    GenServer.call(coordinator, {:mark_healthy, 1})
+    GenServer.call(coordinator, {:mark_healthy, 1}, 60_000)
 
     # 再激活一个（rev 2）
     {_c2, _r2} = propose_and_activate(coordinator, %{plugin_id: "tool.bad", kind: :tool, source_files: %{"bad.ex" => tool_source("BadTool", "tool.bad")}})

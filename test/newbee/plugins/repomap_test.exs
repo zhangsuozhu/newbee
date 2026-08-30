@@ -9,8 +9,17 @@ defmodule Newbee.Plugins.RepoMapTest do
   end
 
   test "非 Elixir 目录退化为文件树" do
-    dir = System.tmp_dir!()
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee_repomap_non_elixir_" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "README.txt"), "plain project")
+    on_exit(fn -> File.rm_rf(dir) end)
+
     map = Newbee.Plugins.RepoMap.build(dir)
-    assert is_binary(map)
+    assert map =~ "README.txt"
   end
 end

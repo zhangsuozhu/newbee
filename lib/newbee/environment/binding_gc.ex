@@ -15,6 +15,9 @@ defmodule Newbee.Environment.BindingGC do
 
   # 驻留预算（字节）；超过则按 LRU 逐出冷值
   @default_resident_budget 512_000
+  @word_bytes :erlang.system_info(:wordsize)
+  @max_measure_depth 128
+  @max_measure_bytes 1_000_000
 
   @doc "pin 一个 binding 名（活跃值不静默删除）。"
   def pin(name), do: :persistent_term.put(pin_key(name), true)
@@ -36,9 +39,7 @@ defmodule Newbee.Environment.BindingGC do
     budget = Keyword.get(opts, :resident_budget, @default_resident_budget)
     track_access(binding, turn)
 
-    total = resident_bytes(binding)
-
-    if total <= budget do
+    if within_budget?(binding, budget) do
       {binding, []}
     else
       evict(binding, budget, turn, [])
@@ -72,21 +73,29 @@ defmodule Newbee.Environment.BindingGC do
       end)
       |> Enum.sort_by(fn {name, value} -> {last_access(name), -value_bytes(value)} end)
 
-    if resident_bytes(binding) <= budget or candidates == [] do
+    if within_budget?(binding, budget) or candidates == [] do
       # 达标，或全是 pin/不可序列化（不静默删除活跃值）
       {binding, Enum.reverse(evicted)}
     else
-      {name, value} = hd(candidates)
+      limit = @max_measure_bytes
+      candidate = Enum.find(candidates, fn {_n, v} -> measure_value(v, limit) != :over end)
 
-      case evict_value(name, value) do
-        {:ok, ref} ->
-          binding = Keyword.put(binding, name, ref)
-          Newbee.Events.emit(:binding_evicted, %{name: name, bytes: value_bytes(value), artifact: ref.id})
-          evict(binding, budget, 0, [name | evicted], skip)
+      if candidate == nil do
+        # 所有候选都超测量预算（病态共享图）——保活不逐出
+        {binding, Enum.reverse(evicted)}
+      else
+        {name, value} = candidate
 
-        :error ->
-          # 序列化失败：跳过该值，不再尝试
-          evict(binding, budget, 0, evicted, MapSet.put(skip, name))
+        case evict_value(name, value) do
+          {:ok, ref} ->
+            binding = Keyword.put(binding, name, ref)
+            Newbee.Events.emit(:binding_evicted, %{name: name, bytes: value_bytes(value), artifact: ref.id})
+            evict(binding, budget, 0, [name | evicted], skip)
+
+          :error ->
+            # 序列化失败：跳过该值，不再尝试
+            evict(binding, budget, 0, evicted, MapSet.put(skip, name))
+        end
       end
     end
   end
@@ -98,7 +107,7 @@ defmodule Newbee.Environment.BindingGC do
         dir = Path.join(Store.dir(:bindings), "gc")
         File.mkdir_p!(dir)
 
-        body = Jason.encode_to_iodata!(snapshot.entries)
+        body = Jason.encode_to_iodata!(snapshot.entries) |> IO.iodata_to_binary()
         sha = :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
         path = Path.join(dir, "#{name}.#{String.slice(sha, 0, 12)}.json")
         Store.write_atomic!(path, body)
@@ -135,13 +144,108 @@ defmodule Newbee.Environment.BindingGC do
   @doc "touch：模型引用某 binding 时更新访问时钟（Tools/Introspect 可调用）。"
   def touch(name, turn), do: :persistent_term.put({__MODULE__, :access, name}, turn)
 
-  # ── 度量 ──
+  # ── 有界度量 ──
 
-  defp resident_bytes(binding) do
-    Enum.reduce(binding, 0, fn {_name, value}, acc -> acc + value_bytes(value) end)
+  # 字节预算截断的迭代遍历：不超预算返回 {:ok, bytes}，超了返回 :over。
+  # 不能用 :erts_debug.size/1：它会完整展开共享图，曾让 EvalWorker 在
+  # 5000 亿 reductions 后仍无法处理中断。遍历按字节预算和深度双重截断。
+
+  defp within_budget?(binding, budget) do
+    case resident_bytes(binding) do
+      {:ok, total} -> total <= budget
+      :over -> false
+    end
   end
 
-  defp value_bytes(value), do: :erts_debug.size(value) * 8
+  defp resident_bytes(binding) do
+    Enum.reduce_while(binding, {:ok, 0}, fn {_name, value}, {:ok, total} ->
+      case measure_value(value, max(@max_measure_bytes - total, 0)) do
+        {:ok, bytes} -> {:cont, {:ok, total + bytes}}
+        :over -> {:halt, :over}
+      end
+    end)
+  end
+
+  defp value_bytes(value) do
+    case measure_value(value, @max_measure_bytes) do
+      {:ok, bytes} -> bytes
+      :over -> @max_measure_bytes + @word_bytes
+    end
+  end
+
+  defp measure_value(value, limit) when is_integer(limit) and limit >= 0 do
+    measure([{:term, value, 0}], 0, limit)
+  end
+
+  defp measure([], bytes, limit) when bytes <= limit, do: {:ok, bytes}
+  defp measure(_stack, bytes, limit) when bytes > limit, do: :over
+
+  defp measure([{:tuple, tuple, index, depth} | rest], bytes, limit) do
+    if index == tuple_size(tuple) do
+      measure(rest, bytes, limit)
+    else
+      measure(
+        [{:term, elem(tuple, index), depth + 1}, {:tuple, tuple, index + 1, depth} | rest],
+        bytes,
+        limit
+      )
+    end
+  end
+
+  defp measure([{:map, iterator, depth} | rest], bytes, limit) do
+    case :maps.next(iterator) do
+      :none ->
+        measure(rest, bytes, limit)
+
+      {key, value, next} ->
+        measure(
+          [{:term, key, depth + 1}, {:term, value, depth + 1}, {:map, next, depth} | rest],
+          bytes,
+          limit
+        )
+    end
+  end
+
+  defp measure([{:term, _value, depth} | _rest], _bytes, _limit)
+       when depth > @max_measure_depth,
+       do: :over
+
+  defp measure([{:term, value, depth} | rest], bytes, limit) do
+    case value do
+      [] ->
+        measure(rest, bytes + @word_bytes, limit)
+
+      [head | tail] ->
+        measure(
+          [{:term, head, depth + 1}, {:term, tail, depth} | rest],
+          bytes + 2 * @word_bytes,
+          limit
+        )
+
+      value when is_tuple(value) ->
+        words = tuple_size(value) + 1
+        measure([{:tuple, value, 0, depth} | rest], bytes + words * @word_bytes, limit)
+
+      value when is_map(value) ->
+        words = 3 + 2 * map_size(value)
+        measure([{:map, :maps.iterator(value), depth} | rest], bytes + words * @word_bytes, limit)
+
+      value when is_bitstring(value) ->
+        payload = div(bit_size(value) + 7, 8)
+        measure(rest, bytes + payload + 2 * @word_bytes, limit)
+
+      value when is_float(value) ->
+        measure(rest, bytes + 2 * @word_bytes, limit)
+
+      value
+      when is_integer(value) or is_atom(value) or is_pid(value) or is_port(value) or
+             is_reference(value) ->
+        measure(rest, bytes + @word_bytes, limit)
+
+      _other ->
+        measure(rest, bytes + 4 * @word_bytes, limit)
+    end
+  end
 
   defp serializable?(value) do
     not (is_pid(value) or is_port(value) or is_reference(value) or is_function(value))

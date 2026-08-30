@@ -18,6 +18,8 @@ defmodule Newbee.Environment.BindingCodec do
 
   @default_value_budget 64_000
   @default_total_budget 1_000_000
+  @max_encode_depth 128
+  @max_encode_steps 50_000
 
   # 允许恢复的 struct（模块必须已存在——String.to_existing_atom，不造原子）
   @struct_whitelist [DateTime, Date, Time, NaiveDateTime, Range, Regex, MapSet, Version, ArtifactRef]
@@ -82,21 +84,120 @@ defmodule Newbee.Environment.BindingCodec do
   end
 
   defp encode_value(name, value, budget) do
-    case encode_term(value) do
-      {:ok, encoded} ->
-        bytes = encoded |> Jason.encode!() |> byte_size()
+    with :ok <- preflight_encode(value, budget) do
+      case encode_term(value) do
+        {:ok, encoded} ->
+          bytes = encoded |> Jason.encode!() |> byte_size()
 
-        if bytes > budget do
-          {:over_budget, bytes}
+          if bytes > budget do
+            {:over_budget, bytes}
+          else
+            %{name: name, kind: :inline, value: encoded, bytes: bytes}
+          end
+
+        {:artifact, ref_map} ->
+          %{name: name, kind: :artifact, value: ref_map, bytes: 0}
+
+        {:tombstone, type, reason} ->
+          %{name: name, kind: :tombstone, type: type, reason: reason, bytes: 0}
+      end
+    end
+  end
+
+  defp preflight_encode(value, budget) do
+    preflight_encode([{:term, value, 0}], budget, 0, 0)
+  end
+
+  defp preflight_encode(_stack, budget, binary_bytes, _steps) when binary_bytes > budget,
+    do: {:over_budget, binary_bytes}
+
+  defp preflight_encode(_stack, budget, _binary_bytes, steps)
+       when steps >= @max_encode_steps,
+       do: {:over_budget, budget + 1}
+
+  defp preflight_encode([], _budget, _binary_bytes, _steps), do: :ok
+
+  defp preflight_encode([{:tuple, tuple, index, depth} | rest], budget, bytes, steps) do
+    if index == tuple_size(tuple) do
+      preflight_encode(rest, budget, bytes, steps + 1)
+    else
+      preflight_encode(
+        [{:term, elem(tuple, index), depth + 1}, {:tuple, tuple, index + 1, depth} | rest],
+        budget,
+        bytes,
+        steps + 1
+      )
+    end
+  end
+
+  defp preflight_encode([{:map, iterator, depth} | rest], budget, bytes, steps) do
+    case :maps.next(iterator) do
+      :none ->
+        preflight_encode(rest, budget, bytes, steps + 1)
+
+      {key, value, next} ->
+        preflight_encode(
+          [{:term, key, depth + 1}, {:term, value, depth + 1}, {:map, next, depth} | rest],
+          budget,
+          bytes,
+          steps + 1
+        )
+    end
+  end
+
+  defp preflight_encode([{:term, _value, depth} | _rest], budget, _bytes, _steps)
+       when depth > @max_encode_depth,
+       do: {:over_budget, budget + 1}
+
+  defp preflight_encode([{:term, value, depth} | rest], budget, bytes, steps) do
+    case value do
+      [] ->
+        preflight_encode(rest, budget, bytes, steps + 1)
+
+      [head | tail] ->
+        preflight_encode(
+          [{:term, head, depth + 1}, {:term, tail, depth} | rest],
+          budget,
+          bytes,
+          steps + 1
+        )
+
+      %ArtifactRef{} ->
+        preflight_encode(rest, budget, bytes, steps + 1)
+
+      %Regex{} = regex ->
+        preflight_encode(rest, budget, bytes + byte_size(Regex.source(regex)), steps + 1)
+
+      %Range{} ->
+        preflight_encode(rest, budget, bytes, steps + 1)
+
+      %MapSet{} = set ->
+        set_map = set |> Map.from_struct() |> Map.fetch!(:map)
+        preflight_encode([{:term, set_map, depth + 1} | rest], budget, bytes, steps + 1)
+
+      %_{} = struct ->
+        if struct.__struct__ in @struct_whitelist do
+          preflight_encode(
+            [{:term, Map.from_struct(struct), depth + 1} | rest],
+            budget,
+            bytes,
+            steps + 1
+          )
         else
-          %{name: name, kind: :inline, value: encoded, bytes: bytes}
+          preflight_encode(rest, budget, bytes, steps + 1)
         end
 
-      {:artifact, ref_map} ->
-        %{name: name, kind: :artifact, value: ref_map, bytes: 0}
+      value when is_tuple(value) ->
+        preflight_encode([{:tuple, value, 0, depth} | rest], budget, bytes, steps + 1)
 
-      {:tombstone, type, reason} ->
-        %{name: name, kind: :tombstone, type: type, reason: reason, bytes: 0}
+      value when is_map(value) ->
+        preflight_encode([{:map, :maps.iterator(value), depth} | rest], budget, bytes, steps + 1)
+
+      value when is_binary(value) ->
+        preflight_encode(rest, budget, bytes + byte_size(value), steps + 1)
+
+      _other ->
+        preflight_encode(rest, budget, bytes, steps + 1)
     end
   end
 
@@ -236,8 +337,11 @@ defmodule Newbee.Environment.BindingCodec do
             end
 
           :tombstone ->
-            {[{name, %Tombstone{name: entry.name, type: entry.type || "unknown", reason: entry.reason || "unmigratable"}} | acc],
-             failed, tombs + 1}
+            {[
+               {name,
+                %Tombstone{name: entry.name, type: entry.type || "unknown", reason: entry.reason || "unmigratable"}}
+               | acc
+             ], failed, tombs + 1}
         end
       end)
 

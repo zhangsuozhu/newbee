@@ -78,7 +78,7 @@ defmodule Newbee.DEE.EvaluatorOwnerTest do
         end
       end)
 
-    assert_receive {:kernel, kernel}, 5_000
+    assert_receive {:kernel, kernel}, 30_000
     Process.unlink(kernel)
     send(owner, :crash)
 

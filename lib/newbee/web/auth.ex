@@ -1,6 +1,6 @@
 defmodule Newbee.Web.Auth do
   @moduledoc """
-  WebUI 认证（密码 + Bearer token + 图形验证码 + 限流/锁定）。纯函数 + ETS，无监督进程。
+  WebUI 认证（密码 + Bearer token + 图形验证码 + 限流/锁定）。ETS 状态同步，sessions.json 由受监督单写者异步持久化。
 
   ## 模型
   - 本地零摩擦：绑定回环地址时 auth_required? 为 false，请求直接放行。
@@ -116,7 +116,7 @@ defmodule Newbee.Web.Auth do
     token = @token_bytes |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
     now = System.system_time(:millisecond)
     put({:token, token}, %{created: now, last_seen: now})
-    persist_sessions()
+    persist_sessions_async()
     {:ok, token}
   end
 
@@ -167,21 +167,36 @@ defmodule Newbee.Web.Auth do
     persist_sessions()
   end
 
+  defp persist_sessions_async do
+    {path, version, body} = session_snapshot()
+    Newbee.Web.Auth.SessionWriter.persist(path, version, body)
+  rescue
+    _ -> :ok
+  end
+
   defp persist_sessions do
+    {path, version, body} = session_snapshot()
+    Newbee.Web.Auth.SessionWriter.persist_sync(path, version, body)
+  rescue
+    _ -> :ok
+  end
+
+  defp session_snapshot do
     ensure_table()
 
     sessions =
       @table
       |> :ets.tab2list()
       |> Enum.flat_map(fn
-        {{:token, tok}, %{created: c, last_seen: l}} -> [%{"token" => tok, "created" => c, "last_seen" => l}]
-        _ -> []
+        {{:token, tok}, %{created: c, last_seen: l}} ->
+          [%{"token" => tok, "created" => c, "last_seen" => l}]
+
+        _ ->
+          []
       end)
 
-    File.mkdir_p!(Newbee.Web.Cert.dir())
-    File.write!(sessions_path(), Jason.encode!(%{"sessions" => sessions}))
-  rescue
-    _ -> :ok
+    version = System.unique_integer([:monotonic, :positive])
+    {sessions_path(), version, Jason.encode!(%{"sessions" => sessions})}
   end
 
   def load_sessions do
