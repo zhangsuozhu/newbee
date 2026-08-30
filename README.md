@@ -163,7 +163,10 @@ cat > ~/.newbee/model.json <<'EOF'
   }
 }
 EOF
-# 可选扩展角色：explorer / plan / advisor / verifier — 完整 7 角色见 `lib/newbee/llm/config.ex` `@roles`
+# 支持标准 Responses API `previous_response_id` 的 provider 可配置：
+# `"api": "openai-responses", "responsesContinuation": true`。该选项会发送
+# `store: true` 以允许跨进程续接；兼容网关未实现或不接受服务端存储时保持 false。
+# 失效的 response id 会自动回退完整请求。
 export OPENROUTER_API_KEY=sk-or-v1-...
 
 # 启动

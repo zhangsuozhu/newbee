@@ -240,4 +240,51 @@ defmodule Newbee.LLM.ClientTest do
     {:ok, "ok", %{usage: usage}} = Client.complete(client, [%{"role" => "user", "content" => "hi"}])
     assert usage["cache_read_tokens"] == 9
   end
+  describe "responses_mode" do
+    test "default mode from api field" do
+      client = Client.new(api: "openai-responses")
+      assert client.responses_mode == :responses
+      assert client.responses_continuation == true
+
+      client = Client.new(api: "openai-completions")
+      assert client.responses_mode == :chat
+      assert client.responses_continuation == false
+    end
+
+    test "explicit mode overrides api default" do
+      client = Client.new(api: "openai-completions", responses_mode: :responses)
+      assert client.responses_mode == :responses
+      assert client.responses_continuation == true
+    end
+
+    test "auto mode falls back to chat when probe fails" do
+      client = Client.new(
+        api: "openai-completions",
+        responses_mode: :auto,
+        base_url: "http://localhost:9999"
+      )
+
+      assert client.responses_mode == :chat
+      assert client.responses_continuation == false
+    end
+
+    test "auto mode caches capability per endpoint+model" do
+      client1 = Client.new(
+        api: "openai-completions",
+        responses_mode: :auto,
+        base_url: "http://localhost:9999",
+        model: "test/m1"
+      )
+
+      client2 = Client.new(
+        api: "openai-completions",
+        responses_mode: :auto,
+        base_url: "http://localhost:9999",
+        model: "test/m1"
+      )
+
+      assert client1.responses_mode == client2.responses_mode
+    end
+  end
+
 end

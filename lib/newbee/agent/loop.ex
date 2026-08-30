@@ -122,12 +122,17 @@ defmodule Newbee.Agent.Loop do
     evaluator = Keyword.get(opts, :evaluator, Newbee.DEE.Evaluator)
     root = Keyword.get(opts, :root)
 
+    session_seed =
+      if Keyword.get(opts, :session, true),
+        do: Newbee.Session.open(Keyword.get(opts, :session_id))
+
+    session_id = if session_seed, do: session_seed.id
+
     # 会话级隔离：每个会话一个中断 scope（注入 client），evaluator 注册到
     # SessionEvaluators（key = 本 Loop pid），interrupt 只作用本会话。
-    # cache_key（prompt_cache_key 路由）：先在进程字典登记会话 id，再构建
-    # client —— Client.new 从进程字典派生。会话在 init 尾部才 open，这里用
-    # opts 的 session_id；无则 nil（CLI 内嵌/测试场景不带 key 也可）。
-    Newbee.LLM.Client.put_cache_key(Keyword.get(opts, :session_id))
+    # 新会话 id 由 Session.open/1 生成，必须先取得真实 id 再固定缓存路由键；
+    # 否则 CLI/TUI 的 session_id: nil 会使整个会话不发送 prompt_cache_key。
+    Newbee.LLM.Client.put_cache_key(session_id)
 
     client =
       if Map.get(client, :interrupt_scope),
@@ -135,11 +140,20 @@ defmodule Newbee.Agent.Loop do
         else: Map.put(client, :interrupt_scope, Newbee.LLM.Client.new_interrupt_scope())
 
     # client 在外部（web/session.ex client_for_session / CLI）构造好传入——
-    # 那些进程没有进程字典 key，Client.new 派生拿到 nil。这里按会话补齐：
+    # 那些进程没有进程字典 key，Client.new 派生拿到 nil。这里按真实会话补齐：
     # 会话 id 就是缓存路由键的稳定来源，switch_model 已有继承逻辑。
     client =
-      if Map.get(client, :cache_key) in [nil, ""] and is_binary(Keyword.get(opts, :session_id)) do
-        Map.put(client, :cache_key, "newbee-" <> Keyword.get(opts, :session_id))
+      if Map.get(client, :cache_key) in [nil, ""] and is_binary(session_id) do
+        Map.put(client, :cache_key, "newbee-" <> session_id)
+      else
+        client
+      end
+
+    # checkpoint 路径属于会话，不属于当前模型；这样从 Chat Completions
+    # 热切到支持 Responses continuation 的模型后也能立即启用。
+    client =
+      if is_nil(Map.get(client, :responses_checkpoint)) and session_seed do
+        Map.put(client, :responses_checkpoint, Path.join(session_seed.dir, "responses-continuation.json"))
       else
         client
       end
@@ -192,8 +206,8 @@ defmodule Newbee.Agent.Loop do
       end
 
     session =
-      if Keyword.get(opts, :session, true) do
-        s = Newbee.Session.open(Keyword.get(opts, :session_id))
+      if session_seed do
+        s = session_seed
         # 恢复 = 物化视图重建（§4.6）：transcript 只增不删，压缩只是账本上的切点；
         # 视图 = 基底 + 段汇总消息 + 切点后原文。无压缩账本的旧会话逐字节兼容。
         prior =
@@ -243,7 +257,7 @@ defmodule Newbee.Agent.Loop do
         true -> Newbee.LLM.Config.client_for("advisor")
       end
 
-    # J-Space 恢复协议：会话边界 = 长间隔，有 ledger 则注入恢复提醒（§?）
+    # 恢复提醒追加在持久化历史之后：中断前的真实请求仍是新请求的严格前缀。
     recovery =
       if session && prior_messages != [] && Newbee.Tools.JSpace.exists?(session.id) do
         [%{"role" => "system", "content" => jspace_recovery_reminder()}]
@@ -253,7 +267,7 @@ defmodule Newbee.Agent.Loop do
 
     {:ok,
      %__MODULE__{
-       messages: [%{"role" => "system", "content" => prompt}] ++ recovery ++ prior_messages,
+       messages: [%{"role" => "system", "content" => prompt}] ++ prior_messages ++ recovery,
        client: client,
        evaluator: evaluator,
        owner: owner_ref,
@@ -362,10 +376,9 @@ defmodule Newbee.Agent.Loop do
     client = Map.put(client, :interrupt_scope, Map.get(state.client, :interrupt_scope))
 
     client =
-      case {Map.get(client, :cache_key), Map.get(state.client, :cache_key)} do
-        {nil, inherited} when is_binary(inherited) -> Map.put(client, :cache_key, inherited)
-        _ -> client
-      end
+      client
+      |> inherit_client_field(state.client, :cache_key)
+      |> inherit_client_field(state.client, :responses_checkpoint)
 
     client_fun = fn messages, on_text, on_reasoning ->
       Newbee.LLM.Client.stream_chat(client, messages, on_text, on_reasoning)
@@ -1722,6 +1735,13 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp error_pattern(_), do: nil
+
+  defp inherit_client_field(client, previous, field) do
+    case {Map.get(client, field), Map.get(previous, field)} do
+      {nil, inherited} when not is_nil(inherited) -> Map.put(client, field, inherited)
+      _ -> client
+    end
+  end
 
   # ── system prompt = 环境物化视图（§4.6）──
 

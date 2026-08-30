@@ -1,42 +1,77 @@
 defmodule Newbee.LLM.Responses do
   @moduledoc false
 
+  alias Newbee.LLM.ResponsesContinuation, as: Continuation
+
   @overload_statuses [429, 500, 502, 503, 529]
   @overload_retries 5
   @overload_delay 1_000
 
   def request(client, messages, tools, opts \\ []) do
-    body =
+    logical_input = input(messages)
+    wire_tools = tools(tools)
+
+    full_body =
       %{
         model: client.model,
-        input: input(messages),
+        input: logical_input,
         stream: false,
-        tools: tools(tools)
+        tools: wire_tools
       }
       |> maybe_put(:temperature, Keyword.get(opts, :temperature))
       |> maybe_put(:reasoning, reasoning(client.reasoning_effort))
+      |> maybe_put(:prompt_cache_key, client.cache_key)
+      |> maybe_put(:store, if(client.responses_continuation, do: true))
       |> Map.merge(Keyword.get(opts, :extra, %{}))
 
-    req =
-      [
-        url: client.base_url <> "/responses",
-        method: :post,
-        headers: [
-          {"authorization", "Bearer #{client.api_key}"},
-          {"content-type", "application/json"},
-          {"user-agent", "newbee"}
-        ],
-        json: body,
-        receive_timeout: 120_000,
-        retry: false
-      ]
-      |> Keyword.merge(client.req_options)
-      |> Req.new()
+    envelope = Map.delete(full_body, :input)
 
-    case request_with_retry(req, @overload_retries) do
-      {:ok, %{status: 200, body: body}} -> parse(body)
-      {:ok, %{status: status, body: body}} -> {:error, {:http_error, status, encoded(body)}}
-      {:error, error} -> {:error, error}
+    plan =
+      if client.responses_continuation do
+        Continuation.plan(client.responses_checkpoint, envelope, logical_input)
+      else
+        :full
+      end
+
+    {request_body, continued?} =
+      case plan do
+        {:continue, response_id, delta} ->
+          Newbee.DebugLog.log(:llm, "responses continuation delta_items=#{length(delta)}")
+          {full_body |> Map.put(:input, delta) |> Map.put(:previous_response_id, response_id), true}
+
+        :full ->
+          Newbee.DebugLog.log(:llm, "responses full input_items=#{length(logical_input)}")
+          {full_body, false}
+      end
+
+    case perform(client, request_body) do
+      {:ok, body} ->
+        finish(client, envelope, logical_input, body)
+
+      {:error, {:http_error, status, body}} when continued? ->
+        if previous_response_not_found?(body) do
+          Newbee.DebugLog.log(:llm, "responses continuation expired; retrying full request")
+          Continuation.clear(client.responses_checkpoint)
+
+          case perform(client, full_body) do
+            {:ok, retry_body} ->
+              finish(client, envelope, logical_input, retry_body)
+
+            {:error, {:http_error, retry_status, retry_body}} ->
+              {:error, {:http_error, retry_status, encoded(retry_body)}}
+
+            error ->
+              error
+          end
+        else
+          {:error, {:http_error, status, encoded(body)}}
+        end
+
+      {:error, {:http_error, status, body}} ->
+        {:error, {:http_error, status, encoded(body)}}
+
+      error ->
+        error
     end
   end
 
@@ -68,7 +103,6 @@ defmodule Newbee.LLM.Responses do
       %{"role" => role} = message when role in ["user", "system", "assistant"] ->
         [message]
 
-      # media/usage/未知角色：非标准消息不进 API 请求，避免 400
       _message ->
         []
     end)
@@ -87,16 +121,41 @@ defmodule Newbee.LLM.Responses do
     end)
   end
 
-  def parse(body) when is_binary(body) do
+  def parse(body) do
+    case parse_with_id(body) do
+      {:ok, message, usage, _response_id} -> {:ok, message, usage}
+      error -> error
+    end
+  end
+
+  defp finish(client, envelope, logical_input, body) do
+    case parse_with_id(body) do
+      {:ok, message, usage, response_id} ->
+        next_prefix = logical_input ++ input([message])
+
+        if client.responses_continuation and is_binary(response_id) and response_id != "" do
+          Continuation.commit(client.responses_checkpoint, envelope, next_prefix, response_id)
+        else
+          Continuation.clear(client.responses_checkpoint)
+        end
+
+        {:ok, message, usage}
+
+      error ->
+        error
+    end
+  end
+
+  defp parse_with_id(body) when is_binary(body) do
     case Jason.decode(body) do
-      {:ok, decoded} -> parse(decoded)
+      {:ok, decoded} -> parse_with_id(decoded)
       {:error, error} -> {:error, {:bad_response, error}}
     end
   end
 
-  def parse(%{"error" => error}) when not is_nil(error), do: {:error, {:api_error, error}}
+  defp parse_with_id(%{"error" => error}) when not is_nil(error), do: {:error, {:api_error, error}}
 
-  def parse(%{"output" => output} = body) when is_list(output) do
+  defp parse_with_id(%{"output" => output} = body) when is_list(output) do
     content =
       for %{"type" => "message", "content" => parts} <- output,
           %{"type" => "output_text", "text" => text} <- parts,
@@ -116,10 +175,48 @@ defmodule Newbee.LLM.Responses do
       %{"role" => "assistant", "content" => content}
       |> maybe_put("tool_calls", tool_calls)
 
-    {:ok, message, usage(body["usage"] || %{})}
+    {:ok, message, usage(body["usage"] || %{}), body["id"]}
   end
 
-  def parse(body), do: {:error, {:bad_response, body}}
+  defp parse_with_id(body), do: {:error, {:bad_response, body}}
+
+  defp perform(client, body) do
+    req =
+      [
+        url: client.base_url <> "/responses",
+        method: :post,
+        headers: [
+          {"authorization", "Bearer #{client.api_key}"},
+          {"content-type", "application/json"},
+          {"user-agent", "newbee"}
+        ],
+        json: body,
+        receive_timeout: 120_000,
+        retry: false
+      ]
+      |> Keyword.merge(client.req_options)
+      |> Req.new()
+
+    case request_with_retry(req, @overload_retries) do
+      {:ok, %{status: 200, body: response_body}} -> {:ok, response_body}
+      {:ok, %{status: status, body: response_body}} -> {:error, {:http_error, status, response_body}}
+      {:error, error} -> {:error, error}
+    end
+  end
+
+  defp previous_response_not_found?(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> previous_response_not_found?(decoded)
+      _ -> false
+    end
+  end
+
+  defp previous_response_not_found?(%{"error" => error}) when is_map(error) do
+    error["code"] == "previous_response_not_found" or
+      error["type"] == "previous_response_not_found"
+  end
+
+  defp previous_response_not_found?(_), do: false
 
   defp usage(usage) do
     Newbee.LLM.Client.normalize_usage(%{
