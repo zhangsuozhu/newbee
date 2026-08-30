@@ -52,13 +52,15 @@ defmodule Newbee.SessionTest do
   end
 
   test "transcript 追加与读取" do
-    s = Session.open("test_#{:erlang.unique_integer([:positive])}")
+    s = Session.open("test_" <> Integer.to_string(:erlang.unique_integer([:positive])))
     Session.append(s, %{"role" => "user", "content" => "hi"})
     Session.append(s, %{"role" => "assistant", "content" => "yo"})
 
     msgs = Session.messages(s)
     assert length(msgs) == 2
     assert Enum.at(msgs, 0)["content"] == "hi"
+    assert Enum.all?(msgs, &is_binary(&1["created_at"]))
+    assert Enum.all?(msgs, &Regex.match?(~r/T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/, &1["created_at"]))
   end
 
   test "绑定快照：可序列化保留，PID/函数 tombstone" do

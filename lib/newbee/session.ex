@@ -23,12 +23,12 @@ defmodule Newbee.Session do
     File.mkdir_p!(dir)
     dir
   end
+
   def media_dir(_) do
     dir = Path.join(artifacts(), "unknown/media")
     File.mkdir_p!(dir)
     dir
   end
-
 
   @doc "新会话或恢复已有会话。"
   def open(id \\ nil) do
@@ -55,6 +55,7 @@ defmodule Newbee.Session do
 
   @doc "追加一条消息到 transcript。"
   def append(%__MODULE__{transcript: t, id: id}, %{"role" => _} = msg) do
+    msg = Map.put_new(msg, "created_at", local_iso())
     File.write!(t, [Jason.encode_to_iodata!(msg), "\n"], [:append])
     touch_index(id)
   end
@@ -72,13 +73,15 @@ defmodule Newbee.Session do
 
   @doc "读取全部历史消息。坏行（崩溃写了一半的）跳过而非崩 init。"
   def messages(%__MODULE__{transcript: t}) do
+    fallback = legacy_iso(t)
+
     case File.read(t) do
       {:ok, body} ->
         body
         |> String.split("\n", trim: true)
         |> Enum.reduce([], fn line, acc ->
           case Jason.decode(line) do
-            {:ok, msg} -> [msg | acc]
+            {:ok, msg} when is_map(msg) -> [Map.put_new(msg, "created_at", fallback) | acc]
             _ -> acc
           end
         end)
@@ -252,7 +255,10 @@ defmodule Newbee.Session do
       saved_at: local_iso()
     }
 
-    File.write!(Path.join(dir, "beam_snapshot.json"), Jason.encode_to_iodata!(snapshot, pretty: true))
+    File.write!(
+      Path.join(dir, "beam_snapshot.json"),
+      Jason.encode_to_iodata!(snapshot, pretty: true)
+    )
   rescue
     _ -> :ok
   end
@@ -557,13 +563,20 @@ defmodule Newbee.Session do
     case Enum.find(entries, &(&1["id"] == id)) do
       nil ->
         # 新会话：记录创建时间（此后 created 保持不变）
-        File.write!(index(), Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => now} | entries]))
+        File.write!(
+          index(),
+          Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => now} | entries])
+        )
 
       existing ->
         # 已有会话：mtime 刷新，created 保留（缺失时回退 mtime）
         created = existing["created"] || created_from_id(id) || existing["mtime"] || now
         rest = Enum.reject(entries, &(&1["id"] == id))
-        File.write!(index(), Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => created} | rest]))
+
+        File.write!(
+          index(),
+          Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => created} | rest])
+        )
     end
   rescue
     _ -> :ok
@@ -666,7 +679,10 @@ defmodule Newbee.Session do
   defp when_str(utc_datetime) do
     {{y, m, d}, {h, mi, _}} = :calendar.universal_time_to_local_time(utc_datetime)
     {{ny, nm, nd}, _} = :calendar.local_time()
-    yesterday = (:calendar.date_to_gregorian_days({ny, nm, nd}) - 1) |> :calendar.gregorian_days_to_date()
+
+    yesterday =
+      (:calendar.date_to_gregorian_days({ny, nm, nd}) - 1) |> :calendar.gregorian_days_to_date()
+
     pad = &String.pad_leading(Integer.to_string(&1), 2, "0")
 
     cond do
@@ -692,8 +708,49 @@ defmodule Newbee.Session do
 
   # 本地时间 ISO（无 tz database 时 :calendar.local_time 即系统本地时区）
   defp local_iso do
-    {{y, m, d}, {h, mi, sec}} = :calendar.local_time()
-    :io_lib.format("~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0B", [y, m, d, h, mi, sec]) |> IO.iodata_to_binary()
+    local = :calendar.local_time()
+    utc = :calendar.universal_time()
+
+    offset =
+      :calendar.datetime_to_gregorian_seconds(local) -
+        :calendar.datetime_to_gregorian_seconds(utc)
+
+    iso_from_local(local, offset)
+  end
+
+  defp legacy_iso(path) do
+    case File.stat(path) do
+      {:ok, %{mtime: mtime}} ->
+        local = :calendar.universal_time_to_local_time(mtime)
+
+        offset =
+          :calendar.datetime_to_gregorian_seconds(local) -
+            :calendar.datetime_to_gregorian_seconds(mtime)
+
+        iso_from_local(local, offset)
+
+      _ ->
+        local_iso()
+    end
+  end
+
+  defp iso_from_local({{y, m, d}, {h, mi, sec}}, offset) do
+    sign = if offset < 0, do: "-", else: "+"
+    abs_offset = abs(offset)
+    oh = div(abs_offset, 3600)
+    om = div(rem(abs_offset, 3600), 60)
+
+    :io_lib.format("~4..0B-~2..0B-~2..0BT~2..0B:~2..0B:~2..0B~s~2..0B:~2..0B", [
+      y,
+      m,
+      d,
+      h,
+      mi,
+      sec,
+      sign,
+      oh,
+      om
+    ])
+    |> IO.iodata_to_binary()
   end
 end
-
