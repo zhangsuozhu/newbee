@@ -395,17 +395,32 @@ const flow = $("flow");
     return Math.floor(w / 60) + "m" + (w % 60) + "s";
   }
 
+  // 服务端时间带 offset；显示转换到手机/浏览器本地时区。
+  function setBubbleTime(d, value) {
+    const parsed = value ? new Date(value) : new Date();
+    const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+    d.dataset.createdAt = value || d.dataset.createdAt || date.toISOString();
+    let time = d.querySelector(":scope > .msg-time");
+    if (!time) { time = document.createElement("time"); time.className = "msg-time"; }
+    time.textContent = date.toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+    time.dateTime = date.toISOString();
+    time.title = date.toISOString();
+    d.appendChild(time);
+    return d;
+  }
+
   // ── 事件 → 渲染 ──
   function onEvent(kind, p) {
+    state.eventCreatedAt = p && p.created_at;
     trackTiming(kind, p);
     switch (kind) {
-      case "text": appendStream(p.delta); break;
-      case "reasoning": appendReasoning(p.delta); break;
+      case "text": appendStream(p.delta, p.created_at); break;
+      case "reasoning": appendReasoning(p.delta, p.created_at); break;
       case "tool_start": toolStart(p); break;
       case "tool_result": toolResult(p.text, true, p.duration_ms); break;
       case "tool_error": toolResult(p.text, false); break;
-case "done": finishTurn(); line("done", p.summary, true); break;
-      case "ask": finishTurn(); renderAskCard(p.question, p.options || [], p.kind || "text", null); break;
+      case "done": finishTurn(); line("done", p.summary, true, p.created_at); break;
+      case "ask": finishTurn(); renderAskCard(p.question, p.options || [], p.kind || "text", p.created_at); break;
       case "text_end": finishTurn(); break;
       case "error": {
         finishTurn();
@@ -493,11 +508,12 @@ case "goal_round": break;
     state.lastAttachedSeq = 0;
   }
 
-  function el(cls, text, md) {
+  function el(cls, text, md, createdAt) {
     const d = document.createElement("div");
     d.className = `msg ${cls}`;
     if (text) { if (md) d.innerHTML = renderMarkdown(text); else d.textContent = text; }
     flow.appendChild(d);
+    setBubbleTime(d, createdAt || state.eventCreatedAt);
     return d;
   }
 
@@ -584,7 +600,7 @@ case "goal_round": break;
   let replayPendingUsage = null; // 回放时 usage 行先于 assistant 行到达，暂存等下个气泡
   let streamAcc = "";
   let streamRaf = 0;
-  function appendStream(delta) {
+  function appendStream(delta, createdAt) {
     archiveReasoning();
     const d = typeof delta === "string" ? delta : "";
     // Some OpenAI-compatible providers emit empty text events between tool calls.
@@ -597,7 +613,7 @@ case "goal_round": break;
     if (!state.currentAssistant) {
       state.busy = true; setBusy(true);
       clearTurnStatus();
-      state.currentAssistant = addAssistantChrome(el("msg-assistant", ""));
+      state.currentAssistant = addAssistantChrome(el("msg-assistant", "", false, createdAt));
       if (state._pendingUsage) { attachUsageToBubble(state.currentAssistant, state._pendingUsage); state._pendingUsage = null; }
     }
     state.currentAssistant.dataset.raw = streamAcc;
@@ -701,6 +717,7 @@ case "goal_round": break;
     const result = document.createElement("div");
     result.className = "tool-result hidden";
     card.append(head, code, result);
+    setBubbleTime(card, p.created_at || state.eventCreatedAt);
     // 默认折叠，点 head 展开 code + result
     head.style.cursor = "pointer";
     head.addEventListener("click", () => {
@@ -821,6 +838,7 @@ case "goal_round": break;
     addToolStatus(card, p.exit === 0);
     addToolCopyButton(card, p.output, p.cmd);
     card.append(head, out);
+    setBubbleTime(card, p.created_at || state.eventCreatedAt);
     flow.appendChild(card);
     flushTextBlock();
   }
@@ -830,8 +848,8 @@ case "goal_round": break;
     card.className = "msg msg-tool";
     const head = document.createElement("div");
     head.className = "tool-head";
-    const st = p.stats || {};
     const actor = p.session_id ? sessionDisplayName(p.session_id) : "当前会话";
+    const st = p.stats || {};
     if (p.path && p.session_id) state.fileAttribution[p.path] = { sessionId: p.session_id, name: actor };
     head.innerHTML = `<b>✎</b> ${escapeHtml(p.path || "")} <span class="diffstat">+${st.added ?? 0} −${st.removed ?? 0}</span><span class="diff-owner">${escapeHtml(actor)}</span>`;
     const body = document.createElement("div");
@@ -845,6 +863,7 @@ case "goal_round": break;
       body.appendChild(row);
     });
     card.append(head, body);
+    setBubbleTime(card, p.created_at || state.eventCreatedAt);
     flow.appendChild(card);
     flushTextBlock();
     mcOnFileChange(p.path);
@@ -1846,6 +1865,7 @@ case "goal_round": break;
     res.className = "tool-result " + (ok ? "ok" : "err") + " hidden";
     res.textContent = (result || "").split("\n").slice(0, 30).join("\n");
     card.append(head, codeEl, res);
+    setBubbleTime(card, state.eventCreatedAt);
     head.style.cursor = "pointer";
     head.addEventListener("click", () => {
       const open = codeEl.classList.contains("hidden");
@@ -2021,14 +2041,13 @@ case "goal_round": break;
 
 
   function renderOneMsg(m) {
+    state.eventCreatedAt = m.created_at || null;
     if (m.role === "user") {
       if (m.images && m.images.length) renderUserLine(m.content, m.images);
       else line("user", m.content);
-    }
-    else if (m.role === "done") {
+    } else if (m.role === "done") {
       line("done", m.content, true);
-    }
-    else if (m.role === "assistant") {
+    } else if (m.role === "assistant") {
       if (m.reasoning) {
         const d = el("msg-reasoning", "");
         d.dataset.thinkText = m.reasoning;
@@ -2036,33 +2055,48 @@ case "goal_round": break;
         renderReasoningBody(d);
       }
       if (m.content) {
-        const d = addAssistantChrome(el("msg-assistant", m.content, true)); bindCopyButtons(d);
-        // 回放：有 tool_calls 时 usage 留给工具卡（底部统计），纯文本回复才贴气泡
-        if (replayPendingUsage && !(m.toolCalls || []).length) { attachUsageToBubble(d, replayPendingUsage); replayPendingUsage = null; }
+        const d = addAssistantChrome(el("msg-assistant", m.content, true));
+        bindCopyButtons(d);
+        if (replayPendingUsage && !(m.toolCalls || []).length) {
+          attachUsageToBubble(d, replayPendingUsage);
+          replayPendingUsage = null;
+        }
       }
-      (m.toolCalls || []).forEach((tc) => { const card = renderReplayTool(tc.name, tc.title, tc.code, "", true); if (tc.id) replayToolCards[tc.id] = card; });
+      (m.toolCalls || []).forEach((tc) => {
+        const card = renderReplayTool(tc.name, tc.title, tc.code, "", true);
+        if (replayPendingUsage) attachToolUsageToCard(card, replayPendingUsage);
+        if (tc.id) replayToolCards[tc.id] = card;
+      });
+      if ((m.toolCalls || []).length && replayPendingUsage) replayPendingUsage = null;
     } else if (m.role === "ask") {
       const c = m.content || {};
       renderAskCard(c.question || "", c.options || [], c.kind || "text", c.created_at || null);
     } else if (m.role === "media") {
       renderMediaShow(m.content || {});
     } else if (m.role === "usage") {
-      if (m.usage) replayPendingUsage = typeof m.usage === "string" ? JSON.parse(m.usage) : m.usage;
+      if (m.usage) {
+        replayPendingUsage = typeof m.usage === "string" ? JSON.parse(m.usage) : m.usage;
+        const cards = Object.values(replayToolCards);
+        if (cards.length) {
+          cards.forEach((card) => attachToolUsageToCard(card, replayPendingUsage));
+          replayPendingUsage = null;
+        }
+      }
     } else if (m.role === "tool") {
       const ok = !(m.content || "").startsWith("✗");
       const host = (m.toolCallId && replayToolCards[m.toolCallId]) || null;
       if (host) {
         const resEl = host.querySelector(".tool-result");
-        if (resEl) { resEl.classList.add(ok ? "ok" : "err"); resEl.textContent = (m.content || "").split("\n").slice(0, 30).join("\n"); }
+        if (resEl) {
+          resEl.classList.add(ok ? "ok" : "err");
+          resEl.textContent = (m.content || "").split("\n").slice(0, 30).join("\n");
+        }
         addToolStatus(host, ok);
         addToolCopyButton(host, m.content, host.querySelector(".tool-code")?.textContent || "");
-        // 回放：usage 行先于 tool 行到达（transcript 顺序），此时贴到工具卡
-        if (replayPendingUsage && !host.querySelector(":scope > .tool-usage")) {
-          attachToolUsageToCard(host, replayPendingUsage);
-          replayPendingUsage = null;
-        }
         delete replayToolCards[m.toolCallId];
-      } else { renderReplayTool("tool", "", "", m.content, ok); }
+      } else {
+        renderReplayTool("tool", "", "", m.content, ok);
+      }
     } else if (m.role === "archive") {
       const d = el("msg-archive", "");
       const segs = m.segments || [];
@@ -2073,10 +2107,10 @@ case "goal_round": break;
       if (segs.length) {
         const list = document.createElement("div");
         list.className = "archive-segs";
-        segs.forEach((s) => {
+        segs.forEach((seg) => {
           const row = document.createElement("div");
           row.className = "archive-seg";
-          row.textContent = `[${s.id}] ${s.messages} 条` + (s.intent ? ` · ${s.intent}` : "");
+          row.textContent = `[${seg.id}] ${seg.messages} 条` + (seg.intent ? ` · ${seg.intent}` : "");
           list.appendChild(row);
         });
         d.appendChild(list);
@@ -2245,6 +2279,7 @@ case "goal_round": break;
 
   // ── 发送 ──
   async function send() {
+    state.eventCreatedAt = new Date().toISOString();
     const text = input.value.trim();
     const images = state.attachments.map(x => x.dataUrl);
     if ((!text && images.length === 0) || !state.sid) return;
@@ -2640,17 +2675,18 @@ case "goal_round": break;
     const f = usageFields(u || state.lastLLMUsage);
     if (!card || !f) return;
     if (card.querySelector(":scope > .tool-usage")) return;
-    const isShared = state.lastAttachedSeq === state.lastUsageSeq && state.lastUsageSeq !== 0;
+    const labelPrefix = state.lastAttachedSeq === state.lastUsageSeq && state.lastUsageSeq !== 0 ? "同上次请求 · " : "";
     const bar = document.createElement("div");
     bar.className = "tool-usage";
     const left = document.createElement("span");
     left.className = "tool-usage-stats";
     const pct = f.hit == null ? "未统计" : ((f.hit > 99.995 ? "100.00" : f.hit.toFixed(2)) + "%");
     const cacheTxt = f.cached == null ? "-" : fmtTokShort(f.cached);
-    left.textContent = (isShared ? "同上次请求 · " : "") + `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${cacheTxt} (${pct})`;
+    left.textContent = labelPrefix + `输入 ${fmtTokShort(f.prompt)} · 输出 ${fmtTokShort(f.completion)} · 缓存 ${cacheTxt} (${pct})`;
     left.title = `prompt=${f.prompt} completion=${f.completion} total=${f.total} cached=${f.cached} hit=${f.hit == null ? "-" : f.hit.toFixed(2)+"%"}`;
     bar.appendChild(left);
     card.appendChild(bar);
+    setBubbleTime(card, card.dataset.createdAt);
     state.lastAttachedSeq = state.lastUsageSeq;
   }
   function scrollBottom(force) {

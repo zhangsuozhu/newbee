@@ -244,9 +244,9 @@ body {
 }
 
 .msg-usage { display:flex; align-items:center; justify-content:flex-start; gap:8px; margin-top:10px; padding-top:8px; border-top:1px dashed var(--nb-border); font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); font-variant-numeric: tabular-nums; }
-.msg-usage-stats { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.msg-usage-stats { flex:1; min-width:0; overflow-wrap:anywhere; white-space:normal; }
 .tool-usage { display:flex; align-items:center; gap:8px; margin-top:6px; padding-top:6px; border-top:1px dashed var(--nb-border); font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); font-variant-numeric: tabular-nums; }
-.tool-usage-stats { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tool-usage-stats { flex:1; min-width:0; overflow-wrap:anywhere; white-space:normal; }
 .msg-usage-model { flex:none; max-width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:0.9; }
 
 /* assistant 输出框：包边框 + 右上角复制按钮 */
@@ -2417,4 +2417,29 @@ svg.ico {
 /* 手机端不展示扫码按钮（手机是扫码方） */
 @media (max-width: 768px) {
   #qa-show { display: none !important; }
+}
+
+/* 消息时间：独立底部行，不占正文横向空间。 */
+.msg-time {
+  display: block;
+  margin-top: 8px;
+  color: var(--nb-label-caption);
+  font: 10px/1.35 var(--nb-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: right;
+  opacity: .85;
+}
+
+@media (max-width: 768px) {
+  .msg-time {
+    margin-top: 6px;
+    font-size: 10px;
+    line-height: 1.25;
+    text-align: left;
+  }
+  .msg-user, .msg-assistant, .msg-boxed, .msg-tool {
+    min-width: 0;
+  }
 }

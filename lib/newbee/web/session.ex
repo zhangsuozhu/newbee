@@ -123,7 +123,8 @@ defmodule Newbee.Web.Session do
   执行的工具调用。消息带协作横幅（标注来源与不可信属性），经 Kernel
   持久化在会话 transcript 中，重启后可追溯。
   """
-  def collaboration_message(pid, message), do: GenServer.cast(pid, {:collaboration_message, message})
+  def collaboration_message(pid, message),
+    do: GenServer.cast(pid, {:collaboration_message, message})
 
   @doc "向会话队列投递协作结果通知（任务进入终态时由 Coordinator 回收）。"
   def collaboration_result(pid, task), do: GenServer.cast(pid, {:collaboration_result, task})
@@ -186,7 +187,9 @@ defmodule Newbee.Web.Session do
       try do
         opts =
           []
-          |> then(fn opts -> if provider, do: Keyword.put(opts, :provider, provider), else: opts end)
+          |> then(fn opts ->
+            if provider, do: Keyword.put(opts, :provider, provider), else: opts
+          end)
           |> then(fn opts -> if model, do: Keyword.put(opts, :model, model), else: opts end)
 
         {:ok, Newbee.LLM.Config.client_for("default", opts)}
@@ -454,7 +457,12 @@ defmodule Newbee.Web.Session do
 
     if st.busy or st.booting do
       queue = :queue.in({:text, prompt}, st.queue)
-      broadcast(st.sid, :collab_result_queued, %{taskId: task["task_id"], queued: :queue.len(queue)})
+
+      broadcast(st.sid, :collab_result_queued, %{
+        taskId: task["task_id"],
+        queued: :queue.len(queue)
+      })
+
       {:noreply, %{st | queue: queue}}
     else
       {:noreply, dispatch_input(st, prompt)}
@@ -466,7 +474,9 @@ defmodule Newbee.Web.Session do
 
     if st.busy or st.booting do
       queue = :queue.in({:text, prompt}, st.queue)
+
       broadcast(st.sid, :collab_task_queued, %{taskId: task["task_id"], queued: :queue.len(queue)})
+
       {:noreply, %{st | queue: queue}}
     else
       {:noreply, dispatch_input(st, prompt)}
@@ -490,7 +500,12 @@ defmodule Newbee.Web.Session do
         {:noreply, st}
       else
         queue = :queue.in({:collab_message, message}, st.queue)
-        broadcast(st.sid, :collab_message_queued, %{messageId: message["message_id"], queued: :queue.len(queue)})
+
+        broadcast(st.sid, :collab_message_queued, %{
+          messageId: message["message_id"],
+          queued: :queue.len(queue)
+        })
+
         {:noreply, %{st | queue: queue}}
       end
     else
@@ -555,7 +570,14 @@ defmodule Newbee.Web.Session do
   def handle_cast({:usage_snap, usage}, st) when is_map(usage) do
     merged = Map.merge(st.usage_snap, usage, fn _k, a, b -> (num(a) || 0) + (num(b) || 0) end)
     context_tokens = usage["prompt_tokens"] || usage[:prompt_tokens] || st.context_tokens
-    next = %{st | usage_snap: merged, context_tokens: context_tokens, steps_snap: st.steps_snap + 1}
+
+    next = %{
+      st
+      | usage_snap: merged,
+        context_tokens: context_tokens,
+        steps_snap: st.steps_snap + 1
+    }
+
     save_stats(next)
     {:noreply, next}
   end
@@ -763,6 +785,7 @@ defmodule Newbee.Web.Session do
     case :queue.out(q) do
       {{:value, {:text, t}}, q} ->
         st = %{st | queue: q} |> dispatch_input(t)
+
         # 命令类输入（/status 等）不会开启 turn：继续排后续；真正提交 LLM 后 busy=true 停下
         if st.busy, do: st, else: dispatch_pending(st)
 
@@ -970,13 +993,26 @@ defmodule Newbee.Web.Session do
   defp broadcast_turn_end(sid, result) do
     {kind, payload} =
       case result do
-        {:done, summary} -> {:done, %{summary: summary}}
-        {:ask, q, options, kind} -> {:ask, %{question: q, options: options || [], kind: kind || "text"}}
-        {:ask, q} -> {:ask, %{question: q, options: [], kind: "text"}}
-        {:text, body} -> {:text_end, %{body: body}}
-        {:error, e} -> {:error, %{message: inspect(e)}}
-        {:interrupted, _} -> {:interrupted, %{}}
-        other -> {:error, %{message: inspect(other)}}
+        {:done, summary} ->
+          {:done, %{summary: summary}}
+
+        {:ask, q, options, kind} ->
+          {:ask, %{question: q, options: options || [], kind: kind || "text"}}
+
+        {:ask, q} ->
+          {:ask, %{question: q, options: [], kind: "text"}}
+
+        {:text, body} ->
+          {:text_end, %{body: body}}
+
+        {:error, e} ->
+          {:error, %{message: inspect(e)}}
+
+        {:interrupted, _} ->
+          {:interrupted, %{}}
+
+        other ->
+          {:error, %{message: inspect(other)}}
       end
 
     broadcast(sid, kind, payload)
@@ -984,6 +1020,8 @@ defmodule Newbee.Web.Session do
 
   # Loop 事件统一编码为 JSON 安全的 {kind, payload}，经 Bus 广播给 socket。
   defp broadcast(sid, kind, payload) do
+    payload = Map.put_new(payload, :created_at, DateTime.utc_now() |> DateTime.to_iso8601())
+
     if Process.whereis(Newbee.Bus) do
       Newbee.Bus.emit(:web_event, {:web_event, sid, kind, payload})
     end
@@ -1020,9 +1058,15 @@ defmodule Newbee.Web.Session do
   defp encode_event({:turn_end, kind, ms}), do: %{result: kind, ms: ms}
   defp encode_event({:goal_start, text}), do: %{text: text}
   defp encode_event({:goal_done, summary}), do: %{summary: summary}
-  defp encode_event({:ask, q, options, kind}), do: %{question: q, options: options || [], kind: kind || "text"}
+
+  defp encode_event({:ask, q, options, kind}),
+    do: %{question: q, options: options || [], kind: kind || "text"}
+
   defp encode_event({:ask, q}), do: %{question: q, options: [], kind: "text"}
-  defp encode_event({:goal_ask, q, options, kind}), do: %{question: q, options: options || [], kind: kind || "text"}
+
+  defp encode_event({:goal_ask, q, options, kind}),
+    do: %{question: q, options: options || [], kind: kind || "text"}
+
   defp encode_event({:goal_ask, q}), do: %{question: q, options: [], kind: "text"}
   defp encode_event({:goal_round, n}), do: %{round: n}
   defp encode_event({:goal_retry, n}), do: %{retry: n}

@@ -1822,10 +1822,11 @@ defmodule Newbee.Web.Api do
   end
 
   # transcript 消息 → 前端可渲染结构
-  defp history_msg(%{"role" => "user", "content" => c}) when is_binary(c),
-    do: %{role: "user", content: c}
+  # transcript 消息 -> 前端可渲染结构，时间戳原样透传；旧记录由 Session.messages/1 回填。
+  defp history_msg(%{"role" => "user", "content" => c} = m) when is_binary(c),
+    do: %{role: "user", content: c, created_at: m["created_at"]}
 
-  defp history_msg(%{"role" => "user", "content" => content}) when is_list(content) do
+  defp history_msg(%{"role" => "user", "content" => content} = m) when is_list(content) do
     text =
       content
       |> Enum.filter(&is_map/1)
@@ -1839,11 +1840,11 @@ defmodule Newbee.Web.Api do
       end)
       |> Enum.reject(&is_nil/1)
 
-    %{role: "user", content: text, images: images}
+    %{role: "user", content: text, images: images, created_at: m["created_at"]}
   end
 
-  defp history_msg(%{"role" => "assistant", "done" => true, "content" => c}) when is_binary(c),
-    do: %{role: "done", content: c}
+  defp history_msg(%{"role" => "assistant", "done" => true, "content" => c} = m) when is_binary(c),
+    do: %{role: "done", content: c, created_at: m["created_at"]}
 
   defp history_msg(%{"role" => "assistant"} = m) do
     calls =
@@ -1859,26 +1860,27 @@ defmodule Newbee.Web.Api do
       role: "assistant",
       content: m["content"] || "",
       reasoning: m["reasoning"] || "",
-      toolCalls: calls
+      toolCalls: calls,
+      created_at: m["created_at"]
     }
   end
 
-  defp history_msg(%{"role" => "tool", "tool_call_id" => tcid, "content" => c}) when is_binary(c),
-    do: %{role: "tool", content: String.slice(c, 0, 4000), toolCallId: tcid}
+  defp history_msg(%{"role" => "tool", "tool_call_id" => tcid, "content" => c} = m) when is_binary(c),
+    do: %{role: "tool", content: String.slice(c, 0, 4000), toolCallId: tcid, created_at: m["created_at"]}
 
   # 兼容无 tool_call_id 的旧记录：仅内容，前端按孤结果兜底渲染
 
-  defp history_msg(%{"role" => "ask", "content" => c}) when is_map(c),
-    do: %{role: "ask", content: json_safe(c)}
+  defp history_msg(%{"role" => "ask", "content" => c} = m) when is_map(c),
+    do: %{role: "ask", content: Map.put_new(json_safe(c), "created_at", m["created_at"]), created_at: m["created_at"]}
 
-  defp history_msg(%{"role" => "ask", "content" => c}) when is_binary(c),
-    do: %{role: "ask", content: %{question: c, options: [], kind: "text"}}
+  defp history_msg(%{"role" => "ask", "content" => c} = m) when is_binary(c),
+    do: %{role: "ask", content: %{question: c, options: [], kind: "text"}, created_at: m["created_at"]}
 
-  defp history_msg(%{"role" => "media", "content" => c}) when is_map(c),
-    do: %{role: "media", content: json_safe(c)}
+  defp history_msg(%{"role" => "media", "content" => c} = m) when is_map(c),
+    do: %{role: "media", content: json_safe(c), created_at: m["created_at"]}
 
-  defp history_msg(%{"role" => "usage", "usage" => u}) when is_map(u),
-    do: %{role: "usage", usage: json_safe(u)}
+  defp history_msg(%{"role" => "usage", "usage" => u} = m) when is_map(u),
+    do: %{role: "usage", usage: json_safe(u), created_at: m["created_at"]}
 
   defp history_msg(_), do: nil
 
@@ -2163,4 +2165,3 @@ defmodule Newbee.Web.Api do
     end
   end
 end
-

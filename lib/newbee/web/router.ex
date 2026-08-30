@@ -60,8 +60,10 @@ defmodule Newbee.Web.Router do
     serve_static(conn)
   end
 
-  @priv_web Path.expand("../../../priv/web", __DIR__)
-  @index Path.join(@priv_web, "index.html")
+  # 运行时解析（_build/.../priv 是相对符号链接）：仓库目录改名/移动后
+  # 不重编译也能找对位置；编译期 Path.expand(__DIR__) 会把旧绝对路径焊死在 beam 里。
+  defp priv_web, do: Path.join(:code.priv_dir(:newbee), "web")
+  defp index_html, do: Path.join(priv_web(), "index.html")
 
   # ── 认证 gate ──
 
@@ -130,12 +132,13 @@ defmodule Newbee.Web.Router do
   # ── 静态资源 + SPA fallback ──
 
   defp serve_static(conn) do
+    root = priv_web()
     path = conn.request_path |> String.trim_leading("/")
     path = if path == "", do: "index.html", else: path
-    file = Path.join(@priv_web, path)
+    file = Path.join(root, path)
 
     cond do
-      not inside_root?(Path.expand(file), Path.expand(@priv_web)) ->
+      not inside_root?(Path.expand(file), Path.expand(root)) ->
         send_resp(conn, 403, "forbidden")
 
       File.regular?(file) ->
@@ -144,11 +147,11 @@ defmodule Newbee.Web.Router do
         |> put_resp_header("cache-control", "no-store, no-cache, must-revalidate")
         |> send_file(200, file)
 
-      File.regular?(@index) ->
+      File.regular?(index_html()) ->
         conn
         |> put_resp_content_type("text/html")
         |> put_resp_header("cache-control", "no-store, no-cache, must-revalidate")
-        |> send_file(200, @index)
+        |> send_file(200, index_html())
 
       true ->
         send_resp(conn, 404, "newbee webui 前端未构建：priv/web/index.html 不存在")
