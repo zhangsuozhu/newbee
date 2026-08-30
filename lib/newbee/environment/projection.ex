@@ -10,8 +10,8 @@ defmodule Newbee.Environment.Projection do
     环境重新投影（见 Verifier.projection_replay）；
   - 渐进式披露（§9.4/§9.12）：一行签名清单 + 价签，全文按需 Newbee.read。
 
-  视图成分：system 基底 + 项目记忆（不可信隔离）+ RepoMap +
-  工具一行签名清单（带价签）+ 记忆 Guidance + 进化 prompt 片段 +
+  视图成分：system 基底 + 项目记忆（不可信隔离）+ 工具一行签名清单（带价签）+
+  记忆 Guidance + 进化 prompt 片段 +
   绑定摘要 + module_ready/迁移摘要通知 + 沉睡规则挂载表。
   Agent.Loop 的 system prompt 由本模块产出（唯一视图构建器）。
   """
@@ -24,7 +24,7 @@ defmodule Newbee.Environment.Projection do
   @doc """
   构建 worker 视图。context: root / bindings_summary / session_id。
   返回 map（含 `:prompt` 渲染文本，以及各成分字段供诊断/测试）。
-  注意：本函数**每次调用都重新读取**项目记忆、RepoMap、价签、绑定与通知——
+  注意：本函数**每次调用都重新读取**项目记忆、价签、绑定与通知——
   它每步渲染当前实况；Loop 只在会话首建时取一次 `:prompt` 并持久化复用（前缀缓存），
   不会每步重build。
   """
@@ -132,12 +132,11 @@ defmodule Newbee.Environment.Projection do
     _ -> ""
   end
 
-  # RepoMap（§3.6）：Elixir 工程给模块签名图，其他语言退化目录树（build 内部分流）
-  defp repomap(root) do
-    map = Newbee.Plugins.RepoMap.build(root)
-    if map == "", do: "", else: "\n## 工程结构图（RepoMap，按图定位再精确读取）\n" <> map <> "\n"
-  rescue
-    _ -> ""
+  # RepoMap（§3.6）：**默认不注入 prompt**（§9.4 渐进式披露）。
+  # 模型需要定位时自己调 Newbee.Plugins.RepoMap.build(root, format: :slim) 拉基础档，
+  # 需要签名细节再拉 :full。本函数保留返回空串，仅维持 view 结构与 UsageTracker 观测面。
+  defp repomap(_root) do
+    ""
   end
 
   # 工具清单：一行签名 + 价签（样本不足的桶不展示，§3.3）

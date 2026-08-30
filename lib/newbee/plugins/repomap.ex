@@ -7,8 +7,11 @@ defmodule Newbee.Plugins.RepoMap do
   非 Elixir 工程退化为目录树。
 
   ## 函数清单
-  - `build(root \\\\ ".", opts \\\\ []) :: String.t()` — 构建工程结构图（紧凑字符串）。非 Elixir 工程退化为目录树。
+  - `build(root \\ ".", opts \\ []) :: String.t()` — 构建工程结构图（紧凑字符串）。非 Elixir 工程退化为目录树。
     选项：`:tier1_max_bytes` —— Tier1 区字节预算（默认 14_000）。
+    选项：`:format` —— `:full`（默认，核心模块全签名加全部模块索引）；
+      `:slim` 基础档——每个模块一行（名字加一句话说明加路径），不列函数签名，
+      说明截 30 字符，供按需加载场景首次定位用。
 
   增量缓存（§3.6）：以 mix.exs + lib 全部文件的 mtime 指纹为 key，
   工程未变更时直接复用缓存，不重复 AST 解析。
@@ -16,6 +19,7 @@ defmodule Newbee.Plugins.RepoMap do
   ## 可跑示例
       Newbee.Plugins.RepoMap.build(".")
       Newbee.Plugins.RepoMap.build(".", tier1_max_bytes: 8_000)
+      Newbee.Plugins.RepoMap.build(".", format: :slim)
 
   """
 
@@ -38,10 +42,10 @@ defmodule Newbee.Plugins.RepoMap do
       小工程想强制双层展示可调小。
 
   增量缓存（§3.6）：以 mix.exs + lib 全部文件的 mtime 指纹为 key，
-  工程未变更时直接复用缓存，不重复 AST 解析。v2 键前缀隔离旧格式。
+  工程未变更时直接复用缓存，不重复 AST 解析。缓存键含 format，两档互不串。
   """
   def build(dir \\ ".", opts \\ []) do
-    key = "v2-" <> fingerprint(dir)
+    key = "v2-" <> to_string(Keyword.get(opts, :format, :full)) <> "-" <> fingerprint(dir)
 
     case read_cache(key) do
       {:ok, map} ->
@@ -72,7 +76,10 @@ defmodule Newbee.Plugins.RepoMap do
     refs = reference_counts(parsed, known)
     ranked = rank(parsed, refs)
 
-    render_ranked(ranked, Keyword.get(opts, :tier1_max_bytes, @tier1_max_bytes))
+    case Keyword.get(opts, :format, :full) do
+      :slim -> render_slim(ranked)
+      _ -> render_ranked(ranked, Keyword.get(opts, :tier1_max_bytes, @tier1_max_bytes))
+    end
   end
 
   # 参与建图的源文件：跳过厂商/产物/环境目录，test 文件保留（引用数低自然落 Tier2）
@@ -316,6 +323,22 @@ defmodule Newbee.Plugins.RepoMap do
 
   defp render_index_line(m) do
     "· #{m.name} (#{length(m.defs)} sigs) @ #{m.path}"
+  end
+
+  # 基础档（:slim）：每个模块一行——名字 + 一句话说明 + 路径，不列函数签名。
+  # 供按需加载场景：模型首次定位时拉这张轻量图，需要签名细节再拉 :full。
+  # slim 专用 doc 截断：30 字符（约 10 个汉字），比 full 的 80 更狠——
+  # slim 的目标是让模型扫一眼知道"该找哪个模块"，说明够用即可，省 token。
+  defp slim_doc_suffix(nil), do: ""
+  defp slim_doc_suffix(doc) do
+    cut = String.slice(doc, 0, 30)
+    if String.length(doc) > 30, do: " — " <> cut <> "…", else: " — " <> cut
+  end
+
+  defp render_slim(ranked) do
+    Enum.map_join(ranked, "\n", fn m ->
+      "· #{m.name}#{slim_doc_suffix(m.doc)} @ #{m.path}"
+    end)
   end
 
   # ── 缓存 ──────────────────────────────────────────────────────────────

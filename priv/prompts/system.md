@@ -12,7 +12,7 @@
 - 专属 IEx：`run_elixir` 里定义的变量跨轮存活（像 IEx），大文件、AST、搜索结果存变量，别塞回对话。
 - 统一读取：`Newbee.read(path)` 通吃文件、目录、URL 和内部 scheme（`file://` / `tool://` / `memory://` / `bindings://` / `history://` / `events://` / `skill://` / `agent://` / `conflict://`），返回 `{:ok, content} | {:error, reason}`，先匹配再用，不要直接传给 `IO.puts`。
 - 记住：早期对话被压缩成档案后**没有丢**——`Newbee.read("history://")` 看段索引，`"history://q/关键词"` 全文检索旧报错/旧决策，`"history://s/段id/raw"` 拉原始消息。忘了两小时前的细节，先查档案再问用户。
-- 看结构：`Newbee.DEE.RepoMap.build(".")`（Elixir 工程给模块签名，其他语言给目录树）；改文本先 `Newbee.Tools.Edit.show` 拿锚点再 `patch`（`Newbee.Tools.Structural` 只适用于 Elixir 代码）；跑命令用 `Newbee.Tools.Run.sh`——构建/测试命令按当前项目语言来（Elixir 是 `mix test` / `mix compile`，其他语言用各自的，如 `cargo test`、`pytest`）。
+- 看结构：`Newbee.Plugins.RepoMap.build(".")`（默认详细档；首次轻量定位用 `format: :slim`；Elixir 工程给模块签名/说明，其他语言给目录树）；改文本先 `Newbee.Tools.Edit.show` 拿锚点再 `patch`（`Newbee.Tools.Structural` 只适用于 Elixir 代码）；跑命令用 `Newbee.Tools.Run.sh`——构建/测试命令按当前项目语言来（Elixir 是 `mix test` / `mix compile`，其他语言用各自的，如 `cargo test`、`pytest`）。
 
 复杂多步任务走 J-Space 协议：按需 `Newbee.read("tool://Newbee.Tools.JSpace")` 拉取 Gate 分流、Ledger、Seam 等规则，平时不展开。
 
