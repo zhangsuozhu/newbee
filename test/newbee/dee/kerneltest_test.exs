@@ -2,6 +2,7 @@ defmodule Newbee.Agent.LoopTest do
   use ExUnit.Case, async: false
   alias Newbee.Agent.Loop
   alias Newbee.DEE.Evaluator
+  alias Newbee.LLM.Client
 
   defp tool_msg(code, id \\ "call_1") do
     %{
@@ -29,6 +30,28 @@ defmodule Newbee.Agent.LoopTest do
         }
       ]
     }
+  end
+
+  test "新会话用生成后的真实 session id 补齐 cache_key" do
+    {:ok, ev} = Evaluator.start(mode: :local)
+
+    {:ok, kernel} =
+      Loop.start_link(
+        client: Client.new(api_key: "test", cache_key: nil),
+        evaluator: ev,
+        client_fun: scripted([])
+      )
+
+    state = :sys.get_state(kernel)
+    assert state.client.cache_key == "newbee-" <> state.session.id
+    assert state.client.responses_checkpoint == Path.join(state.session.dir, "responses-continuation.json")
+
+    switched = Client.new(api: "openai-responses", api_key: "test", responses_continuation: true)
+    assert :ok = Loop.switch_model(kernel, switched)
+    assert :sys.get_state(kernel).client.responses_checkpoint == state.client.responses_checkpoint
+
+    GenServer.stop(kernel)
+    Newbee.Session.delete(state.session.id)
   end
 
   @tag timeout: 120_000

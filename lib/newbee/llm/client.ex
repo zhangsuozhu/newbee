@@ -8,6 +8,7 @@ defmodule Newbee.LLM.Client do
   @default_model "deepseek/deepseek-v4-flash-0731"
   @default_context_window 256_000
   @context_cache_key {__MODULE__, :context_windows}
+  @responses_capability_key {__MODULE__, :responses_capabilities}
   @overload_statuses [429, 500, 502, 503, 529]
   @overload_retries 5
   @overload_delay 1_000
@@ -23,6 +24,9 @@ defmodule Newbee.LLM.Client do
             context_window: nil,
             interrupt_scope: nil,
             cache_key: nil,
+            responses_mode: :chat,
+            responses_continuation: false,
+            responses_checkpoint: nil,
             req_options: []
 
   # ── cache_key 派生 ──
@@ -47,25 +51,89 @@ defmodule Newbee.LLM.Client do
 
   @doc "获取模型上下文窗口；显式配置优先，否则查询 provider 元数据，失败回退 256K。"
   def new(opts \\ []) do
+    api = Keyword.get(opts, :api, "openai-completions")
+    mode = Keyword.get(opts, :responses_mode, default_responses_mode(api))
+    base_url = Keyword.get(opts, :base_url, @default_base_url)
+
+    # :auto 模式：探测 endpoint 是否支持 Responses API
+    {mode, continuation} = resolve_auto_mode(mode, base_url, Keyword.get(opts, :model, @default_model))
+
     %__MODULE__{
       model: Keyword.get(opts, :model, @default_model),
       provider: Keyword.get(opts, :provider, "openrouter"),
       api_key: Keyword.get(opts, :api_key, System.get_env("OPENROUTER_API_KEY")),
       base_url: Keyword.get(opts, :base_url, @default_base_url),
-      api: Keyword.get(opts, :api, "openai-completions"),
+      api: api,
       reasoning_effort: normalize_reasoning_effort(Keyword.get(opts, :reasoning_effort)),
       vision: Keyword.get(opts, :vision, true),
       context_window: Keyword.get(opts, :context_window),
       interrupt_scope: Keyword.get(opts, :interrupt_scope),
-      # cache_key：会话级稳定路由键（OpenAI prompt_cache_key 语义；Sub2API/
-      # gpt-5.6 系要求客户端主动携带，缺省不命中）。未显式传入时从进程字典
-      # 派生（Loop init/switch_model 注入），无会话上下文则 nil 不发送。
       cache_key: Keyword.get_lazy(opts, :cache_key, fn -> derive_cache_key() end),
+      responses_mode: normalize_responses_mode(mode),
+      responses_continuation: continuation,
+      responses_checkpoint: Keyword.get(opts, :responses_checkpoint),
       req_options: Keyword.get(opts, :req_options, [])
     }
   end
 
-  @doc "将旧版关闭值 off 迁移为上游 API 接受的 none。"
+  defp default_responses_mode("openai-responses"), do: :responses
+  defp default_responses_mode(_), do: :chat
+
+  # :auto 模式：探测 endpoint 是否支持 Responses API
+  # 返回 {mode, continuation_enabled?}
+  defp resolve_auto_mode(:auto, base_url, model) do
+    key = {base_url, model}
+    cache = :persistent_term.get(@responses_capability_key, %{})
+
+    case Map.fetch(cache, key) do
+      {:ok, supported?} ->
+        if supported?, do: {:responses, true}, else: {:chat, false}
+
+      :error ->
+        supported? = probe_responses_support(base_url, model)
+        :persistent_term.put(@responses_capability_key, Map.put(cache, key, supported?))
+        if supported?, do: {:responses, true}, else: {:chat, false}
+    end
+  end
+
+  defp resolve_auto_mode(mode, _base_url, _model) do
+    {mode, mode == :responses}
+  end
+
+  # 探测 endpoint 是否支持 Responses API
+  # 注意：在 Req/Finch 未启动的环境（如 DEE 测试）会返回 false
+  defp probe_responses_support(base_url, model) do
+    # 发送一个 minimal Responses 请求看是否 404/400
+    body = %{model: model, input: [], stream: false}
+
+    req = [
+      url: base_url <> "/responses",
+      method: :post,
+      headers: [
+        {"content-type", "application/json"},
+        {"user-agent", "newbee-probe"}
+      ],
+      json: body,
+      receive_timeout: 5_000,
+      retry: false
+    ]
+
+    case Req.post(req) do
+      {:ok, %{status: status}} when status in [200, 400, 401, 403, 422] ->
+        # 200 = 支持, 400/401/403/422 = endpoint 存在但参数/权限问题
+        true
+
+      {:ok, %{status: 404}} ->
+        false
+
+      {:error, _} ->
+        false
+    end
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
   def normalize_reasoning_effort("off"), do: "none"
   def normalize_reasoning_effort(effort), do: effort
 
@@ -161,18 +229,24 @@ defmodule Newbee.LLM.Client do
 
   # Req.request/1 在收到首个响应前可能同步等待连接/首 token，
   # 所以整个请求放到可杀的 worker；调用方每 50ms 检查一次 Esc 标志。
-  defp stream_chat_request(%__MODULE__{api: "openai-responses"} = client, messages, on_text, _on_reasoning) do
-    case Newbee.LLM.Responses.request(client, messages, Newbee.Codec.tools()) do
-      {:ok, message, _usage} = ok ->
-        if message["content"] != "", do: on_text.(message["content"])
-        ok
+  defp stream_chat_request(%__MODULE__{} = client, messages, on_text, on_reasoning) do
+    case client.responses_mode do
+      :responses ->
+        case Newbee.LLM.Responses.request(client, messages, Newbee.Codec.tools()) do
+          {:ok, message, _usage} = ok ->
+            if message["content"] != "", do: on_text.(message["content"])
+            ok
 
-      error ->
-        error
+          error ->
+            error
+        end
+
+      _ ->
+        stream_chat_request_chat(client, messages, on_text, on_reasoning)
     end
   end
 
-  defp stream_chat_request(%__MODULE__{} = client, messages, on_text, on_reasoning) do
+  defp stream_chat_request_chat(%__MODULE__{} = client, messages, on_text, on_reasoning) do
     Newbee.DebugLog.log(:llm, "start model=#{client.model} messages=#{length(messages)}")
     t0 = System.monotonic_time(:millisecond)
 
@@ -185,8 +259,6 @@ defmodule Newbee.LLM.Client do
         stream_options: %{include_usage: true}
       }
       |> put_cache_field(client)
-
-    effort = normalize_reasoning_effort(client.reasoning_effort)
 
     effort = normalize_reasoning_effort(client.reasoning_effort)
 
@@ -840,6 +912,14 @@ defmodule Newbee.LLM.Client do
       }
     end)
   end
+
+  defp normalize_responses_mode(mode) when mode in [:auto, :responses, :chat], do: mode
+  defp normalize_responses_mode("auto"), do: :auto
+  defp normalize_responses_mode("responses"), do: :responses
+  defp normalize_responses_mode("openai-responses"), do: :responses
+  defp normalize_responses_mode("chat"), do: :chat
+  defp normalize_responses_mode("openai-completions"), do: :chat
+  defp normalize_responses_mode(_), do: :chat
 
   defp drain(resp) do
     receive do

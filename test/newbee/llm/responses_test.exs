@@ -3,6 +3,12 @@ defmodule Newbee.LLM.ResponsesTest do
 
   alias Newbee.LLM.{Client, Responses}
 
+  setup do
+    Client.register_interrupt_scope()
+    Client.clear_interrupt()
+    :ok
+  end
+
   test "stream_chat uses Responses API and restores tool calls" do
     test_pid = self()
 
@@ -39,6 +45,7 @@ defmodule Newbee.LLM.ResponsesTest do
         api_key: "test",
         base_url: "http://localhost",
         reasoning_effort: "max",
+        cache_key: "newbee-responses-session",
         req_options: [plug: plug, retry: false]
       )
 
@@ -51,6 +58,7 @@ defmodule Newbee.LLM.ResponsesTest do
     assert_received {:text, "working"}
     assert body["input"] == [%{"role" => "user", "content" => "hi"}]
     assert body["reasoning"] == %{"effort" => "high"}
+    assert body["prompt_cache_key"] == "newbee-responses-session"
     assert [%{"type" => "function", "name" => "run_elixir"} | _] = body["tools"]
     assert message["content"] == "working"
 
@@ -82,6 +90,7 @@ defmodule Newbee.LLM.ResponsesTest do
         api_key: "test",
         base_url: "http://localhost",
         reasoning_effort: "off",
+        responses_mode: :responses,
         req_options: [plug: plug, retry: false]
       }
 
@@ -116,5 +125,111 @@ defmodule Newbee.LLM.ResponsesTest do
              },
              %{"type" => "function_call_output", "call_id" => "call-1", "output" => "2"}
            ]
+  end
+
+  test "continuation survives client recreation and sends only strict delta" do
+    test_pid = self()
+    checkpoint = Path.join(System.tmp_dir!(), "newbee-responses-#{System.unique_integer([:positive])}.json")
+    on_exit(fn -> File.rm(checkpoint) end)
+
+    plug = fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+      send(test_pid, {:continuation_request, body})
+
+      {id, text} =
+        if body["previous_response_id"], do: {"resp-2", "two"}, else: {"resp-1", "one"}
+
+      Req.Test.json(conn, response(id, text))
+    end
+
+    client_opts = [
+      api: "openai-responses",
+      model: "test/m",
+      api_key: "test",
+      base_url: "http://localhost",
+      cache_key: "newbee-session",
+      responses_continuation: true,
+      responses_checkpoint: checkpoint,
+      req_options: [plug: plug, retry: false]
+    ]
+
+    first = Client.new(client_opts)
+    assert {:ok, %{"content" => "one"}, _usage} = Client.stream_chat(first, [user("hi")])
+    assert_received {:continuation_request, first_body}
+    refute Map.has_key?(first_body, "previous_response_id")
+    assert first_body["store"] == true
+    refute Map.has_key?(Jason.decode!(File.read!(checkpoint)), "input")
+
+    recreated = Client.new(client_opts)
+    history = [user("hi"), assistant("one"), user("interrupted work"), user("continue")]
+    assert {:ok, %{"content" => "two"}, _usage} = Client.stream_chat(recreated, history)
+    assert_received {:continuation_request, second_body}
+    assert second_body["previous_response_id"] == "resp-1"
+    assert second_body["store"] == true
+    assert second_body["input"] == [user("interrupted work"), user("continue")]
+  end
+
+  test "missing previous response retries once with the full request" do
+    test_pid = self()
+    checkpoint = Path.join(System.tmp_dir!(), "newbee-responses-fallback-#{System.unique_integer([:positive])}.json")
+    on_exit(fn -> File.rm(checkpoint) end)
+    counter = :atomics.new(1, [])
+
+    plug = fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+      n = :atomics.add_get(counter, 1, 1)
+      send(test_pid, {:fallback_request, n, body})
+
+      case n do
+        1 ->
+          Req.Test.json(conn, response("resp-1", "one"))
+
+        2 ->
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.send_resp(400, Jason.encode!(%{"error" => %{"code" => "previous_response_not_found"}}))
+
+        3 ->
+          Req.Test.json(conn, response("resp-3", "three"))
+      end
+    end
+
+    client =
+      Client.new(
+        api: "openai-responses",
+        model: "test/m",
+        api_key: "test",
+        base_url: "http://localhost",
+        cache_key: "newbee-session",
+        responses_continuation: true,
+        responses_checkpoint: checkpoint,
+        req_options: [plug: plug, retry: false]
+      )
+
+    assert {:ok, %{"content" => "one"}, _usage} = Client.stream_chat(client, [user("hi")])
+    history = [user("hi"), assistant("one"), user("continue")]
+    assert {:ok, %{"content" => "three"}, _usage} = Client.stream_chat(client, history)
+
+    assert_received {:fallback_request, 2, incremental}
+    assert incremental["previous_response_id"] == "resp-1"
+    assert_received {:fallback_request, 3, full}
+    refute Map.has_key?(full, "previous_response_id")
+    assert full["store"] == true
+    assert full["input"] == history
+  end
+
+  defp user(text), do: %{"role" => "user", "content" => text}
+  defp assistant(text), do: %{"role" => "assistant", "content" => text}
+
+  defp response(id, text) do
+    %{
+      "id" => id,
+      "output" => [
+        %{"type" => "message", "content" => [%{"type" => "output_text", "text" => text}]}
+      ],
+      "usage" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
+    }
   end
 end
