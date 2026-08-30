@@ -20,7 +20,7 @@ defmodule Newbee.DEE.Rules do
 
   use GenServer
 
-  @path Path.join(System.user_home!(), ".newbee/rules.json")
+  defp path, do: Path.join(Newbee.GlobalStore.root(), "rules.json")
 
   defstruct rules: [], hits: %{}
 
@@ -203,13 +203,13 @@ defmodule Newbee.DEE.Rules do
   end
 
   defp persist(rules) do
-    File.mkdir_p!(Path.dirname(@path))
-    File.write!(@path, Jason.encode_to_iodata!(rules))
+    File.mkdir_p!(Path.dirname(path()))
+    File.write!(path(), Jason.encode_to_iodata!(rules))
     :ok
   end
 
   defp load do
-    case File.read(@path) do
+    case File.read(path()) do
       {:ok, body} ->
         case Jason.decode(body) do
           {:ok, rules} when is_list(rules) ->

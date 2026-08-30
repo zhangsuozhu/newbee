@@ -113,7 +113,7 @@ defmodule Newbee.Web.ApiIntegrationTest do
 
       on_exit(fn ->
         File.rm_rf!(root)
-        File.rm_rf!(Path.join([System.user_home!(), ".newbee/session-artifacts", sid]))
+        Newbee.Session.delete(sid)
       end)
 
       %{sid: sid}

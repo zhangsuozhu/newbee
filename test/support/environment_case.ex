@@ -18,6 +18,7 @@ defmodule Newbee.EnvironmentCase do
       Path.join(System.tmp_dir!(), "newbee_env_#{System.system_time(:native)}_#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(tmp)
+    runtime_rules = snapshot_runtime_rules()
     original_cwd = File.cwd!()
     File.cd!(tmp)
 
@@ -31,15 +32,54 @@ defmodule Newbee.EnvironmentCase do
       File.rm_rf(tmp)
     end)
 
-    # 无论测试内部是否重启过 Coordinator，退出时按名字兜底停止（防泄漏）
+    # 停止测试 Coordinator 后恢复全局 Rules，防止 release 规则泄漏到后续测试。
     on_exit(fn ->
       case Process.whereis(Newbee.Environment.Coordinator) do
         nil -> :ok
         pid -> Newbee.EnvironmentCase.stop_coordinator(pid)
       end
+
+      restore_runtime_rules(runtime_rules)
     end)
 
     {:ok, project_dir: tmp}
+  end
+
+  defp snapshot_runtime_rules do
+    path = Path.join(Newbee.GlobalStore.root(), "rules.json")
+    mounted_key = {Newbee.Environment.Coordinator, :mounted_rules}
+
+    file =
+      case File.read(path) do
+        {:ok, body} -> {:present, body}
+        {:error, :enoent} -> :missing
+      end
+
+    %{
+      state: if(Process.whereis(Newbee.DEE.Rules), do: :sys.get_state(Newbee.DEE.Rules), else: nil),
+      file: file,
+      path: path,
+      mounted: :persistent_term.get(mounted_key, :missing),
+      mounted_key: mounted_key
+    }
+  end
+
+  defp restore_runtime_rules(snapshot) do
+    if snapshot.state && Process.whereis(Newbee.DEE.Rules) do
+      :sys.replace_state(Newbee.DEE.Rules, fn _ -> snapshot.state end)
+    end
+
+    case snapshot.file do
+      {:present, body} -> File.write!(snapshot.path, body)
+      :missing -> File.rm(snapshot.path)
+    end
+
+    case snapshot.mounted do
+      :missing -> :persistent_term.erase(snapshot.mounted_key)
+      mounted -> :persistent_term.put(snapshot.mounted_key, mounted)
+    end
+
+    :ok
   end
 
   @doc "启动具名 Coordinator（默认名，供 CapabilityGate/Worker 等全局引用）。"

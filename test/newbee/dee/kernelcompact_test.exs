@@ -67,7 +67,7 @@ defmodule Newbee.Agent.LoopCompactTest do
     {:ok, kernel} = Loop.start_link(client: %{}, evaluator: ev, session_id: id, client_fun: scripted(script))
     assert {:done, "完成 6 步"} = Loop.submit(kernel, "任务 A：连续六步计算")
 
-    transcript = Path.join(System.user_home!(), ".newbee/sessions/#{id}.jsonl")
+    transcript = Session.open(id).transcript
     before = File.read!(transcript)
     assert before != ""
 
@@ -132,7 +132,7 @@ defmodule Newbee.Agent.LoopCompactTest do
         compaction_retain: 0.4
       )
 
-    transcript = Path.join(System.user_home!(), ".newbee/sessions/#{id}.jsonl")
+    transcript = Session.open(id).transcript
     assert {:done, "done"} = Loop.submit(kernel, "压力任务 #{big}")
 
     assert Newbee.Archive.archived?(Session.open(id))

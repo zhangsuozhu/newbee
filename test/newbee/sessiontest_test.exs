@@ -15,8 +15,8 @@ defmodule Newbee.SessionTest do
   end
 
   defp cleanup_test_sessions do
-    root = Path.join(System.user_home!(), ".newbee/sessions")
-    artifacts = Path.join(System.user_home!(), ".newbee/session-artifacts")
+    root = Path.join(Newbee.GlobalStore.root(), "sessions")
+    artifacts = Path.join(Newbee.GlobalStore.root(), "session-artifacts")
 
     # jsonl 侧：建了 transcript 的会话
     jsonl_ids =

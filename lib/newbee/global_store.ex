@@ -19,13 +19,33 @@ defmodule Newbee.GlobalStore do
   """
 
   alias Newbee.Environment.{Coordinator, Fitness}
+  @test_env Mix.env() == :test
 
-  @doc "全局根目录。测试可用 Application.put_env(:newbee, :global_root_override, path) 沙箱化。"
+  @doc "全局根目录。测试默认落到独立临时目录，也可用 :global_root_override 显式覆盖。"
   def root do
     case Application.get_env(:newbee, :global_root_override) do
       path when is_binary(path) -> path
-      _ -> Path.join(System.user_home!(), ".newbee")
+      _ -> default_root()
     end
+  end
+
+  defp default_root do
+    if @test_env do
+      Application.get_env(:newbee, :test_global_root) || create_test_root()
+    else
+      Path.join(System.user_home!(), ".newbee")
+    end
+  end
+
+  defp create_test_root do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee-test-global-#{System.pid()}-#{System.unique_integer([:positive])}"
+      )
+
+    Application.put_env(:newbee, :test_global_root, root)
+    root
   end
 
   def dir(:bundles), do: Path.join(root(), "bundles")
