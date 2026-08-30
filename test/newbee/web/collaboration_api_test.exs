@@ -118,19 +118,28 @@ defmodule Newbee.Web.CollaborationApiTest do
     assert %{"error" => %{"code" => "not_member"}} = response["result"]
   end
 
-  test "已有会话可加入和移出工作组，组内会话不能直接删除" do
+  test "组内会话删除时自动移出工作组，协调者删除时自动解散工作组" do
     suffix = System.unique_integer([:positive])
     parent_sid = "member-parent-#{suffix}"
     member_sid = "existing-member-#{suffix}"
+    child_sid = "child-member-#{suffix}"
 
     {:ok, _pid, ^member_sid} = Newbee.Web.Session.ensure(member_sid, File.cwd!())
     :ok = Newbee.Session.mark_created(member_sid)
-    on_exit(fn -> Newbee.Web.Session.destroy(member_sid) end)
+
+    {:ok, _pid, ^child_sid} = Newbee.Web.Session.ensure(child_sid, File.cwd!())
+    :ok = Newbee.Session.mark_created(child_sid)
+
+    on_exit(fn ->
+      Newbee.Web.Session.destroy(member_sid)
+      Newbee.Web.Session.destroy(child_sid)
+    end)
 
     group =
       post_rpc("group.create", %{"sessionId" => parent_sid, "title" => "已有会话分组"})
       |> ok!()
 
+    # 普通成员 + 其子协作成员（parent_session_id=member_sid）
     member =
       post_rpc("group.member.add", %{
         "groupId" => group["group_id"],
@@ -142,21 +151,39 @@ defmodule Newbee.Web.CollaborationApiTest do
 
     assert member["session_id"] == member_sid
 
-    blocked = post_rpc("session.delete", %{"sessionId" => member_sid})
-    assert %{"error" => %{"code" => "session_in_group"}} = blocked["result"]
-
-    removed =
-      post_rpc("group.member.remove", %{
+    child =
+      post_rpc("group.member.add", %{
         "groupId" => group["group_id"],
         "actorSessionId" => parent_sid,
-        "sessionId" => member_sid,
-        "commandId" => "remove-existing-#{suffix}"
+        "sessionId" => child_sid,
+        "parentSessionId" => member_sid,
+        "commandId" => "add-child-#{suffix}"
       })
       |> ok!()
 
-    assert removed["sessionId"] == member_sid
-    assert %{"deleted" => ^member_sid} = post_rpc("session.delete", %{"sessionId" => member_sid}) |> ok!()
+    assert child["session_id"] == child_sid
+
+    # 删除普通成员：自动级联移出其子成员，然后删除成功（带 notices）
+    deleted = post_rpc("session.delete", %{"sessionId" => member_sid}) |> ok!()
+    assert deleted["deleted"] == member_sid
+    assert [note | _] = deleted["notices"]
+    assert is_binary(note)
+    refute Newbee.Collaboration.Coordinator.member?(group["group_id"], member_sid)
+    refute Newbee.Collaboration.Coordinator.member?(group["group_id"], child_sid)
+
+    # 删除协调者：自动解散工作组（取消 + 移出全部成员），然后删除成功
+    deleted_parent = post_rpc("session.delete", %{"sessionId" => parent_sid}) |> ok!()
+    assert deleted_parent["deleted"] == parent_sid
+    assert [note2 | _] = deleted_parent["notices"]
+    assert is_binary(note2)
+
+    # 组内已无成员（协调者已移出，工作组被取消）
+    group_after = Newbee.Collaboration.Coordinator.get(group["group_id"])
+    assert {:ok, g} = group_after
+    assert g["status"] == "cancelled"
+    assert g["members"] == []
   end
+
 
   test "让另一个 AI 帮忙会创建会话、成员和已分派任务" do
     suffix = System.unique_integer([:positive])

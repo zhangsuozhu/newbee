@@ -2443,3 +2443,41 @@ svg.ico {
     min-width: 0;
   }
 }
+
+/* ── 手机端顶栏美化：按钮不竖排、不挤压标题 ── */
+@media (max-width: 768px) {
+  #topbar { flex-wrap: nowrap; overflow: hidden; }
+  /* "+ 让另一个 AI 帮忙" 按钮：紧凑药丸，文字横向不竖排 */
+  #delegate-session {
+    flex: none;
+    padding: 6px 10px; min-height: 34px;
+    font-size: 12px; line-height: 1.2;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 132px;
+    border-radius: 999px;
+  }
+  /* 标题保留弹性收缩，绝不被挤成竖排 */
+  #topbar .session-title {
+    min-width: 0; flex: 1 1 auto;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* usage / current-op 在小屏隐藏（保留标题与按钮空间） */
+  #topbar .usage, #topbar .current-op { display: none !important; }
+}
+
+/* 超小屏进一步收紧 */
+@media (max-width: 420px) {
+  #delegate-session { max-width: 40px; padding: 6px; }
+  /* 只保留 + 图标感：文字隐藏，title 仍可读 */
+  #delegate-session { font-size: 0; }
+  #delegate-session::before { content: '+ AI'; font-size: 13px; font-weight: 600; }
+  #topbar .session-title { max-width: none; }
+}
+
+/* 消息区内联 code 在窄屏不断裂溢出 */
+@media (max-width: 768px) {
+  .msg-content code:not(pre code) {
+    word-break: break-word; overflow-wrap: anywhere;
+    font-size: 0.92em;
+  }
+}
