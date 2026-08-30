@@ -604,9 +604,6 @@ defmodule Newbee.Collaboration.Coordinator do
       is_nil(member) ->
         {:error, "not_member", "会话不属于该群"}
 
-      group["coordinator_session_id"] == session_id ->
-        {:error, "coordinator_required", "协调会话不能移出工作组"}
-
       Enum.any?(group["members"], &(&1["parent_session_id"] == session_id)) ->
         {:error, "member_has_children", "请先移出该会话创建的协作会话"}
 

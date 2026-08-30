@@ -1400,7 +1400,7 @@ case "goal_round": break;
       const title = String(s.title || s.id).slice(0, 40);
       confirmDialog("删除会话「" + title + "」？此操作不可恢复。", async () => {
         try {
-          await rpc("session.delete", { sessionId: s.id });
+          const res = await rpc("session.delete", { sessionId: s.id });
           clearTiming(s.id);
           if (s.id === state.sid) {
             state.sid = null;
@@ -1408,7 +1408,14 @@ case "goal_round": break;
             await newSession();
           }
           await loadSessions();
-        } catch (err) { line("error", "删除失败: " + err.message); }
+          // 删除时若自动移出了工作组，给一条提示
+          if (res && Array.isArray(res.notices)) {
+            for (const n of res.notices) line("notice", n);
+          }
+        } catch (err) {
+          const msg = err && err.message ? err.message : String(err);
+          line("error", "删除失败: " + msg);
+        }
       }, { confirmLabel: "删除", confirmClass: "btn-deny" });
     }
   });

@@ -150,7 +150,9 @@ defmodule Newbee.Collaboration.CoordinatorTest do
                server
              )
 
-    assert {:error, "coordinator_required", _} =
+    # 协调者现在可以直接移出（用于删除会话时自动解散工作组）；
+    # 保护只剩 member_has_children / member_has_active_tasks。
+    assert {:error, "member_has_children", _} =
              Coordinator.remove_member(
                group_id,
                %{"session_id" => "parent", "actor_session_id" => "parent"},
