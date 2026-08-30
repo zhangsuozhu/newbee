@@ -72,7 +72,7 @@ defmodule Newbee.ArchiveTest do
     assert summary["role"] == "system"
     assert summary["content"] =~ "请求 1：修改 lib/demo.ex"
     assert length(view) == 1 + 4
-    assert List.last(view) == List.last(msgs)
+    assert List.last(view) == List.last(Session.messages(s))
   end
 
   test "二次压缩不做摘要的摘要：新段 digest 独立、旧段不再重算", %{session: s} do
@@ -219,7 +219,7 @@ defmodule Newbee.ArchiveTest do
   test "旧会话（无账本）视图 = 原始消息，逐字节兼容", %{session: s} do
     msgs = conv(5)
     feed(s, msgs)
-    assert Archive.view(s) == msgs
+    assert Archive.view(s) == Session.messages(s)
     assert {:ok, text} = Archive.read_history(s, "")
     assert text =~ "尚无归档段"
   end

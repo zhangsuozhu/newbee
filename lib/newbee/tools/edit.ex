@@ -11,6 +11,8 @@ defmodule Newbee.Tools.Edit do
   行号全部指向原快照；stale/越界/未读/重叠/no-op 一律拒绝；
   多节全部预检通过才落盘（逻辑原子）。
 
+  生成含插值、sigil 或 heredoc 的 Elixir 源码时，先用 `source_literal/1` 包装目标文本。
+
   ## 函数清单
   - `show(path, range \\\\ :all) :: %{tag: String.t(), text: String.t(), lines: non_neg_integer()}` — 读取全文或 `{first, last}` 范围并记录快照；默认参数使 `show/1` 与 `show/2` 都可调用。
   - `patch(patch_text) :: %{status: :applied, files: [map()], warnings: list()}` — 应用 `[path#tag]` 行号补丁；解析失败抛 `ParseError`，预检拒绝抛带 `category` 的 `RejectError`。

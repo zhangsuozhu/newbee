@@ -16,6 +16,7 @@ defmodule Newbee.Application do
         Newbee.Staging,
         Newbee.Environment.PluginSupervisor,
         Newbee.SessionEvaluators,
+        Newbee.Web.Auth.SessionWriter,
         {Registry, keys: :unique, name: Newbee.Web.SessionRegistry},
         {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Web.SessionSup}
       ] ++

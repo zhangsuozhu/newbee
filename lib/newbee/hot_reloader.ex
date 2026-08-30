@@ -3,16 +3,25 @@ defmodule Newbee.HotReloader do
   自动热载 newbee 自身的已编译 BEAM。
 
   监控应用 ebin 目录的内容哈希；编译产物变化后先 soft purge 旧版本，
-  再 load_binary 新版本。仍有进程执行旧代码时不会硬 purge，而是在后续
-  扫描中重试，避免为了热载杀掉活动会话。
+  再 load_binary 新版本。仍有进程执行旧代码时按指数退避重试，
+  避免为了热载杀掉活动会话，也避免高频 soft purge 占满调度器。
   """
 
   use GenServer
   require Logger
 
-  @default_interval 1_000
+  @default_interval 5_000
+  @default_retry_base 5_000
+  @default_retry_max 60_000
 
-  defstruct dirs: [], fingerprints: %{}, deferred: %{}, interval: @default_interval, timer: nil
+  defstruct dirs: [],
+            fingerprints: %{},
+            deferred: %{},
+            interval: @default_interval,
+            retry_base: @default_retry_base,
+            retry_max: @default_retry_max,
+            reload_fun: nil,
+            timer: nil
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -41,47 +50,69 @@ defmodule Newbee.HotReloader do
   def init(opts) do
     dirs = Keyword.get(opts, :dirs, default_dirs())
     interval = Keyword.get(opts, :interval, @default_interval)
+    retry_base = Keyword.get(opts, :retry_base, @default_retry_base)
+    retry_max = Keyword.get(opts, :retry_max, @default_retry_max)
+    reload_fun = Keyword.get(opts, :reload_fun, &__MODULE__.reload_file/1)
     fingerprints = fingerprints(dirs)
-    {:ok, schedule(%__MODULE__{dirs: dirs, fingerprints: fingerprints, interval: interval})}
+
+    state = %__MODULE__{
+      dirs: dirs,
+      fingerprints: fingerprints,
+      interval: interval,
+      retry_base: retry_base,
+      retry_max: retry_max,
+      reload_fun: reload_fun
+    }
+
+    {:ok, schedule(state)}
   end
 
   @impl true
   def handle_call(:scan, _from, state) do
-    {state, results} = scan(state)
+    {state, results} = scan(state, true)
     {:reply, results, state}
   end
 
   @impl true
   def handle_info(:scan, state) do
-    {state, _results} = scan(%{state | timer: nil})
+    {state, _results} = scan(%{state | timer: nil}, false)
     {:noreply, schedule(state)}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp scan(state) do
+  defp scan(state, force?) do
     current = fingerprints(state.dirs)
+    now = System.monotonic_time(:millisecond)
 
     changed =
       current
-      |> Enum.filter(fn {path, fingerprint} -> state.fingerprints[path] != fingerprint end)
+      |> Enum.filter(fn {path, fingerprint} ->
+        state.fingerprints[path] != fingerprint and
+          (force? or retry_due?(state.deferred[path], fingerprint, now))
+      end)
       |> Enum.sort_by(&elem(&1, 0))
+
+    reload_fun = Map.get(state, :reload_fun) || (&__MODULE__.reload_file/1)
 
     {fingerprints, deferred, results} =
       Enum.reduce(changed, {state.fingerprints, state.deferred, []}, fn {path, fingerprint},
                                                                         {known, deferred, results} ->
-        case reload_file(path) do
+        case reload_fun.(path) do
           {:ok, module} = result ->
             Logger.info("hot reloaded #{inspect(module)} from #{path}")
             Newbee.Events.emit(:hot_reload, {:hot_reload, module, path})
             {Map.put(known, path, fingerprint), Map.delete(deferred, path), [result | results]}
 
           {:error, :old_code_in_use} = result ->
-            if Map.get(deferred, path) != fingerprint do
-              Logger.warning("hot reload deferred #{path}: :old_code_in_use")
+            previous = Map.get(deferred, path)
+
+            if not same_fingerprint?(previous, fingerprint) do
+              Logger.warning("hot reload deferred " <> path <> ": :old_code_in_use")
             end
 
-            {known, Map.put(deferred, path, fingerprint), [result | results]}
+            retry = next_retry(previous, fingerprint, state, now)
+            {known, Map.put(deferred, path, retry), [result | results]}
 
           {:error, reason} = result ->
             Logger.warning("hot reload deferred #{path}: #{inspect(reason)}")
@@ -93,6 +124,27 @@ defmodule Newbee.HotReloader do
     fingerprints = Map.take(fingerprints, Map.keys(current))
     deferred = Map.take(deferred, Map.keys(current))
     {%{state | fingerprints: fingerprints, deferred: deferred}, Enum.reverse(results)}
+  end
+
+  defp retry_due?(%{fingerprint: fingerprint, retry_at: retry_at}, fingerprint, now),
+    do: now >= retry_at
+
+  defp retry_due?(_retry, _fingerprint, _now), do: true
+
+  defp same_fingerprint?(%{fingerprint: fingerprint}, fingerprint), do: true
+  defp same_fingerprint?(_retry, _fingerprint), do: false
+
+  defp next_retry(previous, fingerprint, state, now) do
+    retry_base = Map.get(state, :retry_base, @default_retry_base)
+    retry_max = Map.get(state, :retry_max, @default_retry_max)
+
+    delay =
+      case previous do
+        %{fingerprint: ^fingerprint, delay: delay} -> min(delay * 2, retry_max)
+        _ -> min(retry_base, retry_max)
+      end
+
+    %{fingerprint: fingerprint, delay: delay, retry_at: now + delay}
   end
 
   defp fingerprints(dirs) do

@@ -18,6 +18,8 @@ defmodule Newbee.TestSupport.WebTmpHome do
   end
 
   def restore({dir, orig}) do
+    Newbee.Web.Auth.SessionWriter.flush()
+
     case orig do
       nil -> Application.delete_env(:newbee, :global_root_override)
       p -> Application.put_env(:newbee, :global_root_override, p)

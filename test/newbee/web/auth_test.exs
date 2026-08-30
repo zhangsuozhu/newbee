@@ -57,6 +57,22 @@ defmodule Newbee.Web.AuthTest do
     end
   end
 
+  test "token 签发不等待 sessions.json 落盘" do
+    writer = Process.whereis(Newbee.Web.Auth.SessionWriter)
+    assert is_pid(writer)
+    :ok = :sys.suspend(writer)
+
+    on_exit(fn ->
+      if Process.alive?(writer), do: :sys.resume(writer)
+    end)
+
+    assert {:ok, token} = Auth.issue_token()
+    assert Auth.check_token(token) == :ok
+    assert {:message_queue_len, queued} = Process.info(writer, :message_queue_len)
+    assert queued >= 1
+    :ok = :sys.resume(writer)
+  end
+
   describe "图形验证码" do
     test "生成 SVG + 一次性校验" do
       cap = Auth.gen_captcha()

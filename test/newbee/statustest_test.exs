@@ -1,5 +1,5 @@
 defmodule Newbee.StatusTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   test "render 用模型组织为功能数据纯文本" do
     client = Newbee.LLM.Client.new(api_key: "test")

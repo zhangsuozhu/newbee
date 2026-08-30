@@ -68,7 +68,7 @@ defmodule Newbee.Environment.Coordinator do
   def revisions(server \\ __MODULE__), do: GenServer.call(server, :revisions)
 
   @doc "全部 change（含历史）。"
-  def changes(server \\ __MODULE__), do: GenServer.call(server, :changes)
+  def changes(server \\ __MODULE__), do: GenServer.call(server, :changes, 60_000)
 
   @doc """
   提议变更（worker/adapter/system 均可发起）。
@@ -76,7 +76,7 @@ defmodule Newbee.Environment.Coordinator do
          evaluation_plan, deadline。
   """
   def propose_change(server \\ __MODULE__, attrs) do
-    GenServer.call(server, {:propose_change, Map.new(attrs)})
+    GenServer.call(server, {:propose_change, Map.new(attrs)}, 60_000)
   end
 
   @doc """
@@ -84,12 +84,12 @@ defmodule Newbee.Environment.Coordinator do
   按 change_id 去重；异步构建+评测，完成后以事件回报。
   """
   def candidate_ready(server \\ __MODULE__, change_id, release_attrs, opts \\ []) do
-    GenServer.call(server, {:candidate_ready, change_id, Map.new(release_attrs), opts})
+    GenServer.call(server, {:candidate_ready, change_id, Map.new(release_attrs), opts}, 60_000)
   end
 
   @doc "manual 档下人工授权（§8.1：带签名的授权事件，进 Event Store，可审计）。"
   def approve(server \\ __MODULE__, change_id, approver \\ "user") do
-    GenServer.call(server, {:approve, change_id, approver})
+    GenServer.call(server, {:approve, change_id, approver}, 60_000)
   end
 
   @doc "将基线过期的候选绑定到当前 revision 并重新运行完整验证。"
