@@ -95,7 +95,8 @@ defmodule Newbee.DEE.Rules do
          pattern: pattern,
          injection: injection,
          source: Keyword.get(opts, :source, :user),
-         scope: Keyword.get(opts, :scope, :all)
+         scope: Keyword.get(opts, :scope, :all),
+         condition: Keyword.get(opts, :condition)
        }}
     )
   end
@@ -150,10 +151,11 @@ defmodule Newbee.DEE.Rules do
     hits =
       Enum.filter(state.rules, fn rule ->
         if rule.scope == :all or rule.scope == scope do
-          case Regex.compile(rule.pattern) do
-            {:ok, re} -> Regex.match?(re, text)
-            {:error, _} -> false
-          end
+          condition_ok?(rule) and
+            case Regex.compile(rule.pattern) do
+              {:ok, re} -> Regex.match?(re, text)
+              {:error, _} -> false
+            end
         else
           false
         end
@@ -172,6 +174,18 @@ defmodule Newbee.DEE.Rules do
     persist(state.rules)
     {:reply, :ok, state}
   end
+
+  # 规则可选条件谓词：condition（Elixir 表达式字符串）求值为 true 才参与命中。
+  # 用于「按实际状态触发」的场景（如 cwd 是否与目标目录一致）：状态一致时
+  # 即使代码文本出现相关词也不注入，消除文本正则自激循环。
+  defp condition_ok?(%{condition: nil}), do: true
+  defp condition_ok?(%{condition: cond}) when is_binary(cond) do
+    {result, _} = Code.eval_string(cond)
+    result == true
+  rescue
+    _ -> false
+  end
+  defp condition_ok?(_), do: true
 
   @impl true
   def handle_cast({:hit, id}, state) do
@@ -219,7 +233,8 @@ defmodule Newbee.DEE.Rules do
                 pattern: r["pattern"],
                 injection: r["injection"],
                 source: (r["source"] || "user") |> String.to_atom(),
-                scope: (r["scope"] || "all") |> String.to_atom()
+                scope: (r["scope"] || "all") |> String.to_atom(),
+                condition: r["condition"]
               }
             end)
 

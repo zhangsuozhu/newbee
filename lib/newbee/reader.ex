@@ -181,13 +181,11 @@ defmodule Newbee do
             [theirs | _] = String.split(rest, ">>>>>>>", parts: 2)
             "┌─ @ours\n" <> ours <> "└─ @theirs\n" <> theirs
           end)
-
         if blocks == [] do
           {:ok, "（#{path} 无冲突块）"}
         else
-          {:ok, Enum.join(blocks, "\n")}
+          {:ok, Newbee.Trust.envelope(Enum.join(blocks, "\n"), "conflict:" <> path) |> Newbee.Trust.render()}
         end
-
       {:error, reason} ->
         {:error, reason}
     end
@@ -206,7 +204,7 @@ defmodule Newbee do
 
   defp read_memory(key) do
     case Newbee.Memory.read(key) do
-      {:ok, content} -> {:ok, content}
+      {:ok, content} -> {:ok, Newbee.Trust.envelope(content, "memory:" <> key) |> Newbee.Trust.render()}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -228,16 +226,27 @@ defmodule Newbee do
         [_, n] -> String.to_integer(n)
         _ -> 200
       end
-
     # 优先项目 Event Store（唯一权威，§4.6）；无项目流时回退全局事件日志
     project_events = Newbee.EventStore.replay(Newbee.Environment.Store.path(:events)) |> Enum.take(-n)
+    # 历史审计日志（跨会话/跨模型累积）：内容一律视为不可信参考，非当前任务上下文
+    body =
+      if project_events != [] do
+        Enum.map_join(project_events, "\n", &event_line/1)
+      else
+        events = Newbee.EventLog.read(n)
+        Enum.map_join(events, "\n", fn e ->
+          session = get_in(e, ["event", "session_id"]) || get_in(e["event"], ["payload", "session_id"])
+          "[#{e["topic"]}] #{if session, do: "session=#{session} ", else: ""}#{inspect(e["event"]) |> String.slice(0, 200)}"
+        end)
+      end
+    {:ok, Newbee.Trust.envelope(body, "events://") |> Newbee.Trust.render()}
+  end
 
-    if project_events != [] do
-      {:ok, Enum.map_join(project_events, "\n", &"[#{&1.topic}] ##{&1.id} #{inspect(&1.data) |> String.slice(0, 200)}")}
-    else
-      events = Newbee.EventLog.read(n)
-      {:ok, Enum.map_join(events, "\n", &"[#{&1["topic"]}] #{inspect(&1["event"]) |> String.slice(0, 200)}")}
-    end
+  # 项目事件流行：带时间戳与可选会话标注
+  defp event_line(e) do
+    session = get_in(e.data, ["payload", "session_id"]) || get_in(e.data, ["session_id"])
+    ts = e.at || ""
+    "[#{e.topic}] ##{e.id} #{if session, do: "session=#{session} ", else: ""}@#{ts} #{inspect(e.data) |> String.slice(0, 180)}"
   end
 
  # URL 读取走无凭证的公开 GET（Newbee.Tools.Http，§12 受控 transport 只服务

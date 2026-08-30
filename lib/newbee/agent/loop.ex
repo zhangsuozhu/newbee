@@ -1043,24 +1043,40 @@ defmodule Newbee.Agent.Loop do
   defp maybe_extract_lesson(_state, summary) when not is_binary(summary) or summary == "", do: :ok
 
   defp maybe_extract_lesson(state, summary) do
-    task = build_task(state.messages) |> String.slice(0, 100)
-    path = Path.join(System.user_home!(), ".newbee/memory/lessons.md")
-    File.mkdir_p!(Path.dirname(path))
-    entry = "## #{task}\n#{summary}\n"
+    task = build_task(state.messages) |> String.slice(0, 100) |> cleanup_task()
 
-    case File.read(path) do
-      {:ok, body} ->
-        unless String.contains?(body, "## #{task}") do
-          # 上限：保留最近约 60 个条目（按行截断）
-          lines = (String.split(body, "\n") ++ String.split(entry, "\n")) |> Enum.take(-120)
-          File.write!(path, Enum.join(lines, "\n") <> "\n")
-        end
+    if skip_task?(task) do
+      :ok
+    else
+      entry = "## #{task}\n#{summary}\n"
 
-      _ ->
-        File.write!(path, entry)
+      case Newbee.Memory.read("lessons") do
+        {:ok, body} ->
+          unless String.contains?(body, "## #{task}") do
+            # 上限：保留最近约 60 个条目（按行截断）；Memory.write 自动脱敏
+            lines = (String.split(body, "\n") ++ String.split(entry, "\n")) |> Enum.take(-120)
+            Newbee.Memory.write("lessons", Enum.join(lines, "\n") <> "\n")
+          end
+
+        _ ->
+          Newbee.Memory.write("lessons", entry)
+      end
     end
   rescue
     _ -> :ok
+  end
+
+  # 清洗占位任务：自主目标模式启动文案 → 真实目标文本
+  defp cleanup_task(task) do
+    task
+    |> String.replace(~r/^（自主目标模式启动）目标：/, "")
+    |> String.replace(~r/^\(自主目标模式启动\)目标：/, "")
+    |> String.trim()
+  end
+
+  # 占位/过短任务不落记忆（防垃圾条目污染检索）
+  defp skip_task?(task) do
+    task == "" or task == "目标" or task == "（无任务描述）" or String.length(task) < 4
   end
 
   # ── 权限确认（§8 ask 档）──
