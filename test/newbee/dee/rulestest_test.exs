@@ -3,15 +3,19 @@ defmodule Newbee.DEE.RulesTest do
   alias Newbee.DEE.Rules
 
   setup do
-    # 备份并清空全局规则文件，测试后恢复
-    file = Path.join(System.user_home!(), ".newbee/rules.json")
-    backup = if File.exists?(file), do: File.read!(file), else: nil
+    file = Path.join(Newbee.GlobalStore.root(), "rules.json")
+    backup = if File.exists?(file), do: {:present, File.read!(file)}, else: :missing
+    state = :sys.get_state(Rules)
     File.rm(file)
     :sys.replace_state(Rules, fn _ -> %Newbee.DEE.Rules{} end)
 
     on_exit(fn ->
-      if backup, do: File.write!(file, backup), else: File.rm(file)
-      :sys.replace_state(Rules, fn _ -> %Newbee.DEE.Rules{} end)
+      case backup do
+        {:present, body} -> File.write!(file, body)
+        :missing -> File.rm(file)
+      end
+
+      :sys.replace_state(Rules, fn _ -> state end)
     end)
 
     :ok
@@ -26,7 +30,7 @@ defmodule Newbee.DEE.RulesTest do
 
   test "规则持久化到磁盘（沉睡——不占 prompt）" do
     :ok = Rules.add("persist-test", "danger", "小心")
-    file = Path.join(System.user_home!(), ".newbee/rules.json")
+    file = Path.join(Newbee.GlobalStore.root(), "rules.json")
     assert File.read!(file) =~ "persist-test"
     assert File.read!(file) =~ "小心"
   end
@@ -54,7 +58,7 @@ defmodule Newbee.DEE.RulesTest do
   end
 
   test "内建 J-Space 规则在 init 时播种（缺则补）" do
-    file = Path.join(System.user_home!(), ".newbee/rules.json")
+    file = Path.join(Newbee.GlobalStore.root(), "rules.json")
     File.rm(file)
 
     {:ok, pid} = GenServer.start_link(Rules, [])

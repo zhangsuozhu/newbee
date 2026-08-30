@@ -6,9 +6,10 @@ defmodule Newbee.Session do
 
   defstruct id: nil, dir: nil, transcript: nil
 
-  @root Path.join(System.user_home!(), ".newbee/sessions")
-  @artifacts Path.join(System.user_home!(), ".newbee/session-artifacts")
-  @index Path.join(@root, ".index.json")
+  defp root, do: Path.join(Newbee.GlobalStore.root(), "sessions")
+  defp artifacts, do: Path.join(Newbee.GlobalStore.root(), "session-artifacts")
+
+  defp index, do: Path.join(root(), ".index.json")
 
   @doc "当前活动会话 id（kernel 启动时登记；无会话返回 nil）。"
   def current_id, do: :persistent_term.get({__MODULE__, :current}, nil)
@@ -18,12 +19,12 @@ defmodule Newbee.Session do
   def set_current(id) when is_binary(id), do: :persistent_term.put({__MODULE__, :current}, id)
   @doc "该会话的媒体上屏制品目录（不存在时自动创建）。"
   def media_dir(id) when is_binary(id) do
-    dir = Path.join(@artifacts, id <> "/media")
+    dir = Path.join(artifacts(), id <> "/media")
     File.mkdir_p!(dir)
     dir
   end
   def media_dir(_) do
-    dir = Path.join(@artifacts, "unknown/media")
+    dir = Path.join(artifacts(), "unknown/media")
     File.mkdir_p!(dir)
     dir
   end
@@ -32,11 +33,11 @@ defmodule Newbee.Session do
   @doc "新会话或恢复已有会话。"
   def open(id \\ nil) do
     id = id || gen_id()
-    dir = Path.join(@artifacts, id)
+    dir = Path.join(artifacts(), id)
     File.mkdir_p!(dir)
 
-    %__MODULE__{id: id, dir: dir, transcript: Path.join(@root, "#{id}.jsonl")}
-    |> tap(fn _ -> File.mkdir_p!(@root) end)
+    %__MODULE__{id: id, dir: dir, transcript: Path.join(root(), "#{id}.jsonl")}
+    |> tap(fn _ -> File.mkdir_p!(root()) end)
   end
 
   @doc "让新会话立即出现在列表：创建空 transcript 并更新索引（幂等）。"
@@ -278,8 +279,8 @@ defmodule Newbee.Session do
 
   @doc "删除会话：transcript + artifacts 目录 + 索引。返回 :ok | {:error, reason}。"
   def delete(id) when is_binary(id) do
-    transcript = Path.join(@root, "#{id}.jsonl")
-    artifacts = Path.join(@artifacts, id)
+    transcript = Path.join(root(), "#{id}.jsonl")
+    artifacts = Path.join(artifacts(), id)
 
     with :ok <- remove_file(transcript),
          :ok <- remove_dir(artifacts),
@@ -304,12 +305,12 @@ defmodule Newbee.Session do
   end
 
   defp remove_from_index(id) do
-    case File.read(@index) do
+    case File.read(index()) do
       {:ok, body} ->
         case Jason.decode(body) do
           {:ok, entries} when is_list(entries) ->
             kept = Enum.reject(entries, &(&1["id"] == id))
-            File.write!(@index, Jason.encode_to_iodata!(kept))
+            File.write!(index(), Jason.encode_to_iodata!(kept))
             :ok
 
           _ ->
@@ -379,7 +380,7 @@ defmodule Newbee.Session do
   end
 
   defp update_metadata(id, fun) do
-    dir = Path.join(@artifacts, id)
+    dir = Path.join(artifacts(), id)
     File.mkdir_p!(dir)
     meta_path = Path.join(dir, "meta.json")
 
@@ -391,7 +392,7 @@ defmodule Newbee.Session do
   end
 
   defp metadata(id) do
-    meta_path = Path.join([@artifacts, id, "meta.json"])
+    meta_path = Path.join([artifacts(), id, "meta.json"])
 
     with {:ok, body} <- File.read(meta_path),
          {:ok, meta} when is_map(meta) <- Jason.decode(body) do
@@ -411,7 +412,7 @@ defmodule Newbee.Session do
 
   @doc "会话总数（廉价：单次 File.ls；/status 用）。"
   def count do
-    case File.ls(@root) do
+    case File.ls(root()) do
       {:ok, files} -> Enum.count(files, &String.ends_with?(&1, ".jsonl"))
       _ -> 0
     end
@@ -421,14 +422,14 @@ defmodule Newbee.Session do
   def stale_empty_ids(older_than_secs \\ 3600) do
     cutoff = System.system_time(:second) - older_than_secs
 
-    case File.read(@index) do
+    case File.read(index()) do
       {:ok, body} ->
         case Jason.decode(body) do
           {:ok, entries} when is_list(entries) ->
             entries
             |> Enum.filter(fn e ->
               (e["mtime"] || 0) < cutoff and
-                match?({:ok, %{size: 0}}, File.stat(Path.join(@root, "#{e["id"]}.jsonl")))
+                match?({:ok, %{size: 0}}, File.stat(Path.join(root(), "#{e["id"]}.jsonl")))
             end)
             |> Enum.map(& &1["id"])
 
@@ -443,11 +444,11 @@ defmodule Newbee.Session do
 
   @doc "有效会话总数（transcript 文件仍存在）。供列表分页计算 total/hasMore。"
   def count_valid do
-    case File.read(@index) do
+    case File.read(index()) do
       {:ok, body} ->
         case Jason.decode(body) do
           {:ok, entries} when is_list(entries) ->
-            Enum.count(entries, &File.regular?(Path.join(@root, "#{&1["id"]}.jsonl")))
+            Enum.count(entries, &File.regular?(Path.join(root(), "#{&1["id"]}.jsonl")))
 
           _ ->
             length(build_index())
@@ -464,12 +465,12 @@ defmodule Newbee.Session do
     # 按 mtime（最近活动）排序而非 created：仍在跑的旧会话（如长跑自主任务）
     # 不应被一批新建的空会话挤出列表。
     recent =
-      case File.read(@index) do
+      case File.read(index()) do
         {:ok, body} ->
           case Jason.decode(body) do
             {:ok, entries} when is_list(entries) ->
               entries
-              |> Enum.filter(&File.regular?(Path.join(@root, "#{&1["id"]}.jsonl")))
+              |> Enum.filter(&File.regular?(Path.join(root(), "#{&1["id"]}.jsonl")))
               |> Enum.sort_by(&(&1["mtime"] || &1["created"]), :desc)
               |> Enum.drop(offset)
               |> Enum.take(n)
@@ -485,11 +486,11 @@ defmodule Newbee.Session do
     recent
     |> Enum.flat_map(fn entry ->
       id = entry["id"]
-      fp = Path.join(@root, "#{id}.jsonl")
+      fp = Path.join(root(), "#{id}.jsonl")
 
       case File.stat(fp) do
         {:ok, stat} ->
-          msgs = messages(%__MODULE__{id: id, dir: Path.join(@artifacts, id), transcript: fp})
+          msgs = messages(%__MODULE__{id: id, dir: Path.join(artifacts(), id), transcript: fp})
 
           [
             %{
@@ -511,7 +512,7 @@ defmodule Newbee.Session do
   # 首次无索引时构建（一次性成本；后续 append 增量维护）
   defp build_index do
     entries =
-      @root
+      root()
       |> Path.join("*.jsonl")
       |> Path.wildcard()
       |> Enum.flat_map(fn fp ->
@@ -532,15 +533,15 @@ defmodule Newbee.Session do
         end
       end)
 
-    File.mkdir_p!(@root)
-    File.write!(@index, Jason.encode_to_iodata!(entries))
+    File.mkdir_p!(root())
+    File.write!(index(), Jason.encode_to_iodata!(entries))
 
     entries |> Enum.sort_by(&(&1["mtime"] || &1["created"]), :desc)
   end
 
   defp touch_index(id) do
     entries =
-      case File.read(@index) do
+      case File.read(index()) do
         {:ok, body} ->
           case Jason.decode(body) do
             {:ok, list} when is_list(list) -> list
@@ -556,13 +557,13 @@ defmodule Newbee.Session do
     case Enum.find(entries, &(&1["id"] == id)) do
       nil ->
         # 新会话：记录创建时间（此后 created 保持不变）
-        File.write!(@index, Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => now} | entries]))
+        File.write!(index(), Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => now} | entries]))
 
       existing ->
         # 已有会话：mtime 刷新，created 保留（缺失时回退 mtime）
         created = existing["created"] || created_from_id(id) || existing["mtime"] || now
         rest = Enum.reject(entries, &(&1["id"] == id))
-        File.write!(@index, Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => created} | rest]))
+        File.write!(index(), Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => created} | rest]))
     end
   rescue
     _ -> :ok
@@ -654,7 +655,7 @@ defmodule Newbee.Session do
   end
 
   def list do
-    @root
+    root()
     |> Path.join("*.jsonl")
     |> Path.wildcard()
     |> Enum.map(&Path.basename(&1, ".jsonl"))

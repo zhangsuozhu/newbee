@@ -247,6 +247,7 @@ defmodule Newbee.Agent.LoopGoalTest do
       Loop.start_link(
         client: %{},
         evaluator: ev,
+        session: false,
         client_fun:
           scripted([
             fn _m, _o -> {:error, {:upstream_error, :overloaded}} end,
