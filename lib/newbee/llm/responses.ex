@@ -833,7 +833,9 @@ defmodule Newbee.LLM.Responses do
   defp previous_response_not_found?(body) when is_binary(body) do
     case Jason.decode(body) do
       {:ok, decoded} -> previous_response_not_found?(decoded)
-      _ -> String.contains?(String.downcase(body), "previous_response_not_found")
+      _ ->
+        String.contains?(String.downcase(body), "previous_response_not_found") or
+          String.contains?(String.downcase(body), "referenced response not found")
     end
   end
 
@@ -844,7 +846,8 @@ defmodule Newbee.LLM.Responses do
   defp previous_response_not_found?(%{} = error) do
     error["code"] == "previous_response_not_found" or
       error["type"] == "previous_response_not_found" or
-      String.contains?(String.downcase(to_string(error["message"] || "")), "previous response")
+      String.contains?(String.downcase(to_string(error["message"] || "")), "previous response") or
+      String.contains?(String.downcase(to_string(error["message"] || "")), "referenced response")
   end
 
   defp previous_response_not_found?(_), do: false
