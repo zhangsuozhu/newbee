@@ -161,7 +161,8 @@ defmodule Newbee.Tools.Collaboration do
         Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token])
 
       _ ->
-        {:error, "no_execution_context", "只能从模型会话的 run_elixir 使用协作工具"}
+        host_sid = Newbee.Tools.Collaboration.HostIdentity.session_id()
+        {:ok, %{session_id: host_sid, project_root: File.cwd!()}}
     end
   end
 
