@@ -506,6 +506,14 @@ case "goal_round": break;
         const cacheSum = state.turnUsage.hasUnknown ? fmtTokShort(state.turnUsage.cached) + "+?" : fmtTokShort(state.turnUsage.cached);
         if (bar) bar.title = `本轮累计 ${state.turnUsage.count} 次请求 · 输入 ${fmtTokShort(state.turnUsage.prompt)} · 输出 ${fmtTokShort(state.turnUsage.completion)} · 缓存 ${cacheSum}`;
     }
+    // 兜底：纯工具 turn 的 usage 悬空时挂到最后一个无用量气泡，避免丢弃/串轮
+    if (state._pendingUsage && !state.currentAssistant) {
+      const boxed = flow.querySelectorAll(".msg-assistant.msg-boxed");
+      let target = null;
+      for (let i = boxed.length - 1; i >= 0; i--) { if (boxed[i].dataset.hasUsage !== "1") { target = boxed[i]; break; } }
+      if (target) { attachUsageToBubble(target, state._pendingUsage); }
+      state._pendingUsage = null;
+    }
     archiveReasoning();
     state.currentAssistant = null;
     state.currentTool = null;
@@ -758,6 +766,7 @@ case "goal_round": break;
     state.currentToolCard = card;
     try {
       if (p._replayUsage) { attachToolUsageToCard(card, p._replayUsage); if (replayPendingUsage === p._replayUsage) replayPendingUsage = null; }
+      else if (state._pendingUsage) { attachToolUsageToCard(card, state._pendingUsage); state._pendingUsage = null; }
       else if (state.lastLLMUsage) attachToolUsageToCard(card);
     } catch (e) {}
     flushTextBlock();
@@ -2865,8 +2874,10 @@ case "goal_round": break;
     const total = u.total_tokens ?? (prompt + completion);
     // 缓存字段缺失 = 网关未回报（如 guoyu 未命中时省略 prompt_tokens_details），
     // 与“真 0”（deepseek 显式回 0）区分：缺失 → cached=null → 显示“未统计”。
+    // responses API 风格：input_tokens_details.cached_tokens / output_tokens_details.reasoning_tokens
     const cachedRaw = u.cache_read_tokens ?? u.cached_tokens ?? u.cache_read_input_tokens
-      ?? (u.prompt_tokens_details && (u.prompt_tokens_details.cached_tokens ?? u.prompt_tokens_details.cache_read_tokens));
+      ?? (u.prompt_tokens_details && (u.prompt_tokens_details.cached_tokens ?? u.prompt_tokens_details.cache_read_tokens))
+      ?? (u.input_tokens_details && u.input_tokens_details.cached_tokens);
     const hasCacheInfo = cachedRaw != null;
     const cached = hasCacheInfo ? cachedRaw : null;
     const hit = (prompt > 0 && hasCacheInfo) ? (cached / prompt) * 100 : null;
@@ -2932,7 +2943,8 @@ case "goal_round": break;
       for (let i = assistants.length - 1; i >= 0; i--) {
         if (assistants[i].dataset.hasUsage !== "1") { target = assistants[i]; break; }
       }
-      if (!target && assistants.length) target = assistants[assistants.length - 1];
+      // 找不到未挂用的气泡就暂存 pending（等 toolStart/finishTurn 消费），
+      // 严禁覆盖挂到最后一个旧气泡——那会把本轮用量写到历史消息上（muse 纯工具轮实测踩坑）。
     }
     if (target) {
       attachUsageToBubble(target, u);

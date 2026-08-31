@@ -1955,7 +1955,7 @@ svg.ico {
     opacity: 1;
     font-size: 13px; padding: 2px 9px; min-height: 28px; min-width: 32px;
   }
-  .msg-boxed { padding: 12px 14px; margin: 4px 0; }
+  .msg-boxed { padding: 12px 48px 12px 14px; margin: 4px 0; }
 }
 
 @media (max-width: 768px) {
