@@ -45,11 +45,11 @@ defmodule Newbee.Environment.CascadeTest do
     lcb_r = PatternStats.net_lcb(r_dec, 5000)
 
     # 衰减后 Refactor 的 LCB 相对位置应改善（其绝对节省更高，方差惩罚相对变小）
-    ratio_before = (edit_mean * PatternStats.save_mean(stats[{{:tool_use, "Edit"}, "general"}]))
+    ratio_before = edit_mean * PatternStats.save_mean(stats[{{:tool_use, "Edit"}, "general"}])
     ratio_after = PatternStats.save_mean(r_dec) / max(PatternStats.save_mean(e_dec), 1.0)
 
-    assert lcb_r / max(lcb_e, 1.0) > 0 and
-             ratio_after > 1.0 or ratio_before > 0
+    assert (lcb_r / max(lcb_e, 1.0) > 0 and
+              ratio_after > 1.0) or ratio_before > 0
 
     # 关键断言：衰减保持均值不变（语义正确）
     assert_in_delta PatternStats.freq_mean(e_dec), edit_mean, edit_mean * 1.0e-9

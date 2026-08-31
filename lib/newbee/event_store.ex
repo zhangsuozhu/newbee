@@ -114,6 +114,7 @@ defmodule Newbee.EventStore do
 
     # 恢复 next_id：读文件末行（坏帧截断）
     frames_with_offsets = read_frames_with_offsets(path)
+
     next_id =
       case List.last(frames_with_offsets) do
         nil -> 1

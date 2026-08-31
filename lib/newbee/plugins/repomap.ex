@@ -330,6 +330,7 @@ defmodule Newbee.Plugins.RepoMap do
   # slim 专用 doc 截断：30 字符（约 10 个汉字），比 full 的 80 更狠——
   # slim 的目标是让模型扫一眼知道"该找哪个模块"，说明够用即可，省 token。
   defp slim_doc_suffix(nil), do: ""
+
   defp slim_doc_suffix(doc) do
     cut = String.slice(doc, 0, 30)
     if String.length(doc) > 30, do: " — " <> cut <> "…", else: " — " <> cut

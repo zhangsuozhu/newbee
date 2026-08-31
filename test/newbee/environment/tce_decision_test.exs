@@ -69,6 +69,10 @@ defmodule Newbee.Environment.TceDecisionTest do
     assert is_atom(PatternStore.persist(stats))
     restored = PatternStore.restore()
     needs = Jit.tce_hot_needs(stats: restored, compile_cost: 50_000)
-    assert needs |> Enum.any?(&(&1.evidence[:pattern] == {:tool_use, "Edit"} or get_in(&1.evidence, [:pattern]) == {:tool_use, "Edit"}))
+
+    assert needs
+           |> Enum.any?(
+             &(&1.evidence[:pattern] == {:tool_use, "Edit"} or get_in(&1.evidence, [:pattern]) == {:tool_use, "Edit"})
+           )
   end
 end

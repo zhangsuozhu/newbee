@@ -35,7 +35,9 @@ defmodule Newbee.Web.ApiGitTest do
       content = "defmodule Foo do\nend\n"
       lines = String.split(content, "\n")
 
-      header = "diff --git a/#{path} b/#{path}\nnew file mode 100644\n--- /dev/null\n+++ b/#{path}\n@@ -0,0 +1,#{length(lines)} @@"
+      header =
+        "diff --git a/#{path} b/#{path}\nnew file mode 100644\n--- /dev/null\n+++ b/#{path}\n@@ -0,0 +1,#{length(lines)} @@"
+
       body = lines |> Enum.map(&("+" <> &1)) |> Enum.join("\n")
       diff = header <> "\n" <> body
 

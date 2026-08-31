@@ -1134,18 +1134,24 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
-  # 模型代码在独立 evaluator 节点执行；把不可伪造的当前会话身份短暂注入
-  # evaluator 进程，供 Newbee.Tools.Collaboration.delegate/2 读取，执行后必清除。
-  # 会话身份注入 = 三段独立 eval（put → 裸代码 → delete）。
-  # 不能用 try/after 包裹代码体：Code.eval_string 只收集顶层作用域绑定，
-  # try 块内的赋值不会出现在 new_binding 里——工具代码的绑定全部丢失
-  # （kerneltest 完整循环用例暴露：回填值正常但 x=42 绑定消失）。
-  defp collaboration_context_put(state) do
+  # 模型代码在独立 evaluator 节点执行；只注入主节点签发的单次短时 token，
+  # 不注入 session_id。模型即使改写进程字典，也无法伪造其它会话身份。
+  # 保持三段 eval（put → 裸代码 → delete），避免 try 块吞掉 evaluator 顶层绑定。
+  defp issue_collaboration_capability(state) do
     sid = if state.session, do: state.session.id, else: nil
-    root = state.root || (state.session && state.session.dir)
+    root = state.root || File.cwd!()
 
-    "Process.put({Newbee.Tools.Collaboration, :context}, %{session_id: " <>
-      inspect(sid) <> ", project_root: " <> inspect(root) <> "})"
+    with true <- is_binary(sid),
+         :ok <- Newbee.Collaboration.Capability.register(self(), sid, root),
+         {:ok, token} <- Newbee.Collaboration.Capability.issue(self()) do
+      {:ok, token}
+    else
+      _ -> {:error, :collaboration_context_unavailable}
+    end
+  end
+
+  defp collaboration_context_put(token) do
+    "Process.put({Newbee.Tools.Collaboration, :context}, %{capability: " <> inspect(token) <> "})"
   end
 
   @collab_context_delete "Process.delete({Newbee.Tools.Collaboration, :context})"
@@ -1159,17 +1165,19 @@ defmodule Newbee.Agent.Loop do
 
     eval_result =
       try do
-        _ = Newbee.DEE.Evaluator.eval(state.evaluator, collaboration_context_put(state))
+        with {:ok, token} <- issue_collaboration_capability(state) do
+          _ = Newbee.DEE.Evaluator.eval(state.evaluator, collaboration_context_put(token))
 
-        result =
           try do
             Newbee.DEE.Evaluator.eval(state.evaluator, code)
           after
-            # 会话身份清理独立成步：裸代码绑定不被吞；delete 失败不影响主结果
+            # token 清理独立成步：保留裸代码的顶层绑定；主节点撤销阻止 token 复用
             Newbee.DEE.Evaluator.eval(state.evaluator, @collab_context_delete)
+            Newbee.Collaboration.Capability.revoke(token)
           end
-
-        result
+        else
+          _ -> Newbee.DEE.Evaluator.eval(state.evaluator, code)
+        end
       rescue
         e ->
           Newbee.DebugLog.log(:tool, "eval raised #{inspect(e)}")

@@ -27,14 +27,19 @@ defmodule Newbee.SessionEvaluators do
   @doc "注册 kernel → evaluator 映射（Loop init 调用）。重复注册覆盖旧的。"
   def register(kernel, value) when is_pid(kernel) do
     case Registry.register(@registry, kernel, value) do
-      {:ok, _} -> :ok
+      {:ok, _} ->
+        :ok
+
       {:error, {:already_registered, _}} ->
         Registry.unregister(@registry, kernel)
+
         case Registry.register(@registry, kernel, value) do
           {:ok, _} -> :ok
           _ -> :ok
         end
-      _ -> :ok
+
+      _ ->
+        :ok
     end
   rescue
     _ -> :ok

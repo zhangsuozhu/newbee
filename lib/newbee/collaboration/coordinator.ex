@@ -36,11 +36,17 @@ defmodule Newbee.Collaboration.Coordinator do
   def permission_request(session_id, preview, server \\ __MODULE__),
     do: GenServer.call(server, {:permission_request, session_id, preview})
 
+  def can_approve_permission?(actor_session_id, target_session_id, server \\ __MODULE__),
+    do: GenServer.call(server, {:can_approve_permission?, actor_session_id, target_session_id})
+
   def groups_for_session(session_id, server \\ __MODULE__),
     do: GenServer.call(server, {:groups_for_session, session_id})
 
   def add_member(group_id, attrs, server \\ __MODULE__),
     do: GenServer.call(server, {:add_member, group_id, attrs})
+
+  def delegate(group_id, attrs, server \\ __MODULE__),
+    do: GenServer.call(server, {:delegate, group_id, attrs})
 
   def remove_member(group_id, attrs, server \\ __MODULE__),
     do: GenServer.call(server, {:remove_member, group_id, attrs})
@@ -51,6 +57,9 @@ defmodule Newbee.Collaboration.Coordinator do
   def messages(group_id, opts \\ [], server \\ __MODULE__),
     do: GenServer.call(server, {:messages, group_id, opts})
 
+  def activity(group_id, opts \\ [], server \\ __MODULE__),
+    do: GenServer.call(server, {:activity, group_id, opts})
+
   def member?(group_id, session_id, server \\ __MODULE__),
     do: GenServer.call(server, {:member?, group_id, session_id})
 
@@ -59,6 +68,9 @@ defmodule Newbee.Collaboration.Coordinator do
 
   def update_task(group_id, task_id, attrs, server \\ __MODULE__),
     do: GenServer.call(server, {:update_task, group_id, task_id, attrs})
+
+  def update_workspace(group_id, task_id, attrs, server \\ __MODULE__),
+    do: GenServer.call(server, {:update_workspace, group_id, task_id, attrs})
 
   def tasks(group_id, server \\ __MODULE__),
     do: GenServer.call(server, {:tasks, group_id})
@@ -183,6 +195,64 @@ defmodule Newbee.Collaboration.Coordinator do
     end
   end
 
+  def handle_call({:delegate, group_id, attrs}, _from, state) do
+    with {:ok, group} <- fetch_group(state, group_id),
+         :ok <- group_accepts_tasks(group),
+         {:ok, attrs} <- normalize_delegation(attrs),
+         :ok <- unique_command(state, attrs["command_id"]),
+         :ok <- ensure_member(group, attrs["parent_session_id"]),
+         :ok <- ensure_member_capacity(group),
+         :ok <- ensure_task_capacity(group),
+         :ok <- ensure_not_member(group, attrs["session_id"]) do
+      now = now_iso()
+
+      member = %{
+        "member_id" => id("mem"),
+        "session_id" => attrs["session_id"],
+        "role" => attrs["role"],
+        "state" => "idle",
+        "parent_session_id" => attrs["parent_session_id"],
+        "workspace" => attrs["workspace"],
+        "joined_at" => now
+      }
+
+      task = %{
+        "task_id" => id("task"),
+        "group_id" => group_id,
+        "title" => attrs["title"],
+        "description" => attrs["description"],
+        "acceptance" => attrs["acceptance"],
+        "created_by_session_id" => attrs["parent_session_id"],
+        "assigned_session_id" => attrs["session_id"],
+        "status" => "assigned",
+        "progress" => nil,
+        "result" => nil,
+        "workspace" => attrs["workspace"],
+        "lease_owner" => nil,
+        "lease_until" => nil,
+        "attempt" => 0,
+        "created_at" => now,
+        "updated_at" => now
+      }
+
+      event =
+        event(
+          "collab_delegated",
+          group_id,
+          %{"member" => member, "task" => task},
+          attrs["command_id"]
+        )
+
+      {:ok, persisted} = append(state, event)
+      next = apply_event(state, persisted)
+      broadcast(persisted, next.groups[group_id])
+      dispatch_task(task)
+      {:reply, {:ok, %{member: member, task: task}}, next}
+    else
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
+
   def handle_call({:remove_member, group_id, attrs}, _from, state) do
     with {:ok, group} <- fetch_group(state, group_id),
          {:ok, attrs} <- normalize_member_removal(attrs),
@@ -283,21 +353,50 @@ defmodule Newbee.Collaboration.Coordinator do
          :ok <- ensure_member(group, attrs["session_id"]),
          :ok <- task_actor_allowed(task, attrs["session_id"]),
          :ok <- valid_task_transition(task["status"], attrs["status"]) do
+      first_result_terminal? =
+        attrs["status"] in ["succeeded", "failed"] and task["status"] not in ["succeeded", "failed"]
+
+      first_review_terminal? =
+        attrs["status"] in ["succeeded", "failed", "cancelled"] and
+          task["status"] not in ["succeeded", "failed", "cancelled"]
+
       updated =
         task
         |> Map.put("status", attrs["status"])
         |> maybe_put("progress", attrs["progress"])
         |> maybe_put("result", attrs["result"])
+        |> maybe_mark_workspace_pending(first_review_terminal?)
         |> Map.put("updated_at", now_iso())
-
-      first_terminal? =
-        updated["status"] in ["succeeded", "failed"] and task["status"] not in ["succeeded", "failed"]
 
       event = event("collab_task_updated", group_id, %{"task" => updated}, attrs["command_id"])
       {:ok, persisted} = append(state, event)
       next = apply_event(state, persisted)
       broadcast(persisted, next.groups[group_id])
-      if first_terminal?, do: dispatch_result(updated)
+      if first_result_terminal?, do: dispatch_result(updated)
+      {:reply, {:ok, updated}, next}
+    else
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
+
+  def handle_call({:update_workspace, group_id, task_id, attrs}, _from, state) do
+    with {:ok, group} <- fetch_group(state, group_id),
+         {:ok, task} <- fetch_task(group, task_id),
+         {:ok, attrs} <- normalize_workspace_update(attrs),
+         :ok <- unique_command(state, attrs["command_id"]),
+         :ok <- ensure_coordinator(group, attrs["actor_session_id"]),
+         {:ok, updated} <- transition_workspace(task, attrs) do
+      event =
+        event(
+          "collab_workspace_updated",
+          group_id,
+          %{"task" => updated, "action" => attrs["action"]},
+          attrs["command_id"]
+        )
+
+      {:ok, persisted} = append(state, event)
+      next = apply_event(state, persisted)
+      broadcast(persisted, next.groups[group_id])
       {:reply, {:ok, updated}, next}
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
@@ -374,9 +473,29 @@ defmodule Newbee.Collaboration.Coordinator do
     end
   end
 
+  def handle_call({:can_approve_permission?, actor_session_id, target_session_id}, _from, state) do
+    allowed? =
+      actor_session_id == target_session_id or
+        Enum.any?(state.groups, fn {_id, group} ->
+          target = Enum.find(group["members"], &(&1["session_id"] == target_session_id))
+
+          target &&
+            actor_session_id in [target["parent_session_id"], group["coordinator_session_id"]]
+        end)
+
+    {:reply, allowed?, state}
+  end
+
   def handle_call({:permission_request, session_id, preview}, _from, state) do
     case Enum.find(state.groups, fn {_id, group} -> session_member?(group, session_id) end) do
       {_id, group} ->
+        member = Enum.find(group["members"], &(&1["session_id"] == session_id))
+
+        approvers =
+          [member && member["parent_session_id"], group["coordinator_session_id"]]
+          |> Enum.filter(&is_binary/1)
+          |> Enum.uniq()
+
         event = %{
           "event_id" => id("perm"),
           "topic" => "collab_permission_ask",
@@ -384,9 +503,9 @@ defmodule Newbee.Collaboration.Coordinator do
           "payload" => %{
             "request_session_id" => session_id,
             "preview" => preview,
-            "session_ids" => Enum.map(group["members"], & &1["session_id"])
+            "approver_session_ids" => approvers
           },
-          "session_ids" => Enum.map(group["members"], & &1["session_id"]),
+          "session_ids" => approvers,
           "at" => now_iso()
         }
 
@@ -395,6 +514,31 @@ defmodule Newbee.Collaboration.Coordinator do
 
       nil ->
         {:reply, {:error, "not_member", "会话不属于任何工作组"}, state}
+    end
+  end
+
+  def handle_call({:activity, group_id, opts}, _from, state) do
+    with {:ok, _group} <- fetch_group(state, group_id) do
+      since = Keyword.get(opts, :since, 0)
+      limit = Keyword.get(opts, :limit, 100) |> max(1) |> min(500)
+
+      activity =
+        state.path
+        |> EventStore.replay(since)
+        |> Enum.filter(&(to_string(&1.data["group_id"]) == group_id))
+        |> Enum.take(-limit)
+        |> Enum.map(fn event ->
+          %{
+            "event_id" => event.id,
+            "topic" => to_string(event.topic),
+            "payload" => event.data["payload"],
+            "at" => event.at
+          }
+        end)
+
+      {:reply, {:ok, activity}, state}
+    else
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
   end
 
@@ -459,6 +603,28 @@ defmodule Newbee.Collaboration.Coordinator do
 
   defp apply_event(
          state,
+         %{
+           "topic" => "collab_delegated",
+           "group_id" => group_id,
+           "payload" => %{"member" => member, "task" => task}
+         } = event
+       ) do
+    group = state.groups[group_id]
+
+    group = %{
+      group
+      | "members" => group["members"] ++ [member],
+        "tasks" => (group["tasks"] || []) ++ [task],
+        "updated_at" => event["at"]
+    }
+
+    state
+    |> put_group(group)
+    |> remember_command(event["command_id"])
+  end
+
+  defp apply_event(
+         state,
          %{"topic" => "collab_member_removed", "group_id" => group_id, "payload" => %{"member" => member}} = event
        ) do
     group = state.groups[group_id]
@@ -492,7 +658,7 @@ defmodule Newbee.Collaboration.Coordinator do
          state,
          %{"topic" => topic, "group_id" => group_id, "payload" => %{"task" => task}} = event
        )
-       when topic in ["collab_task_created", "collab_task_updated"] do
+       when topic in ["collab_task_created", "collab_task_updated", "collab_workspace_updated"] do
     group = state.groups[group_id]
     tasks = (group["tasks"] || []) |> Enum.reject(&(&1["task_id"] == task["task_id"])) |> Kernel.++([task])
     group = %{group | "tasks" => tasks, "updated_at" => event["at"]}
@@ -559,9 +725,11 @@ defmodule Newbee.Collaboration.Coordinator do
   end
 
   defp ensure_task_capacity(group) do
-    if length(group["tasks"] || []) < @max_tasks,
+    active = Enum.count(group["tasks"] || [], &(&1["status"] not in ["succeeded", "failed", "cancelled"]))
+
+    if active < @max_tasks,
       do: :ok,
-      else: {:error, "task_limit", "工作组任务已达到上限"}
+      else: {:error, "task_limit", "工作组活动任务已达到上限"}
   end
 
   defp fetch_group(state, group_id) do
@@ -678,6 +846,33 @@ defmodule Newbee.Collaboration.Coordinator do
 
   defp normalize_member(_), do: {:error, "bad_request", "成员参数格式错误"}
 
+  defp normalize_delegation(attrs) when is_map(attrs) do
+    title = clean(attrs["title"] || attrs[:title])
+    description = clean(attrs["description"] || attrs[:description])
+    parent = clean(attrs["parent_session_id"] || attrs[:parent_session_id])
+    session_id = clean(attrs["session_id"] || attrs[:session_id])
+    role = clean(attrs["role"] || attrs[:role]) || "worker"
+    workspace = attrs["workspace"] || attrs[:workspace]
+
+    if (title && parent && session_id && role in @roles) and is_map(workspace) do
+      {:ok,
+       %{
+         "title" => title,
+         "description" => description || title,
+         "acceptance" => attrs["acceptance"] || attrs[:acceptance] || [],
+         "parent_session_id" => parent,
+         "session_id" => session_id,
+         "role" => role,
+         "workspace" => workspace,
+         "command_id" => clean(attrs["command_id"] || attrs[:command_id])
+       }}
+    else
+      {:error, "bad_request", "派生任务需要父会话、子会话、角色、工作区和标题"}
+    end
+  end
+
+  defp normalize_delegation(_), do: {:error, "bad_request", "派生参数格式错误"}
+
   defp normalize_member_removal(attrs) when is_map(attrs) do
     session_id = clean(attrs["session_id"] || attrs[:session_id])
     actor_session_id = clean(attrs["actor_session_id"] || attrs[:actor_session_id])
@@ -779,6 +974,63 @@ defmodule Newbee.Collaboration.Coordinator do
   end
 
   defp normalize_task_update(_), do: {:error, "bad_request", "任务更新参数格式错误"}
+
+  defp normalize_workspace_update(attrs) when is_map(attrs) do
+    actor = clean(attrs["actor_session_id"] || attrs[:actor_session_id])
+    action = clean(attrs["action"] || attrs[:action])
+
+    if actor && action in ~w(applied rejected cleaned) do
+      {:ok,
+       %{
+         "actor_session_id" => actor,
+         "action" => action,
+         "patch_sha256" => clean(attrs["patch_sha256"] || attrs[:patch_sha256]),
+         "command_id" => clean(attrs["command_id"] || attrs[:command_id])
+       }}
+    else
+      {:error, "bad_request", "工作区操作或 actorSessionId 无效"}
+    end
+  end
+
+  defp normalize_workspace_update(_), do: {:error, "bad_request", "工作区操作参数格式错误"}
+
+  defp transition_workspace(%{"workspace" => workspace} = task, attrs) when is_map(workspace) do
+    current = workspace["review_status"]
+    action = attrs["action"]
+
+    valid? =
+      case {current, action} do
+        {"pending", next} when next in ["applied", "rejected"] -> true
+        {previous, "cleaned"} when previous in ["applied", "rejected"] -> true
+        _ -> false
+      end
+
+    if valid? do
+      workspace = %{
+        workspace
+        | "review_status" => action,
+          "reviewed_at" => now_iso(),
+          "reviewed_by_session_id" => attrs["actor_session_id"]
+      }
+
+      workspace =
+        if attrs["patch_sha256"],
+          do: Map.put(workspace, "patch_sha256", attrs["patch_sha256"]),
+          else: workspace
+
+      {:ok, task |> Map.put("workspace", workspace) |> Map.put("updated_at", now_iso())}
+    else
+      {:error, "invalid_workspace_state", "工作区状态不允许该操作"}
+    end
+  end
+
+  defp transition_workspace(_, _), do: {:error, "workspace_missing", "任务没有隔离工作区"}
+
+  defp maybe_mark_workspace_pending(%{"workspace" => %{"review_status" => "waiting"} = workspace} = task, true) do
+    Map.put(task, "workspace", Map.put(workspace, "review_status", "pending"))
+  end
+
+  defp maybe_mark_workspace_pending(task, _), do: task
 
   defp fetch_task(group, task_id) do
     case Enum.find(group["tasks"] || [], &(&1["task_id"] == task_id)) do

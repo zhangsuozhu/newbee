@@ -72,7 +72,9 @@ defmodule Mix.Tasks.Newbee.Bench do
       try do
         r = Newbee.Agent.Loop.submit(kernel, prompt)
         usage = Newbee.Agent.Loop.usage(kernel)
-        {r, (usage[:input_tokens] || usage["input_tokens"] || 0) + (usage[:output_tokens] || usage["output_tokens"] || 0)}
+
+        {r,
+         (usage[:input_tokens] || usage["input_tokens"] || 0) + (usage[:output_tokens] || usage["output_tokens"] || 0)}
       after
         if Process.alive?(kernel), do: GenServer.stop(kernel, :normal, 5_000)
       end

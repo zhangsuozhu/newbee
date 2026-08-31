@@ -130,7 +130,8 @@ defmodule Newbee.Environment.EvaluatorPool do
      %{
        active: state.active && %{id: state.active.id, revision: state.active.revision, status: state.active.status},
        candidate:
-         state.candidate && %{id: state.candidate.id, revision: state.candidate.revision, status: state.candidate.status},
+         state.candidate &&
+           %{id: state.candidate.id, revision: state.candidate.revision, status: state.candidate.status},
        evaluator: evaluator_info
      }, state}
   end
@@ -167,8 +168,7 @@ defmodule Newbee.Environment.EvaluatorPool do
     case Generation.boot(revision, active_map, state.evaluator_opts) do
       {:ok, gen} ->
         gen = %{gen | status: :candidate}
-        {:reply, {:ok, gen},
-         %{state | candidate: gen, generations: Map.put(state.generations, gen.id, gen)}}
+        {:reply, {:ok, gen}, %{state | candidate: gen, generations: Map.put(state.generations, gen.id, gen)}}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}

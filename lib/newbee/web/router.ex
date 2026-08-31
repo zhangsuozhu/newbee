@@ -167,7 +167,9 @@ defmodule Newbee.Web.Router do
     :defp,
     :render_pair_page,
     @pair_template,
-    [:ok, :error, :pairing_id_json, :ua_short, :ip, :time_ago, :auth_required], trim: true)
+    [:ok, :error, :pairing_id_json, :ua_short, :ip, :time_ago, :auth_required],
+    trim: true
+  )
 
   defp serve_pair_page(conn) do
     conn = fetch_query_params(conn)

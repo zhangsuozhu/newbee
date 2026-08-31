@@ -95,6 +95,7 @@ defmodule Newbee.Web.PairTest do
 
     defp post_rpc(method, payload, token \\ nil) do
       body = Jason.encode!(%{"rpcId" => "t1", "method" => method, "payload" => payload})
+
       conn =
         Plug.Test.conn(:post, "/api/" <> method, body)
         |> Plug.Conn.put_req_header("content-type", "application/json")
@@ -146,6 +147,7 @@ defmodule Newbee.Web.PairTest do
       # 手机：复核 + 点允许
       assert %{"result" => %{"ok" => _}} =
                post_rpc("pair.phone_status", %{"pairing_id" => pid}) |> Map.fetch!(:resp_body) |> Jason.decode!()
+
       assert %{"result" => %{"ok" => %{"approved" => true}}} =
                post_rpc("pair.confirm", %{"pairing_id" => pid}) |> Map.fetch!(:resp_body) |> Jason.decode!()
 

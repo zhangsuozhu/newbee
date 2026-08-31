@@ -76,6 +76,51 @@ defmodule Newbee.Web.CollaborationApiTest do
     assert [%{"group_id" => ^group_id, "member_count" => 2}] = groups["groups"]
   end
 
+  test "成员可读取工作组持久活动时间线，非成员被拒绝" do
+    group = post_rpc("group.create", %{"sessionId" => "activity-parent", "title" => "活动群"}) |> ok!()
+
+    post_rpc("collab.message.send", %{
+      "groupId" => group["group_id"],
+      "senderSessionId" => "activity-parent",
+      "body" => "一条消息",
+      "commandId" => "activity-message"
+    })
+    |> ok!()
+
+    post_rpc("group.task.create", %{
+      "groupId" => group["group_id"],
+      "sessionId" => "activity-parent",
+      "title" => "一项任务",
+      "commandId" => "activity-task"
+    })
+    |> ok!()
+
+    result =
+      post_rpc("group.activity.list", %{
+        "groupId" => group["group_id"],
+        "sessionId" => "activity-parent",
+        "limit" => 20
+      })
+      |> ok!()
+
+    topics = Enum.map(result["activity"], & &1["topic"])
+    assert "collab_group_created" in topics
+    assert "collab_message_created" in topics
+    assert "collab_task_created" in topics
+    message_event = Enum.find(result["activity"], &(&1["topic"] == "collab_message_created"))
+    refute Map.has_key?(message_event["payload"]["message"], "body")
+    ids = Enum.map(result["activity"], & &1["event_id"])
+    assert ids == Enum.sort(ids)
+
+    denied =
+      post_rpc("group.activity.list", %{
+        "groupId" => group["group_id"],
+        "sessionId" => "outsider"
+      })
+
+    assert %{"error" => %{"code" => "not_member"}} = denied["result"]
+  end
+
   test "父会话可启动群内子会话" do
     group =
       post_rpc("group.create", %{"sessionId" => "spawn-parent", "title" => "派生群"})
@@ -210,6 +255,8 @@ defmodule Newbee.Web.CollaborationApiTest do
     assert delegated["member"]["parent_session_id"] == parent_sid
     assert delegated["task"]["assigned_session_id"] == child_sid
     assert delegated["task"]["status"] == "assigned"
+    refute Map.has_key?(delegated["task"]["workspace"], "path")
+    refute Map.has_key?(delegated["task"]["workspace"], "root")
 
     detail =
       post_rpc("group.get", %{"groupId" => group["group_id"], "sessionId" => parent_sid})
@@ -322,6 +369,127 @@ defmodule Newbee.Web.CollaborationApiTest do
 
     assert Enum.count(q) == 1
     assert :queue.len(st.queue) == 1
+  end
+
+  test "总控可审查、应用并清理子代理变更，成员只能查看" do
+    suffix = System.unique_integer([:positive])
+    parent_sid = "review-parent-#{suffix}"
+    child_sid = "review-child-#{suffix}"
+    repo = Path.join(System.tmp_dir!(), "newbee-review-api-#{suffix}")
+    File.mkdir_p!(repo)
+    git!(repo, ["init", "-q"])
+    git!(repo, ["config", "user.email", "review@test.local"])
+    git!(repo, ["config", "user.name", "Review Test"])
+    File.write!(Path.join(repo, "feature.txt"), "base\n")
+    git!(repo, ["add", "feature.txt"])
+    git!(repo, ["commit", "-q", "-m", "base"])
+
+    assert {:ok, group} =
+             Newbee.Collaboration.Coordinator.create_group(%{
+               "session_id" => parent_sid,
+               "title" => "审查群",
+               "project_root" => repo
+             })
+
+    assert {:ok, workspace} = Newbee.Collaboration.Workspace.prepare(repo, child_sid, true)
+
+    assert {:ok, %{task: task}} =
+             Newbee.Collaboration.Coordinator.delegate(group["group_id"], %{
+               "session_id" => child_sid,
+               "parent_session_id" => parent_sid,
+               "role" => "worker",
+               "title" => "修改功能",
+               "workspace" => workspace,
+               "command_id" => "review-delegate-#{suffix}"
+             })
+
+    :ok = Newbee.Session.mark_created(child_sid)
+    :ok = Newbee.Session.set_cwd(child_sid, workspace["path"])
+    File.write!(Path.join(workspace["path"], "feature.txt"), "base\nchild\n")
+
+    assert {:ok, _} =
+             Newbee.Collaboration.Coordinator.update_task(group["group_id"], task["task_id"], %{
+               "session_id" => child_sid,
+               "status" => "running"
+             })
+
+    assert {:ok, _} =
+             Newbee.Collaboration.Coordinator.update_task(group["group_id"], task["task_id"], %{
+               "session_id" => child_sid,
+               "status" => "succeeded",
+               "result" => "done"
+             })
+
+    review =
+      post_rpc("group.workspace.review", %{
+        "groupId" => group["group_id"],
+        "taskId" => task["task_id"],
+        "sessionId" => child_sid
+      })
+      |> ok!()
+
+    assert review["dirty"]
+    assert [%{"path" => "feature.txt"}] = review["files"]
+    refute Map.has_key?(review, "workspace_path")
+    refute Map.has_key?(review, "base_ref")
+
+    forbidden =
+      post_rpc("group.workspace.apply", %{
+        "groupId" => group["group_id"],
+        "taskId" => task["task_id"],
+        "sessionId" => child_sid,
+        "patchSha256" => review["patch_sha256"]
+      })
+
+    assert %{"error" => %{"code" => "forbidden_role"}} = forbidden["result"]
+
+    stale =
+      post_rpc("group.workspace.apply", %{
+        "groupId" => group["group_id"],
+        "taskId" => task["task_id"],
+        "sessionId" => parent_sid,
+        "patchSha256" => String.duplicate("0", 64)
+      })
+
+    assert %{"error" => %{"code" => "stale_review"}} = stale["result"]
+
+    applied =
+      post_rpc("group.workspace.apply", %{
+        "groupId" => group["group_id"],
+        "taskId" => task["task_id"],
+        "sessionId" => parent_sid,
+        "patchSha256" => review["patch_sha256"],
+        "commandId" => "apply-#{suffix}"
+      })
+      |> ok!()
+
+    assert applied["task"]["workspace"]["review_status"] == "applied"
+    assert File.read!(Path.join(repo, "feature.txt")) == "base\nchild\n"
+
+    cleaned =
+      post_rpc("group.workspace.cleanup", %{
+        "groupId" => group["group_id"],
+        "taskId" => task["task_id"],
+        "sessionId" => parent_sid,
+        "commandId" => "cleanup-#{suffix}"
+      })
+      |> ok!()
+
+    assert cleaned["task"]["workspace"]["review_status"] == "cleaned"
+    refute File.exists?(workspace["path"])
+    assert Newbee.Session.cwd(child_sid) == repo
+
+    on_exit(fn ->
+      Newbee.Web.Session.destroy(child_sid)
+      File.rm_rf!(repo)
+    end)
+  end
+
+  defp git!(dir, args) do
+    case System.cmd("git", ["-C", dir | args], stderr_to_stdout: true) do
+      {output, 0} -> output
+      {output, code} -> flunk("git #{Enum.join(args, " ")} failed (#{code}): #{output}")
+    end
   end
 
   defp post_rpc(method, payload) do

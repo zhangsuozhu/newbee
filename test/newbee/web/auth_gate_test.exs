@@ -71,6 +71,7 @@ defmodule Newbee.Web.AuthGateTest do
       # 取验证码
       cap_resp = post_rpc("auth.captcha", %{})
       %{"result" => %{"ok" => %{"captchaId" => cid}}} = Jason.decode!(cap_resp.resp_body)
+
       # 测试拿不到验证码明文（防止暴破者直接读）——但此处我们模拟"已知答案"通过 setup 路径
       # 直接 setup（密码刚 set 过，setup 会 already_set），所以改走 login，需要一个有效 captcha
       # 这里只验证 login 缺 captcha 时被拒

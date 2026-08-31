@@ -95,6 +95,7 @@ defmodule Newbee.Web.WebAuthnTest do
       assert opts.rp.id == "custom.example.com"
     end
   end
+
   describe "挑战表跨进程存活（回归：表随请求进程销毁的 bug）" do
     test "短命进程存入的挑战，进程退出后仍可取出" do
       parent = self()

@@ -27,7 +27,10 @@ defmodule Newbee.Web.Socket do
 
       {:ok, %{"type" => "permission", "ok" => ok} = frame} ->
         target = frame["sessionId"] || st.sid
-        cast_session(target, &WSession.permission_reply(&1, ok))
+
+        if Newbee.Collaboration.Coordinator.can_approve_permission?(st.sid, target) do
+          cast_session(target, &WSession.permission_reply(&1, ok))
+        end
 
       {:ok, %{"type" => "prompt", "text" => t}} ->
         cast_session(st.sid, &WSession.prompt(&1, t))

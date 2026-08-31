@@ -11,7 +11,9 @@ defmodule Newbee.Tools.StructuralTest do
   """
 
   setup do
-    path = Path.join(System.tmp_dir!(), "struct_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.ex")
+    path =
+      Path.join(System.tmp_dir!(), "struct_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.ex")
+
     File.write!(path, @src)
     on_exit(fn -> File.rm(path) end)
     %{path: path}

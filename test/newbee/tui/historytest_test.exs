@@ -3,7 +3,12 @@ defmodule Newbee.TUI.HistoryTest do
   alias Newbee.TUI.History
 
   setup do
-    tmp = Path.join(System.tmp_dir!(), "newbee_hist_test_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}")
+    tmp =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee_hist_test_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(tmp)
     path = Path.join(tmp, "history")
     Application.put_env(:newbee, :history_path, path)

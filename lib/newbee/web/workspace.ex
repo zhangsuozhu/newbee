@@ -22,10 +22,13 @@ defmodule Newbee.Web.Workspace do
   条目排序：目录优先，名称不区分大小写。
   """
   def list_dir(path) do
-    dir = path |> blank_to_nil() |> case do
-      nil -> System.user_home!()
-      p -> Path.expand(p)
-    end
+    dir =
+      path
+      |> blank_to_nil()
+      |> case do
+        nil -> System.user_home!()
+        p -> Path.expand(p)
+      end
 
     cond do
       not File.dir?(dir) ->
@@ -80,7 +83,8 @@ defmodule Newbee.Web.Workspace do
         target = Path.join(base, trimmed)
 
         case File.mkdir(target) do
-          :ok -> {:ok, target}
+          :ok ->
+            {:ok, target}
 
           {:error, :eexist} ->
             if File.dir?(target) do
@@ -89,7 +93,8 @@ defmodule Newbee.Web.Workspace do
               {:error, "not_a_directory", "目标已存在但不是目录: #{target}"}
             end
 
-          {:error, reason} -> {:error, "mkdir_failed", "#{target}: #{inspect(reason)}"}
+          {:error, reason} ->
+            {:error, "mkdir_failed", "#{target}: #{inspect(reason)}"}
         end
     end
   end
@@ -97,7 +102,9 @@ defmodule Newbee.Web.Workspace do
   @doc "校验候选工作目录：存在且是目录则返回展开后的绝对路径，否则 :error。"
   def valid_dir?(path) when is_binary(path) do
     case String.trim(path) do
-      "" -> :error
+      "" ->
+        :error
+
       trimmed ->
         expanded = Path.expand(trimmed)
         if File.dir?(expanded), do: {:ok, expanded}, else: :error
@@ -127,4 +134,3 @@ defmodule Newbee.Web.Workspace do
 
   defp blank_to_nil(_), do: nil
 end
-

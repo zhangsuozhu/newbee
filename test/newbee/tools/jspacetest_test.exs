@@ -3,7 +3,12 @@ defmodule Newbee.Tools.JSpaceTest do
   alias Newbee.Tools.JSpace
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "newbee_jspace_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}")
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee_jspace_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}"
+      )
+
     System.put_env("NEWBEE_JSPACE_DIR", dir)
     sid = "test-#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}"
 

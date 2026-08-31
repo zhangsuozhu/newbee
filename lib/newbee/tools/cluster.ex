@@ -24,7 +24,10 @@ defmodule Newbee.Tools.Cluster do
           %{exit: 0, output: out} -> %{host: host, ok: true, output: out}
           %{exit: code, output: out} -> %{host: host, ok: false, exit: code, output: out}
         end
-      end, timeout: timeout + 5000, max_concurrency: 8)
+      end,
+      timeout: timeout + 5000,
+      max_concurrency: 8
+    )
     |> Enum.map(fn
       {:ok, r} -> r
       {:exit, reason} -> %{ok: false, error: inspect(reason)}

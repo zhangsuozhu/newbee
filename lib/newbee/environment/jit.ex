@@ -201,6 +201,7 @@ defmodule Newbee.Environment.Jit do
         {:ok, _} -> base_cost
         :error -> Newbee.Environment.Calibration.adjust_compile_cost(base_cost)
       end
+
     kappa = Keyword.get(opts, :kappa, 1.0)
     min_samples = Keyword.get(opts, :min_samples, 3)
 
@@ -255,7 +256,6 @@ defmodule Newbee.Environment.Jit do
       s -> PatternStats.deopt_decision(s, opts)
     end
   end
-
 
   @doc "TCE deopt v2 [U1]：后验判据 + SPRT 序贯证据合流。"
   def tce_deopt_decision_v2(%PatternStats{} = s, opts \\ []) do

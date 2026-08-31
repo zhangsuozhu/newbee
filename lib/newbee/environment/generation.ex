@@ -217,7 +217,9 @@ defmodule Newbee.Environment.Generation do
       case store.load_environment() do
         {:ok, %{"active" => active}} when map_size(active) > 0 ->
           case PluginManager.materialize_active(active, node) do
-            {:ok, _} -> :ok
+            {:ok, _} ->
+              :ok
+
             {:error, reason} ->
               Logger.warning("load_active_into #{node}: #{inspect(reason)}")
               :ok

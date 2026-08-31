@@ -211,8 +211,15 @@ defmodule Newbee.Environment.ContextQuality.Collector do
 
   # 规则 id：真实载荷 rules[].id；兼容 source 直接是规则 id 的情况
   # 系统注入的 source（非可退休经验，不进入质量度量）——实证自真实事件流
-  @system_sources ["sleeping_rule", "history_recall", "goal_continue", "goal_start",
-                   "goal_idle", "final_verifier", "jspace_recovery"]
+  @system_sources [
+    "sleeping_rule",
+    "history_recall",
+    "goal_continue",
+    "goal_start",
+    "goal_idle",
+    "final_verifier",
+    "jspace_recovery"
+  ]
 
   defp rule_ids_of(event) when is_map(event) do
     rules = event[:rules] || event["rules"]
@@ -254,8 +261,8 @@ defmodule Newbee.Environment.ContextQuality.Collector do
     case event[:payload] || event["payload"] do
       ["usage", usage] when is_map(usage) ->
         usage[:total_tokens] || usage["total_tokens"] ||
-          (safe_int(usage[:prompt_tokens] || usage["prompt_tokens"]) +
-             safe_int(usage[:completion_tokens] || usage["completion_tokens"]))
+          safe_int(usage[:prompt_tokens] || usage["prompt_tokens"]) +
+            safe_int(usage[:completion_tokens] || usage["completion_tokens"])
 
       usage when is_map(usage) ->
         usage[:total_tokens] || usage["total_tokens"] || usage[:tokens] || usage["tokens"]

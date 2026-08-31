@@ -4,7 +4,12 @@ defmodule Newbee.EventStoreTest do
   alias Newbee.EventStore
 
   setup do
-    path = Path.join(System.tmp_dir!(), "evs_#{System.system_time(:native)}_#{System.system_time(:native)}_#{System.unique_integer([:positive])}.jsonl")
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "evs_#{System.system_time(:native)}_#{System.system_time(:native)}_#{System.unique_integer([:positive])}.jsonl"
+      )
+
     on_exit(fn -> File.rm(path) end)
     {:ok, path: path}
   end

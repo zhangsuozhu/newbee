@@ -18,7 +18,8 @@ defmodule Newbee.Application do
         Newbee.SessionEvaluators,
         Newbee.Web.Auth.SessionWriter,
         {Registry, keys: :unique, name: Newbee.Web.SessionRegistry},
-        {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Web.SessionSup}
+        {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Web.SessionSup},
+        Newbee.Collaboration.Capability
       ] ++
         if Mix.env() == :test do
           []

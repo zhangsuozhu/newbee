@@ -58,6 +58,7 @@ defmodule Newbee.Web.QuickAccessTest do
 
     defp post_rpc(method, payload, token \\ nil) do
       body = Jason.encode!(%{"rpcId" => "t1", "method" => method, "payload" => payload})
+
       conn =
         Plug.Test.conn(:post, "/api/" <> method, body)
         |> Plug.Conn.put_req_header("content-type", "application/json")

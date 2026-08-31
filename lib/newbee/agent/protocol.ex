@@ -16,7 +16,16 @@ defmodule Newbee.Agent.Protocol do
 
   alias Newbee.Environment.Store
 
-  @kinds [:need, :candidate_ready, :feedback, :rollback_request, :module_ready, :module_rejected, :evaluation_failed, :rolled_back]
+  @kinds [
+    :need,
+    :candidate_ready,
+    :feedback,
+    :rollback_request,
+    :module_ready,
+    :module_rejected,
+    :evaluation_failed,
+    :rolled_back
+  ]
 
   def kinds, do: @kinds
 

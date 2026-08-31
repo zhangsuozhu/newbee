@@ -140,6 +140,7 @@ defmodule Newbee.Staging do
     e in ArgumentError -> {:error, {:outside_project, Exception.message(e)}}
     _ -> {:error, :outside_project}
   end
+
   defp put_entry(state, entry) do
     state = Map.put(state, entry.id, entry)
     persist(state)

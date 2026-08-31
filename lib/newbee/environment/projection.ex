@@ -37,6 +37,7 @@ defmodule Newbee.Environment.Projection do
       fragments: prompt_fragments(),
       repomap: repomap(root),
       tools: tools_section(),
+      collaboration: collaboration_section(context),
       memory: memory_guidance(),
       bindings: bindings_summary(context),
       notices: drain_notices(),
@@ -147,6 +148,20 @@ defmodule Newbee.Environment.Projection do
     _ -> Newbee.Plugins.prompt_section(%{})
   end
 
+  # 协作策略提示（稳定成分）：告诉模型有 delegate 能力，遇到可拆分/可并行的
+  # 子任务时使用。会话后续是否进组不影响这段（system prompt 会被缓存复用）。
+  # 组态感知提示未来通过 inject_prompt 走易变通道。
+  defp collaboration_section(_context) do
+    """
+
+    ## 协作能力（Newbee.Tools.Collaboration）
+
+    遇到**可拆分 / 可并行 / 需要独立上下文**的子任务时，调用
+    `Newbee.Tools.Collaboration.delegate(title, opts)` 派生一个子代理处理，
+    自己继续做主线。详细用法 `Newbee.read("tool://Newbee.Tools.Collaboration")`。
+    """
+  end
+
   defp memory_guidance do
     if function_exported?(Newbee.Memory, :topics, 0) do
       Newbee.Memory.topics()
@@ -239,6 +254,7 @@ defmodule Newbee.Environment.Projection do
       view.project_memory <>
       view.repomap <>
       view.tools <>
+      view.collaboration <>
       view.memory <>
       view.fragments <>
       bindings <>

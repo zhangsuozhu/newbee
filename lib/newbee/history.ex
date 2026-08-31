@@ -35,7 +35,6 @@ defmodule Newbee.History do
   end
 
   defp msg_lines(%{"role" => "user", "content" => c}) when is_binary(c) do
-
     all = String.split(c, "\n")
     lines = Enum.take(all, 20)
     more = if length(all) > 20, do: ["  \e[2m… (#{length(all) - 20} 行更多)\e[0m"], else: []

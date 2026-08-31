@@ -70,17 +70,14 @@ defmodule Newbee.Collaboration.DispatchTest do
   test "模型只能从当前执行上下文派生工作组子代理" do
     assert {:error, "no_execution_context", _} = Newbee.Tools.Collaboration.delegate("无上下文任务")
 
-    Process.put({Newbee.Tools.Collaboration, :context}, %{
-      session_id: "model-parent",
-      project_root: File.cwd!()
-    })
-
     assert {:ok, result} =
-             Newbee.Tools.Collaboration.delegate("分析认证失败路径",
-               name: "认证分析子代理",
-               description: "找出失败路径并给出测试建议",
-               role: "reviewer"
-             )
+             with_identity("model-parent", File.cwd!(), fn ->
+               Newbee.Tools.Collaboration.delegate("分析认证失败路径",
+                 name: "认证分析子代理",
+                 description: "找出失败路径并给出测试建议",
+                 role: "reviewer"
+               )
+             end)
 
     assert is_binary(result.session_id)
     assert result.member["parent_session_id"] == "model-parent"
@@ -92,11 +89,9 @@ defmodule Newbee.Collaboration.DispatchTest do
     assert String.contains?(child_root, Path.join([".newbee", "worktrees"]))
     assert File.dir?(child_root)
 
-    Process.delete({Newbee.Tools.Collaboration, :context})
-
     on_exit(fn ->
       Newbee.Web.Session.destroy(result.session_id)
-      Newbee.Tools.Git.worktree_remove(File.cwd!(), child_root)
+      Newbee.Collaboration.Workspace.discard_orphan(result.workspace)
     end)
   end
 
@@ -114,23 +109,25 @@ defmodule Newbee.Collaboration.DispatchTest do
 
     tid = task["task_id"]
 
-    assert {:error, "bad_request", _} =
-             Newbee.Tools.Collaboration.report(gid, tid, "w", :nonsense)
+    with_identity("w", File.cwd!(), fn ->
+      assert {:error, "bad_request", _} =
+               Newbee.Tools.Collaboration.report(gid, tid, "w", :nonsense)
 
-    assert {:ok, updated} =
-             Newbee.Tools.Collaboration.report(gid, tid, "w", :running, progress: "30%")
+      assert {:ok, updated} =
+               Newbee.Tools.Collaboration.report(gid, tid, "w", :running, progress: "30%")
 
-    assert updated["status"] == "running"
-    assert updated["progress"] == "30%"
+      assert updated["status"] == "running"
+      assert updated["progress"] == "30%"
 
-    assert {:ok, [%{"status" => "running"}]} = Newbee.Tools.Collaboration.tasks(gid)
+      assert {:ok, [%{"status" => "running"}]} = Newbee.Tools.Collaboration.tasks(gid)
 
-    msg_opts = [to: "p", kind: :question, message_id: "msg-tool-fixed"]
+      msg_opts = [to: "p", kind: :question, message_id: "msg-tool-fixed"]
 
-    assert {:ok, _} = Newbee.Tools.Collaboration.send_message(gid, "w", "我开始了", msg_opts)
+      assert {:ok, _} = Newbee.Tools.Collaboration.send_message(gid, "w", "我开始了", msg_opts)
 
-    assert {:error, "duplicate_message", _} =
-             Newbee.Tools.Collaboration.send_message(gid, "w", "重试同一条", msg_opts)
+      assert {:error, "duplicate_message", _} =
+               Newbee.Tools.Collaboration.send_message(gid, "w", "重试同一条", msg_opts)
+    end)
   end
 
   test "任务进入终态时创建者会话收到一次结构化结果通知" do
@@ -174,5 +171,18 @@ defmodule Newbee.Collaboration.DispatchTest do
     assert notified["task_id"] == tid
     assert notified["status"] == "succeeded"
     Process.exit(parent_stub, :kill)
+  end
+
+  defp with_identity(session_id, root, fun) do
+    :ok = Newbee.Collaboration.Capability.register(self(), session_id, root)
+    {:ok, token} = Newbee.Collaboration.Capability.issue(self())
+    Process.put({Newbee.Tools.Collaboration, :context}, %{capability: token})
+
+    try do
+      fun.()
+    after
+      Process.delete({Newbee.Tools.Collaboration, :context})
+      Newbee.Collaboration.Capability.revoke(token)
+    end
   end
 end
