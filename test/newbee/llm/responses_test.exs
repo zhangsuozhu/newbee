@@ -428,6 +428,71 @@ defmodule Newbee.LLM.ResponsesTest do
     assert_received {:stream_fallback_request, 3, %{"stream" => false}}
   end
 
+  test "requires API-key account gateway downgrades continuation and retries full" do
+    test_pid = self()
+    checkpoint = Path.join(System.tmp_dir!(), "newbee-responses-apikey-#{System.unique_integer([:positive])}.json")
+    on_exit(fn -> File.rm(checkpoint) end)
+    counter = :atomics.new(1, [])
+
+    plug = fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+      n = :atomics.add_get(counter, 1, 1)
+      send(test_pid, {:apikey_request, n, body})
+
+      cond do
+        n == 1 ->
+          # 第一轮建立 checkpoint
+          Req.Test.json(conn, response("resp-1", "one"))
+
+        body["previous_response_id"] ->
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.send_resp(
+            400,
+            Jason.encode!(%{
+              "error" => %{
+                "message" => "previous_response_id requires an OpenAI API-key account for HTTP requests",
+                "type" => "invalid_request_error"
+              }
+            })
+          )
+
+        true ->
+          Req.Test.json(conn, response("resp-full-#{n}", "full"))
+      end
+    end
+
+    client =
+      Client.new(
+        api: "openai-responses",
+        model: "test/no-continuation-#{System.unique_integer([:positive])}",
+        api_key: "test",
+        base_url: "http://localhost",
+        cache_key: "newbee-session",
+        responses_continuation: true,
+        responses_checkpoint: checkpoint,
+        req_options: [plug: plug, retry: false]
+      )
+
+    # 第一轮成功并写入 checkpoint
+    assert {:ok, %{"content" => "one"}, _usage} = Client.stream_chat(client, [user("hi")])
+    assert_received {:apikey_request, 1, first_body}
+    refute Map.has_key?(first_body, "previous_response_id")
+    assert first_body["store"] == true
+
+    # 第二轮 continuation 被网关拒绝 → 自动降级 continuation 并全量重试
+    history = [user("hi"), assistant("one"), user("continue")]
+    assert {:ok, %{"content" => "full"}, _usage} = Client.stream_chat(client, history)
+
+    assert_received {:apikey_request, 2, incremental}
+    assert incremental["previous_response_id"] == "resp-1"
+    assert_received {:apikey_request, 3, full}
+    refute Map.has_key?(full, "previous_response_id")
+    refute Map.has_key?(full, "store")
+    assert full["input"] == history
+  end
+
   defp user(text), do: %{"role" => "user", "content" => text}
   defp assistant(text), do: %{"role" => "assistant", "content" => text}
 

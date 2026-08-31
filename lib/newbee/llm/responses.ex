@@ -83,7 +83,7 @@ defmodule Newbee.LLM.Responses do
     envelope = Map.delete(full_body, :input)
 
     plan =
-      if client.responses_continuation and not state.force_full do
+      if client.responses_continuation and caps.continuation and not state.force_full do
         Continuation.plan(client.responses_checkpoint, envelope, logical_input)
       else
         :full
@@ -101,7 +101,7 @@ defmodule Newbee.LLM.Responses do
           {full_body, false}
       end
 
-    attempt = {caps.stream, caps.encrypted_reasoning, continued?, state.force_full}
+    attempt = {caps.stream, caps.encrypted_reasoning, caps.continuation, continued?, state.force_full}
 
     if MapSet.member?(state.attempts, attempt) do
       {:error, {:responses_retry_loop, attempt}}
@@ -112,7 +112,7 @@ defmodule Newbee.LLM.Responses do
 
       case perform(client, request_body, on_text, on_reasoning) do
         {:ok, result} ->
-          finish(client, envelope, logical_input, result, on_text, on_reasoning)
+          finish(client, caps, envelope, logical_input, result, on_text, on_reasoning)
 
         {:interrupted, _content} = interrupted ->
           interrupted
@@ -142,7 +142,7 @@ defmodule Newbee.LLM.Responses do
     |> maybe_put(:temperature, Keyword.get(opts, :temperature))
     |> maybe_put(:reasoning, reasoning(client.reasoning_effort))
     |> maybe_put(:prompt_cache_key, client.cache_key)
-    |> maybe_put(:store, if(client.responses_continuation, do: true))
+    |> maybe_put(:store, if(client.responses_continuation and caps.continuation, do: true))
     |> maybe_put(:include, if(caps.encrypted_reasoning, do: ["reasoning.encrypted_content"]))
     |> Map.merge(Keyword.get(opts, :extra, %{}))
   end
@@ -177,7 +177,12 @@ defmodule Newbee.LLM.Responses do
           "responses capability downgrade #{capability}=#{inspect(value)}; retrying"
         )
 
-        run_request(client, logical_input, wire_tools, opts, %{state | force_full: false})
+        force_full =
+          if capability == :continuation,
+            do: true,
+            else: state.force_full
+
+        run_request(client, logical_input, wire_tools, opts, %{state | force_full: force_full})
 
       match?({:http_error, _, _}, error) ->
         {:http_error, status, body} = error
@@ -188,7 +193,7 @@ defmodule Newbee.LLM.Responses do
     end
   end
 
-  defp finish(client, envelope, logical_input, result, on_text, on_reasoning) do
+  defp finish(client, caps, envelope, logical_input, result, on_text, on_reasoning) do
     parsed =
       case result do
         {:json, body} ->
@@ -209,7 +214,7 @@ defmodule Newbee.LLM.Responses do
       {:ok, message, usage, response_id} ->
         next_prefix = logical_input ++ input([message])
 
-        if client.responses_continuation and is_binary(response_id) and response_id != "" do
+        if client.responses_continuation and caps.continuation and is_binary(response_id) and response_id != "" do
           Continuation.commit(client.responses_checkpoint, envelope, next_prefix, response_id)
         else
           Continuation.clear(client.responses_checkpoint)
@@ -775,7 +780,8 @@ defmodule Newbee.LLM.Responses do
 
     %{
       stream: stream,
-      encrypted_reasoning: Map.get(stored, :encrypted_reasoning, true)
+      encrypted_reasoning: Map.get(stored, :encrypted_reasoning, true),
+      continuation: Map.get(stored, :continuation, true)
     }
   end
 
@@ -801,6 +807,15 @@ defmodule Newbee.LLM.Responses do
           (String.contains?(text, "reasoning.encrypted_content") or
              (String.contains?(text, "include") and unsupported_text?(text))) ->
         {:encrypted_reasoning, false}
+
+      caps.continuation and
+          (String.contains?(text, "previous_response_id requires") or
+             String.contains?(text, "api-key account") or
+             String.contains?(text, "previous_response_id") and
+               (String.contains?(text, "requires") or String.contains?(text, "not supported") or
+                  String.contains?(text, "unsupported") or String.contains?(text, "billing") or
+                  String.contains?(text, "quota"))) ->
+        {:continuation, false}
 
       caps.stream and
         (String.contains?(text, "stream") or String.contains?(text, "event-stream") or
