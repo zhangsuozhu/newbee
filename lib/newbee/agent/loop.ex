@@ -751,6 +751,12 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
+  defp after_turn({:done, summary, next_steps}, state) when is_map(next_steps) or is_list(next_steps) do
+    emit(state, {:goal_done, summary})
+    maybe_extract_lesson(state, summary)
+    {{:done, summary, next_steps}, %{state | goal: nil}}
+  end
+
   defp after_turn({:ask, question, options, kind}, state) do
     emit(state, {:goal_ask, question, options, kind})
     {{:ask, question}, %{state | goal: %{state.goal | error_retries: 0}}}
@@ -1197,6 +1203,7 @@ defmodule Newbee.Agent.Loop do
 
             "done" ->
               summary = call.args["summary"] || ""
+              next_steps = normalize_next_steps(call.args)
               tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => "✓ done"}
 
               case final_check(state) do
@@ -1207,12 +1214,23 @@ defmodule Newbee.Agent.Loop do
                   # 否则刷新后 session.history 读不到最后一条总结。
                   # 走 push_msg 带上本轮 _usage（拆成 usage 行 + done 行），
                   # 回放时 usage 与 done 卡相邻，否则 usage 悬空错位（done 卡无统计）。
-                  done_msg = %{"role" => "assistant", "content" => summary, "done" => true, "_usage" => state.usage}
+                  done_msg =
+                    %{"role" => "assistant", "content" => summary, "done" => true, "_usage" => state.usage}
+                    |> then(fn m -> if next_steps, do: Map.put(m, "next_steps", next_steps), else: m end)
+
                   state = push_msg(state, done_msg)
 
                   # DeepSeek 严格校验：带 tool_calls 的 assistant 后必须跟齐 tool 响应，
                   # 否则下一回合 400（此前 done/ask 从不回填，历史必然悬空）
-                  {:halt, {:halt, {:done, summary}, push_msg(state, tool_msg)}}
+                  # done 如带下一步选项，随 halt 一并透传给 after_turn / broadcast
+                  halt_payload =
+                    if next_steps do
+                      {:done, summary, next_steps}
+                    else
+                      {:done, summary}
+                    end
+
+                  {:halt, {:halt, halt_payload, push_msg(state, tool_msg)}}
 
                 {:retry, state, reminder} ->
                   emit(state, {:final_check_low, state.progress.final_score})
@@ -1859,7 +1877,77 @@ defmodule Newbee.Agent.Loop do
   # ── 终局验证（LLM-as-a-Verifier）──
 
   # done 前的终局检查：分数 ≥ 阈值直接 done；低分注入提醒让模型重新评估（仅一次）。
-  defp final_check(%{progress: nil} = state), do: {:done, state}
+# ── done 携带的下一步选项归一化 ──
+# 支持两种写法：扁平 next_question/next_kind/next_options 或嵌套 next_steps 对象；优先 next_steps
+defp normalize_next_steps(args) when is_map(args) do
+  nested = args["next_steps"] || args[:next_steps]
+
+  base =
+    cond do
+      is_map(nested) and (nested["question"] || nested[:question] || nested["options"] || nested[:options]) ->
+        %{
+          "question" => nested["question"] || nested[:question] || nested["next_question"] || "下一步做什么？",
+          "kind" => normalize_next_kind(nested["kind"] || nested[:kind] || nested["next_kind"]),
+          "options" => normalize_next_options(nested["options"] || nested[:options] || nested["next_options"])
+        }
+
+      true ->
+        q = args["next_question"] || args[:next_question]
+        opts = args["next_options"] || args[:next_options]
+        kind = args["next_kind"] || args[:next_kind]
+
+        if (is_binary(q) && String.trim(q) != "") || (is_list(opts) && opts != []) do
+          %{
+            "question" => (is_binary(q) && String.trim(q) != "" && q) || "下一步做什么？",
+            "kind" => normalize_next_kind(kind),
+            "options" => normalize_next_options(opts)
+          }
+        else
+          nil
+        end
+    end
+
+  case base do
+    %{"options" => opts} = m when is_list(opts) and length(opts) > 0 ->
+      capped =
+        opts
+        |> Enum.take(8)
+        |> Enum.map(fn o ->
+          cond do
+            is_map(o) ->
+              l = to_string(o["label"] || o[:label] || o["value"] || o[:value] || "")
+              v = to_string(o["value"] || o[:value] || o["label"] || o[:label] || "")
+              %{"label" => String.slice(l, 0, 80), "value" => String.slice(v, 0, 80)}
+
+            is_binary(o) ->
+              s = String.slice(o, 0, 80)
+              %{"label" => s, "value" => s}
+
+            true ->
+              nil
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.filter(fn %{"label" => l} -> String.trim(l) != "" end)
+
+      if capped == [], do: nil, else: %{m | "options" => capped}
+
+    _ ->
+      base
+  end
+end
+
+defp normalize_next_steps(_), do: nil
+
+defp normalize_next_kind(k) when k in ["single", "multi", "buttons"], do: k
+defp normalize_next_kind(k) when is_atom(k) and k in [:single, :multi, :buttons], do: to_string(k)
+defp normalize_next_kind(_), do: "single"
+
+defp normalize_next_options(opts) when is_list(opts), do: opts
+defp normalize_next_options(_), do: []
+
+defp final_check(%{progress: nil} = state), do: {:done, state}
+
 
   defp final_check(state) do
     p = state.progress

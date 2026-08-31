@@ -26,10 +26,15 @@ defmodule Newbee.Codec do
       type: "function",
       function: %{
         name: "done",
-        description: "声明本轮目标完成，附带给用户的总结。",
+        description: "完成总结；可附下一步",
         parameters: %{
           type: "object",
-          properties: %{summary: %{type: "string"}},
+          properties: %{
+            summary: %{type: "string"},
+            next_question: %{type: "string"},
+            next_kind: %{type: "string", enum: ["single", "multi", "buttons"]},
+            next_options: %{type: "array", items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}}
+          },
           required: ["summary"]
         }
       }
@@ -43,16 +48,8 @@ defmodule Newbee.Codec do
           type: "object",
           properties: %{
             question: %{type: "string", description: "向用户提出的问题"},
-            kind: %{
-              type: "string",
-              enum: ["text", "single", "multi", "buttons"],
-              description: "交互形态；默认 text"
-            },
-            options: %{
-              type: "array",
-              description: "选择项 [{label, value}]",
-              items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}
-            }
+            kind: %{type: "string", enum: ["text", "single", "multi", "buttons"], description: "交互形态；默认 text"},
+            options: %{type: "array", description: "选择项 [{label, value}]", items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}}
           },
           required: ["question"]
         }
@@ -83,5 +80,3 @@ defmodule Newbee.Codec do
 
   def extract_tool_calls(_), do: []
 end
-
-:ok

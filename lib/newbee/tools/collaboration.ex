@@ -28,11 +28,11 @@ defmodule Newbee.Tools.Collaboration do
 
   ## 函数清单
 
-  - `delegate(title, opts \\ [])` — 派生子代理；opts: `name:/role:/description:/acceptance:/isolate:`
-  - `report(group_id, task_id, session_id, status, opts \\ [])` — 子代理调用
-  - `renew(group_id, task_id, session_id, seconds \\ 300)` — 子代理续期
+  - `delegate(title, opts \\\\ [])` — 派生子代理；opts: `name:/role:/description:/acceptance:/isolate:`
+  - `report(group_id, task_id, session_id, status, opts \\\\ [])` — 子代理调用
+  - `renew(group_id, task_id, session_id, seconds \\\\ 300)` — 子代理续期
   - `tasks(group_id)` — 列出组内任务
-  - `send_message(group_id, session_id, body, opts \\ [])` — 发消息；opts: `to:/kind:/delivery:`
+  - `send_message(group_id, session_id, body, opts \\\\ [])` — 发消息；opts: `to:/kind:/delivery:`
 
   ## 安全约束
 

@@ -7,7 +7,7 @@ defmodule Newbee.Plugins.RepoMap do
   非 Elixir 工程退化为目录树。
 
   ## 函数清单
-  - `build(root \\ ".", opts \\ []) :: String.t()` — 构建工程结构图（紧凑字符串）。非 Elixir 工程退化为目录树。
+  - `build(root \\\\ ".", opts \\\\ []) :: String.t()` — 构建工程结构图（紧凑字符串）。非 Elixir 工程退化为目录树。
     选项：`:tier1_max_bytes` —— Tier1 区字节预算（默认 14_000）。
     选项：`:format` —— `:full`（默认，核心模块全签名加全部模块索引）；
       `:slim` 基础档——每个模块一行（名字加一句话说明加路径），不列函数签名，
