@@ -59,6 +59,11 @@ defmodule Newbee.Agent.Loop do
   @doc "查询自主目标状态：nil | %{text, rounds, max_rounds, idle}。"
   def goal(kernel), do: GenServer.call(kernel, :goal)
 
+  def update_goal(kernel, text, opts \\ []), do: GenServer.call(kernel, {:update_goal, text, opts}, :infinity)
+  def set_goal_status(kernel, status), do: GenServer.call(kernel, {:set_goal_status, status}, :infinity)
+  def set_goal_budget(kernel, budget), do: GenServer.call(kernel, {:set_goal_budget, budget}, :infinity)
+  def loop(kernel, task, opts \\ []), do: GenServer.call(kernel, {:loop, task, opts}, :infinity)
+
   def usage(kernel), do: GenServer.call(kernel, :usage)
 
   @doc "热切模型：不丢会话/绑定/消息，只换 LLM client 与流式入口。返回 :ok | {:error, reason}。"
@@ -329,11 +334,40 @@ defmodule Newbee.Agent.Loop do
 
   def handle_call({:set_goal, text, opts}, _from, state) do
     text = String.trim(text)
-    max_rounds = Keyword.get(opts, :max_rounds, 50)
-
     if text == "" do
       {:reply, {:error, :empty_goal}, state}
     else
+      max_rounds = Keyword.get(opts, :max_rounds, 50)
+      token_budget = Keyword.get(opts, :token_budget) || Keyword.get(opts, :budget)
+      token_budget = parse_token_budget(token_budget)
+      session_id = state.session && state.session.id
+
+      gstate = Newbee.Goal.new_state(text, max_rounds: max_rounds, token_budget: token_budget, session_id: session_id)
+      goal = %{
+        id: gstate.id,
+        text: text,
+        objective: text,
+        status: :active,
+        token_budget: token_budget,
+        tokens_used: 0,
+        time_used_ms: 0,
+        rounds: 0,
+        max_rounds: max_rounds,
+        idle: 0,
+        blocked_streak: 0,
+        last_block_reason: nil,
+        msg_len: length(state.messages),
+        error_retries: 0,
+        max_error_retries: Keyword.get(opts, :max_error_retries, 3),
+        retry_delay: Keyword.get(opts, :retry_delay, 250),
+        wall_start: System.monotonic_time(:millisecond),
+        last_tool_sig: nil,
+        repeat_count: 0,
+        reflect_cooldown: 0,
+        session_id: session_id,
+        created_at: System.system_time(:millisecond)
+      }
+
       state =
         state
         |> inject_prompt(%{"role" => "system", "content" => goal_system_prompt(text)}, %{
@@ -343,16 +377,9 @@ defmodule Newbee.Agent.Loop do
         })
         |> push_msg(%{"role" => "user", "content" => "（自主目标模式启动）目标：#{text}\n请开始自主工作，直到达成目标。"})
 
-      goal = %{
-        text: text,
-        rounds: 0,
-        max_rounds: max_rounds,
-        idle: 0,
-        msg_len: length(state.messages),
-        error_retries: 0,
-        max_error_retries: Keyword.get(opts, :max_error_retries, 3),
-        retry_delay: Keyword.get(opts, :retry_delay, 250)
-      }
+      try do
+        Newbee.Goal.persist(%Newbee.Goal.State{id: goal.id, text: text, status: :active, token_budget: token_budget, tokens_used: 0, rounds: 0, max_rounds: max_rounds, updated_at: goal.created_at, session_id: session_id})
+      rescue _ -> :ok end
 
       emit(state, {:goal_start, text})
       send(self(), :goal_next)
@@ -360,12 +387,96 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
+  def handle_call({:update_goal, new_text, _opts}, _from, state) do
+    if state.goal == nil do
+      {:reply, {:error, :no_goal}, state}
+    else
+      text = String.trim(new_text)
+      if text == "" do
+        {:reply, {:error, :empty_goal}, state}
+      else
+        g = state.goal
+        updated = %{g | text: text, objective: text, status: :active, idle: 0, blocked_streak: 0}
+        state = inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.objective_updated(updated)}, %{
+          source: "goal_objective_updated",
+          reason: "目标编辑",
+          timing: "next_request"
+        })
+        try do
+          Newbee.Goal.persist(%Newbee.Goal.State{id: g.id, text: text, status: :active, token_budget: g.token_budget, tokens_used: g.tokens_used, rounds: g.rounds, max_rounds: g.max_rounds, updated_at: System.system_time(:millisecond), session_id: g.session_id})
+        rescue _ -> :ok end
+        emit(state, {:goal_updated, text})
+        {:reply, :ok, %{state | goal: updated}}
+      end
+    end
+  end
+
+  def handle_call({:set_goal_status, status}, _from, state) do
+    if state.goal == nil do
+      {:reply, {:error, :no_goal}, state}
+    else
+      allowed = [:active, :paused, :blocked, :budget_limited]
+      if status not in allowed do
+        {:reply, {:error, {:invalid_status, status}}, state}
+      else
+        g = %{state.goal | status: status}
+        g = if status == :active, do: %{g | wall_start: System.monotonic_time(:millisecond)}, else: g
+        emit(state, {:goal_status, status})
+        if status == :active do
+          send(self(), :goal_next)
+        end
+        {:reply, :ok, %{state | goal: g}}
+      end
+    end
+  end
+
+  def handle_call({:set_goal_budget, budget}, _from, state) do
+    if state.goal == nil do
+      {:reply, {:error, :no_goal}, state}
+    else
+      b = parse_token_budget(budget)
+      g = %{state.goal | token_budget: b}
+      emit(state, {:goal_budget, b})
+      {:reply, :ok, %{state | goal: g}}
+    end
+  end
+
   def handle_call(:clear_goal, _from, state) do
-    if state.goal, do: emit(state, {:goal_cancelled, :user})
+    if state.goal do
+      emit(state, {:goal_cancelled, :user})
+      try do Newbee.Goal.clear_persist(state.goal.session_id) rescue _ -> :ok end
+    end
     {:reply, :ok, %{state | goal: nil}}
   end
 
   def handle_call(:goal, _from, state), do: {:reply, state.goal, state}
+  def handle_call({:loop, task, opts}, _from, state) do
+    task = String.trim(task)
+    if task == "" do
+      {:reply, {:error, :empty_loop}, state}
+    else
+      iterations = Keyword.get(opts, :iterations, 5) |> parse_loop_iterations()
+      token_budget = parse_token_budget(Keyword.get(opts, :token_budget) || Keyword.get(opts, :budget))
+      loop_state = %{
+        task: task,
+        iterations: iterations,
+        token_budget: token_budget,
+        tokens_used: 0,
+        rounds: 0,
+        msg_len: length(state.messages)
+      }
+      state = inject_prompt(state, %{"role" => "system", "content" => "[Loop 模式] 任务：#{task}\n迭代上限 #{iterations}，预算 #{token_budget || "无"}。每轮要有实质进展，完成后调用 done。"}, %{
+        source: "loop_start",
+        reason: "启动紧凑循环",
+        timing: "current_turn"
+      })
+      {reply, state} = loop_iterations(state, loop_state)
+      {:reply, reply, state}
+    end
+  end
+
+
+
 
   def handle_call({:switch_model, client}, _from, state) do
     # 不丢会话/绑定/消息/中断 scope，仅替换后续 turn 所用的 client 与 client_fun。
@@ -440,12 +551,15 @@ defmodule Newbee.Agent.Loop do
   end
 
   def handle_info(:goal_next, state) do
-    if state.goal do
+    if state.goal && state.goal.status == :active do
       Newbee.LLM.Client.clear_interrupt(state.client)
       {reply, state} = run_turn(state, 1)
       {_reply, state} = after_turn(reply, state)
       {:noreply, state}
     else
+      if state.goal && state.goal.status in [:paused, :blocked, :budget_limited] do
+        Newbee.DebugLog.log(:goal, "goal_next skipped status=#{state.goal.status}")
+      end
       {:noreply, state}
     end
   rescue
@@ -460,62 +574,189 @@ defmodule Newbee.Agent.Loop do
   # 非目标模式：原样返回
   defp after_turn(reply, %{goal: nil} = state), do: {reply, state}
 
-  # 目标模式：模型以纯文本结束 → 自动开始下一轮（轮数上限 + 停滞提醒保护）
+  # 增强版 after_turn: 融合 Codex budget/三击阻塞 + Reflexion 反思 + JSpace 验证门
   defp after_turn({:text, content}, state) do
     g = state.goal
-    added = Enum.slice(state.messages, g.msg_len, length(state.messages) - g.msg_len)
-    idle = if Enum.any?(added, &(&1["role"] == "tool")), do: 0, else: g.idle + 1
-    rounds = g.rounds + 1
-    state = %{state | goal: %{g | rounds: rounds, idle: idle, error_retries: 0}}
-
-    if rounds >= g.max_rounds do
-      emit(state, {:goal_limit, g.max_rounds})
-      {{:goal_limit, g.max_rounds}, %{state | goal: nil}}
+    # If paused, do not auto-continue; return text and keep goal paused
+    if g.status == :paused do
+      {{:text, content}, state}
     else
-      emit(state, {:goal_round, rounds})
+      # Accounting: tokens_used from usage, time_used
+      tokens_delta = estimate_tokens(content, g.msg_len, state)
+      time_delta = if g.wall_start, do: System.monotonic_time(:millisecond) - g.wall_start, else: 0
+      g = %{g | tokens_used: (g.tokens_used || 0) + tokens_delta, time_used_ms: (g.time_used_ms || 0) + time_delta, wall_start: System.monotonic_time(:millisecond)}
 
-      state =
-        if idle >= 3 do
-          inject_prompt(state, %{"role" => "system", "content" => goal_idle_reminder(rounds)}, %{
-            source: "goal_idle",
-            reason: "自主目标连续多轮没有工具进展",
-            timing: "next_request",
-            round: rounds
-          })
-          |> then(fn s -> %{s | goal: %{s.goal | idle: 0}} end)
+      # Budget check: if exceeded, transition to budget_limited and inject budget_limit steering
+      g =
+        if g.token_budget && g.tokens_used >= g.token_budget && g.status == :active do
+          %{g | status: :budget_limited, blocked_streak: 0}
         else
-          state
+          g
         end
 
-      state =
-        inject_prompt(state, %{"role" => "system", "content" => goal_continue_msg(rounds)}, %{
-          source: "goal_continue",
-          reason: "自主目标尚未确认完成",
-          timing: "next_request",
-          round: rounds
-        })
-        |> then(fn s -> %{s | goal: %{s.goal | msg_len: length(s.messages)}} end)
+      state = %{state | goal: g}
 
-      send(self(), :goal_next)
-      {{:text, content}, state}
+      # If budget_limited, inject budget_limit and do not continue with new work (but still count round)
+      if g.status == :budget_limited do
+        emit(state, {:goal_budget_limited, g.tokens_used})
+        state = inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.budget_limit(g)}, %{
+          source: "goal_budget_limit",
+          reason: "token 预算触顶",
+          timing: "next_request",
+          tokens_used: g.tokens_used
+        })
+        # Still auto-continue once for wrap-up, but will not loop forever
+        if g.rounds + 1 >= g.max_rounds do
+          emit(state, {:goal_limit, g.max_rounds})
+          {{:goal_limit, g.max_rounds}, %{state | goal: nil}}
+        else
+          g2 = %{g | rounds: g.rounds + 1, idle: 0, msg_len: length(state.messages)}
+          state = %{state | goal: g2}
+          emit(state, {:goal_round, g2.rounds})
+          send(self(), :goal_next)
+          {{:text, content}, state}
+        end
+      else
+        added = Enum.slice(state.messages, g.msg_len, length(state.messages) - g.msg_len)
+        has_tool = Enum.any?(added, &(&1["role"] == "tool"))
+        idle = if has_tool, do: 0, else: g.idle + 1
+
+        # Repeat detection: tool signature fingerprint
+        tool_sig = extract_tool_sig(added)
+        {repeat_count, last_sig} =
+          if tool_sig && tool_sig == g.last_tool_sig do
+            {g.repeat_count + 1, tool_sig}
+          else
+            {if(tool_sig, do: 1, else: 0), tool_sig || g.last_tool_sig}
+          end
+
+        # Blocked streak: model text indicates blocked/waiting?
+        is_blocked_text = blocked_text?(content)
+        blocked_streak = if is_blocked_text, do: g.blocked_streak + 1, else: 0
+
+        # Three-strike blocked audit (Codex): only after 3 consecutive blocked texts mark blocked
+        {g_status, blocked_streak} =
+          if blocked_streak >= 3 do
+            {:blocked, blocked_streak}
+          else
+            {g.status, blocked_streak}
+          end
+
+        rounds = g.rounds + 1
+        g2 = %{g | rounds: rounds, idle: idle, error_retries: 0, repeat_count: repeat_count, last_tool_sig: last_sig, blocked_streak: blocked_streak, status: g_status}
+
+        # If blocked threshold reached, emit and stop loop (requires user to resume)
+        if g_status == :blocked do
+          emit(state, {:goal_blocked, content})
+          state = inject_prompt(state, %{"role" => "system", "content" => "[Goal Blocked] 模型连续3轮提示阻塞，已将目标置为 blocked。请等待用户介入或 /goal resume。"}, %{
+            source: "goal_blocked",
+            reason: "三击阻塞审计",
+            timing: "next_request"
+          })
+          state = %{state | goal: %{g2 | status: :blocked}}
+          {{:text, content}, state}
+        else
+          state = %{state | goal: g2}
+
+          if rounds >= g.max_rounds do
+            emit(state, {:goal_limit, g.max_rounds})
+            {{:goal_limit, g.max_rounds}, %{state | goal: nil}}
+          else
+            emit(state, {:goal_round, rounds})
+
+            # Reflection injection (Reflexion) when stuck: idle>=3 or repeat>=2 or error loop
+            reflect_reason =
+              cond do
+                idle >= 3 -> "连续3轮无工具进展"
+                repeat_count >= 2 -> "重复工具调用 (#{tool_sig})"
+                true -> nil
+              end
+
+            state =
+              if reflect_reason && g2.reflect_cooldown == 0 do
+                inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.reflection(g2, reflect_reason)}, %{
+                  source: "goal_reflection",
+                  reason: reflect_reason,
+                  timing: "next_request",
+                  round: rounds
+                })
+                |> then(fn s -> %{s | goal: %{s.goal | reflect_cooldown: 3, idle: 0, repeat_count: 0}} end)
+              else
+                # Decrement cooldown
+                cooldown = max(g2.reflect_cooldown - 1, 0)
+                base = %{state | goal: %{state.goal | reflect_cooldown: cooldown}}
+                if idle >= 3 && reflect_reason == nil do
+                  # fallback idle reminder (should not happen if reflection already handled)
+                  inject_prompt(base, %{"role" => "system", "content" => Newbee.Goal.Steering.idle_reminder(rounds)}, %{
+                    source: "goal_idle",
+                    reason: "连续无工具进展",
+                    timing: "next_request",
+                    round: rounds
+                  })
+                  |> then(fn s -> %{s | goal: %{s.goal | idle: 0}} end)
+                else
+                  base
+                end
+              end
+
+            state =
+              inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.continuation(state.goal)}, %{
+                source: "goal_continue",
+                reason: "自主目标尚未确认完成",
+                timing: "next_request",
+                round: rounds
+              })
+              |> then(fn s -> %{s | goal: %{s.goal | msg_len: length(s.messages)}} end)
+
+            send(self(), :goal_next)
+            {{:text, content}, state}
+          end
+        end
+      end
     end
   end
 
   defp after_turn({:done, summary}, state) do
-    emit(state, {:goal_done, summary})
-    maybe_extract_lesson(state, summary)
-    {{:done, summary}, %{state | goal: nil}}
+    g = state.goal
+    # Verification gate: if JSpace ledger exists with open/verified gaps, block done and inject reminder (unless summary indicates force)
+    if verification_gate_blocks?(state, summary) do
+      emit(state, {:goal_verification_block, summary})
+      state = inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.verification_gate_message()}, %{
+        source: "goal_verification_gate",
+        reason: "JSpace verified 未落账",
+        timing: "current_turn_retry"
+      })
+      # Convert done to text continuation: model should fix ledger then call done again
+      # We inject a synthetic tool-like reminder and continue loop
+      g2 = %{g | rounds: g.rounds + 1, msg_len: length(state.messages)}
+      state = %{state | goal: g2}
+      # Push a tool-style message to transcript to record the block (so model sees it)
+      state = push_msg(state, %{"role" => "tool", "tool_call_id" => "verification_gate", "content" => "[verification_gate] done 被拦截：请先在 JSpace 落账 verified/open 再完成。"})
+      state = inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.continuation(state.goal)}, %{
+        source: "goal_continue_after_gate",
+        reason: "验证门拦截 done",
+        timing: "next_request"
+      })
+      |> then(fn s -> %{s | goal: %{s.goal | msg_len: length(s.messages)}} end)
+      send(self(), :goal_next)
+      {{:text, summary}, state}
+    else
+      # Token accounting for final turn
+      tokens_delta = estimate_tokens(summary, g.msg_len, state)
+      _g = %{g | tokens_used: (g.tokens_used || 0) + tokens_delta, status: :complete}
+      emit(state, {:goal_done, summary})
+      maybe_extract_lesson(state, summary)
+      try do Newbee.Goal.clear_persist(g.session_id) rescue _ -> :ok end
+      {{:done, summary}, %{state | goal: nil}}
+    end
   end
 
   defp after_turn({:ask, question, options, kind}, state) do
-    # 目标保留：用户回答后的 submit 出口会自动续跑。
-    # goal_ask 事件携带 options/kind（前端渲染交互控件）；submit 返回值保持 2-tuple 兼容（CLI/TUI）。
     emit(state, {:goal_ask, question, options, kind})
     {{:ask, question}, %{state | goal: %{state.goal | error_retries: 0}}}
   end
 
   defp after_turn({:ask, question}, state) do
-    # 兼容旧版 2-tuple（历史事件流）
     emit(state, {:goal_ask, question})
     {{:ask, question}, %{state | goal: %{state.goal | error_retries: 0}}}
   end
@@ -552,6 +793,53 @@ defmodule Newbee.Agent.Loop do
   defp retryable_goal_error?({:error, %Req.TransportError{}}), do: true
   defp retryable_goal_error?(_), do: false
 
+  # Helpers for enhanced goal
+  defp estimate_tokens(content, _msg_len, state) do
+    # Simple heuristic: content bytes / 4 plus tool outputs in last turn
+    base = div(byte_size(content || ""), 4)
+    # Add usage from last turn if available
+    extra =
+      case Map.get(state, :usage) do
+        %{"total_tokens" => n} when is_integer(n) -> div(n, max(state.goal.rounds + 1, 1))
+        _ -> 0
+      end
+    max(base + extra, 50)
+  end
+
+  defp extract_tool_sig(added) do
+    added
+    |> Enum.filter(&(&1["role"] == "tool"))
+    |> List.last()
+    |> case do
+      nil -> nil
+      msg -> String.slice(msg["content"] || "", 0, 80)
+    end
+  end
+
+  defp blocked_text?(content) when is_binary(content) do
+    String.contains?(String.downcase(content), "blocked") or
+      String.contains?(content, "等待用户") or
+      String.contains?(content, "需要用户") or
+      String.contains?(content, "无法继续")
+  end
+  defp blocked_text?(_), do: false
+
+  defp verification_gate_blocks?(state, _summary) do
+    session_id = state.goal && state.goal.session_id
+    if session_id && Newbee.Tools.JSpace.exists?(session_id) do
+      body = Newbee.Tools.JSpace.read(session_id) || ""
+      has_open = String.contains?(body, "? ") or String.contains?(body, "Open:")
+      verified_empty = String.contains?(body, "Verified:  (无)") or String.contains?(body, "Verified:  (") and not String.contains?(body, "✓")
+      # Block if there are open items and no verified progress
+      has_open and verified_empty
+    else
+      false
+    end
+  rescue
+    _ -> false
+  end
+
+
   defp goal_system_prompt(text) do
     """
     [自主目标模式] 你被赋予一个明确的完成目标，需要自主、持续地工作直到达成。
@@ -564,6 +852,7 @@ defmodule Newbee.Agent.Loop do
     - 达成目标后：调用 done 工具，附上完成总结（做了什么、如何验证）。
     - 未达成前不要调用 done，也不要仅用文字结束回合。
     - 确实需要用户决策时用 ask；能自主解决的就自主解决。
+    - 预算与反思：留意 token 预算与 JSpace ledger；停滞时先反思再换策略；阻塞需连续3轮确认才可标记 blocked。
     """
   end
 
@@ -572,9 +861,65 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp goal_idle_reminder(round) do
-    "（自主模式第 #{round} 轮：你已连续多轮没有调用工具、没有实质进展。" <>
-      "请立即采取行动：检查/运行/修改/验证。若目标已达成请调用 done。）"
+    Newbee.Goal.Steering.idle_reminder(round)
   end
+
+  # helpers delegating to Steering for backward compat
+  defp parse_token_budget(nil), do: nil
+  defp parse_token_budget(n) when is_integer(n) and n > 0, do: n
+  defp parse_token_budget(n) when is_binary(n) do
+    case Integer.parse(String.trim(n)) do
+      {i, ""} when i > 0 -> i
+      _ -> nil
+    end
+  end
+  defp parse_token_budget(_), do: nil
+
+  defp parse_loop_iterations(nil), do: 5
+  defp parse_loop_iterations(n) when is_integer(n) and n > 0 and n <= 20, do: n
+  defp parse_loop_iterations(n) when is_binary(n) do
+    case Integer.parse(String.trim(n)) do
+      {i, ""} when i > 0 and i <= 20 -> i
+      _ -> 5
+    end
+  end
+  defp parse_loop_iterations(_), do: 5
+
+  defp loop_iterations(state, %{rounds: r, iterations: max} = loop) when r >= max do
+    {{:loop_done, r}, state}
+  end
+  defp loop_iterations(state, loop) do
+    {reply, state} = run_turn(state, 1)
+    tokens = div(byte_size(inspect(reply)), 4) + 50
+    loop = %{loop | rounds: loop.rounds + 1, tokens_used: loop.tokens_used + tokens}
+    state = case reply do
+      {:done, _} -> state
+      {:ask, _} -> state
+      {:text, content} ->
+        if loop.token_budget && loop.tokens_used >= loop.token_budget do
+          state
+        else
+          inject_prompt(state, %{"role" => "system", "content" => "[Loop 第 #{loop.rounds} 轮] 继续推进：#{loop.task}（#{loop.rounds}/#{loop.iterations}）"}, %{
+            source: "loop_continue",
+            reason: "loop 未完成",
+            timing: "next_request"
+          })
+        end
+      _ -> state
+    end
+    case reply do
+      {:done, summary} -> {{:done, summary}, state}
+      {:ask, q} -> {{:ask, q}, state}
+      {:text, _} ->
+        if loop.token_budget && loop.tokens_used >= loop.token_budget do
+          {{:loop_budget, loop.tokens_used}, state}
+        else
+          loop_iterations(state, loop)
+        end
+      other -> {other, state}
+    end
+  end
+
 
   # ── 档案召回（查询感知 rehydration，§6.6）──
 
