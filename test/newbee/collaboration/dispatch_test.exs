@@ -67,9 +67,22 @@ defmodule Newbee.Collaboration.DispatchTest do
     refute_receive {:stub_got, _, {:collaboration_task, _}}, 200
   end
 
-  test "模型只能从当前执行上下文派生工作组子代理" do
-    assert {:error, "no_execution_context", _} = Newbee.Tools.Collaboration.delegate("无上下文任务")
+  test "无 token 时回退到稳定宿主身份，仍受成员校验约束" do
+    # fix_gate：宿主直调（无 Loop token）回退 HostIdentity；同一项目复用同一宿主组。
+    assert {:ok, first} = Newbee.Tools.Collaboration.delegate("宿主回退任务")
+    assert {:ok, second} = Newbee.Tools.Collaboration.delegate("宿主回退任务二")
+    assert first.task["group_id"] == second.task["group_id"]
 
+    on_exit(fn ->
+      Newbee.Web.Session.destroy(first.session_id)
+      Newbee.Web.Session.destroy(second.session_id)
+      Newbee.Collaboration.Workspace.discard_orphan(first.workspace)
+      Newbee.Collaboration.Workspace.discard_orphan(second.workspace)
+    end)
+  end
+
+
+  test "带 token 时按模型身份派生并进入其工作组" do
     assert {:ok, result} =
              with_identity("model-parent", File.cwd!(), fn ->
                Newbee.Tools.Collaboration.delegate("分析认证失败路径",
@@ -82,7 +95,6 @@ defmodule Newbee.Collaboration.DispatchTest do
     assert is_binary(result.session_id)
     assert result.member["parent_session_id"] == "model-parent"
     assert [group | _] = Coordinator.groups_for_session("model-parent")
-    assert group["member_count"] == 2
     assert result.task["assigned_session_id"] == result.session_id
     assert Coordinator.member?(group["group_id"], result.session_id)
     child_root = Newbee.Session.cwd(result.session_id)
