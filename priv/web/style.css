@@ -2347,6 +2347,8 @@ svg.ico {
 /* ── 会话协作列表（保留原会话条目，仅增加层级和选择态）── */
 .session-group-label{padding:9px 8px 4px;color:var(--nb-label-caption);font-size:11px;font-weight:650;border-top:1px solid var(--nb-border);margin-top:5px}
 .session-group-label:first-child{border-top:0;margin-top:0}.session-group-label.other{margin-top:10px}
+.session-group-label.current{color:var(--nb-accent);}
+.group-current-badge{display:inline-block;margin-left:6px;padding:0 5px;font-size:10px;line-height:14px;border-radius:7px;background:var(--nb-accent);color:#fff;vertical-align:middle;}
 .session-child{margin-left:18px!important;width:calc(100% - 18px)!important;border-left:1px solid var(--nb-border);border-radius:0 8px 8px 0}
 .session-role{margin-left:6px;color:var(--nb-label-caption);font-size:10px;font-weight:400}
 .session-select{position:absolute;left:4px;top:9px;z-index:2;display:flex;align-items:center;cursor:pointer;opacity:0;transition:opacity var(--nb-dur)}

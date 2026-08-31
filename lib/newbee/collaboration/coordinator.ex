@@ -139,12 +139,16 @@ defmodule Newbee.Collaboration.Coordinator do
   end
 
   def handle_call({:list, session_id}, _from, state) do
+    # 列出全部组（不按当前会话过滤），仅在组上标记当前会话是否成员，
+    # 供前端侧栏稳定展示"哪些已分组 / 哪些未分组"——切到未分组会话不再清空组视图。
     groups =
       state.groups
       |> Map.values()
-      |> Enum.filter(fn group -> is_nil(session_id) or session_member?(group, session_id) end)
       |> Enum.sort_by(& &1["updated_at"], :desc)
-      |> Enum.map(&summary/1)
+      |> Enum.map(fn group ->
+        summary(group)
+        |> Map.put("current_session_member", not is_nil(session_id) and session_member?(group, session_id))
+      end)
 
     {:reply, groups, state}
   end

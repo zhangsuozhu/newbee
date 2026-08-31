@@ -73,7 +73,7 @@ defmodule Newbee.Web.CollaborationApiTest do
     assert Enum.map(messages["messages"], & &1["body"]) == ["开始检查", "检查完成"]
 
     groups = post_rpc("group.list", %{"sessionId" => "session-b"}) |> ok!()
-    assert [%{"group_id" => ^group_id, "member_count" => 2}] = groups["groups"]
+    assert [%{"group_id" => ^group_id, "member_count" => 2, "current_session_member" => true}] = groups["groups"]
   end
 
   test "成员可读取工作组持久活动时间线，非成员被拒绝" do

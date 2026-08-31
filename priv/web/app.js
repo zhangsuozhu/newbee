@@ -1469,7 +1469,7 @@ case "goal_round": break;
       const members = group.members || [];
       if (!members.length) return;
       const head = members.find((m) => m.session_id === group.coordinator_session_id) || members[0];
-      if (visible(findSession(head.session_id))) { const label = document.createElement("div"); label.className = "session-group-label"; label.textContent = group.title || group.goal || "会话群"; box.appendChild(label); }
+      if (visible(findSession(head.session_id))) { const label = document.createElement("div"); label.className = "session-group-label" + (group.current_session_member ? " current" : ""); label.textContent = group.title || group.goal || "会话群"; if (group.current_session_member) { const cur = document.createElement("span"); cur.className = "group-current-badge"; cur.textContent = "当前"; label.appendChild(cur); } box.appendChild(label); }
       addItem(findSession(head.session_id), false, head);
       members.filter((m) => m.session_id !== head.session_id).forEach((m) => addItem(findSession(m.session_id), true, m));
     });
@@ -1846,8 +1846,7 @@ case "goal_round": break;
     exitGroupMode();
     state.sid = sid;
     groupLoadSeq++;
-    state.groups = [];
-    rebuildGroupIndex();
+    // 组视图是全局的：切会话不清空 state.groups，避免点到未分组会话时侧栏组瞬间消失。
     state.activeGroupId = null;
     state.activeGroup = null;
     localStorage.setItem("newbee.sid", sid);
