@@ -77,6 +77,7 @@ defmodule Newbee.LLM.Client do
   end
 
   defp default_responses_mode("openai-responses"), do: :responses
+  defp default_responses_mode("auto"), do: :auto
   defp default_responses_mode(_), do: :chat
 
   # :auto 模式：探测 endpoint 是否支持 Responses API
