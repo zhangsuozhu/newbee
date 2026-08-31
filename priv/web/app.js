@@ -875,6 +875,9 @@ case "goal_round": break;
 
 
   // ── 会话协作：分组留在左侧，当前会话过程保持在中间，协作信息进入 Mission Control ──
+  // 组请求与会话切换共享代次，旧点击的响应不能覆盖当前会话。
+  let groupLoadSeq = 0;
+
   function rebuildGroupIndex() {
     state.groupBySession = {};
     (state.groups || []).forEach((group) => {
@@ -896,20 +899,30 @@ case "goal_round": break;
   }
 
   async function loadGroups() {
-    if (!state.sid) return;
+    const sid = state.sid;
+    const seq = ++groupLoadSeq;
+    if (!sid) {
+      state.groups = [];
+      rebuildGroupIndex();
+      renderSessionList();
+      return;
+    }
     try {
-      const result = await rpc("group.list", { sessionId: state.sid });
+      const result = await rpc("group.list", { sessionId: sid });
+      if (seq !== groupLoadSeq || state.sid !== sid) return;
       state.groups = result.groups || [];
     } catch (e) {
+      if (seq !== groupLoadSeq || state.sid !== sid) return;
       state.groups = [];
     }
     rebuildGroupIndex();
     renderSessionList();
-    await loadActiveGroup();
+    await loadActiveGroup(sid, seq);
   }
 
-  async function loadActiveGroup() {
-    const ref = currentGroupRef();
+  async function loadActiveGroup(expectedSid = state.sid, expectedSeq = groupLoadSeq) {
+    if (expectedSeq !== groupLoadSeq || state.sid !== expectedSid) return;
+    const ref = state.groupBySession[expectedSid] || null;
     const delegate = $("delegate-session");
     if (!ref) {
       state.activeGroupId = null;
@@ -923,32 +936,31 @@ case "goal_round": break;
       renderCollaborationTasks();
       return;
     }
-
-    if (state.activeGroupId !== ref.group.group_id) state.taskReviews = {};
-    state.activeGroupId = ref.group.group_id;
-    if (delegate) {
-      delegate.classList.toggle("hidden", ref.group.coordinator_session_id !== state.sid);
-    }
-
+    const groupId = ref.group.group_id;
+    if (state.activeGroupId !== groupId) state.taskReviews = {};
+    state.activeGroupId = groupId;
+    if (delegate) delegate.classList.toggle("hidden", ref.group.coordinator_session_id !== expectedSid);
     try {
       const [group, messages, activity, tasks] = await Promise.all([
-        rpc("group.get", { groupId: ref.group.group_id, sessionId: state.sid }),
-        rpc("collab.message.list", { groupId: ref.group.group_id, sessionId: state.sid, limit: 200 }),
-        rpc("group.activity.list", { groupId: ref.group.group_id, sessionId: state.sid, limit: 100 }),
-        rpc("group.task.list", { groupId: ref.group.group_id, sessionId: state.sid }),
+        rpc("group.get", { groupId, sessionId: expectedSid }),
+        rpc("collab.message.list", { groupId, sessionId: expectedSid, limit: 200 }),
+        rpc("group.activity.list", { groupId, sessionId: expectedSid, limit: 100 }),
+        rpc("group.task.list", { groupId, sessionId: expectedSid }),
       ]);
-      if (!state.sid || state.activeGroupId !== ref.group.group_id) return;
+      if (expectedSeq !== groupLoadSeq || state.sid !== expectedSid || state.activeGroupId !== groupId) return;
       state.activeGroup = group;
       state.groupMessages = messages.messages || [];
       state.groupActivity = activity.activity || [];
       state.groupTasks = tasks.tasks || [];
     } catch (e) {
+      if (expectedSeq !== groupLoadSeq || state.sid !== expectedSid || state.activeGroupId !== groupId) return;
       state.activeGroup = null;
       state.groupMessages = [];
       state.groupActivity = [];
       state.groupTasks = [];
       state.taskReviews = {};
     }
+    if (expectedSeq !== groupLoadSeq || state.sid !== expectedSid) return;
     renderCollaborationPane();
     renderCollaborationTasks();
   }
@@ -1242,7 +1254,7 @@ case "goal_round": break;
       });
       $("delegate-modal").classList.add("hidden");
       await Promise.all([loadSessions(), loadGroups()]);
-      await resume(result.sessionId);
+      line("notice", `已在当前协作组派生子会话：${sessionDisplayName(result.sessionId)}；当前会话保持不变`);
     } catch (e) {
       line("error", "启动协作会话失败: " + e.message);
     } finally {
@@ -1385,21 +1397,23 @@ case "goal_round": break;
   // ── 会话管理 ──
   // 搜索关键字（"" 表示不过滤）；state.allSessions 缓存最近一次 session.list 响应
   let sessionFilter = "";
-
+  let sessionListSeq = 0;
   async function loadSessions() {
+    const seq = ++sessionListSeq;
+    const sid = state.sid;
     const list = await rpc("session.list", { limit: 50, offset: 0 });
+    if (seq !== sessionListSeq || state.sid !== sid) return;
     let sessions = list.sessions || [];
     // 懒落盘：刚建好还没发消息的会话尚未写盘，服务端列表里没有——
     // 保留本地注入的当前会话条目在顶部，首条消息落盘后由服务端列表接管
-    if (state.sid && !sessions.some((s) => s.id === state.sid)) {
-      const local = (state.allSessions || []).find((s) => s.id === state.sid);
+    if (sid && !sessions.some((s) => s.id === sid)) {
+      const local = (state.allSessions || []).find((s) => s.id === sid);
       if (local && (local.messages || 0) === 0) sessions = [local].concat(sessions);
     }
     state.allSessions = sessions;
     state.sessionsTotal = (typeof list.total === "number") ? list.total : sessions.length;
     renderSessionList();
   }
-
   // 分页加载下一页（服务端按 mtime 倒序）：按已加载条数作 offset，按 id 去重
   async function loadMoreSessions() {
     if (state.loadingMoreSessions) return;
@@ -1419,6 +1433,11 @@ case "goal_round": break;
     }
   }
 
+  // 组成员必须只出现一次；没有在当前组索引中的会话才属于其他会话。
+  function groupedSessionIds() {
+    return new Set(Object.keys(state.groupBySession || {}));
+  }
+
   function renderSessionList() {
     const box = $("session-list");
     box.innerHTML = "";
@@ -1427,18 +1446,18 @@ case "goal_round": break;
     const visible = (s) => !kw || String(s.title || "").toLowerCase().includes(kw) || String(s.id).toLowerCase().includes(kw);
     const rendered = new Set();
     const addItem = (s, child, ref) => {
-      if (!visible(s)) return;
+      if (!visible(s) || rendered.has(s.id)) return;
       rendered.add(s.id);
       const item = document.createElement("div");
       item.className = "session-item" + (child ? " session-child" : "") + (s.id === state.sid ? " active" : "");
-      const title = String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\s+/g, " ").trim().slice(0, 40) || "(未命名)";
+      const title = String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\s+/g, " " ).trim().slice(0, 40) || "(未命名)";
       const stCls = s.busy ? "busy" : (s.running ? "online" : "offline");
       const role = ref && ref.role ? ref.role : "会话";
       const selected = state.selectedSessions && state.selectedSessions.has(s.id) ? " checked" : "";
       const cwdShort = s.cwd ? (() => { const p = String(s.cwd).replace(/\\$/, ""); return p.split("/").filter(Boolean).pop() || p; })() : null;
       item.innerHTML = `<label class="session-select"><input type="checkbox" data-select-session="${escapeHtml(s.id)}"${selected}><span class="session-select-mark"></span></label><span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}${child ? `<span class="session-role">${escapeHtml(role)}</span>` : ""}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>`;
       item.dataset.sid = s.id;
-      item.onclick = (e) => { if (e.target.closest(".session-select") || e.target.classList.contains("menu-btn")) return; if (!state.creatingSession) resume(s.id); };
+      item.onclick = (e) => { if (e.target.closest(".session-select") || e.target.classList.contains("menu-btn")) return; if (!state.creatingSession && state.sid !== s.id) resume(s.id); };
       const checkbox = item.querySelector("[data-select-session]");
       checkbox.onchange = () => { if (!state.selectedSessions) state.selectedSessions = new Set(); checkbox.checked ? state.selectedSessions.add(s.id) : state.selectedSessions.delete(s.id); updateSelectedSessionCount(); };
       const btn = document.createElement("button"); btn.className = "menu-btn"; btn.textContent = "⋯"; btn.title = "更多操作";
@@ -1454,7 +1473,8 @@ case "goal_round": break;
       addItem(findSession(head.session_id), false, head);
       members.filter((m) => m.session_id !== head.session_id).forEach((m) => addItem(findSession(m.session_id), true, m));
     });
-    const others = all.filter((s) => !rendered.has(s.id) && visible(s));
+    const grouped = groupedSessionIds();
+    const others = all.filter((s) => !grouped.has(s.id) && !rendered.has(s.id) && visible(s));
     if (others.length) { const label = document.createElement("div"); label.className = "session-group-label other"; label.textContent = "其他会话"; box.appendChild(label); others.forEach((s) => addItem(s, false, null)); }
     if (!box.children.length) { const empty = document.createElement("div"); empty.className = "session-empty"; empty.textContent = kw ? "没有匹配「" + kw + "」的会话" : "暂无会话"; box.appendChild(empty); }
     const cur = all.find((s) => s.id === state.sid); if (cur && typeof updateCwdLabel === "function") updateCwdLabel(cur.cwd || null);
@@ -1825,6 +1845,11 @@ case "goal_round": break;
     const stale = () => seq !== resumeSeq || state.sid !== sid;
     exitGroupMode();
     state.sid = sid;
+    groupLoadSeq++;
+    state.groups = [];
+    rebuildGroupIndex();
+    state.activeGroupId = null;
+    state.activeGroup = null;
     localStorage.setItem("newbee.sid", sid);
     loadTiming(sid);
     resetStreamState();

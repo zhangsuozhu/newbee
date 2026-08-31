@@ -162,7 +162,8 @@ defmodule Newbee.Tools.Collaboration do
 
       _ ->
         host_sid = Newbee.Tools.Collaboration.HostIdentity.session_id()
-        {:ok, %{session_id: host_sid, project_root: File.cwd!()}}
+        project_root = Newbee.Tools.Collaboration.HostIdentity.project_root()
+        {:ok, %{session_id: host_sid, project_root: project_root}}
     end
   end
 
