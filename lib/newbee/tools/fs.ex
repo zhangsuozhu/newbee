@@ -1,6 +1,29 @@
 defmodule Newbee.Tools.Fs do
+  # -- 宽容参数：路径/内容多形态归一 --
+  defp normalize_path(path) when is_binary(path), do: path
+  defp normalize_path(path) when is_atom(path), do: to_string(path)
+  defp normalize_path(%{path: p}) when is_binary(p) or is_atom(p), do: normalize_path(p)
+  defp normalize_path(%{"path" => p}) when is_binary(p) or is_atom(p), do: normalize_path(p)
+  defp normalize_path(%{dir: p}) when is_binary(p) or is_atom(p), do: normalize_path(p)
+  defp normalize_path(%{"dir" => p}) when is_binary(p) or is_atom(p), do: normalize_path(p)
+  defp normalize_path(%{file: p}) when is_binary(p) or is_atom(p), do: normalize_path(p)
+  defp normalize_path(%{"file" => p}) when is_binary(p) or is_atom(p), do: normalize_path(p)
+  defp normalize_path([p]) when is_binary(p) or is_atom(p), do: normalize_path(p)
+  defp normalize_path(other) when is_list(other) and length(other) == 1, do: normalize_path(hd(other))
+  defp normalize_path(other), do: to_string(other)
+
+  defp normalize_content(c) when is_binary(c), do: c
+  defp normalize_content(%{content: c}) when is_binary(c), do: c
+  defp normalize_content(%{"content" => c}) when is_binary(c), do: c
+  defp normalize_content(c) when is_list(c), do: IO.iodata_to_binary(c)
+  defp normalize_content(c) when is_number(c), do: to_string(c)
+  defp normalize_content(nil), do: ""
+  defp normalize_content(c), do: to_string(c)
+
   @moduledoc """
   文件系统写入/删除/目录工具；通用只读优先 `Newbee.read/1`。
+
+  路径参数宽容：`binary` | `atom` | `%{path: p}` | `%{"path" => p}` | `[p]` 均归一为路径字符串；`write` 的内容也宽容 `binary` | `%{content: c}`。
 
   - 写操作**先进暂存区**（Newbee.Staging），用户 /approve 统一落盘——
     宽松沙箱的"可回滚"承诺（§8）；
@@ -23,6 +46,9 @@ defmodule Newbee.Tools.Fs do
 
   ## 可跑示例
       {:ok, c} = Newbee.Tools.Fs.read("README.md")
+        {:ok, c} = Newbee.Tools.Fs.read(%{path: "README.md"})
+        {:ok, c} = Newbee.Tools.Fs.read(:"README.md")
+        {:ok, c} = Newbee.Tools.Fs.read(["README.md"])
       c = Newbee.Tools.Fs.read!("mix.exs")
       id_or_direct = Newbee.Tools.Fs.write("tmp/hello.txt", "hello")
       :ok = Newbee.Tools.Fs.write!("tmp/a.txt", "direct")
@@ -45,17 +71,23 @@ defmodule Newbee.Tools.Fs do
 
   @doc "读文件。返回 {:ok, content} | {:error, reason}。"
   def read(path) do
+    path = normalize_path(path)
     File.read(path)
   end
 
   @doc "读文件（不存在抛错）。"
-  def read!(path), do: File.read!(path)
+  def read!(path) do
+    path = normalize_path(path)
+    File.read!(path)
+  end
 
   @doc "写文件：暂存待批。返回暂存条目 id。
 
   注意：求值器节点上没有 Staging 进程——经 Newbee.Host 代理回主 VM（§3.4），
   主 VM 无暂存区（app 未启动）时降级直接落盘。"
-  def write(path, content) do
+    def write(path, content) do
+    path = normalize_path(path)
+    content = normalize_content(content)
     with :ok <- guard_path(path) do
       case Newbee.Host.call(Newbee.Staging, :stage, [path, content, :fs_write]) do
         id when is_integer(id) ->
@@ -72,6 +104,8 @@ defmodule Newbee.Tools.Fs do
 
   @doc "写文件（直接落盘，不暂存）。危险操作，模型慎用。落盘后发内联 diff 事件（§5.1）。"
   def write!(path, content) do
+    path = normalize_path(path)
+    content = normalize_content(content)
     guard_path!(path)
     old = if File.exists?(path), do: File.read!(path), else: ""
     File.mkdir_p!(Path.dirname(path))
@@ -82,6 +116,8 @@ defmodule Newbee.Tools.Fs do
 
   @doc "追加写（直接落盘——追加语义不适合暂存）。"
   def append!(path, content) do
+    path = normalize_path(path)
+    content = normalize_content(content)
     guard_path!(path)
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, content, [:append])
@@ -90,11 +126,13 @@ defmodule Newbee.Tools.Fs do
 
   @doc "删除文件。返回 :ok | {:error, reason}。"
   def rm(path) do
+    path = normalize_path(path)
     with :ok <- guard_path(path), do: File.rm(path)
   end
 
   @doc "递归删除（高风险，记审计）。"
   def rm_rf(path) do
+    path = normalize_path(path)
     with :ok <- guard_path(path) do
       Newbee.Host.emit(:audit, {:audit, :dangerous_code, ["File.rm_rf!", path]})
       File.rm_rf(path)
@@ -122,6 +160,7 @@ defmodule Newbee.Tools.Fs do
   长输出可写到工程内 `.newbee-tmp/` 或 `~/.newbee/`。
   """
   def guard_path(path) do
+    path = normalize_path(path)
     expanded = Path.expand(path)
     root = Path.expand(File.cwd!())
     newbee = Path.join(System.user_home!(), ".newbee") |> Path.expand()
@@ -144,6 +183,7 @@ defmodule Newbee.Tools.Fs do
 
   @doc "工作目录隔离的 bang 版本；非法路径抛 ArgumentError。"
   def guard_path!(path) do
+    path = normalize_path(path)
     case guard_path(path) do
       :ok -> :ok
       {:error, %{hint: hint}} -> raise ArgumentError, hint
@@ -151,10 +191,14 @@ defmodule Newbee.Tools.Fs do
   end
 
   @doc "文件是否存在。"
-  def exists?(path), do: File.exists?(path)
+  def exists?(path) do
+    path = normalize_path(path)
+    File.exists?(path)
+  end
 
   @doc "列出目录（一层）。"
   def ls(dir) do
+    dir = normalize_path(dir)
     case File.ls(dir) do
       {:ok, entries} ->
         Enum.map(entries, fn e ->
@@ -169,6 +213,7 @@ defmodule Newbee.Tools.Fs do
 
   @doc "遍历工程树（跳过 _build/deps/.git）。返回相对路径列表。"
   def tree(root \\ ".") do
+    root = normalize_path(root)
     root
     |> Path.join("**/*")
     |> Path.wildcard()
@@ -180,9 +225,37 @@ defmodule Newbee.Tools.Fs do
 
   @doc "文件大小（字节）。"
   def size(path) do
+    path = normalize_path(path)
     case File.stat(path) do
       {:ok, stat} -> stat.size
       _ -> 0
     end
   end
+  @doc false
+  def write(%{path: p, content: c}), do: write(p, c)
+  @doc false
+  def write(%{"path" => p, "content" => c}), do: write(p, c)
+  @doc false
+  def write(%{path: p, text: c}), do: write(p, c)
+  @doc false
+  def write(%{"path" => p, "text" => c}), do: write(p, c)
+  @doc false
+  def write(%{file: p, content: c}), do: write(p, c)
+  @doc false
+  def write(%{"file" => p, "content" => c}), do: write(p, c)
+
+  @doc false
+  def write!(%{path: p, content: c}), do: write!(p, c)
+  @doc false
+  def write!(%{"path" => p, "content" => c}), do: write!(p, c)
+  @doc false
+  def write!(%{path: p, text: c}), do: write!(p, c)
+  @doc false
+  def write!(%{"path" => p, "text" => c}), do: write!(p, c)
+
+  @doc false
+  def append!(%{path: p, content: c}), do: append!(p, c)
+  @doc false
+  def append!(%{"path" => p, "content" => c}), do: append!(p, c)
+
 end

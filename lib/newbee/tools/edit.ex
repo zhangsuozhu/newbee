@@ -20,8 +20,13 @@ defmodule Newbee.Tools.Edit do
 
   ## 可跑示例
       snapshot = Newbee.Tools.Edit.show("README.md", {1, 20})
+      snapshot = Newbee.Tools.Edit.show("README.md", [1, 20])
+        snapshot = Newbee.Tools.Edit.show("README.md", 1..20)
+        snapshot = Newbee.Tools.Edit.show("README.md", %{first: 1, last: 20})
+        snapshot = Newbee.Tools.Edit.show(%{path: "README.md", range: {1, 20}})
       # patch_text 的节头使用 snapshot.tag；PUT/CUT 行号来自 snapshot.text
       result = Newbee.Tools.Edit.patch(patch_text)
+        result = Newbee.Tools.Edit.patch(%{patch: patch_text})
       literal = Newbee.Tools.Edit.source_literal(source_code)
   """
 
@@ -50,7 +55,14 @@ defmodule Newbee.Tools.Edit do
   @op_re ~r/^(PUT|CUT)\s+(.+?)\s*(:)?$/
   @range_re ~r/^(\d+)(?:\.\.(\d+))?$/
 
-  @doc "应用行号补丁，成功返回 %{status: :applied, files: [...]}。"
+  @doc "应用行号补丁，成功返回 %{status: :applied, files: [...]}。patch_text 宽容：binary | %{patch: text} | %{text: text} | %{patch_text: text}"
+def patch(%{patch: p}) when is_binary(p), do: patch(p)
+def patch(%{"patch" => p}) when is_binary(p), do: patch(p)
+def patch(%{text: p}) when is_binary(p), do: patch(p)
+def patch(%{"text" => p}) when is_binary(p), do: patch(p)
+def patch(%{patch_text: p}) when is_binary(p), do: patch(p)
+def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
+
   def patch(patch_text) do
     sections = parse(patch_text)
     plans = Enum.map(sections, &plan_section/1)
@@ -74,8 +86,61 @@ defmodule Newbee.Tools.Edit do
     }
   end
 
-  @doc "读取文件并记录快照，返回 %{tag, text, lines}。"
-  def show(path, range \\ :all) do
+    @doc "读取文件并记录快照，返回 %{tag, text, lines}。range 宽容：:all | {a,b} | [a,b] | a..b | %{first: a, last: b} | \"a..b\" | a"
+  def show(path, range \\ :all)
+
+  def show(%{path: p} = opts, _range) when is_binary(p) do
+    r = Map.get(opts, :range) || Map.get(opts, "range") || Map.get(opts, :__range__) || :all
+    show(p, r)
+  end
+
+  def show(%{"path" => p} = opts, _range) when is_binary(p) do
+    r = Map.get(opts, "range") || Map.get(opts, :range) || :all
+    show(p, r)
+  end
+
+  def show(path, range) when is_binary(path) do
+    show_range(path, normalize_show_range(range))
+  end
+
+  def show(path, range) when is_atom(path) do
+    show(to_string(path), range)
+  end
+
+  defp normalize_show_range(:all), do: :all
+  defp normalize_show_range(nil), do: :all
+  defp normalize_show_range(""), do: :all
+  defp normalize_show_range(:full), do: :all
+  defp normalize_show_range({a, b}) when is_integer(a) and is_integer(b), do: {a, b}
+  defp normalize_show_range([a, b]) when is_integer(a) and is_integer(b), do: {a, b}
+  defp normalize_show_range([a]) when is_integer(a), do: {a, a}
+  defp normalize_show_range(%Range{first: f, last: l}), do: {min(f, l), max(f, l)}
+  defp normalize_show_range(%{first: f, last: l}) when is_integer(f) and is_integer(l), do: {f, l}
+  defp normalize_show_range(%{"first" => f, "last" => l}) when is_integer(f) and is_integer(l), do: {f, l}
+  defp normalize_show_range(%{start: s, end: e}) when is_integer(s) and is_integer(e), do: {s, e}
+  defp normalize_show_range(%{"start" => s, "end" => e}) when is_integer(s) and is_integer(e), do: {s, e}
+  defp normalize_show_range(%{a: a, b: b}) when is_integer(a) and is_integer(b), do: {a, b}
+  defp normalize_show_range(%{"a" => a, "b" => b}) when is_integer(a) and is_integer(b), do: {a, b}
+  defp normalize_show_range(a) when is_integer(a), do: {a, a}
+  defp normalize_show_range(s) when is_binary(s) do
+    t = String.trim(s)
+    cond do
+      t == "" or t == "all" -> :all
+      Regex.match?(~r/^\d+\.\.\d+$/, t) -> t |> String.split("..") |> then(fn [a, b] -> {String.to_integer(a), String.to_integer(b)} end)
+      Regex.match?(~r/^\d+-\d+$/, t) -> t |> String.split("-") |> then(fn [a, b] -> {String.to_integer(a), String.to_integer(b)} end)
+      Regex.match?(~r/^\d+,\d+$/, t) -> t |> String.split(",") |> then(fn [a, b] -> {String.to_integer(String.trim(a)), String.to_integer(String.trim(b))} end)
+      Regex.match?(~r/^\d+$/, t) -> {String.to_integer(t), String.to_integer(t)}
+      true -> :all
+    end
+  end
+  defp normalize_show_range(other) when is_list(other) do
+    f = Keyword.get(other, :first) || Keyword.get(other, :start) || Keyword.get(other, :a)
+    l = Keyword.get(other, :last) || Keyword.get(other, :end) || Keyword.get(other, :b)
+    if is_integer(f) and is_integer(l), do: {f, l}, else: :all
+  end
+  defp normalize_show_range(_), do: :all
+
+  defp show_range(path, range) do
     content = File.read!(path)
     full_lines = split_lines(content) |> elem(0)
 
