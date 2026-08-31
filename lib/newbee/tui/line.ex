@@ -192,14 +192,24 @@ defmodule Newbee.TUI.Line do
     {candidates, base} = complete_candidates(prefix)
 
     case candidates do
-      [] -> l
+      [] ->
+        l
+
       cands ->
         # 多候选时优先按公共前缀补到最长公共段，单候选直接补全
         common = longest_common_prefix(cands)
         target = if length(cands) == 1, do: hd(cands), else: common
-        if String.length(target) > String.length(base), do: %{l | text: prefix <> String.slice(target, String.length(base)..-1//1) <> rest, cur: c + String.length(target) - String.length(base)}, else: l
+
+        if String.length(target) > String.length(base),
+          do: %{
+            l
+            | text: prefix <> String.slice(target, String.length(base)..-1//1) <> rest,
+              cur: c + String.length(target) - String.length(base)
+          },
+          else: l
     end
   end
+
   defp split_at(t, c) do
     {String.slice(t, 0, c), String.slice(t, c..-1//1)}
   end
@@ -327,7 +337,8 @@ defmodule Newbee.TUI.Line do
       # 光标在当前行内的字符偏移
       before = String.slice(t, 0, c)
       row_before = before |> String.split("\n") |> Enum.take(row) |> Enum.join("\n")
-      in_line = max(c - String.length(row_before) - (if row > 0, do: 1, else: 0), 0)
+      in_line = max(c - String.length(row_before) - if(row > 0, do: 1, else: 0), 0)
+
       {line, col} =
         if width(cur_line) <= max_cols do
           {cur_line, width(String.slice(cur_line, 0, in_line))}
@@ -336,6 +347,7 @@ defmodule Newbee.TUI.Line do
           start = max(cur_w - div(max_cols, 2), 0) |> min(max(width(cur_line) - max_cols, 0))
           {slice_by_width(cur_line, start, max_cols), max(cur_w - start, 0)}
         end
+
       {List.replace_at(rows, row, line) |> Enum.join("\n"), col}
     else
       total = width(t)

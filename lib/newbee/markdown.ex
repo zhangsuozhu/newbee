@@ -68,6 +68,7 @@ defmodule Newbee.Markdown do
         else
           "\e[38;5;187m" <> line <> "\e[0m"
         end
+
       render_blocks(rest, {:fence, lang}, [colored | acc])
     end
   end

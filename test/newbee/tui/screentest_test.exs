@@ -28,7 +28,11 @@ defmodule Newbee.TUI.ScreenTest do
   test "状态栏 ANSI 不占宽，右栏 tok/bind/policy 不被截断" do
     # 回归：状态栏按可见宽度截断时曾把 \e[2m 里的 [ 2 m 各计 1 列，
     # 导致右栏 tok/bind/policy 被多算的 20+ 列顶出屏幕。
-    tmp = Path.join(System.tmp_dir!(), "newbee_screen_status_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.bin")
+    tmp =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee_screen_status_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.bin"
+      )
 
     port =
       Port.open({:spawn_executable, "/bin/bash"}, [:binary, :exit_status, args: ["-c", "cat > #{tmp}"]])
@@ -76,7 +80,11 @@ defmodule Newbee.TUI.ScreenTest do
 
   test "paint_full 锚定末尾：超屏后首行不可见、末行必上屏" do
     # 回归：旧实现取【前】N 行，transcript 超一屏后新输出永远不上屏
-    tmp = Path.join(System.tmp_dir!(), "newbee_screen_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.bin")
+    tmp =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee_screen_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.bin"
+      )
 
     port =
       Port.open({:spawn_executable, "/bin/bash"}, [:binary, :exit_status, args: ["-c", "cat > #{tmp}"]])
@@ -93,7 +101,11 @@ defmodule Newbee.TUI.ScreenTest do
   end
 
   test "paint_delta 只重写变化行且内容正确" do
-    tmp = Path.join(System.tmp_dir!(), "newbee_screen_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.bin")
+    tmp =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee_screen_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.bin"
+      )
 
     port =
       Port.open({:spawn_executable, "/bin/bash"}, [:binary, :exit_status, args: ["-c", "cat > #{tmp}"]])

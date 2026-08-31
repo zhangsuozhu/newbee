@@ -79,8 +79,10 @@ defmodule Newbee.Daemon do
     # TCE [G2]: tool_error 风暴即时触发——10min heartbeat 对"坏工具持续烧钱"太慢。
     # 滑窗计数: 60s 内 >=3 次错误 → debounce 触发进化（deopt/修复 need）。
     now = System.monotonic_time(:millisecond)
-    window = [now | Map.get(state, :error_times, [])]
-              |> Enum.filter(fn t -> now - t < 60_000 end)
+
+    window =
+      [now | Map.get(state, :error_times, [])]
+      |> Enum.filter(fn t -> now - t < 60_000 end)
 
     if length(window) >= 3 do
       if state.evolve_timer do

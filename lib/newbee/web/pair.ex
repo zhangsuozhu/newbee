@@ -153,7 +153,9 @@ defmodule Newbee.Web.Pair do
   @doc "手机端进入授权页后，按 pairing_id 复核配对是否仍有效（供 confirm 前置校验）。"
   def phone_status(pairing_id) do
     case get_pair(pairing_id) do
-      nil -> {:error, "not_found", "配对不存在或已过期"}
+      nil ->
+        {:error, "not_found", "配对不存在或已过期"}
+
       p ->
         if expired?(p) do
           delete({:pair, pairing_id})

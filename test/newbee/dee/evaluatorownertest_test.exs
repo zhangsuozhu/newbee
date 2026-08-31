@@ -111,7 +111,13 @@ defmodule Newbee.DEE.EvaluatorOwnerTest do
     remaining =
       Enum.filter(nodes, fn n ->
         Enum.reduce_while(1..100, true, fn _, _ ->
-          if n in Node.list(), do: (Process.sleep(50); {:cont, true}), else: {:halt, false}
+          if n in Node.list(),
+            do:
+              (
+                Process.sleep(50)
+                {:cont, true}
+              ),
+            else: {:halt, false}
         end)
       end)
 

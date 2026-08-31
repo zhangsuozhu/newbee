@@ -219,10 +219,18 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     GenServer.stop(restored)
   end
 
-  test "权限请求广播给工作组成员并标记请求会话", %{server: server} do
+  test "权限请求只广播给直接父会话和总控", %{server: server} do
     assert {:ok, group} = Coordinator.create_group(%{"session_id" => "parent", "title" => "审批群"}, server)
     group_id = group["group_id"]
-    assert {:ok, _} = Coordinator.add_member(group_id, %{"session_id" => "child"}, server)
+
+    assert {:ok, _} =
+             Coordinator.add_member(group_id, %{"session_id" => "manager", "parent_session_id" => "parent"}, server)
+
+    assert {:ok, _} =
+             Coordinator.add_member(group_id, %{"session_id" => "child", "parent_session_id" => "manager"}, server)
+
+    assert {:ok, _} =
+             Coordinator.add_member(group_id, %{"session_id" => "sibling", "parent_session_id" => "parent"}, server)
 
     Newbee.Bus.subscribe()
     assert :ok = Coordinator.permission_request("child", "执行写文件", server)
@@ -230,9 +238,99 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     assert_receive {:newbee_event, :collab_event, event}, 1_000
     assert event["topic"] == "collab_permission_ask"
     assert event["payload"]["request_session_id"] == "child"
-    assert Enum.sort(event["session_ids"]) == ["child", "parent"]
+    assert Enum.sort(event["session_ids"]) == ["manager", "parent"]
+    assert Enum.sort(event["payload"]["approver_session_ids"]) == ["manager", "parent"]
+    refute "sibling" in event["session_ids"]
 
     assert {:error, "not_member", _} = Coordinator.permission_request("outsider", "x", server)
     Newbee.Bus.unsubscribe()
+  end
+
+  test "原子派生事件同时持久化成员、任务和工作区，重放不产生半状态", %{
+    server: server,
+    path: path
+  } do
+    assert {:ok, group} = Coordinator.create_group(%{"session_id" => "parent", "title" => "原子派生"}, server)
+
+    workspace = %{
+      "kind" => "git_worktree",
+      "root" => "/repo",
+      "path" => "/repo/.newbee/worktrees/child",
+      "base_ref" => String.duplicate("a", 40),
+      "review_status" => "waiting",
+      "reviewed_at" => nil,
+      "reviewed_by_session_id" => nil
+    }
+
+    attrs = %{
+      "session_id" => "child",
+      "parent_session_id" => "parent",
+      "role" => "worker",
+      "title" => "实现功能",
+      "workspace" => workspace,
+      "command_id" => "delegate-atomic"
+    }
+
+    assert {:ok, %{member: member, task: task}} = Coordinator.delegate(group["group_id"], attrs, server)
+    assert member["workspace"] == workspace
+    assert task["workspace"] == workspace
+
+    assert {:error, "duplicate_command", _} =
+             Coordinator.delegate(group["group_id"], %{attrs | "session_id" => "other"}, server)
+
+    assert {:ok, _running} =
+             Coordinator.update_task(
+               group["group_id"],
+               task["task_id"],
+               %{"session_id" => "child", "status" => "running"},
+               server
+             )
+
+    assert {:ok, done} =
+             Coordinator.update_task(
+               group["group_id"],
+               task["task_id"],
+               %{
+                 "session_id" => "child",
+                 "status" => "succeeded"
+               },
+               server
+             )
+
+    assert done["workspace"]["review_status"] == "pending"
+
+    assert {:error, "forbidden_role", _} =
+             Coordinator.update_workspace(
+               group["group_id"],
+               task["task_id"],
+               %{
+                 "actor_session_id" => "child",
+                 "action" => "rejected"
+               },
+               server
+             )
+
+    assert {:ok, reviewed} =
+             Coordinator.update_workspace(
+               group["group_id"],
+               task["task_id"],
+               %{
+                 "actor_session_id" => "parent",
+                 "action" => "rejected",
+                 "patch_sha256" => String.duplicate("b", 64)
+               },
+               server
+             )
+
+    assert reviewed["workspace"]["review_status"] == "rejected"
+    assert reviewed["workspace"]["patch_sha256"] == String.duplicate("b", 64)
+
+    GenServer.stop(Process.whereis(server))
+    {:ok, restored} = Coordinator.start_link(name: server, path: path, durability: :event)
+    assert {:ok, detail} = Coordinator.get(group["group_id"], server)
+    assert Enum.any?(detail["members"], &(&1["session_id"] == "child"))
+    assert [%{"workspace" => restored_workspace}] = detail["tasks"]
+    assert restored_workspace["review_status"] == "rejected"
+    GenServer.stop(restored)
   end
 end

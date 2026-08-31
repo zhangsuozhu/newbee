@@ -76,12 +76,12 @@ defmodule TCE.Sim do
       max_delay: Enum.max(delays)
     }
   end
+
   defp drift_noisy(st, step) do
     x = -1.2 + (:rand.uniform() * 1.0 - 0.5)
     st2 = Sequential.cusum_down_step(st, x, omega: 1.0, h: 12.0)
     if st2.alarm?, do: step, else: drift_noisy(st2, step + 1)
   end
-
 
   defp drift(st, step)
   defp drift(%{alarm?: true} = _st, step), do: step - 1
@@ -134,7 +134,7 @@ defmodule TCE.Sim do
       Enum.reduce(1..rounds, state, fn r, acc ->
         pred = 1000.0
         realized = pred / (1.0 + acc.bias)
-        err = (pred - realized) ** 2 / (pred ** 2)
+        err = (pred - realized) ** 2 / pred ** 2
         # 反馈: 误差越大下一轮 bias 越低（模拟 adjust_compile_cost 的威慑）
         new_bias = max(acc.bias - 0.02 * err * 10, 0.08)
         %{acc | bias: new_bias, errs: [err | acc.errs]}

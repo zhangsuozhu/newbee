@@ -74,10 +74,11 @@ defmodule Newbee.LLM.Image do
       {:ok,
        %{
          "role" => "user",
-         "content" => [%{"type" => "text", "text" => prompt}] ++
-                        Enum.map(urls, fn url ->
-                          %{"type" => "image_url", "image_url" => %{"url" => url}}
-                        end)
+         "content" =>
+           [%{"type" => "text", "text" => prompt}] ++
+             Enum.map(urls, fn url ->
+               %{"type" => "image_url", "image_url" => %{"url" => url}}
+             end)
        }}
     end
   end

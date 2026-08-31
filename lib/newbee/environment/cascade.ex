@@ -23,7 +23,7 @@ defmodule Newbee.Environment.Cascade do
     c_infer = opts[:c_infer] || @default_c_infer
     c_l2 = opts[:c_l2] || @default_c_l2
     p_l3 = opts[:p_l3] || PatternStats.succ_mean(s)
-    p_l2 = opts[:p_l2] || p_l3 * 1.5 |> min(1.0)
+    p_l2 = opts[:p_l2] || (p_l3 * 1.5) |> min(1.0)
     p_l3 * c_infer + max(p_l2 - p_l3, 0.0) * (c_infer - c_l2)
   end
 

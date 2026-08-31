@@ -55,7 +55,12 @@ defmodule Newbee.CommandsTest do
   end
 
   test "@文件 展开为内容块（不存在则原样保留）" do
-    tmp = Path.join(System.tmp_dir!(), "newbee_at_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.txt")
+    tmp =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee_at_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.txt"
+      )
+
     File.write!(tmp, "file-body")
 
     assert {:submit, text} = Commands.handle("@#{tmp}", %{say: fn _ -> :ok end})

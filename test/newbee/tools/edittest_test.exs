@@ -6,7 +6,9 @@ defmodule Newbee.Tools.EditTest do
 
   setup do
     SnapshotStore.clear()
-    path = Path.join(System.tmp_dir!(), "edit_v2_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.txt")
+
+    path =
+      Path.join(System.tmp_dir!(), "edit_v2_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.txt")
 
     on_exit(fn -> File.rm(path) end)
 

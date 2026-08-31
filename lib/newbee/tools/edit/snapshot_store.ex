@@ -44,7 +44,7 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
           has_trailing: has_trailing
         }
 
-        put_store(store |> Map.put(path, history ++ [snap] |> Enum.take(-@max_versions)) |> lru_touch(path))
+        put_store(store |> Map.put(path, (history ++ [snap]) |> Enum.take(-@max_versions)) |> lru_touch(path))
         hash
 
       idx ->
@@ -99,7 +99,7 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
       has_trailing: has_trailing
     }
 
-    put_store(store |> Map.put(path, history ++ [snap] |> Enum.take(-@max_versions)) |> lru_touch(path))
+    put_store(store |> Map.put(path, (history ++ [snap]) |> Enum.take(-@max_versions)) |> lru_touch(path))
     hash
   end
 

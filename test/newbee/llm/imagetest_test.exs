@@ -2,7 +2,12 @@ defmodule Newbee.LLM.ImageTest do
   use ExUnit.Case, async: true
 
   test "构造图片 data URL user message" do
-    path = Path.join(System.tmp_dir!(), "newbee-image-#{System.system_time(:native)}_#{System.unique_integer([:positive])}.png")
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee-image-#{System.system_time(:native)}_#{System.unique_integer([:positive])}.png"
+      )
+
     File.write!(path, <<137, 80, 78, 71, 1, 2, 3>>)
     on_exit(fn -> File.rm(path) end)
 

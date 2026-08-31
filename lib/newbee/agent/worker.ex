@@ -41,7 +41,8 @@ defmodule Newbee.Agent.Worker do
     # 同步记 Coordinator（价签记账 + 可选自动回退受理）
     if Process.whereis(Newbee.Environment.Coordinator) do
       Newbee.Environment.Coordinator.feedback(
-        Map.new(opts) |> Map.merge(%{plugin_id: plugin_id, release_id: release_id, outcome: outcome})
+        Map.new(opts)
+        |> Map.merge(%{plugin_id: plugin_id, release_id: release_id, outcome: outcome})
       )
     end
 

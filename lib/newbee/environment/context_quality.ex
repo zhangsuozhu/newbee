@@ -204,8 +204,8 @@ defmodule Newbee.Environment.ContextQuality do
     k = 200
     h = 1.0 / k
 
-    {s0, sk} = {beta_pdf(0.0, a1, b1) * (1.0 - safe_betai(0.0, a2, b2)),
-                beta_pdf(1.0, a1, b1) * (1.0 - safe_betai(1.0, a2, b2))}
+    {s0, sk} =
+      {beta_pdf(0.0, a1, b1) * (1.0 - safe_betai(0.0, a2, b2)), beta_pdf(1.0, a1, b1) * (1.0 - safe_betai(1.0, a2, b2))}
 
     {s_odd, s_even} =
       Enum.reduce(1..(k - 1), {0.0, 0.0}, fn i, {o, e} ->

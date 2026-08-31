@@ -38,7 +38,6 @@ defmodule Newbee.LLM.ConfigTest do
     refute Newbee.LLM.Config.client_for("default").api_key == "<redacted>"
   end
 
-
   test "未知角色回退 default" do
     c1 = Newbee.LLM.Config.client_for("nonexistent")
     c2 = Newbee.LLM.Config.client_for("default")
@@ -47,15 +46,25 @@ defmodule Newbee.LLM.ConfigTest do
 
   describe "set_default_model" do
     setup do
-      tmp = Path.join(System.tmp_dir!(), "newbee-configtest-#{System.system_time(:native)}_#{System.unique_integer([:positive])}/model.json")
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "newbee-configtest-#{System.system_time(:native)}_#{System.unique_integer([:positive])}/model.json"
+        )
+
       File.mkdir_p!(Path.dirname(tmp))
+
       File.write!(
         tmp,
         Jason.encode!(%{
           "providers" => %{
-             "opencode" => %{"baseUrl" => "https://opencode.ai/zen/go/v1", "apiKey" => "k", "models" => ["ox-alpha-free"]},
-             "openrouter" => %{"baseUrl" => "https://openrouter.ai/api/v1", "apiKey" => "k", "models" => []}
-           },
+            "opencode" => %{
+              "baseUrl" => "https://opencode.ai/zen/go/v1",
+              "apiKey" => "k",
+              "models" => ["ox-alpha-free"]
+            },
+            "openrouter" => %{"baseUrl" => "https://openrouter.ai/api/v1", "apiKey" => "k", "models" => []}
+          },
           "roles" => %{"default" => %{"provider" => "openrouter", "model" => "deepseek/deepseek-v4-flash-0731"}}
         })
       )
@@ -113,7 +122,12 @@ defmodule Newbee.LLM.ConfigTest do
 
   describe "set_context_window" do
     setup do
-      tmp = Path.join(System.tmp_dir!(), "newbee-configtest-#{System.system_time(:native)}_#{System.unique_integer([:positive])}/model.json")
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "newbee-configtest-#{System.system_time(:native)}_#{System.unique_integer([:positive])}/model.json"
+        )
+
       File.mkdir_p!(Path.dirname(tmp))
 
       File.write!(

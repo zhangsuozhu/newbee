@@ -71,6 +71,7 @@ defmodule Newbee.Environment.ContextQuality.E2ETest do
 
     # 退休候选应只含有害规则（当样本足够判定）
     cands = Collector.retire_candidates(pid) |> Enum.map(fn {rid, _} -> rid end)
+
     if harmful.verdict == :harmful do
       assert "harmful_rule" in cands
       refute "helpful_rule" in cands

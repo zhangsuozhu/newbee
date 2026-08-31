@@ -26,9 +26,9 @@ defmodule Newbee.MixProject do
     [
       {:jason, "~> 1.0"},
       {:req, "~> 0.5"},
-{:sourceror, "~> 1.0"},
-{:bandit, "~> 1.5"},
-{:websock_adapter, "~> 0.5"},
+      {:sourceror, "~> 1.0"},
+      {:bandit, "~> 1.5"},
+      {:websock_adapter, "~> 0.5"},
       {:wax_, "~> 0.7"}
     ]
   end

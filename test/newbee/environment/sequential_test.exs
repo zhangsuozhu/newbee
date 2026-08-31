@@ -19,6 +19,7 @@ defmodule Newbee.Environment.SequentialTest do
   test "SPRT: 健康工具(80%成功)最终判 H0 清白" do
     # 确定性伪随机: 80% 成功模式
     outcomes = Stream.cycle([true, true, true, true, false])
+
     st =
       outcomes
       |> Enum.take(40)
@@ -42,16 +43,20 @@ defmodule Newbee.Environment.SequentialTest do
   @tag :sequential
   test "CUSUM: 缓慢下漂被检测，平稳序列不误报" do
     # 平稳: x 在 0 附近抖动，omega=0.5 吸收
-    steady = Enum.reduce(1..200, Sequential.cusum_init(), fn i, acc ->
-      x = if rem(i, 2) == 0, do: 0.4, else: -0.4
-      Sequential.cusum_step(acc, x, omega: 0.5, h: 4.0)
-    end)
+    steady =
+      Enum.reduce(1..200, Sequential.cusum_init(), fn i, acc ->
+        x = if rem(i, 2) == 0, do: 0.4, else: -0.4
+        Sequential.cusum_step(acc, x, omega: 0.5, h: 4.0)
+      end)
+
     refute steady.alarm?
 
     # 缓慢漂移: 每 step -0.3 偏移
-    drift = Enum.reduce(1..60, Sequential.cusum_init(), fn _, acc ->
-      Sequential.cusum_down_step(acc, -0.8, omega: 0.5, h: 4.0)
-    end)
+    drift =
+      Enum.reduce(1..60, Sequential.cusum_init(), fn _, acc ->
+        Sequential.cusum_down_step(acc, -0.8, omega: 0.5, h: 4.0)
+      end)
+
     assert drift.alarm?
     # 首次报警应在 ~14 步内 (S 累积 0.3/步 越过 h=4)
   end
@@ -98,6 +103,7 @@ defmodule Newbee.Environment.SequentialTest do
   test "集成: SPRT 判定接入 deopt 流程语义（与旧判据一致性方向）" do
     # 90% 失败的工具：SPRT 应快速判坏
     outcomes = for i <- 1..40, do: rem(i, 10) == 0
+
     final =
       Enum.reduce(outcomes, Sequential.sprt_init(), fn ok, acc ->
         case acc.decided do

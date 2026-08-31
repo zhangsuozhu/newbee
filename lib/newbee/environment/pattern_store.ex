@@ -58,6 +58,7 @@ defmodule Newbee.Environment.PatternStore do
       when t in [:tool_error, "tool_error"] and is_binary(msg) do
     nil
   end
+
   def key_of(ev) when is_map(ev) do
     case JitStrategy.pattern_key(ev) do
       nil -> nil
@@ -71,14 +72,15 @@ defmodule Newbee.Environment.PatternStore do
   defp task_type_of(%{data: %{task_type: t}}) when is_binary(t), do: t
   defp task_type_of(_), do: "general"
 
-
   # ── 投影：事件流 → stats ──
 
   @doc "从事件流重建全部 PatternStats（幂等投影）。"
   def project(events) when is_list(events) do
     Enum.reduce(events, %{}, fn ev, acc ->
       case key_of(ev) do
-        nil -> acc
+        nil ->
+          acc
+
         key ->
           existing = Map.get(acc, key)
           base = if is_struct(existing, PatternStats), do: existing, else: PatternStats.new()

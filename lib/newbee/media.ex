@@ -21,16 +21,32 @@ defmodule Newbee.Media do
 
   @max_bytes 50 * 1024 * 1024
   @ext_kind %{
-    "png" => "image", "jpg" => "image", "jpeg" => "image", "gif" => "image",
-    "webp" => "image", "svg" => "image", "bmp" => "image",
-    "mp3" => "audio", "wav" => "audio", "ogg" => "audio", "m4a" => "audio",
-    "flac" => "audio", "aac" => "audio",
-    "mp4" => "video", "webm" => "video", "mov" => "video", "mkv" => "video",
-    "avi" => "video", "mpeg" => "video", "mpg" => "video", "ts" => "video"
+    "png" => "image",
+    "jpg" => "image",
+    "jpeg" => "image",
+    "gif" => "image",
+    "webp" => "image",
+    "svg" => "image",
+    "bmp" => "image",
+    "mp3" => "audio",
+    "wav" => "audio",
+    "ogg" => "audio",
+    "m4a" => "audio",
+    "flac" => "audio",
+    "aac" => "audio",
+    "mp4" => "video",
+    "webm" => "video",
+    "mov" => "video",
+    "mkv" => "video",
+    "avi" => "video",
+    "mpeg" => "video",
+    "mpg" => "video",
+    "ts" => "video"
   }
 
   @doc "单个文件上屏到指定会话。返回 {:ok, payload} | {:error, code, message}。"
   def show(sid, path, opts \\ [])
+
   def show(sid, path, opts) when is_binary(sid) and is_binary(path) do
     caption = Keyword.get(opts, :caption)
     name = Keyword.get(opts, :name) || Path.basename(path)
@@ -189,7 +205,6 @@ defmodule Newbee.Media do
   end
 
   defp append_manifest(sid, payload) do
-
     {:ok, items} = list(sid)
     File.mkdir_p!(Session.media_dir(sid))
     File.write!(manifest_path(sid), Jason.encode_to_iodata!([payload | items]))
@@ -215,4 +230,3 @@ defmodule Newbee.Media do
   defp format_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_reason(reason), do: inspect(reason)
 end
-

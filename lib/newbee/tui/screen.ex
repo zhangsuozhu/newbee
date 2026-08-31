@@ -196,6 +196,7 @@ defmodule Newbee.TUI.Screen do
 
     out = out ++ ["\e[#{rows - n - 1};1H\e[K" <> slice_by_width(status_text, cols) <> "\e[K"]
     out = out ++ ["\e[#{rows - n};1H" <> String.duplicate("─", cols) <> "\e[K"]
+
     out =
       out ++
         (Enum.with_index(in_lines, 1)
@@ -222,6 +223,7 @@ defmodule Newbee.TUI.Screen do
 
     out = out ++ ["\e[#{rows - n - 1};1H\e[K" <> slice_by_width(status_text, cols) <> "\e[K"]
     out = out ++ ["\e[#{rows - n};1H" <> String.duplicate("─", cols) <> "\e[K"]
+
     out =
       out ++
         (Enum.with_index(in_lines, 1)

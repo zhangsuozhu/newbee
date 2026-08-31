@@ -71,7 +71,9 @@ defmodule Newbee.GlobalStore do
       plugin_ids
       |> Enum.flat_map(fn pid ->
         case active[pid] do
-          nil -> []
+          nil ->
+            []
+
           release_id ->
             case Newbee.Environment.PluginManager.fetch_or_builtin(release_id) do
               {:ok, r} -> [%{release: Newbee.Environment.Release.to_map(r), fitness: Fitness.overall(release_id)}]

@@ -107,7 +107,7 @@ defmodule Newbee.Environment.TceMonteCarloTest do
       Enum.reduce(1..40, state, fn _r, acc ->
         pred = 1000.0
         realized = pred / (1.0 + acc.bias)
-        err = (pred - realized) ** 2 / (pred ** 2)
+        err = (pred - realized) ** 2 / pred ** 2
         new_bias = max(acc.bias - 0.02 * err * 10, 0.08)
         %{acc | bias: new_bias, errs: [err | acc.errs]}
       end)

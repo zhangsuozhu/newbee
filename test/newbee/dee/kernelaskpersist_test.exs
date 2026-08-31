@@ -6,6 +6,7 @@ defmodule Newbee.Agent.LoopAskPersistTest do
 
   defp ask_msg(question, extra) do
     args = Map.merge(%{question: question}, extra)
+
     %{
       "role" => "assistant",
       "content" => "",
@@ -23,6 +24,7 @@ defmodule Newbee.Agent.LoopAskPersistTest do
     sid = "ask-persist-test-" <> Integer.to_string(System.unique_integer([:positive]))
 
     {:ok, ev} = Evaluator.start(mode: :local)
+
     {:ok, kernel} =
       Loop.start_link(
         client: %{},
@@ -31,7 +33,9 @@ defmodule Newbee.Agent.LoopAskPersistTest do
         client_fun:
           scripted([
             fn _m, _o ->
-              {:ok, ask_msg("选哪个方案？", %{options: [%{label: "A", value: "a"}, %{label: "B", value: "b"}], kind: "buttons"}), %{}}
+              {:ok,
+               ask_msg("选哪个方案？", %{options: [%{label: "A", value: "a"}, %{label: "B", value: "b"}], kind: "buttons"}),
+               %{}}
             end
           ])
       )
@@ -55,6 +59,7 @@ defmodule Newbee.Agent.LoopAskPersistTest do
   test "ask 无 options 时默认 text 形态且落盘 options 为空" do
     sid = "ask-persist-test-" <> Integer.to_string(System.unique_integer([:positive]))
     {:ok, ev} = Evaluator.start(mode: :local)
+
     {:ok, kernel} =
       Loop.start_link(
         client: %{},

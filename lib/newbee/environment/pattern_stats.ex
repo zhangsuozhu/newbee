@@ -11,8 +11,12 @@ defmodule Newbee.Environment.PatternStats do
   分位数 bisection。判据是序贯检验，1e-8 精度足够（TCE 总纲 A/B 节）。
   """
 
-  defstruct freq: {1.0, 1.0}, succ: {1.0, 1.0}, save: {0.0, 0.0, 1.0},
-            n: 0, last_update: nil, snapshot: %{a: nil, b: nil}
+  defstruct freq: {1.0, 1.0},
+            succ: {1.0, 1.0},
+            save: {0.0, 0.0, 1.0},
+            n: 0,
+            last_update: nil,
+            snapshot: %{a: nil, b: nil}
 
   @type t :: %__MODULE__{}
   @type gamma :: {float(), float()}
@@ -23,9 +27,18 @@ defmodule Newbee.Environment.PatternStats do
   @doc "log Γ(x)，Lanczos (g=7)。x>0。"
   def log_gamma(x) when x > 0 do
     z = x - 1.0
-    coefs = [0.999_999_999_999_809_93, 676.5203681218851, -1259.1392167224028,
-             771.32342877765313, -176.61502916214059, 12.507343278686905,
-             -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7]
+
+    coefs = [
+      0.999_999_999_999_809_93,
+      676.5203681218851,
+      -1259.1392167224028,
+      771.32342877765313,
+      -176.61502916214059,
+      12.507343278686905,
+      -0.13857109526572012,
+      9.9843695780195716e-6,
+      1.5056327351493116e-7
+    ]
 
     sum =
       coefs
@@ -47,6 +60,7 @@ defmodule Newbee.Environment.PatternStats do
   defp dg(x, acc) do
     inv = 1.0 / x
     inv2 = inv * inv
+
     acc + :math.log(x) - 0.5 * inv -
       inv2 * (1.0 / 12.0 - inv2 * (1.0 / 120.0 - inv2 / 252.0))
   end
@@ -68,8 +82,10 @@ defmodule Newbee.Environment.PatternStats do
 
   def betai(x, a, b) do
     front =
-      :math.exp(log_gamma(a + b) - log_gamma(a) - log_gamma(b) +
-                  a * :math.log(x) + b * :math.log(1.0 - x))
+      :math.exp(
+        log_gamma(a + b) - log_gamma(a) - log_gamma(b) +
+          a * :math.log(x) + b * :math.log(1.0 - x)
+      )
 
     if x < (a + 1.0) / (a + b + 2.0) do
       front * betacf(a, b, x) / a
@@ -417,7 +433,7 @@ defmodule Newbee.Environment.PatternStats do
 
   # ═══════════════ Empirical Bayes 收缩 [D12] ═══════════════
 
-@doc """
+  @doc """
   EB 收缩（v2.1 James-Stein 标准形式 [R4]）：
   shrunk_mu = w*m_bar + (1-w)*mu_i, 其中 w = var_m/(var_m+var_i)
   （个体方差相对群体方差越小，越信任个体）。
@@ -448,7 +464,7 @@ defmodule Newbee.Environment.PatternStats do
 
       eff = shrink * w
       shrunk_mu = eff * m_bar + (1.0 - eff) * mu_i
-      shrunk_var = max((1.0 - eff), 0.05) * var_i
+      shrunk_var = max(1.0 - eff, 0.05) * var_i
 
       # Gamma 重参数化（mu>0 守卫）
       mu_safe = max(shrunk_mu, 1.0e-6)

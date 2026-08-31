@@ -10,11 +10,19 @@ defmodule Newbee.Plugins.RepoMapV2Test do
   end
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "repomap_v2_test_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}")
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "repomap_v2_test_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(Path.join(dir, "lib"))
 
     # build 需要 mix.exs 才进入 Elixir 建图分支
-    File.write!(Path.join(dir, "mix.exs"), "defmodule T.MixProject do\n  use Mix.Project\n  def project, do: [app: :t]\nend\n")
+    File.write!(
+      Path.join(dir, "mix.exs"),
+      "defmodule T.MixProject do\n  use Mix.Project\n  def project, do: [app: :t]\nend\n"
+    )
 
     on_exit(fn -> File.rm_rf!(dir) end)
     {:ok, dir: dir}
@@ -60,7 +68,7 @@ defmodule Newbee.Plugins.RepoMapV2Test do
 
   test "预算触发双层：Tier2 单行索引", %{dir: dir} do
     # 一个大模块吃掉 Tier1 预算，其余进 Tier2
-    big_defs = Enum.map_join(1..60, "\n", &("  def big_fn#{&1}(a), do: a"))
+    big_defs = Enum.map_join(1..60, "\n", &"  def big_fn#{&1}(a), do: a")
 
     write(Path.join(dir, "lib/big.ex"), """
     defmodule Big do
@@ -147,6 +155,7 @@ defmodule Newbee.Plugins.RepoMapV2Test do
     assert map =~ "Good"
   end
 end
+
 defmodule Newbee.Plugins.RepoMapV2Test do
   use ExUnit.Case, async: false
 
@@ -159,11 +168,19 @@ defmodule Newbee.Plugins.RepoMapV2Test do
   end
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "repomap_v2_test_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}")
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "repomap_v2_test_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(Path.join(dir, "lib"))
 
     # build 需要 mix.exs 才进入 Elixir 建图分支
-    File.write!(Path.join(dir, "mix.exs"), "defmodule T.MixProject do\n  use Mix.Project\n  def project, do: [app: :t]\nend\n")
+    File.write!(
+      Path.join(dir, "mix.exs"),
+      "defmodule T.MixProject do\n  use Mix.Project\n  def project, do: [app: :t]\nend\n"
+    )
 
     on_exit(fn -> File.rm_rf!(dir) end)
     {:ok, dir: dir}
@@ -209,7 +226,7 @@ defmodule Newbee.Plugins.RepoMapV2Test do
 
   test "预算触发双层：Tier2 单行索引", %{dir: dir} do
     # 一个大模块吃掉 Tier1 预算，其余进 Tier2
-    big_defs = Enum.map_join(1..60, "\n", &("  def big_fn#{&1}(a), do: a"))
+    big_defs = Enum.map_join(1..60, "\n", &"  def big_fn#{&1}(a), do: a")
 
     write(Path.join(dir, "lib/big.ex"), """
     defmodule Big do

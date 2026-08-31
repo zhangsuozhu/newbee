@@ -109,11 +109,14 @@ defmodule Newbee.Environment.Manifest do
     # 兼容旧快照：rev0 空图（首启前/旧文件）自动合入内置基线（P0 活锁修复），
     # rev>0 的显式空快照原样保留（避免漂移）。
     builtin = Newbee.Plugins.builtin_active_map()
-    merged = cond do
-      is_map(active) and map_size(active) == 0 and (map["revision"] || 0) == 0 -> Map.merge(builtin, active)
-      is_map(active) -> (if map_size(active) == 0, do: builtin, else: active)
-      true -> builtin
-    end
+
+    merged =
+      cond do
+        is_map(active) and map_size(active) == 0 and (map["revision"] || 0) == 0 -> Map.merge(builtin, active)
+        is_map(active) -> if map_size(active) == 0, do: builtin, else: active
+        true -> builtin
+      end
+
     %__MODULE__{
       revision: map["revision"] || 0,
       active: merged,

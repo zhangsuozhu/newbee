@@ -10,9 +10,11 @@ defmodule Newbee.Web.AuthTest do
     on_exit(fn -> Newbee.TestSupport.WebTmpHome.restore(sandbox) end)
 
     Auth.password_set?()
+
     if :ets.whereis(:newbee_web_auth) != :undefined do
       :ets.delete_all_objects(:newbee_web_auth)
     end
+
     :ok
   end
 
@@ -101,17 +103,23 @@ defmodule Newbee.Web.AuthTest do
 
     test "正确密码 + 正确验证码 → token" do
       cap = Auth.gen_captcha()
-      assert {:ok, token} = Auth.login(%{"password" => "hunter22", "captchaId" => cap.id, "captcha" => cap.text}, {10, 0, 0, 1})
+
+      assert {:ok, token} =
+               Auth.login(%{"password" => "hunter22", "captchaId" => cap.id, "captcha" => cap.text}, {10, 0, 0, 1})
+
       assert is_binary(token)
     end
 
     test "密码错误 → bad_password" do
       cap = Auth.gen_captcha()
-      assert {:error, "bad_password", _} = Auth.login(%{"password" => "nope", "captchaId" => cap.id, "captcha" => cap.text}, {10, 0, 0, 2})
+
+      assert {:error, "bad_password", _} =
+               Auth.login(%{"password" => "nope", "captchaId" => cap.id, "captcha" => cap.text}, {10, 0, 0, 2})
     end
 
     test "验证码错误 → bad_captcha" do
-      assert {:error, "bad_captcha", _} = Auth.login(%{"password" => "hunter22", "captchaId" => "bogus", "captcha" => "x"}, {10, 0, 0, 3})
+      assert {:error, "bad_captcha", _} =
+               Auth.login(%{"password" => "hunter22", "captchaId" => "bogus", "captcha" => "x"}, {10, 0, 0, 3})
     end
 
     test "连续失败触发锁定（防暴破）" do
@@ -126,9 +134,12 @@ defmodule Newbee.Web.AuthTest do
       assert Enum.at(codes, 4) |> elem(1) == "locked"
       assert Enum.at(codes, 5) |> elem(1) == "locked"
       cap = Auth.gen_captcha()
-      assert {:error, "locked", _} = Auth.login(%{"password" => "hunter22", "captchaId" => cap.id, "captcha" => cap.text}, ip)
+
+      assert {:error, "locked", _} =
+               Auth.login(%{"password" => "hunter22", "captchaId" => cap.id, "captcha" => cap.text}, ip)
     end
   end
+
   describe "认证表跨进程存活（回归：表随请求进程销毁导致 token 丢失）" do
     test "短命进程签发的 token，进程退出后仍可校验" do
       parent = self()

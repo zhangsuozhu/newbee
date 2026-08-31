@@ -118,6 +118,5 @@ defmodule Newbee.Environment.PatternStore.Collector do
     if is_number(p) and is_number(c), do: p + c, else: nil
   end
 
-
   defp schedule_flush, do: Process.send_after(self(), :flush, @flush_interval)
 end

@@ -196,8 +196,12 @@ defmodule Newbee.DEE.Rules do
   defp seed_generic(rules) do
     {rules, added?} =
       Enum.reduce(@generic_rules, {rules, false}, fn r, {acc, added?} ->
-        if Enum.any?(acc, &(&1.id == r.id)), do: {acc, added?}, else: {acc ++ [%{id: r.id, pattern: r.pattern, injection: r.injection, source: :generic, scope: r.scope}], true}
+        if Enum.any?(acc, &(&1.id == r.id)),
+          do: {acc, added?},
+          else:
+            {acc ++ [%{id: r.id, pattern: r.pattern, injection: r.injection, source: :generic, scope: r.scope}], true}
       end)
+
     if added?, do: persist(rules)
     rules
   end

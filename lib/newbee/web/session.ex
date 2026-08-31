@@ -86,6 +86,19 @@ defmodule Newbee.Web.Session do
     Newbee.Session.delete(sid)
   end
 
+  @doc "停止会话运行时并迁回指定项目根；保留 transcript、制品和会话索引。"
+  def archive_runtime(sid, fallback_cwd) when is_binary(sid) and is_binary(fallback_cwd) do
+    case lookup(sid) do
+      {:ok, pid} ->
+        if Process.alive?(pid), do: GenServer.stop(pid, :normal, 3_000)
+
+      _ ->
+        :ok
+    end
+
+    Newbee.Session.set_cwd(sid, fallback_cwd)
+  end
+
   @doc false
   def gen_session_id do
     # 与 Newbee.Session 的 id 体系一致：时间戳 + 随机后缀

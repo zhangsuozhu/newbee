@@ -41,14 +41,19 @@ defmodule Newbee.Environment.Sequential do
     b = :math.log((1.0 - beta) / alpha)
 
     s = state.s + llr
-    decided = cond do
-      s >= b -> :h1   # 接受"工具坏" -> deopt
-      s <= a -> :h0   # 接受"工具健康" -> 清白重置
-      true -> nil
-    end
+
+    decided =
+      cond do
+        # 接受"工具坏" -> deopt
+        s >= b -> :h1
+        # 接受"工具健康" -> 清白重置
+        s <= a -> :h0
+        true -> nil
+      end
 
     %{state | s: s, decided: decided}
   end
+
   @doc """
   SPRT 决定后的滚动重置 [R8]：生产中一次判定不是终点——h0 后世界可能变坏、
   h1 后修复可能恢复。重置清零证据，开启新一轮监控，rounds 记录已完成轮数。
@@ -58,7 +63,6 @@ defmodule Newbee.Environment.Sequential do
   def sprt_roll(state) do
     %{state | s: 0.0, decided: nil, n: 0, rounds: (state[:rounds] || 0) + 1}
   end
-
 
   @doc "SPRT 初始状态。"
   def sprt_init, do: %{s: 0.0, decided: nil, n: 0, rounds: 0}

@@ -12,19 +12,38 @@ defmodule Newbee.Permissions do
     ~r/mix (test|compile|deps|format)|git (push|reset|rebase|clean|checkout|commit)/
   ]
   def levels, do: @levels
+
   def get do
     case File.read(@config) do
-      {:ok, body} -> case Jason.decode(body) do {:ok, %{"permissions" => p}} when is_binary(p) -> String.to_atom(p); _ -> @default end
-      _ -> @default
+      {:ok, body} ->
+        case Jason.decode(body) do
+          {:ok, %{"permissions" => p}} when is_binary(p) -> String.to_atom(p)
+          _ -> @default
+        end
+
+      _ ->
+        @default
     end
-  rescue _ -> @default
+  rescue
+    _ -> @default
   end
+
   def set(level) when level in @levels do
-    cfg = try do case File.read(@config) do {:ok, b} -> Jason.decode!(b); _ -> %{} end rescue _ -> %{} end
+    cfg =
+      try do
+        case File.read(@config) do
+          {:ok, b} -> Jason.decode!(b)
+          _ -> %{}
+        end
+      rescue
+        _ -> %{}
+      end
+
     File.mkdir_p!(Path.dirname(@config))
     File.write!(@config, Jason.encode!(Map.put(cfg, "permissions", to_string(level)), pretty: true))
     :ok
   end
+
   def risky?(code) when is_binary(code), do: Enum.any?(@risky_patterns, &Regex.match?(&1, code))
 
   @doc "Capability 检查：:ok 放行 | :ask 需用户确认 | {:deny, reason} 拒绝（§8.1）。"

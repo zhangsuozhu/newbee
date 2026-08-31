@@ -46,7 +46,8 @@ defmodule Newbee.Web.QuickAccess do
 
     put({:qk, code}, %{
       code: code,
-      status: "pending",      # pending → used
+      # pending → used
+      status: "pending",
       created: now,
       expires: now + @ttl_ms,
       created_by_ip: Map.get(meta, :ip, "")

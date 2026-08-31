@@ -369,7 +369,7 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("group.get", %{"groupId" => group_id, "sessionId" => sid}) do
     with :ok <- require_group_member(group_id, sid),
          {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id) do
-      {:ok, json_safe(group)}
+      {:ok, json_safe(public_collab_group(group))}
     else
       {:error, code, message} -> {:error, code, message}
     end
@@ -393,7 +393,7 @@ defmodule Newbee.Web.Api do
              "session_id" => child_sid,
              "role" => blank_to_nil(p["role"]) || "worker",
              "parent_session_id" => parent_sid,
-             "command_id" => p["commandId"]
+             "command_id" => blank_to_nil(p["commandId"]) || "workspace-apply-50114"
            }) do
       {:ok, %{sessionId: child_sid, member: json_safe(member), cwd: Newbee.Session.cwd(child_sid)}}
     else
@@ -417,7 +417,7 @@ defmodule Newbee.Web.Api do
              "session_id" => sid,
              "role" => blank_to_nil(p["role"]) || "worker",
              "parent_session_id" => blank_to_nil(p["parentSessionId"]) || actor_sid,
-             "command_id" => p["commandId"]
+             "command_id" => blank_to_nil(p["commandId"]) || "workspace-reject-50178"
            }) do
       {:ok, json_safe(member)}
     else
@@ -437,7 +437,7 @@ defmodule Newbee.Web.Api do
            Newbee.Collaboration.Coordinator.remove_member(group_id, %{
              "session_id" => sid,
              "actor_session_id" => actor_sid,
-             "command_id" => p["commandId"]
+             "command_id" => blank_to_nil(p["commandId"]) || "workspace-cleanup-50242"
            }) do
       {:ok, %{member: json_safe(member), sessionId: sid}}
     else
@@ -452,51 +452,29 @@ defmodule Newbee.Web.Api do
          "group.member.delegate",
          %{"groupId" => group_id, "parentSessionId" => parent_sid, "title" => title} = p
        ) do
-    command_id = blank_to_nil(p["commandId"]) || "delegate-#{System.unique_integer([:positive])}"
-    child_sid = blank_to_nil(p["sessionId"]) || Newbee.Web.Session.gen_session_id()
+    child_sid = blank_to_nil(p["sessionId"])
 
     with :ok <- require_group_coordinator(group_id, parent_sid),
-         :ok <- require_new_session(child_sid),
-         {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id),
-         cwd = group["project_root"] || Newbee.Session.cwd(parent_sid),
-         {:ok, _pid, ^child_sid} <- Newbee.Web.Session.ensure(child_sid, cwd),
-         :ok <- Newbee.Session.mark_created(child_sid),
-         :ok <- maybe_rename_session(child_sid, p["name"] || title),
-         {:ok, member} <-
-           Newbee.Collaboration.Coordinator.add_member(group_id, %{
-             "session_id" => child_sid,
-             "role" => blank_to_nil(p["role"]) || "worker",
-             "parent_session_id" => parent_sid,
-             "command_id" => command_id <> ":member"
-           }) do
-      case Newbee.Collaboration.Coordinator.create_task(group_id, %{
-             "created_by_session_id" => parent_sid,
-             "assigned_session_id" => child_sid,
-             "title" => title,
-             "description" => p["description"],
-             "acceptance" => p["acceptance"],
-             "command_id" => command_id <> ":task"
-           }) do
-        {:ok, task} ->
-          {:ok,
-           %{sessionId: child_sid, member: json_safe(member), task: json_safe(task), cwd: Newbee.Session.cwd(child_sid)}}
-
-        {:error, code, message} ->
-          rollback_delegated_member(group_id, parent_sid, child_sid, command_id)
-          {:error, code, message}
-      end
+         :ok <- maybe_require_new_session(child_sid),
+         {:ok, delegated} <-
+           Newbee.Collaboration.Delegator.delegate(group_id, parent_sid, title,
+             session_id: child_sid,
+             name: p["name"] || title,
+             role: blank_to_nil(p["role"]) || "worker",
+             description: p["description"],
+             acceptance: p["acceptance"],
+             isolate: normalize_isolation(p["isolate"]),
+             command_id: blank_to_nil(p["commandId"])
+           ) do
+      {:ok,
+       %{
+         sessionId: delegated.session_id,
+         member: json_safe(public_collab_member(delegated.member)),
+         task: json_safe(public_collab_task(delegated.task))
+       }}
     else
-      {:error, code, message} ->
-        maybe_destroy_delegated_session(child_sid)
-        {:error, code, message}
-
-      {:error, reason} ->
-        maybe_destroy_delegated_session(child_sid)
-        {:error, "session_error", inspect(reason)}
-
-      other ->
-        maybe_destroy_delegated_session(child_sid)
-        {:error, "session_error", inspect(other)}
+      {:error, code, message} -> {:error, code, message}
+      other -> {:error, "delegate_failed", inspect(other)}
     end
   end
 
@@ -546,10 +524,23 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("collab.message.list", _p),
     do: {:error, "bad_request", "需要 groupId 和 sessionId 字段"}
 
+  defp dispatch_rpc("group.activity.list", %{"groupId" => group_id, "sessionId" => sid} = p) do
+    with :ok <- require_group_member(group_id, sid),
+         {:ok, activity} <-
+           Newbee.Collaboration.Coordinator.activity(group_id,
+             since: clamp_int(p["sinceEventId"], 0, 0, 1_000_000_000),
+             limit: clamp_int(p["limit"], 100, 1, 500)
+           ) do
+      {:ok, %{activity: Enum.map(activity, &public_collab_activity/1) |> json_safe()}}
+    else
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
   defp dispatch_rpc("group.task.list", %{"groupId" => group_id, "sessionId" => sid}) do
     with :ok <- require_group_member(group_id, sid),
          {:ok, tasks} <- Newbee.Collaboration.Coordinator.tasks(group_id) do
-      {:ok, %{tasks: json_safe(tasks)}}
+      {:ok, %{tasks: Enum.map(tasks, &public_collab_task/1) |> json_safe()}}
     else
       {:error, code, message} -> {:error, code, message}
     end
@@ -567,6 +558,83 @@ defmodule Newbee.Web.Api do
              "command_id" => p["commandId"]
            }) do
       {:ok, json_safe(task)}
+    else
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc(
+         "group.workspace.review",
+         %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid}
+       ) do
+    with :ok <- require_group_member(group_id, sid),
+         {:ok, task} <- fetch_group_task(group_id, task_id),
+         {:ok, review} <- Newbee.Collaboration.Workspace.review(task) do
+      {:ok, review |> Map.drop([:workspace_path, :base_ref]) |> json_safe()}
+    else
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc(
+         "group.workspace.apply",
+         %{
+           "groupId" => group_id,
+           "taskId" => task_id,
+           "sessionId" => sid,
+           "patchSha256" => patch_sha256
+         } = p
+       ) do
+    with :ok <- require_group_coordinator(group_id, sid),
+         {:ok, task} <- fetch_group_task(group_id, task_id),
+         {:ok, result} <- Newbee.Collaboration.Workspace.apply(task, patch_sha256),
+         {:ok, updated} <-
+           Newbee.Collaboration.Coordinator.update_workspace(group_id, task_id, %{
+             "actor_session_id" => sid,
+             "action" => "applied",
+             "patch_sha256" => patch_sha256,
+             "command_id" => rpc_command_id(p, "workspace")
+           }) do
+      {:ok, %{result: json_safe(result), task: json_safe(public_collab_task(updated))}}
+    else
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc(
+         "group.workspace.reject",
+         %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid} = p
+       ) do
+    with :ok <- require_group_coordinator(group_id, sid),
+         {:ok, task} <- fetch_group_task(group_id, task_id),
+         {:ok, _} <- Newbee.Collaboration.Workspace.reject(task),
+         {:ok, updated} <-
+           Newbee.Collaboration.Coordinator.update_workspace(group_id, task_id, %{
+             "actor_session_id" => sid,
+             "action" => "rejected",
+             "command_id" => rpc_command_id(p, "workspace")
+           }) do
+      {:ok, %{task: json_safe(public_collab_task(updated))}}
+    else
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc(
+         "group.workspace.cleanup",
+         %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid} = p
+       ) do
+    with :ok <- require_group_coordinator(group_id, sid),
+         {:ok, task} <- fetch_group_task(group_id, task_id),
+         {:ok, result} <- Newbee.Collaboration.Workspace.cleanup(task),
+         {:ok, updated} <-
+           Newbee.Collaboration.Coordinator.update_workspace(group_id, task_id, %{
+             "actor_session_id" => sid,
+             "action" => "cleaned",
+             "command_id" => rpc_command_id(p, "workspace")
+           }) do
+      Newbee.Web.Session.archive_runtime(updated["assigned_session_id"], updated["workspace"]["root"])
+      {:ok, %{result: json_safe(result), task: json_safe(public_collab_task(updated))}}
     else
       {:error, code, message} -> {:error, code, message}
     end
@@ -1113,10 +1181,16 @@ defmodule Newbee.Web.Api do
   end
 
   # 权限回复（server-request 象限的 respond 语义）
-  defp dispatch_rpc("respond", %{"sessionId" => sid, "permission" => ok}) do
-    with {:ok, pid} <- find_session(sid) do
+  defp dispatch_rpc("respond", %{"sessionId" => sid, "permission" => ok} = p) do
+    actor = blank_to_nil(p["actorSessionId"]) || sid
+
+    with true <- actor == sid,
+         {:ok, pid} <- find_session(sid) do
       Newbee.Web.Session.permission_reply(pid, ok)
       {:ok, %{delivered: true}}
+    else
+      false -> {:error, "websocket_required", "跨会话权限审批必须通过已绑定会话的 WebSocket"}
+      {:error, _, _} = error -> error
     end
   end
 
@@ -1511,6 +1585,59 @@ defmodule Newbee.Web.Api do
   # an HTML 500 page, which makes client retries and diagnostics unreliable.
   defp dispatch_rpc(method, _p), do: {:error, "unknown_method", "未知 RPC 方法: #{method}"}
 
+  defp rpc_command_id(params, prefix) do
+    blank_to_nil(params["commandId"]) ||
+      prefix <> "-" <> Integer.to_string(System.unique_integer([:positive]))
+  end
+
+  defp public_collab_group(group) do
+    group
+    |> Map.update("members", [], fn members -> Enum.map(members, &public_collab_member/1) end)
+    |> Map.update("tasks", [], fn tasks -> Enum.map(tasks, &public_collab_task/1) end)
+  end
+
+  defp public_collab_member(member), do: Map.drop(member, ["workspace"])
+  defp public_collab_task(task), do: Map.update(task, "workspace", nil, &public_workspace/1)
+  defp public_workspace(nil), do: nil
+
+  defp public_workspace(workspace) when is_map(workspace) do
+    Map.take(workspace, ["kind", "review_status", "reviewed_at", "reviewed_by_session_id", "patch_sha256", "warning"])
+  end
+
+  defp public_collab_activity(event) do
+    payload = event["payload"] || %{}
+
+    payload =
+      cond do
+        is_map(payload["task"]) -> %{"task" => public_collab_task(payload["task"]), "action" => payload["action"]}
+        is_map(payload["member"]) -> %{"member" => public_collab_member(payload["member"])}
+        is_map(payload["message"]) -> %{"message" => Map.drop(payload["message"], ["body"])}
+        is_binary(payload["status"]) -> %{"status" => payload["status"]}
+        true -> %{}
+      end
+
+    Map.put(event, "payload", payload)
+  end
+
+  defp fetch_group_task(group_id, task_id) do
+    with {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id),
+         task when is_map(task) <- Enum.find(group["tasks"] || [], &(&1["task_id"] == task_id)) do
+      {:ok, task}
+    else
+      nil -> {:error, "not_found", "任务不存在"}
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp maybe_require_new_session(nil), do: :ok
+  defp maybe_require_new_session(session_id), do: require_new_session(session_id)
+
+  defp normalize_isolation(false), do: false
+  defp normalize_isolation("false"), do: false
+  defp normalize_isolation(true), do: true
+  defp normalize_isolation("true"), do: true
+  defp normalize_isolation(_), do: :auto
+
   defp require_group_member(group_id, session_id) do
     if Newbee.Collaboration.Coordinator.member?(group_id, session_id) do
       :ok
@@ -1542,33 +1669,6 @@ defmodule Newbee.Web.Api do
       :ok -> {:error, "session_exists", "会话已经存在"}
       {:error, "session_not_found", _} -> :ok
     end
-  end
-
-  defp maybe_rename_session(_session_id, nil), do: :ok
-
-  defp maybe_rename_session(session_id, title) do
-    Newbee.Session.rename(session_id, String.trim(to_string(title)))
-    :ok
-  rescue
-    e -> {:error, "rename_error", Exception.message(e)}
-  end
-
-  defp rollback_delegated_member(group_id, parent_sid, child_sid, command_id) do
-    Newbee.Collaboration.Coordinator.remove_member(group_id, %{
-      "session_id" => child_sid,
-      "actor_session_id" => parent_sid,
-      "command_id" => command_id <> ":rollback"
-    })
-
-    maybe_destroy_delegated_session(child_sid)
-  end
-
-  defp maybe_destroy_delegated_session(session_id) do
-    if Newbee.Collaboration.Coordinator.groups_for_session(session_id) == [] do
-      Newbee.Web.Session.destroy(session_id)
-    end
-
-    :ok
   end
 
   # 历史回放在压缩切点处插入档案分隔条（§6.6）：UI 看的是全量日志，

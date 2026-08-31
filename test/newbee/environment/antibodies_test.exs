@@ -4,7 +4,12 @@ defmodule Newbee.Environment.AntibodiesTest do
   alias Newbee.Environment.Antibodies
 
   setup do
-    dir = Path.join(System.tmp_dir!(), "ab_#{System.system_time(:native)}_#{System.system_time(:native)}_#{System.unique_integer([:positive])}")
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "ab_#{System.system_time(:native)}_#{System.system_time(:native)}_#{System.unique_integer([:positive])}"
+      )
+
     File.mkdir_p!(dir)
     {:ok, scope: dir}
   end

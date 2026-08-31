@@ -37,7 +37,9 @@ defmodule Newbee.AcceptanceTest do
 
     # 等待异步评测完成
     change = wait_evaluation(coordinator, change.change_id)
-    assert change.status in [:canary, :active], "evaluation should pass, got #{change.status}: #{inspect(change.evaluation_result)}"
+
+    assert change.status in [:canary, :active],
+           "evaluation should pass, got #{change.status}: #{inspect(change.evaluation_result)}"
 
     if change.status == :canary do
       # manual 档：人工授权激活（授权事件）
@@ -79,7 +81,12 @@ defmodule Newbee.AcceptanceTest do
     end
 
     # 激活一个 change，产生 revision
-    {_change, release} = propose_and_activate(coordinator, %{plugin_id: "tool.demo", kind: :tool, source_files: %{"demo.ex" => tool_source()}})
+    {_change, release} =
+      propose_and_activate(coordinator, %{
+        plugin_id: "tool.demo",
+        kind: :tool,
+        source_files: %{"demo.ex" => tool_source()}
+      })
 
     rev_before = Coordinator.current(coordinator).revision
     assert rev_before == 1
@@ -169,7 +176,12 @@ defmodule Newbee.AcceptanceTest do
   test "§15.4 任意 active release 可回退到历史 revision（graph 级）" do
     coordinator = Process.whereis(Coordinator)
 
-    {_c1, r1} = propose_and_activate(coordinator, %{plugin_id: "tool.demo", kind: :tool, source_files: %{"demo.ex" => tool_source()}})
+    {_c1, r1} =
+      propose_and_activate(coordinator, %{
+        plugin_id: "tool.demo",
+        kind: :tool,
+        source_files: %{"demo.ex" => tool_source()}
+      })
 
     {_c2, r2} =
       propose_and_activate(coordinator, %{
@@ -282,7 +294,7 @@ defmodule Newbee.AcceptanceTest do
 
     # 大小预算：超预算取消（提示先显式 artifactize）
     big = String.duplicate("x", BindingCodec.default_value_budget() + 1)
-    assert {:error, {:over_budget, :big_val, _}} = BindingCodec.encode([big_val: big])
+    assert {:error, {:over_budget, :big_val, _}} = BindingCodec.encode(big_val: big)
   end
 
   # ── 验收 6：worker 协作通道 ──
@@ -300,9 +312,14 @@ defmodule Newbee.AcceptanceTest do
 
     # module_ready：激活后通知进 worker 下一次投影（pending_notices）
     {_change, release} =
-      propose_and_activate(coordinator, %{plugin_id: "tool.demo", kind: :tool, source_files: %{"demo.ex" => tool_source()}})
+      propose_and_activate(coordinator, %{
+        plugin_id: "tool.demo",
+        kind: :tool,
+        source_files: %{"demo.ex" => tool_source()}
+      })
 
     notices = Coordinator.drain_notices(coordinator)
+
     assert Enum.any?(notices, fn n ->
              n[:release_id] == release.release_id and n[:plugin_id] == "tool.demo" and n[:usage] != nil
            end)
@@ -327,7 +344,11 @@ defmodule Newbee.AcceptanceTest do
     coordinator = Process.whereis(Coordinator)
 
     {change, _release} =
-      propose_and_activate(coordinator, %{plugin_id: "tool.demo", kind: :tool, source_files: %{"demo.ex" => tool_source()}})
+      propose_and_activate(coordinator, %{
+        plugin_id: "tool.demo",
+        kind: :tool,
+        source_files: %{"demo.ex" => tool_source()}
+      })
 
     rev = Coordinator.current(coordinator).revision
 
@@ -343,10 +364,19 @@ defmodule Newbee.AcceptanceTest do
     # candidate_ready 重复投递按 change_id 去重
     {:ok, c2} = Coordinator.propose_change(coordinator, %{reason: "dup", author_agent: :adapter})
 
-    {:ok, _} = Coordinator.candidate_ready(coordinator, c2.change_id, %{plugin_id: "tool.d2", kind: :tool, source_files: %{"d2.ex" => tool_source("D2", "tool.d2")}})
+    {:ok, _} =
+      Coordinator.candidate_ready(coordinator, c2.change_id, %{
+        plugin_id: "tool.d2",
+        kind: :tool,
+        source_files: %{"d2.ex" => tool_source("D2", "tool.d2")}
+      })
 
     assert {:ok, :duplicate, _} =
-             Coordinator.candidate_ready(coordinator, c2.change_id, %{plugin_id: "tool.d2", kind: :tool, source_files: %{"d2.ex" => tool_source("D2", "tool.d2")}})
+             Coordinator.candidate_ready(coordinator, c2.change_id, %{
+               plugin_id: "tool.d2",
+               kind: :tool,
+               source_files: %{"d2.ex" => tool_source("D2", "tool.d2")}
+             })
 
     # inbox 去重
     assert :new = Newbee.Agent.Protocol.dedupe("msg-1")
@@ -360,11 +390,22 @@ defmodule Newbee.AcceptanceTest do
     coordinator = Process.whereis(Coordinator)
 
     # 激活一个好的 release 并标 healthy（known-good）
-    {_c, _r} = propose_and_activate(coordinator, %{plugin_id: "tool.good", kind: :tool, source_files: %{"good.ex" => tool_source("GoodTool", "tool.good")}})
+    {_c, _r} =
+      propose_and_activate(coordinator, %{
+        plugin_id: "tool.good",
+        kind: :tool,
+        source_files: %{"good.ex" => tool_source("GoodTool", "tool.good")}
+      })
+
     GenServer.call(coordinator, {:mark_healthy, 1}, 60_000)
 
     # 再激活一个（rev 2）
-    {_c2, _r2} = propose_and_activate(coordinator, %{plugin_id: "tool.bad", kind: :tool, source_files: %{"bad.ex" => tool_source("BadTool", "tool.bad")}})
+    {_c2, _r2} =
+      propose_and_activate(coordinator, %{
+        plugin_id: "tool.bad",
+        kind: :tool,
+        source_files: %{"bad.ex" => tool_source("BadTool", "tool.bad")}
+      })
 
     # 模拟 rev 2 generation 启动失败 → 恢复 known-good
     {:ok, good_rev, _change} = Coordinator.recover_known_good(coordinator, 2, "simulated boot failure")
@@ -388,11 +429,13 @@ defmodule Newbee.AcceptanceTest do
     coordinator = Process.whereis(Coordinator)
 
     {change, release} =
-      propose_and_activate(coordinator, %{
-        plugin_id: "tool.audit",
-        kind: :tool,
-        source_files: %{"audit.ex" => tool_source("AuditTool", "tool.audit")}
-      }, reason: "审计测试", evidence: [%{event: "ev-123"}], author: :worker)
+      propose_and_activate(
+        coordinator,
+        %{
+          plugin_id: "tool.audit",
+          kind: :tool,
+          source_files: %{"audit.ex" => tool_source("AuditTool", "tool.audit")}
+        }, reason: "审计测试", evidence: [%{event: "ev-123"}], author: :worker)
 
     # 谁（author_agent）、何时（created_at）、基于哪条证据（evidence）、
     # 改了哪个 release（candidate_revision）、如何回退（base_revision）
@@ -463,9 +506,12 @@ defmodule Newbee.AcceptanceTest do
     {:ok, plan} = Newbee.Plugins.Provider.OpenRouter.plan("test/model", [%{"role" => "user", "content" => "hi"}])
     assert plan[:credential_env] == "OPENROUTER_API_KEY"
     refute Map.has_key?(plan, :api_key)
-    assert Enum.all?(Map.to_list(plan[:headers] || %{}), fn {k, _} -> String.downcase(to_string(k)) != "authorization" end)
+
+    assert Enum.all?(Map.to_list(plan[:headers] || %{}), fn {k, _} ->
+             String.downcase(to_string(k)) != "authorization"
+           end)
+
     assert Code.ensure_loaded?(Newbee.Agent.Adapter)
     assert Code.ensure_loaded?(Newbee.DEE.Evaluator)
   end
-
 end
