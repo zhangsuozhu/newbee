@@ -673,6 +673,48 @@ defmodule Newbee.Web.Api do
       {:error, code, message} -> {:error, code, message}
     end
   end
+  defp dispatch_rpc("group.delete", %{"groupId" => group_id, "sessionId" => sid}) do
+    with {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id),
+         :ok <- require_group_coordinator(group_id, sid) do
+      # 运行中保护：组内任一会话 busy 或有进行中任务，均拒绝删除；返回具体阻塞原因供前端展示
+      busy_member =
+        Enum.find(group["members"] || [], fn m -> Newbee.Web.Session.peek_busy(m["session_id"]) end)
+
+      active_tasks =
+        Enum.filter(group["tasks"] || [], fn task ->
+          task["status"] not in ["succeeded", "failed", "cancelled"]
+        end)
+
+      cond do
+        busy_member ->
+          title = Newbee.Session.custom_title(busy_member["session_id"]) || busy_member["session_id"]
+          {:error, "busy", "组内会话「#{title}（#{String.slice(busy_member["session_id"], -6, 6)}）」正在运行，无法删除整组。请先等待该会话空闲或点“停止”。"}
+
+        active_tasks != [] ->
+          names = active_tasks |> Enum.map(fn t -> "#{t["title"] || t["task_id"]}（#{t["status"]}）" end) |> Enum.join("、") |> String.slice(0, 120)
+          {:error, "busy", "组内有进行中任务无法删除：#{names}。请先完成/取消这些任务，或等待子会话结束。"}
+
+        true ->
+          case Newbee.Collaboration.Coordinator.delete_group(group_id, sid) do
+            {:ok, _} ->
+              # 删除整组并销毁全部成员会话
+              Enum.each(group["members"] || [], fn m ->
+                Newbee.Web.Session.destroy(m["session_id"])
+              end)
+
+              {:ok, %{deleted: group_id, members_deleted: Enum.map(group["members"] || [], & &1["session_id"])}}
+
+            {:error, code, message} ->
+              {:error, code, message}
+          end
+      end
+    else
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("group.delete", _p),
+    do: {:error, "bad_request", "需要 groupId 和 sessionId 字段"}
 
   defp dispatch_rpc("group.task.claim", %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid}) do
     with :ok <- require_group_member(group_id, sid),
@@ -754,15 +796,34 @@ defmodule Newbee.Web.Api do
   end
 
   defp dispatch_rpc("session.delete", %{"sessionId" => sid}) do
-    case Newbee.Collaboration.Coordinator.groups_for_session(sid) do
-      [] ->
-        destroy_session(sid, [])
+    if Newbee.Web.Session.peek_busy(sid) do
+      {:error, "busy", "会话正在运行中，无法删除。请先点“停止”或等待完成。"}
+    else
+      case Newbee.Collaboration.Coordinator.groups_for_session(sid) do
+        [] ->
+          destroy_session(sid, [])
 
-      groups ->
-        case remove_session_from_groups(sid, groups) do
-          {:ok, notices} -> destroy_session(sid, notices)
-          {:error, code, message} -> {:error, code, message}
-        end
+        groups ->
+          # 组内任一成员正在运行则禁止删除会话
+          busy_group =
+            Enum.find(groups, fn group ->
+              Enum.any?(group["members"] || [], fn m -> Newbee.Web.Session.peek_busy(m["session_id"]) end)
+            end)
+
+          if busy_group do
+            busy_member =
+              Enum.find(busy_group["members"] || [], fn m -> Newbee.Web.Session.peek_busy(m["session_id"]) end)
+
+            busy_title = busy_member && (Newbee.Session.custom_title(busy_member["session_id"]) || String.slice(busy_member["session_id"], -6, 6))
+
+            {:error, "busy", "所属工作组「#{busy_group["title"] || busy_group["group_id"]}」内会话「#{busy_title}」正在运行，无法删除。请先等待其空闲。"}
+          else
+            case remove_session_from_groups(sid, groups) do
+              {:ok, notices} -> destroy_session(sid, notices)
+              {:error, code, message} -> {:error, code, message}
+            end
+          end
+      end
     end
   end
 

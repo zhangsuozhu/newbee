@@ -243,9 +243,9 @@ body {
   box-shadow: 0 1px 3px rgba(0,0,0,.16);
 }
 
-.msg-usage { display:flex; align-items:center; justify-content:flex-start; gap:8px; margin-top:10px; padding-top:8px; border-top:1px dashed var(--nb-border); font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); font-variant-numeric: tabular-nums; }
+.msg-usage { display:flex; align-items:center; justify-content:flex-start; gap:8px; margin:10px 15px 0; padding:8px 0 0; border-top:1px dashed var(--nb-border); font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); font-variant-numeric: tabular-nums; }
 .msg-usage-stats { flex:1; min-width:0; overflow-wrap:anywhere; white-space:normal; }
-.tool-usage { display:flex; align-items:center; gap:8px; margin-top:6px; padding-top:6px; border-top:1px dashed var(--nb-border); font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); font-variant-numeric: tabular-nums; }
+.tool-usage { display:flex; align-items:center; gap:8px; margin:6px 12px 0; padding:6px 0 0; border-top:1px dashed var(--nb-border); font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); font-variant-numeric: tabular-nums; }
 .tool-usage-stats { flex:1; min-width:0; overflow-wrap:anywhere; white-space:normal; }
 .msg-usage-model { flex:none; max-width:42%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:0.9; }
 
@@ -255,7 +255,8 @@ body {
   border: 1px solid var(--nb-border);
   border-radius: 16px 16px 16px 6px;
   background: var(--nb-bg-panel);
-  padding: 12px 16px;
+  /* 右上角留出复制按钮位置（absolute top6/right8 高22宽~40），避免盖字 */
+  padding: 12px 56px 12px 16px;
   margin: 6px 0;
   max-width: var(--nb-content-w); width: 100%; align-self: flex-start;
 }
@@ -2347,9 +2348,29 @@ svg.ico {
 /* ── 会话协作列表（保留原会话条目，仅增加层级和选择态）── */
 .session-group-label{padding:9px 8px 4px;color:var(--nb-label-caption);font-size:11px;font-weight:650;border-top:1px solid var(--nb-border);margin-top:5px}
 .session-group-label:first-child{border-top:0;margin-top:0}.session-group-label.other{margin-top:10px}
-.session-group-label.current{color:var(--nb-accent);}
+.session-group-label.current{color:var(--nb-accent);}/* 会话组折叠 & 删除 */
+.session-group{margin:4px 0;border-radius:8px;overflow:visible}
+.session-group-header{display:flex;align-items:center;gap:6px;padding:7px 8px 7px 6px;background:var(--nb-bg-elev);border:1px solid var(--nb-border);border-radius:8px;cursor:pointer;user-select:none}
+.session-group-header:hover{border-color:var(--nb-accent);background:var(--nb-bg)}
+.session-group-header.current{border-left:2px solid var(--nb-accent)}
+.session-group-toggle{border:0;background:transparent;color:var(--nb-label-2);width:18px;height:18px;display:grid;place-items:center;border-radius:4px;cursor:pointer;font-size:12px}
+.session-group-toggle:hover{background:var(--nb-border);color:var(--nb-label-1)}
+.session-group-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--nb-label-1);font-size:12px;font-weight:600}
+.session-group-count{color:var(--nb-label-caption);font:10px var(--nb-mono);background:var(--nb-border);padding:1px 5px;border-radius:8px}
+.session-group-busy{color:var(--nb-accent);font-size:10px;margin-left:2px}
+.session-group-delete{border:0;background:transparent;color:var(--nb-label-caption);padding:3px 8px;display:inline-flex;align-items:center;gap:4px;border-radius:6px;cursor:pointer;font-size:11px;border:1px solid transparent}
+.session-group-delete:hover{background:var(--nb-red);color:#fff;border-color:var(--nb-red)}
+.session-group-delete:disabled{opacity:.35;cursor:not-allowed}
+.session-group-delete.hidden{display:none}
+.session-group-body{display:flex;flex-direction:column;gap:0;padding:4px 0 2px}
+.session-group.collapsed .session-group-body{display:none}
+.session-group.collapsed .session-group-header{opacity:.85}
+
 .group-current-badge{display:inline-block;margin-left:6px;padding:0 5px;font-size:10px;line-height:14px;border-radius:7px;background:var(--nb-accent);color:#fff;vertical-align:middle;}
-.session-child{margin-left:18px!important;width:calc(100% - 18px)!important;border-left:1px solid var(--nb-border);border-radius:0 8px 8px 0}
+.session-child{margin-left:22px!important;width:calc(100% - 22px)!important;border-left:2px solid var(--nb-border);border-radius:0 8px 8px 0;position:relative}
+.session-child::before{content:"";position:absolute;left:-14px;top:50%;width:12px;height:1px;background:var(--nb-border)}
+.session-group-body{position:relative}
+.session-group-body::before{content:"";position:absolute;left:8px;top:4px;bottom:4px;width:2px;background:var(--nb-border);opacity:0.5}
 .session-role{margin-left:6px;color:var(--nb-label-caption);font-size:10px;font-weight:400}
 .session-select{position:absolute;left:4px;top:9px;z-index:2;display:flex;align-items:center;cursor:pointer;opacity:0;transition:opacity var(--nb-dur)}
 .session-item{padding-left:28px}.session-item:hover .session-select,.session-select:focus-within{opacity:1}
@@ -2420,8 +2441,7 @@ svg.ico {
 @media (max-width: 768px) {
   #qa-show { display: none !important; }
 }
-
-/* 消息时间：独立底部行，不占正文横向空间。 */
+/* 消息时间：独立底部行，不占正文横向空间；桌面端用量条内嵌到同一行右侧（.msg-time-inline）。 */
 .msg-time {
   display: block;
   margin-top: 8px;
@@ -2433,6 +2453,15 @@ svg.ico {
   text-align: right;
   opacity: .85;
 }
+/* 用量条内嵌时间：桌面端与用量同一行右对齐，过长省略号；手机端回退为独立底部行。 */
+.msg-time-inline {
+  flex: none;
+  margin-top: 0;
+  max-width: 42%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 @media (max-width: 768px) {
   .msg-time {
@@ -2441,6 +2470,8 @@ svg.ico {
     line-height: 1.25;
     text-align: left;
   }
+  .tool-usage, .msg-usage { flex-wrap: wrap; }
+  .msg-time-inline { display: block; width: 100%; }
   .msg-user, .msg-assistant, .msg-boxed, .msg-tool {
     min-width: 0;
   }
@@ -2512,3 +2543,5 @@ svg.ico {
 .collab-activity span{color:var(--nb-accent);font:9px var(--nb-mono)}
 .collab-activity b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--nb-label-2);font-weight:500}
 .collab-activity time{font:9px var(--nb-mono);white-space:nowrap}
+
+.session-group-body .session-item:hover .menu-btn{opacity:1}

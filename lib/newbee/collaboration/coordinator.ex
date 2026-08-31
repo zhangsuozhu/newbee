@@ -84,6 +84,9 @@ defmodule Newbee.Collaboration.Coordinator do
   def renew_task(group_id, task_id, session_id, seconds \\ 300, server \\ __MODULE__),
     do: GenServer.call(server, {:renew_task, group_id, task_id, session_id, seconds})
 
+  def delete_group(group_id, session_id, server \\ __MODULE__),\
+    do: GenServer.call(server, {:delete_group, group_id, session_id})
+
   @impl true
   def init(opts) do
     root = Keyword.get(opts, :root, @default_root)
@@ -476,6 +479,27 @@ defmodule Newbee.Collaboration.Coordinator do
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
   end
+  def handle_call({:delete_group, group_id, session_id}, _from, state) do
+    with {:ok, group} <- fetch_group(state, group_id),
+         :ok <- ensure_coordinator(group, session_id) do
+      active_task? =
+        Enum.any?(group["tasks"] || [], fn task ->
+          task["status"] not in ["succeeded", "failed", "cancelled"]
+        end)
+
+      if active_task? do
+        {:reply, {:error, "busy", "组内有进行中的任务，无法删除"}, state}
+      else
+        event = event("collab_group_deleted", group_id, %{"group_id" => group_id}, nil)
+        {:ok, persisted} = append(state, event)
+        next = apply_event(state, persisted)
+        broadcast(persisted, group)
+        {:reply, {:ok, %{"group_id" => group_id}}, next}
+      end
+    else
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
 
   def handle_call({:can_approve_permission?, actor_session_id, target_session_id}, _from, state) do
     allowed? =
@@ -706,6 +730,12 @@ defmodule Newbee.Collaboration.Coordinator do
 
     state
     |> put_group(group)
+    |> remember_command(event["command_id"])
+  end
+
+  defp apply_event(state, %{"topic" => "collab_group_deleted", "group_id" => group_id} = event) do
+    state
+    |> Map.update!(:groups, &Map.delete(&1, group_id))
     |> remember_command(event["command_id"])
   end
 

@@ -402,12 +402,15 @@ const flow = $("flow");
     const parsed = value ? new Date(value) : new Date();
     const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
     d.dataset.createdAt = value || d.dataset.createdAt || date.toISOString();
-    let time = d.querySelector(":scope > .msg-time");
-    if (!time) { time = document.createElement("time"); time.className = "msg-time"; }
+    let time = d.querySelector(".msg-time");
+    if (!time) {
+      time = document.createElement("time");
+      time.className = "msg-time";
+      d.appendChild(time);
+    }
     time.textContent = date.toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
     time.dateTime = date.toISOString();
     time.title = date.toISOString();
-    d.appendChild(time);
     return d;
   }
 
@@ -421,7 +424,21 @@ const flow = $("flow");
       case "tool_start": toolStart(p); break;
       case "tool_result": toolResult(p.text, true, p.duration_ms); break;
       case "tool_error": toolResult(p.text, false); break;
-      case "done": finishTurn(); line("done", p.summary, true, p.created_at); break;
+      case "done": {
+        finishTurn();
+        const doneCard = line("done", p.summary, true, p.created_at);
+        // done 总结卡补挂本轮用量（与刷新回放视图一致），避免底部空白
+        try {
+          if (doneCard && doneCard.dataset.hasUsage !== "1") {
+            const u = state.turnUsage && state.turnUsage.count > 0
+              ? { prompt_tokens: state.turnUsage.prompt, completion_tokens: state.turnUsage.completion, cache_read_tokens: state.turnUsage.hasUnknown ? null : state.turnUsage.cached, model: state.turnUsage.model }
+              : state.lastLLMUsage;
+            if (u) attachUsageToBubble(doneCard, u);
+          }
+        } catch (e) {}
+        break;
+      }
+
       case "ask": finishTurn(); renderAskCard(p.question, p.options || [], p.kind || "text", p.created_at); break;
       case "text_end": finishTurn(); break;
       case "error": {
@@ -541,8 +558,9 @@ case "goal_round": break;
   }
 
   function line(kind, text, md) {
-    el(`msg-${kind}`, text || "", md);
+    const d = el(`msg-${kind}`, text || "", md);
     scrollBottom();
+    return d;
   }
 
   function promptInjection(p) {
@@ -1437,6 +1455,61 @@ case "goal_round": break;
   function groupedSessionIds() {
     return new Set(Object.keys(state.groupBySession || {}));
   }
+  // ── 会话组折叠状态（localStorage 持久化）──
+  function loadGroupCollapsed() {
+    try {
+      const raw = localStorage.getItem("newbee.groupCollapsed");
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+  }
+  function saveGroupCollapsed() {
+    try { localStorage.setItem("newbee.groupCollapsed", JSON.stringify(state.groupCollapsed || {})); } catch (e) {}
+  }
+  function isGroupCollapsed(groupId) {
+    return !!(state.groupCollapsed && state.groupCollapsed[groupId]);
+  }
+  function toggleGroupCollapse(groupId) {
+    if (!state.groupCollapsed) state.groupCollapsed = loadGroupCollapsed();
+    state.groupCollapsed[groupId] = !state.groupCollapsed[groupId];
+    if (!state.groupCollapsed[groupId]) delete state.groupCollapsed[groupId];
+    saveGroupCollapsed();
+    renderSessionList();
+  }
+  async function deleteGroup(group) {
+    const groupId = group.group_id;
+    const title = group.title || group.goal || groupId;
+    // 前端运行态预检：busy 则直接提示
+    const busyMember = (group.members || []).find((m) => {
+      const s = (state.allSessions || []).find((x) => x.id === m.session_id);
+      return s && s.busy;
+    });
+    if (busyMember) {
+      line("error", "无法删除：组内会话「" + sessionDisplayName(busyMember.session_id) + "」正在运行中");
+      return;
+    }
+    confirmDialog("删除工作组「" + title + "」？将同时删除组内全部会话（" + (group.members || []).length + " 个），此操作不可恢复。", async () => {
+      try {
+        const res = await rpc("group.delete", { groupId, sessionId: state.sid });
+        // 若当前会话在被删组内，切到新会话
+        const deletedIds = (res && res.members_deleted) || (group.members || []).map((m) => m.session_id);
+        if (deletedIds.includes(state.sid)) {
+          state.sid = null;
+          localStorage.removeItem("newbee.sid");
+          deletedIds.forEach(clearTiming);
+          await newSession();
+        } else {
+          deletedIds.forEach(clearTiming);
+        }
+        if (state.groupCollapsed && state.groupCollapsed[groupId]) { delete state.groupCollapsed[groupId]; saveGroupCollapsed(); }
+        await Promise.all([loadSessions(), loadGroups()]);
+        line("notice", "已删除工作组「" + title + "」");
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        line("error", "删除工作组失败: " + msg);
+      }
+    }, { confirmLabel: "删除整组", confirmClass: "btn-deny" });
+  }
+
 
   function renderSessionList() {
     const box = $("session-list");
@@ -1446,11 +1519,11 @@ case "goal_round": break;
     const visible = (s) => !kw || String(s.title || "").toLowerCase().includes(kw) || String(s.id).toLowerCase().includes(kw);
     const rendered = new Set();
     const addItem = (s, child, ref) => {
-      if (!visible(s) || rendered.has(s.id)) return;
+      if (!visible(s) || rendered.has(s.id)) return null;
       rendered.add(s.id);
       const item = document.createElement("div");
       item.className = "session-item" + (child ? " session-child" : "") + (s.id === state.sid ? " active" : "");
-      const title = String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\s+/g, " " ).trim().slice(0, 40) || "(未命名)";
+      const title = String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\\s+/g, " " ).trim().slice(0, 40) || "(未命名)";
       const stCls = s.busy ? "busy" : (s.running ? "online" : "offline");
       const role = ref && ref.role ? ref.role : "会话";
       const selected = state.selectedSessions && state.selectedSessions.has(s.id) ? " checked" : "";
@@ -1462,27 +1535,59 @@ case "goal_round": break;
       checkbox.onchange = () => { if (!state.selectedSessions) state.selectedSessions = new Set(); checkbox.checked ? state.selectedSessions.add(s.id) : state.selectedSessions.delete(s.id); updateSelectedSessionCount(); };
       const btn = document.createElement("button"); btn.className = "menu-btn"; btn.textContent = "⋯"; btn.title = "更多操作";
       btn.onclick = (e) => { e.stopPropagation(); openSessionMenu(e, s); };
-      item.appendChild(btn); box.appendChild(item);
+      item.appendChild(btn);
+      return item;
     };
     const findSession = (id) => all.find((s) => s.id === id) || { id, title: id, messages: 0, running: false, busy: false };
     (state.groups || []).forEach((group) => {
       const members = group.members || [];
       if (!members.length) return;
       const head = members.find((m) => m.session_id === group.coordinator_session_id) || members[0];
-      if (visible(findSession(head.session_id))) { const label = document.createElement("div"); label.className = "session-group-label" + (group.current_session_member ? " current" : ""); label.textContent = group.title || group.goal || "会话群"; if (group.current_session_member) { const cur = document.createElement("span"); cur.className = "group-current-badge"; cur.textContent = "当前"; label.appendChild(cur); } box.appendChild(label); }
-      addItem(findSession(head.session_id), false, head);
-      members.filter((m) => m.session_id !== head.session_id).forEach((m) => addItem(findSession(m.session_id), true, m));
+      const groupVisible = members.some((m) => visible(findSession(m.session_id)));
+      if (!groupVisible) return;
+      const collapsed = isGroupCollapsed(group.group_id);
+      const groupWrap = document.createElement("div");
+      groupWrap.className = "session-group" + (collapsed ? " collapsed" : "");
+      groupWrap.dataset.groupId = group.group_id;
+      const header = document.createElement("div");
+      header.className = "session-group-header" + (group.current_session_member ? " current" : "");
+      const toggleIcon = collapsed ? "▸" : "▾";
+      const busyCount = members.filter((m) => { const s = findSession(m.session_id); return s.busy; }).length;
+      const busyHint = busyCount ? ` <span class="session-group-busy">● ${busyCount} 运行中</span>` : "";
+      const canDelete = group.coordinator_session_id === state.sid;
+      header.innerHTML = `<button class="session-group-toggle" title="${collapsed ? "展开" : "收起"}">${toggleIcon}</button><span class="session-group-title">${escapeHtml(group.title || group.goal || "会话组")}</span><span class="session-group-count">${members.length} 成员</span>${busyHint}${group.current_session_member ? '<span class="group-current-badge">当前</span>' : ""}<button class="session-group-delete ${canDelete ? "" : "hidden"}" title="${busyCount ? "组内有运行中会话，无法删除整组" : "删除整组及组内全部会话（不可恢复）"}">🗑 删除整组</button>`;
+      header.onclick = (e) => {
+        if (e.target.closest(".session-group-delete")) return;
+        toggleGroupCollapse(group.group_id);
+      };
+      const delBtn = header.querySelector(".session-group-delete");
+      if (delBtn) {
+        if (busyCount) delBtn.disabled = true;
+        delBtn.onclick = (e) => { e.stopPropagation(); deleteGroup(group); };
+      }
+      const toggleBtn = header.querySelector(".session-group-toggle");
+      if (toggleBtn) toggleBtn.onclick = (e) => { e.stopPropagation(); toggleGroupCollapse(group.group_id); };
+      groupWrap.appendChild(header);
+      const body = document.createElement("div");
+      body.className = "session-group-body";
+      const headItem = addItem(findSession(head.session_id), false, head);
+      if (headItem) body.appendChild(headItem);
+      members.filter((m) => m.session_id !== head.session_id).forEach((m) => {
+        const it = addItem(findSession(m.session_id), true, m);
+        if (it) body.appendChild(it);
+      });
+      groupWrap.appendChild(body);
+      box.appendChild(groupWrap);
     });
     const grouped = groupedSessionIds();
     const others = all.filter((s) => !grouped.has(s.id) && !rendered.has(s.id) && visible(s));
-    if (others.length) { const label = document.createElement("div"); label.className = "session-group-label other"; label.textContent = "其他会话"; box.appendChild(label); others.forEach((s) => addItem(s, false, null)); }
+    if (others.length) { const label = document.createElement("div"); label.className = "session-group-label other"; label.textContent = "其他会话"; box.appendChild(label); others.forEach((s) => { const it = addItem(s, false, null); if (it) box.appendChild(it); }); }
     if (!box.children.length) { const empty = document.createElement("div"); empty.className = "session-empty"; empty.textContent = kw ? "没有匹配「" + kw + "」的会话" : "暂无会话"; box.appendChild(empty); }
     const cur = all.find((s) => s.id === state.sid); if (cur && typeof updateCwdLabel === "function") updateCwdLabel(cur.cwd || null);
     updateSelectedSessionCount();
     const loaded = all.length, total = state.sessionsTotal || loaded;
     if (loaded < total) { const more = document.createElement("button"); more.className = "session-more"; more.textContent = state.loadingMoreSessions ? "加载中…" : `加载更多（已加载 ${loaded}/${total}）`; more.disabled = !!state.loadingMoreSessions; more.onclick = loadMoreSessions; box.appendChild(more); }
   }
-
   function updateSelectedSessionCount() {
     const n = state.selectedSessions ? state.selectedSessions.size : 0;
     const label = $("selected-session-count");
@@ -2217,7 +2322,8 @@ case "goal_round": break;
       if (m.images && m.images.length) renderUserLine(m.content, m.images);
       else line("user", m.content);
     } else if (m.role === "done") {
-      line("done", m.content, true);
+      const doneCard = line("done", m.content, true);
+      if (replayPendingUsage) { attachUsageToBubble(doneCard, replayPendingUsage); replayPendingUsage = null; }
     } else if (m.role === "assistant") {
       if (m.reasoning) {
         const d = el("msg-reasoning", "");
@@ -2798,6 +2904,9 @@ case "goal_round": break;
     left.textContent = label;
     left.title = `prompt=${f.prompt} completion=${f.completion} total=${f.total} cached=${f.cached} hit=${f.hit == null ? "-" : f.hit.toFixed(2)+"%"}`;
     bar.appendChild(left);
+    setBubbleTime(bubble, bubble.dataset.createdAt);
+    const tm = bubble.querySelector(":scope > .msg-time");
+    if (tm) { tm.classList.add("msg-time-inline"); bar.appendChild(tm); }
     bubble.dataset.hasUsage = "1";
   }
   function handleBubbleUsage(u) {
@@ -2858,6 +2967,8 @@ case "goal_round": break;
     bar.appendChild(left);
     card.appendChild(bar);
     setBubbleTime(card, card.dataset.createdAt);
+    const time = card.querySelector(".msg-time");
+    if (time) { time.classList.add("msg-time-inline"); bar.appendChild(time); }
     state.lastAttachedSeq = state.lastUsageSeq;
   }
   function scrollBottom(force) {

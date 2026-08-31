@@ -859,14 +859,11 @@ defmodule Newbee.Agent.Loop do
                   # emit(:done) 不发——由 WSession broadcast_turn_end 统一发送
                   # 避免前端收到两个 done 事件导致渲染两个空圆点
                   # 持久化 done 总结到 transcript（不入 LLM 历史，仅 UI 历史），
-                  # 否则刷新后 session.history 读不到最后一条总结
-                  if state.session do
-                    Newbee.Session.append(state.session, %{
-                      "role" => "assistant",
-                      "content" => summary,
-                      "done" => true
-                    })
-                  end
+                  # 否则刷新后 session.history 读不到最后一条总结。
+                  # 走 push_msg 带上本轮 _usage（拆成 usage 行 + done 行），
+                  # 回放时 usage 与 done 卡相邻，否则 usage 悬空错位（done 卡无统计）。
+                  done_msg = %{"role" => "assistant", "content" => summary, "done" => true, "_usage" => state.usage}
+                  state = push_msg(state, done_msg)
 
                   # DeepSeek 严格校验：带 tool_calls 的 assistant 后必须跟齐 tool 响应，
                   # 否则下一回合 400（此前 done/ask 从不回填，历史必然悬空）
