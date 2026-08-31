@@ -94,20 +94,26 @@ defmodule Newbee.Agent.Loop do
         :ok
     end
 
-    # 兜底：查表失败（evaluator 非 pid / 未注册）时，从 kernel state 拿 client scope
-    # 直接置 LLM flag。:sys.get_state 在 Loop 忙时会排队，用短超时保护不阻塞控制面。
+    # 兜底：查表失败时异步尝试从 kernel state 拿 scope（不阻塞控制面）。
     if Process.alive?(kernel) do
-      try do
-        state = :sys.get_state(kernel, 200)
-        scope = Map.get(state.client, :interrupt_scope)
-        if scope, do: :persistent_term.put({Newbee.LLM.Client, {:interrupt, scope}}, true)
-      catch
-        :exit, _ -> :ok
-      end
-    end
+      spawn(fn ->
+        try do
+          state = :sys.get_state(kernel, 500)
+          scope = Map.get(state.client, :interrupt_scope)
+          if scope, do: :persistent_term.put({Newbee.LLM.Client, {:interrupt, scope}}, true)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
 
-    # 双保险：同时给 kernel 发消息，Loop 处理 mailbox 时用自己的 client 自置 flag。
-    if Process.alive?(kernel), do: send(kernel, :interrupt_llm)
+      try do
+        GenServer.cast(kernel, :force_interrupt)
+      catch
+        _, _ -> :ok
+      end
+
+      send(kernel, :interrupt_llm)
+    end
 
     :ok
   end
@@ -405,23 +411,31 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp submit_message(state, message) do
-    # 注意：不能在回合开始清中断标志——execute_calls 阶段的中断检查依赖它。
-    # 热加载中的 Loop 可能已持有启动前写入的空 assistant；提交前清掉，避免再次触发上游 400。
     t0 = :erlang.monotonic_time(:millisecond)
     state = %{state | messages: repair_history(drop_empty_assistant_messages(state.messages))}
     state = push_msg(state, message)
     state = maybe_history_recall(state, message)
-    # 回合开始清本会话中断标志（per-session scope，无跨会话竞态）。
-    # 标志语义 = "本回合内是否收到 Esc"；execute_calls 阶段的中断检查依赖它。
-    Newbee.LLM.Client.clear_interrupt(state.client)
-    {reply, state} = run_turn(state, 1)
-    {reply, state} = after_turn(reply, state)
-    persist_bindings(state)
-    ms = :erlang.monotonic_time(:millisecond) - t0
-    Newbee.DebugLog.log(:submit, "done in #{ms}ms reply=#{elem(reply, 0)}")
-    emit(state, {:turn_end, elem(reply, 0), ms})
-    flush_bus()
-    {:reply, reply, state}
+    if Newbee.LLM.Client.interrupted?(state.client) do
+      Newbee.DebugLog.log(:turn, "submit interrupted before run_turn (boundary)")
+      emit(state, {:interrupted, nil})
+      Newbee.LLM.Client.clear_interrupt(state.client)
+      persist_bindings(state)
+      ms = :erlang.monotonic_time(:millisecond) - t0
+      emit(state, {:turn_end, :interrupted, ms})
+      flush_bus()
+      {:reply, {:interrupted, nil}, %{state | goal: nil}}
+    else
+      Newbee.LLM.Client.clear_interrupt(state.client)
+      {reply, state} = run_turn(state, 1)
+      {reply, state} = after_turn(reply, state)
+      Newbee.LLM.Client.clear_interrupt(state.client)
+      persist_bindings(state)
+      ms = :erlang.monotonic_time(:millisecond) - t0
+      Newbee.DebugLog.log(:submit, "done in #{ms}ms reply=#{elem(reply, 0)}")
+      emit(state, {:turn_end, elem(reply, 0), ms})
+      flush_bus()
+      {:reply, reply, state}
+    end
   end
 
   # 自主目标循环：异步驱动（每轮之间可处理 mailbox，/goal clear 可插入取消）。
@@ -441,10 +455,19 @@ defmodule Newbee.Agent.Loop do
 
   def handle_info(:goal_next, state) do
     if state.goal do
-      Newbee.LLM.Client.clear_interrupt(state.client)
-      {reply, state} = run_turn(state, 1)
-      {_reply, state} = after_turn(reply, state)
-      {:noreply, state}
+      if Newbee.LLM.Client.interrupted?(state.client) do
+        Newbee.DebugLog.log(:goal, "goal_next interrupted before run_turn")
+        emit(state, {:goal_cancelled, :interrupted})
+        emit(state, {:interrupted, nil})
+        Newbee.LLM.Client.clear_interrupt(state.client)
+        {:noreply, %{state | goal: nil}}
+      else
+        Newbee.LLM.Client.clear_interrupt(state.client)
+        {reply, state} = run_turn(state, 1)
+        {_reply, state} = after_turn(reply, state)
+        Newbee.LLM.Client.clear_interrupt(state.client)
+        {:noreply, state}
+      end
     else
       {:noreply, state}
     end
@@ -453,6 +476,13 @@ defmodule Newbee.Agent.Loop do
       Newbee.DebugLog.log(:goal, "goal loop crashed: #{inspect(e)}")
       emit(state, {:goal_cancelled, :crash})
       {:noreply, %{state | goal: nil}}
+  end
+
+  @impl true
+  def handle_cast(:force_interrupt, state) do
+    scope = Map.get(state.client, :interrupt_scope)
+    if scope, do: :persistent_term.put({Newbee.LLM.Client, {:interrupt, scope}}, true)
+    {:noreply, state}
   end
 
   # ── 自主目标（/goal）：turn 出口统一处理 ──

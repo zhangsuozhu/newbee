@@ -12,10 +12,7 @@ defmodule Newbee.Web.Session do
   defstruct kernel: nil,
             sid: nil,
             busy: false,
-            # kernel/求值器节点在 init 返回后异步启动（:peer boot 约 1-3s）；
-            # session.create 只需完成登记/配置，立即响应用户。
             booting: false,
-            # boot 中用户可能已热切模型/思考强度；就绪时把最新 client 灌回 kernel
             boot_client: nil,
             queue: :queue.new(),
             turns: 0,
@@ -23,7 +20,9 @@ defmodule Newbee.Web.Session do
             context_window: nil,
             client: nil,
             usage_snap: %{},
-            steps_snap: 0
+            steps_snap: 0,
+            interrupt_pending: false,
+            interrupt_at: nil
 
   # ── registry ──
 
@@ -560,14 +559,15 @@ defmodule Newbee.Web.Session do
   end
 
   def handle_cast(:interrupt, st) do
-    if st.kernel && Process.alive?(st.kernel), do: Newbee.Agent.Loop.interrupt(st.kernel)
-
-    # 中断 = 停止当前 + 清空排队（用户按停止的意图是不再继续跑后续指令）；
-    # 清空数广播给前端提示。
+    now = System.monotonic_time(:millisecond)
+    broadcast(st.sid, :interrupt_ack, %{at: now})
+    if st.kernel && Process.alive?(st.kernel) do
+      Newbee.Agent.Loop.interrupt(st.kernel)
+    end
+    st = %{st | interrupt_pending: true, interrupt_at: now}
     n = :queue.len(st.queue)
     st = %{st | queue: :queue.new()}
     if n > 0, do: broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
-
     {:noreply, st}
   end
 
@@ -752,14 +752,9 @@ defmodule Newbee.Web.Session do
   end
 
   def handle_info({:kernel_booted, {:ok, kernel}}, %{booting: true} = st) do
-    # start_kernel 在临时 spawn 进程内 start_link；spawn 正常退出后 kernel 仍存活，
-    # 这里补 link 回本会话进程，维持原有的会话死→kernel 死生命周期。
     if Process.alive?(kernel), do: Process.link(kernel)
-
     boot_client = st.boot_client
     st = %{st | kernel: kernel, booting: false, boot_client: nil}
-
-    # boot 期间用户可能已热切模型/思考强度；用会话当前 client 覆盖启动时快照。
     if boot_client && st.client && st.client != boot_client do
       try do
         Newbee.Agent.Loop.switch_model(kernel, st.client)
@@ -767,7 +762,13 @@ defmodule Newbee.Web.Session do
         _, _ -> :ok
       end
     end
-
+    st =
+      if st.interrupt_pending && Process.alive?(kernel) do
+        Newbee.Agent.Loop.interrupt(kernel)
+        st
+      else
+        st
+      end
     {:noreply, dispatch_pending(st)}
   end
 
@@ -783,17 +784,20 @@ defmodule Newbee.Web.Session do
   end
 
   def handle_info({:turn_finished, result}, st) do
-    st = %{st | turns: st.turns + 1}
+    st = %{st | turns: st.turns + 1, interrupt_pending: false, interrupt_at: nil}
     save_stats(st)
     broadcast_turn_end(st.sid, result)
-
-    # 队列驱动：循环出队直到真正开启 turn（/ 命令不开 turn，单条出队会卡住后续排队输入）
     {:noreply, dispatch_pending(%{st | busy: false})}
   end
 
   def handle_info(_, st), do: {:noreply, st}
 
   # boot 期间到达的输入排队于此；kernel 就绪后按到达顺序提交。
+  defp dispatch_pending(%{interrupt_pending: true} = st) do
+    # 粘性中断已等待当前 turn 结束，当前 turn 已通过 turn_finished 清 flag，此处仅兜底清理
+    %{st | interrupt_pending: false, interrupt_at: nil}
+  end
+
   defp dispatch_pending(%{queue: q} = st) do
     case :queue.out(q) do
       {{:value, {:text, t}}, q} ->

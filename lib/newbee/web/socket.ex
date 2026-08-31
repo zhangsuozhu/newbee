@@ -23,7 +23,10 @@ defmodule Newbee.Web.Socket do
   def handle_in({text, [opcode: :text]}, st) do
     case Jason.decode(text) do
       {:ok, %{"type" => "interrupt"}} ->
-        cast_session(st.sid, &WSession.interrupt/1)
+        case WSession.lookup(st.sid) do
+          {:ok, pid} -> WSession.interrupt(pid)
+          _ -> :ok
+        end
 
       {:ok, %{"type" => "permission", "ok" => ok} = frame} ->
         target = frame["sessionId"] || st.sid

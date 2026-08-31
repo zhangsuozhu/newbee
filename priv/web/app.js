@@ -436,6 +436,7 @@ const flow = $("flow");
         break;
       }
       case "interrupted": finishTurn(); line("notice", "已中断"); break;
+      case "interrupt_ack": line("notice", "✓ 已收到中断，正在停止…"); break;
       case "permission_ask": showPermission(p.preview); break;
       case "usage": setUsage(p.usage); handleBubbleUsage(p.usage); break;
       case "compacted": line("notice", `历史已压缩 ${p.count} 条`); break;
@@ -2465,12 +2466,25 @@ case "goal_round": break;
     }
   }
 
+  let _interruptAt = 0;
   function interrupt() {
+    const now = Date.now();
+    if (now - _interruptAt < 500) return;
+    _interruptAt = now;
+    const btn = document.getElementById("interrupt");
+    if (btn) { btn.disabled = true; btn.title = "正在中断…"; }
+    line("notice", "⌛ 正在中断…");
+    let sent = false;
     if (state.ws && state.ws.readyState === 1) {
-      state.ws.send(JSON.stringify({ type: "interrupt" }));
-    } else if (state.sid) {
-      rpc("session.cancel", { sessionId: state.sid }).catch(() => {});
+      try { state.ws.send(JSON.stringify({ type: "interrupt" })); sent = true; } catch(e){}
     }
+    if (state.sid) {
+      rpc("session.cancel", { sessionId: state.sid }).catch(() => {});
+      if (sent) setTimeout(() => {
+        if (state.busy) rpc("session.cancel", { sessionId: state.sid }).catch(() => {});
+      }, 200);
+    }
+    setTimeout(() => { if (btn) { btn.disabled = false; btn.title = "中断当前 turn"; } }, 800);
   }
 
   // ── 模型 ──
