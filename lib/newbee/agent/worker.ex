@@ -18,6 +18,10 @@ defmodule Newbee.Agent.Worker do
   defdelegate set_goal(loop, text, opts), to: Newbee.Agent.Loop
   defdelegate clear_goal(loop), to: Newbee.Agent.Loop
   defdelegate goal(loop), to: Newbee.Agent.Loop
+  defdelegate update_goal(loop, text, opts), to: Newbee.Agent.Loop
+  defdelegate set_goal_status(loop, status), to: Newbee.Agent.Loop
+  defdelegate set_goal_budget(loop, budget), to: Newbee.Agent.Loop
+  defdelegate loop(loop, task, opts), to: Newbee.Agent.Loop
   defdelegate usage(loop), to: Newbee.Agent.Loop
   defdelegate switch_model(loop, client), to: Newbee.Agent.Loop
   defdelegate interrupt(loop), to: Newbee.Agent.Loop

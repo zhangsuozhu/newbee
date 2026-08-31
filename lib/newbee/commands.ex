@@ -5,7 +5,7 @@ defmodule Newbee.Commands do
   """
 
   @commands ~w(/model /bindings /tokens /rules /status /dump /resume /reset /approve
-    /reject /log /environment /evolve /autonomy /bundles /goal /diff /image
+    /reject /log /environment /evolve /autonomy /bundles /goal /loop /diff /image
     /undo /session /init /tools /permissions /compact /archive /attach /new /quit)
 
   def commands, do: @commands
@@ -559,24 +559,56 @@ defmodule Newbee.Commands do
 
   defp run("goal", arg, ctx) do
     if ctx.kernel do
-      case String.trim(arg) do
-        "" ->
+      arg = String.trim(arg)
+      cond do
+        arg == "" or arg == "status" ->
           case Newbee.Agent.Loop.goal(ctx.kernel) do
             nil ->
-              ctx.say.("（无自主目标）用法: /goal <目标描述> 启动 · /goal clear 取消")
+              ctx.say.("（无自主目标）用法: /goal <目标> [--budget N] [--max-rounds N] | /goal pause|resume|clear|edit <新目标>|budget <N>")
 
             g ->
-              ctx.say.("自主目标: #{g.text}（第 #{g.rounds}/#{g.max_rounds} 轮）")
+              budget = if g.token_budget, do: "#{g.tokens_used}/#{g.token_budget}", else: "#{g.tokens_used}/∞"
+              ctx.say.("自主目标 [#{g.status}]: #{g.text}（#{g.rounds}/#{g.max_rounds} 轮 · budget #{budget} · idle #{g.idle}）")
+              if g.status == :budget_limited, do: ctx.say.("  ⚠ 已达预算上限，已注入收尾提示；/goal budget <N> 可提升预算")
+              if g.status == :blocked, do: ctx.say.("  ⛔ 三击阻塞，需 /goal resume 或 /goal edit")
           end
 
-        "clear" ->
+        arg == "clear" ->
           Newbee.Agent.Loop.clear_goal(ctx.kernel)
           ctx.say.("自主目标已取消")
 
-        text ->
-          case Newbee.Agent.Loop.set_goal(ctx.kernel, text) do
+        arg == "pause" ->
+          case Newbee.Agent.Loop.set_goal_status(ctx.kernel, :paused) do
+            :ok -> ctx.say.("已暂停自主目标")
+            {:error, e} -> ctx.say.("暂停失败: #{inspect(e)}")
+          end
+
+        arg == "resume" ->
+          case Newbee.Agent.Loop.set_goal_status(ctx.kernel, :active) do
+            :ok -> ctx.say.("已恢复自主目标，继续推进")
+            {:error, e} -> ctx.say.("恢复失败: #{inspect(e)}")
+          end
+
+        String.starts_with?(arg, "edit ") ->
+          text = String.trim_leading(arg, "edit ") |> String.trim()
+          case Newbee.Agent.Loop.update_goal(ctx.kernel, text) do
+            :ok -> ctx.say.("已更新目标: #{text}")
+            {:error, e} -> ctx.say.("更新失败: #{inspect(e)}")
+          end
+
+        String.starts_with?(arg, "budget ") ->
+          b = String.trim_leading(arg, "budget ") |> String.trim()
+          case Newbee.Agent.Loop.set_goal_budget(ctx.kernel, b) do
+            :ok -> ctx.say.("已调整预算: #{b}")
+            {:error, e} -> ctx.say.("调整失败: #{inspect(e)}")
+          end
+
+        true ->
+          {text, opts} = parse_goal_args(arg)
+          case Newbee.Agent.Loop.set_goal(ctx.kernel, text, opts) do
             :ok ->
-              ctx.say.("已启动自主目标（异步运行；/goal 查看状态 · /goal clear 取消）")
+              budget_hint = if opts[:token_budget], do: " budget=#{opts[:token_budget]}", else: ""
+              ctx.say.("已启动自主目标#{budget_hint}（异步运行；/goal 查看状态 · /goal clear 取消）")
 
             {:error, reason} ->
               ctx.say.("启动失败: #{inspect(reason)}")
@@ -588,6 +620,65 @@ defmodule Newbee.Commands do
 
     :handled
   end
+
+  defp parse_goal_args(arg) do
+    # 支持尾缀 --budget N 和 --max-rounds N
+    {text, budget} = case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, arg) do
+      [_, t, b] -> {String.trim(t), String.to_integer(b)}
+      _ -> {arg, nil}
+    end
+    {text, max_rounds} = case Regex.run(~r/^(.*)\s+--max-rounds\s+(\d+)\s*$/, text) do
+      [_, t, n] -> {String.trim(t), String.to_integer(n)}
+      _ -> {text, nil}
+    end
+    opts = []
+    opts = if budget, do: Keyword.put(opts, :token_budget, budget), else: opts
+    opts = if max_rounds, do: Keyword.put(opts, :max_rounds, max_rounds), else: opts
+    {text, opts}
+  end
+
+  defp run("loop", arg, ctx) do
+    if ctx.kernel do
+      arg = String.trim(arg)
+      if arg == "" do
+        ctx.say.("用法: /loop <任务描述> [--iterations N] [--budget TOKENS]  (N≤20)")
+      else
+        {task, opts} = parse_loop_args(arg)
+        # If goal active, hint
+        case Newbee.Agent.Loop.goal(ctx.kernel) do
+          %{status: :active} -> ctx.say.("⚠ 已有 active goal，loop 将与之并行；建议先 /goal pause")
+          _ -> :ok
+        end
+        case Newbee.Agent.Loop.loop(ctx.kernel, task, opts) do
+          {:done, summary} -> ctx.say.("Loop 完成: #{summary}")
+          {:ask, q} -> ctx.say.("Loop 需要提问: #{q}")
+          {:loop_done, n} -> ctx.say.("Loop 完成 #{n} 轮（未调用 done）")
+          {:loop_budget, n} -> ctx.say.("Loop 预算触顶 (#{n} tokens)")
+          {:error, e} -> ctx.say.("Loop 失败: #{inspect(e)}")
+          other -> ctx.say.("Loop 结果: #{inspect(other)}")
+        end
+      end
+    else
+      ctx.say.("（无 kernel 上下文，/loop 不可用）")
+    end
+    :handled
+  end
+
+  defp parse_loop_args(arg) do
+    {task, it} = case Regex.run(~r/^(.*)\s+--iterations\s+(\d+)\s*$/, arg) do
+      [_, t, n] -> {String.trim(t), String.to_integer(n)}
+      _ -> {arg, nil}
+    end
+    {task, budget} = case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, task) do
+      [_, t, b] -> {String.trim(t), String.to_integer(b)}
+      _ -> {task, nil}
+    end
+    opts = []
+    opts = if it, do: Keyword.put(opts, :iterations, it), else: opts
+    opts = if budget, do: Keyword.put(opts, :token_budget, budget), else: opts
+    {task, opts}
+  end
+
 
   # ── /undo：回退到上一 revision（§10：环境版本回退只恢复环境自身）──
 
