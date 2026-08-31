@@ -436,6 +436,13 @@ const flow = $("flow");
             if (u) attachUsageToBubble(doneCard, u);
           }
         } catch (e) {}
+        // 下一步工作建议：done 携带 next_steps 时就地渲染可选卡片（单选/多选/按钮）
+        try {
+          const ns = p.next_steps || (p.question || p.options ? p : null);
+          if (ns && (ns.question || (ns.options && ns.options.length))) {
+            renderAskCard(ns.question || "下一步做什么？", ns.options || [], ns.kind || "single", p.created_at);
+          }
+        } catch (e) {}
         break;
       }
 
@@ -2333,6 +2340,13 @@ case "goal_round": break;
     } else if (m.role === "done") {
       const doneCard = line("done", m.content, true);
       if (replayPendingUsage) { attachUsageToBubble(doneCard, replayPendingUsage); replayPendingUsage = null; }
+      // 回放时若 done 携带下一步选项，同样渲染选择卡片
+      try {
+        const ns = m.next_steps || m.nextSteps;
+        if (ns && (ns.question || (ns.options && ns.options.length))) {
+          renderAskCard(ns.question || "下一步做什么？", ns.options || [], ns.kind || "single", m.created_at || null);
+        }
+      } catch (e) {}
     } else if (m.role === "assistant") {
       if (m.reasoning) {
         const d = el("msg-reasoning", "");

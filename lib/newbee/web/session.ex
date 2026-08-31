@@ -1006,6 +1006,10 @@ defmodule Newbee.Web.Session do
   defp broadcast_turn_end(sid, result) do
     {kind, payload} =
       case result do
+        {:done, summary, next_steps} when is_map(next_steps) ->
+          {:done,
+           %{summary: summary, next_steps: next_steps, question: next_steps["question"], kind: next_steps["kind"], options: next_steps["options"]}}
+
         {:done, summary} ->
           {:done, %{summary: summary}}
 

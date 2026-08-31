@@ -2096,8 +2096,14 @@ defmodule Newbee.Web.Api do
     %{role: "user", content: text, images: images, created_at: m["created_at"]}
   end
 
-  defp history_msg(%{"role" => "assistant", "done" => true, "content" => c} = m) when is_binary(c),
-    do: %{role: "done", content: c, created_at: m["created_at"]}
+  defp history_msg(%{"role" => "assistant", "done" => true, "content" => c} = m) when is_binary(c) do
+    base = %{role: "done", content: c, created_at: m["created_at"]}
+
+    case m["next_steps"] || m[:next_steps] do
+      ns when is_map(ns) and map_size(ns) > 0 -> Map.put(base, :next_steps, json_safe(ns))
+      _ -> base
+    end
+  end
 
   defp history_msg(%{"role" => "assistant"} = m) do
     calls =
