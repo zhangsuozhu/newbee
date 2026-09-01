@@ -196,7 +196,7 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
     Path.join([Newbee.GlobalStore.root(), "edit_snapshots", project_hash <> ".term"])
   end
 
-  defp read_store(project_root \\ File.cwd!()) do
+  defp read_store(project_root) do
     case File.read(snapshot_path(project_root)) do
       {:ok, binary} ->
         try do
