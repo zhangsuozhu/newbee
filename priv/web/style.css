@@ -530,9 +530,17 @@ body {
   padding: 6px 12px; border-radius: 8px; width: fit-content;
 }
 .msg-media .media-download:hover { border-color: var(--nb-accent); }
-
-
-
+/* 图片点击放大 */
+.nb-zoomable { cursor: zoom-in; }
+.nb-lightbox {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.85); cursor: zoom-out;
+}
+.nb-lightbox img {
+  max-width: 94vw; max-height: 94vh; object-fit: contain;
+  border-radius: 4px; box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+}
 
 /* 按钮 */
 .btn-primary {

@@ -52,4 +52,16 @@ defmodule Newbee.MediaWebE2ETest do
     assert {:ok, bin} = Newbee.Media.read(sid, p.media_id)
     assert bin == <<137, 80, 78, 71>>
   end
+
+  test "用户图片 lightbox 固定在视口中央并可点击关闭" do
+    css = File.read!("priv/web/style.css")
+    js = File.read!("priv/web/app.js")
+
+    assert css =~ ~r/\.nb-lightbox\s*\{[^}]*position:\s*fixed/s
+    assert css =~ ~r/\.nb-lightbox\s*\{[^}]*inset:\s*0/s
+    assert css =~ ~r/\.nb-lightbox\s*\{[^}]*display:\s*flex/s
+    assert css =~ ~r/\.nb-lightbox\s*\{[^}]*align-items:\s*center/s
+    assert css =~ ~r/\.nb-lightbox\s*\{[^}]*justify-content:\s*center/s
+    assert js =~ ~s|mask.addEventListener("click", closeLightbox)|
+  end
 end

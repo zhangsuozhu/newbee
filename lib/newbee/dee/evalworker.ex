@@ -92,6 +92,11 @@ defmodule Newbee.DEE.EvalWorker do
       Task.async(fn ->
         register_remote_active(interrupt_node, interrupt_key, self())
 
+        # 当前 cell 的媒体能力令牌：由 Agent.Loop 在主节点签发，
+        # 只在本次 cell 进程中短暂可见；Tools.Media 会回主节点校验令牌。
+        media_capability = opts[:media_capability]
+        if is_binary(media_capability), do: Process.put({Newbee.Tools.Media, :capability}, media_capability)
+
         try do
           {:ok, io} = StringIO.open("")
           Process.group_leader(self(), io)
@@ -111,6 +116,7 @@ defmodule Newbee.DEE.EvalWorker do
           send(parent, {:cell_done, self(), outcome, out})
         after
           clear_remote_active(interrupt_node, interrupt_key, self())
+          if is_binary(media_capability), do: Process.delete({Newbee.Tools.Media, :capability})
         end
       end)
 
