@@ -127,6 +127,35 @@ defmodule Newbee.LLM.ResponsesTest do
            ]
   end
 
+  test "input converts chat-style image content for Responses API" do
+    messages = [
+      %{
+        "role" => "user",
+        "content" => [
+          %{"type" => "text", "text" => "analyze this screenshot"},
+          %{
+            "type" => "image_url",
+            "image_url" => %{"url" => "data:image/png;base64,AA==", "detail" => "high"}
+          }
+        ]
+      }
+    ]
+
+    assert Responses.input(messages) == [
+             %{
+               "role" => "user",
+               "content" => [
+                 %{"type" => "input_text", "text" => "analyze this screenshot"},
+                 %{
+                   "type" => "input_image",
+                   "image_url" => "data:image/png;base64,AA==",
+                   "detail" => "high"
+                 }
+               ]
+             }
+           ]
+  end
+
   test "continuation survives client recreation and sends only strict delta" do
     test_pid = self()
     checkpoint = Path.join(System.tmp_dir!(), "newbee-responses-#{System.unique_integer([:positive])}.json")
