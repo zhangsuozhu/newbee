@@ -1054,6 +1054,20 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
+  # fallback 代码块也要带当前会话的 capability；否则 Tools.Media 会退回全局 current。
+  defp eval_fallback(st, code) do
+    case issue_collaboration_capability(st) do
+      {:ok, token} ->
+        try do
+          Newbee.DEE.Evaluator.eval(st.evaluator, code, media_capability: token)
+        after
+          Newbee.Collaboration.Capability.revoke(token)
+        end
+
+      _ -> Newbee.DEE.Evaluator.eval(st.evaluator, code)
+    end
+  end
+
   # 降级通道：执行正文里的 elixir 块（按 run_elixir 语义），结果回填后继续循环 + 温和纠偏
   defp execute_fallback(blocks, cleaned, state, step) do
     result =
@@ -1064,7 +1078,7 @@ defmodule Newbee.Agent.Loop do
         else
           emit(st, {:tool_start, "run_elixir(fallback)", "", code})
           tool_started_at = System.monotonic_time(:millisecond)
-          eval_result = Newbee.DEE.Evaluator.eval(st.evaluator, code)
+          eval_result = eval_fallback(st, code)
 
           if Newbee.LLM.Client.interrupted?(st.client) or eval_interrupted?(eval_result) do
             emit(st, {:interrupted, nil})
@@ -1520,13 +1534,13 @@ defmodule Newbee.Agent.Loop do
     eval_result =
       try do
         with {:ok, token} <- issue_collaboration_capability(state) do
-          _ = Newbee.DEE.Evaluator.eval(state.evaluator, collaboration_context_put(token))
+          _ = Newbee.DEE.Evaluator.eval(state.evaluator, collaboration_context_put(token), media_capability: token)
 
           try do
-            Newbee.DEE.Evaluator.eval(state.evaluator, code)
+            Newbee.DEE.Evaluator.eval(state.evaluator, code, media_capability: token)
           after
             # token 清理独立成步：保留裸代码的顶层绑定；主节点撤销阻止 token 复用
-            Newbee.DEE.Evaluator.eval(state.evaluator, @collab_context_delete)
+            Newbee.DEE.Evaluator.eval(state.evaluator, @collab_context_delete, media_capability: token)
             Newbee.Collaboration.Capability.revoke(token)
           end
         else

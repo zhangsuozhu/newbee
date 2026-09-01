@@ -2278,9 +2278,21 @@ case "goal_round": break;
 
   // 媒体上屏：渲染图片/音频/视频卡片（实时事件与历史回放共用）
   function renderMediaShow(p) {
+    // 去重：实时 media_show 事件与历史回放（session.history 的 media 行）是两条渲染路径，
+    // 同 media_id 已在流里则跳过，避免刷新/切会话后出现两张卡。
+    if (p.media_id) {
+      const dup = flow.querySelector(`.msg-media[data-media-id="${p.media_id}"]`);
+      if (dup) return;
+    }
     const d = el("msg-media", "");
     d.dataset.mediaId = p.media_id || "";
-    const kind = p.kind || (p.url || "").match(/\.(png|jpe?g|gif|webp|svg)/i) ? "image" : "other";
+    // 修复运算符优先级：原式 `p.kind || match ? "image" : "other"` 等价于
+    // `(p.kind || match) ? "image" : "other"`——任何非空 kind（含 "other"）都被
+    // 判成 image 渲成破图。改为：已知 kind 直用，未知非空 kind 归 other，
+    // 仅 kind 缺失时按 URL 后缀兜底。
+    const urlIsImage = (p.url || "").match(/\.(png|jpe?g|gif|webp|svg)/i);
+    const kind = p.kind === "image" || p.kind === "audio" || p.kind === "video" ? p.kind
+      : (p.kind ? "other" : (urlIsImage ? "image" : "other"));
     const head = document.createElement("div");
     head.className = "media-head";
     head.innerHTML = `<span class="media-kind">${escapeHtml(kind)}</span><span class="media-name">${escapeHtml(p.name || "")}</span><span class="media-size">${escapeHtml(p.size ? fmtBytes(p.size) : "")}</span>`;
