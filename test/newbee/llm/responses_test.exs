@@ -145,7 +145,7 @@ defmodule Newbee.LLM.ResponsesTest do
 
     client_opts = [
       api: "openai-responses",
-      model: "test/m",
+      model: "test/continuation-persist-6084",
       api_key: "test",
       base_url: "http://localhost",
       cache_key: "newbee-session",
@@ -176,30 +176,33 @@ defmodule Newbee.LLM.ResponsesTest do
     on_exit(fn -> File.rm(checkpoint) end)
     counter = :atomics.new(1, [])
 
+    # 网关对带 previous_response_id 的请求一律回 400 previous_response_not_found；
+    # 不带 previous 的（含 continuation 被禁用后的全量重放）正常回 200。
     plug = fn conn ->
       {:ok, raw, conn} = Plug.Conn.read_body(conn)
       body = Jason.decode!(raw)
       n = :atomics.add_get(counter, 1, 1)
       send(test_pid, {:fallback_request, n, body})
 
-      case n do
-        1 ->
-          Req.Test.json(conn, response("resp-1", "one"))
-
-        2 ->
+      cond do
+        # 带 previous_response_id 的续接：网关一律拒绝（模拟不保留 store 的网关）
+        body["previous_response_id"] ->
           conn
           |> Plug.Conn.put_resp_content_type("application/json")
           |> Plug.Conn.send_resp(400, Jason.encode!(%{"error" => %{"code" => "previous_response_not_found"}}))
 
-        3 ->
-          Req.Test.json(conn, response("resp-3", "three"))
+        n == 1 ->
+          Req.Test.json(conn, response("resp-1", "one"))
+
+        true ->
+          Req.Test.json(conn, response("resp-#{n}", "three"))
       end
     end
 
     client =
       Client.new(
         api: "openai-responses",
-        model: "test/m",
+        model: "test/fallback-#{System.unique_integer([:positive])}",
         api_key: "test",
         base_url: "http://localhost",
         cache_key: "newbee-session",
@@ -212,11 +215,13 @@ defmodule Newbee.LLM.ResponsesTest do
     history = [user("hi"), assistant("one"), user("continue")]
     assert {:ok, %{"content" => "three"}, _usage} = Client.stream_chat(client, history)
 
+    # 第 2 次：尝试续接（带 previous_response_id）→ 被拒
     assert_received {:fallback_request, 2, incremental}
     assert incremental["previous_response_id"] == "resp-1"
+    # 第 3 次：continuation 已被禁用，全量重放且不再带 previous_response_id / store
     assert_received {:fallback_request, 3, full}
     refute Map.has_key?(full, "previous_response_id")
-    assert full["store"] == true
+    refute Map.has_key?(full, "store")
     assert full["input"] == history
   end
 
@@ -505,4 +510,36 @@ defmodule Newbee.LLM.ResponsesTest do
       "usage" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
     }
   end
+  test "capability downgrade persists to disk and survives process restart (NEWBEE_HOME)" do
+    # 隔离持久化文件到临时 HOME，避免污染真实 ~/.newbee，也不污染 async 兄弟测试
+    tmp_home = Path.join(System.tmp_dir!(), "newbee-home-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(tmp_home)
+    System.put_env("NEWBEE_HOME", tmp_home)
+
+    on_exit(fn ->
+      System.delete_env("NEWBEE_HOME")
+      File.rm_rf(tmp_home)
+    end)
+
+    scope = {"http://localhost", "test/caps-persist-#{System.unique_integer([:positive])}"}
+
+    # 起始于无记录
+    assert Newbee.LLM.ResponsesCapabilities.load(scope) == %{}
+
+    # 模拟 Responses.put_capability 的落盘效果
+    Newbee.LLM.ResponsesCapabilities.put(scope, :continuation, false)
+    Newbee.LLM.ResponsesCapabilities.put(scope, :stream, false)
+
+    # 同进程可读回
+    assert Newbee.LLM.ResponsesCapabilities.load(scope) == %{continuation: false, stream: false}
+
+    # 模拟"重启"：清掉进程内的 load_persisted 缓存，再从磁盘读——值仍在
+    :persistent_term.erase({:newbee, :responses_caps_persisted, scope})
+    assert Newbee.LLM.ResponsesCapabilities.load(scope) == %{continuation: false, stream: false}
+
+    # 不同 route 互不影响
+    other = {"http://localhost", "test/other-#{System.unique_integer([:positive])}"}
+    assert Newbee.LLM.ResponsesCapabilities.load(other) == %{}
+  end
+
 end

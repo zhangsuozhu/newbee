@@ -2,6 +2,7 @@ defmodule Newbee.LLM.Responses do
   @moduledoc false
 
   alias Newbee.LLM.ResponsesContinuation, as: Continuation
+  alias Newbee.LLM.ResponsesCapabilities, as: Caps
 
   @overload_statuses [429, 500, 502, 503, 529]
   @overload_retries 5
@@ -161,6 +162,11 @@ defmodule Newbee.LLM.Responses do
       continued? and not state.replayed_previous and previous_response_not_found?(error) ->
         Newbee.DebugLog.log(:llm, "responses continuation expired; retrying full request")
         Continuation.clear(client.responses_checkpoint)
+
+        # 该 route 实际不支持/不保留 previous_response_id：把 continuation 能力降级并
+        # 持久化，本会话后续 turn 与重启后都不再白试续接（否则每个 turn 都先失败一次
+        # 再全量重放，等于每步白付一个全 prompt）。
+        put_capability(client, :continuation, false)
 
         run_request(client, logical_input, wire_tools, opts, %{
           state
@@ -768,7 +774,13 @@ defmodule Newbee.LLM.Responses do
   end
 
   defp capabilities(client) do
-    stored = :persistent_term.get(@capability_key, %{}) |> Map.get(capability_scope(client), %{})
+    scope = capability_scope(client)
+
+    stored =
+      @capability_key
+      |> :persistent_term.get(%{})
+      |> Map.get(scope, %{})
+      |> Map.merge(load_persisted(scope))
     configured_stream = Map.get(client, :responses_stream, :auto)
 
     stream =
@@ -794,6 +806,24 @@ defmodule Newbee.LLM.Responses do
       @capability_key,
       Map.put(all, scope, Map.put(current, capability, value))
     )
+
+    # 落盘：重启后复用探测结果，避免每次重启重新踩一遍 400 全量重放。
+    Caps.put(scope, capability, value)
+  end
+
+  # 进程内缓存磁盘快照，避免每个请求都读盘；只把已探测的降级键（false）合并进来。
+  defp load_persisted(scope) do
+    key = {:newbee, :responses_caps_persisted, scope}
+
+    case :persistent_term.get(key, :unset) do
+      :unset ->
+        caps = Caps.load(scope)
+        :persistent_term.put(key, caps)
+        caps
+
+      caps ->
+        caps
+    end
   end
 
   defp capability_scope(client), do: {client.base_url, client.model}
