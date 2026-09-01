@@ -156,4 +156,45 @@ defmodule Newbee.Tools.EditStructuredTest do
     assert result.status == :applied
     assert File.read!(path) == "a\n" <> tricky <> "\n"
   end
+
+  test "show 返回值直传 snapshot（推荐用法）", %{path: path} do
+    w!(path, "a\nb\nc\n")
+    shown = Edit.show(path)
+
+    result = Edit.patch(%{snapshot: shown, edits: [%{op: :replace, range: 2..2, content: "B"}]})
+
+    assert result.status == :applied
+    assert File.read!(path) == "a\nB\nc\n"
+  end
+
+  test "show 扩展返回值 ok:true 直传", %{path: path} do
+    w!(path, "x\ny\n")
+    shown = Map.put(Edit.show(path), :ok, true)
+
+    result = Edit.patch(%{snapshot: shown, edits: [%{op: :delete, range: {2, 2}}]})
+
+    assert result.status == :applied
+    assert File.read!(path) == "x\n"
+  end
+
+  test "冲突参数 content 和 text 不一致返回 ambiguous", %{path: path} do
+    w!(path, "a\nb\n")
+    s = Edit.show(path)
+
+    assert_raise Edit.ParseError, ~r/歧义|不一致/, fn ->
+      Edit.patch(%{path: path, tag: s.tag, op: :replace, from: 1, to: 1, content: "A", text: "B"})
+    end
+  end
+
+  test "无效 range 不再静默退化为全文", %{path: path} do
+    w!(path, "a\nb\n")
+
+    assert_raise Edit.ParseError, ~r/无法识别的 range/, fn ->
+      Edit.show(path, %{nonsense: true})
+    end
+
+    assert_raise Edit.ParseError, ~r/无法识别的 range/, fn ->
+      Edit.show(path, "banana")
+    end
+  end
 end
