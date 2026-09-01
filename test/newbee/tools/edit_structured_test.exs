@@ -246,4 +246,56 @@ defmodule Newbee.Tools.EditStructuredTest do
     assert File.read!(path) == orig1
     on_exit(fn -> File.rm_rf(path2) end)
   end
+
+  test "快照内容哈希：不同内容不同 tag，相同内容 tag 一致" do
+    p1 = Path.join(System.tmp_dir!(), "nb_hash_#{System.unique_integer([:positive])}_1.txt")
+    p2 = Path.join(System.tmp_dir!(), "nb_hash_#{System.unique_integer([:positive])}_2.txt")
+
+    on_exit(fn ->
+      File.rm(p1)
+      File.rm(p2)
+    end)
+
+    w!(p1, "same\n")
+    w!(p2, "same\n")
+    s1 = Edit.show(p1)
+    s2 = Edit.show(p2)
+
+    w!(p2, "different\n")
+    s3 = Edit.show(p2)
+
+    assert s1.tag == s2.tag
+    assert s1.tag != s3.tag
+    assert s1.tag =~ ~r/^[0-9a-f]{12}$/
+  end
+
+  test "不同项目目录独立快照（项目隔离写入）" do
+    proj_a = Path.join(System.tmp_dir!(), "nb_proja_#{System.unique_integer([:positive])}")
+    proj_b = Path.join(System.tmp_dir!(), "nb_projb_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(proj_a)
+    File.mkdir_p!(proj_b)
+
+    on_exit(fn ->
+      File.rm_rf!(proj_a)
+      File.rm_rf!(proj_b)
+    end)
+
+    pa = Path.join(proj_a, "f.txt")
+    pb = Path.join(proj_b, "f.txt")
+    w!(pa, "aaa\n")
+    w!(pb, "bbb\n")
+
+    {:ok, orig} = File.cwd()
+
+    try do
+      File.cd!(proj_a)
+      sa = Edit.show(pa)
+      File.cd!(proj_b)
+      sb = Edit.show(pb)
+      assert sa.tag != sb.tag
+      assert String.length(sa.tag) == 12
+    after
+      File.cd!(orig)
+    end
+  end
 end

@@ -11,12 +11,13 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   @tag_bytes 6
   @table :newbee_edit_snapshots
 
-  @enforce_keys [:text, :hash, :path, :recorded_at]
-  defstruct [:text, :hash, :path, :recorded_at, lines: 0, seen: MapSet.new(), has_trailing: true]
+  @enforce_keys [:text, :hash, :sha256, :path, :recorded_at]
+  defstruct [:text, :hash, :sha256, :path, :recorded_at, lines: 0, seen: MapSet.new(), has_trailing: true]
 
   @type t :: %__MODULE__{
           text: String.t(),
           hash: String.t(),
+          sha256: String.t(),
           path: String.t(),
           recorded_at: integer(),
           lines: non_neg_integer(),
@@ -27,9 +28,12 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   @doc "记录快照，返回标签；同内容重复记录合并已读范围。"
   @spec record(String.t(), String.t(), Enumerable.t()) :: String.t()
   def record(path, text, seen_lines \\ []) do
+    path = normalize_path(path)
+
     with_store(fn store ->
       {lines, has_trailing} = split_lines(text)
       hash = content_hash(text)
+      sha256 = full_hash(text)
       history = Map.get(store, path, [])
 
       next =
@@ -38,6 +42,7 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
             snap = %__MODULE__{
               text: text,
               hash: hash,
+              sha256: sha256,
               path: path,
               recorded_at: System.system_time(:millisecond),
               lines: length(lines),
@@ -59,7 +64,7 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
 
   @doc "按标签取该路径快照。"
   @spec fetch(String.t(), String.t()) :: t() | nil
-  def fetch(path, tag), do: history(path) |> Enum.reverse() |> Enum.find(&(&1.hash == tag))
+  def fetch(path, tag), do: history(normalize_path(path)) |> Enum.reverse() |> Enum.find(&(&1.hash == tag))
 
   @doc "标签是否已知。"
   @spec known?(String.t(), String.t()) :: boolean()
@@ -68,6 +73,8 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   @doc "合并已展示行。"
   @spec mark_seen(String.t(), String.t(), Enumerable.t()) :: :ok | :unknown_snapshot
   def mark_seen(path, tag, lines) do
+    path = normalize_path(path)
+
     with_store(fn store ->
       history = Map.get(store, path, [])
 
@@ -86,14 +93,19 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   @doc "提交后登记新版本（全行已读），返回新标签。"
   @spec promote(String.t(), String.t()) :: String.t()
   def promote(path, new_text) do
+    path = normalize_path(path)
+
     with_store(fn store ->
       {lines, has_trailing} = split_lines(new_text)
       hash = content_hash(new_text)
       history = Map.get(store, path, [])
 
+      sha256 = full_hash(new_text)
+
       snap = %__MODULE__{
         text: new_text,
         hash: hash,
+        sha256: sha256,
         path: path,
         recorded_at: System.system_time(:millisecond),
         lines: length(lines),
@@ -105,47 +117,59 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
     end)
   end
 
-  @doc "清空快照（测试用）。"
-  def clear do
+  @doc "清空快照（测试用）。project_root 指定时只清该项目；缺省清所有并删当前项目文件。"
+  def clear(project_root \\ nil) do
     ensure_table()
-    :ets.delete_all_objects(@table)
-    File.rm(snapshot_path())
+
+    if project_root do
+      :ets.delete(@table, ets_key(project_root))
+      File.rm(snapshot_path(project_root))
+    else
+      :ets.delete_all_objects(@table)
+      File.rm(snapshot_path())
+    end
+
     :ok
   end
 
   defp history(path), do: get_store() |> Map.get(path, [])
 
-  defp get_store do
-    ensure_table()
+  defp ets_key(project_root), do: {:store, project_root}
 
-    case :ets.lookup(@table, :store) do
-      [{:store, store}] ->
+  defp get_store(project_root \\ File.cwd!()) do
+    ensure_table()
+    key = ets_key(project_root)
+
+    case :ets.lookup(@table, key) do
+      [{^key, store}] ->
         store
 
       [] ->
-        store = read_store()
-        :ets.insert(@table, {:store, store})
+        store = read_store(project_root)
+        :ets.insert(@table, {key, store})
         store
     end
   end
 
-  defp put_store(store) do
+  defp put_store(project_root, store) do
     ensure_table()
     trimmed = lru_trim(store)
-    :ets.insert(@table, {:store, trimmed})
-    write_store(trimmed)
+    :ets.insert(@table, {ets_key(project_root), trimmed})
+    write_store(project_root, trimmed)
     trimmed
   end
 
-  defp with_store(fun) do
+  defp with_store(fun), do: with_store(File.cwd!(), fun)
+
+  defp with_store(project_root, fun) do
     # The file is the cross-node source of truth. A global lock protects
     # concurrent writers when nodes share the same Erlang distribution.
-    lock = {__MODULE__, :snapshot_store}
+    lock = {__MODULE__, :snapshot_store, project_root}
 
     transaction = fn ->
-      store = read_store()
+      store = read_store(project_root)
       {result, next_store} = fun.(store)
-      put_store(next_store)
+      put_store(project_root, next_store)
       result
     end
 
@@ -166,12 +190,14 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
     end
   end
 
-  defp snapshot_path do
-    Path.join(Newbee.GlobalStore.root(), "edit_snapshots.term")
+  defp snapshot_path(project_root \\ nil) do
+    root = project_root || File.cwd!()
+    project_hash = :crypto.hash(:sha256, root) |> binary_part(0, 4) |> Base.encode16(case: :lower)
+    Path.join([Newbee.GlobalStore.root(), "edit_snapshots", project_hash <> ".term"])
   end
 
-  defp read_store do
-    case File.read(snapshot_path()) do
+  defp read_store(project_root \\ File.cwd!()) do
+    case File.read(snapshot_path(project_root)) do
       {:ok, binary} ->
         try do
           :erlang.binary_to_term(binary, [:safe])
@@ -187,8 +213,8 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
     end
   end
 
-  defp write_store(store) do
-    path = snapshot_path()
+  defp write_store(project_root, store) do
+    path = snapshot_path(project_root)
     File.mkdir_p!(Path.dirname(path))
     temp = path <> ".tmp." <> Integer.to_string(System.unique_integer([:positive]))
 
@@ -223,6 +249,13 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   defp lru_touch(store, path), do: Map.put(store, {:lru, path}, System.system_time(:millisecond))
 
   defp content_hash(text), do: :crypto.hash(:sha256, text) |> binary_part(0, @tag_bytes) |> Base.encode16(case: :lower)
+
+  # 完整 SHA-256 用于安全校验（短 tag 只作句柄）
+  defp full_hash(text), do: :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)
+
+  # 路径统一绝对化，避免 ./x 与 x 双份
+  defp normalize_path(path) when is_binary(path), do: Path.expand(path)
+  defp normalize_path(other), do: other
 
   defp split_lines(content) do
     has_trailing = String.ends_with?(content, "\n")
