@@ -692,26 +692,37 @@ defmodule Newbee.Web.Session do
      }, st}
   end
 
-  # 热更新思考强度：busy 时 Loop 的 call 会排队到 turn 结束，10s 超时不视为失败——
-  # 元数据已持久化，重启/下轮都会用新值。auto(及 default)→nil = 不发送 reasoning_effort，
-  # 由 provider 用自身默认推理档
+  # 热更新思考强度：busy/booting 时不阻塞调用方——先持久化 + 更新会话 client，立即回复；
+  # kernel 侧由 turn_finished / boot 完成后异步同步，保证下一轮立即生效。
   def handle_call({:set_effort, effort}, _from, st) do
     effort = normalize_effort(effort)
-    client = %{(st.client || client_for_session(st.sid)) | reasoning_effort: effort}
+    base_client =
+      st.client ||
+        case client_for_session(st.sid) do
+          {:ok, c} -> c
+          _ -> %Newbee.LLM.Client{}
+        end
+    client = %{base_client | reasoning_effort: effort}
     :ok = Newbee.Session.set_effort(st.sid, effort)
-
-    applied =
-      try do
-        match?(:ok, Newbee.Agent.Loop.switch_model(st.kernel, client))
-      catch
-        :exit, _ -> false
+    if st.busy or st.booting do
+      broadcast(st.sid, :effort_changed, %{effort: effort, applied: false, deferred: true})
+      {:reply, {:ok, %{applied: false, deferred: true}}, %{st | client: client}}
+    else
+      if st.kernel && Process.alive?(st.kernel) do
+        Task.start(fn ->
+          try do
+            Newbee.Agent.Loop.switch_model(st.kernel, client)
+          catch
+            _, _ -> :ok
+          end
+        end)
       end
-
-    broadcast(st.sid, :effort_changed, %{effort: effort, applied: applied})
-    {:reply, {:ok, %{applied: applied}}, %{st | client: client}}
+      broadcast(st.sid, :effort_changed, %{effort: effort, applied: true})
+      {:reply, {:ok, %{applied: true}}, %{st | client: client}}
+    end
   end
 
-  @effort_levels ~w(none low medium high xhigh max)
+  @effort_levels ~w(none minimal low medium high xhigh max ultra)
 
   defp normalize_effort(e)
 
@@ -727,6 +738,19 @@ defmodule Newbee.Web.Session do
   end
 
   defp normalize_effort(_), do: nil
+
+  # 同步会话 client 到 Loop kernel（在 turn 结束等 Loop 空闲时调用，阻塞短暂可接受）
+  defp sync_kernel_effort(%{kernel: kernel, client: client} = st) when not is_nil(kernel) and not is_nil(client) do
+    if Process.alive?(kernel) do
+      try do
+        _ = Newbee.Agent.Loop.switch_model(kernel, client)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+    st
+  end
+  defp sync_kernel_effort(st), do: st
 
   @impl true
   def handle_info(:boot_kernel, %{booting: true, client: client, sid: sid} = st)
@@ -786,9 +810,9 @@ defmodule Newbee.Web.Session do
     st = %{st | turns: st.turns + 1}
     save_stats(st)
     broadcast_turn_end(st.sid, result)
-
+    st = %{st | busy: false} |> sync_kernel_effort()
     # 队列驱动：循环出队直到真正开启 turn（/ 命令不开 turn，单条出队会卡住后续排队输入）
-    {:noreply, dispatch_pending(%{st | busy: false})}
+    {:noreply, dispatch_pending(st)}
   end
 
   def handle_info(_, st), do: {:noreply, st}
