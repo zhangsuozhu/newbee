@@ -197,4 +197,53 @@ defmodule Newbee.Tools.EditStructuredTest do
       Edit.show(path, "banana")
     end
   end
+
+  test "并发变更：show 后磁盘被改则拒绝写入", %{path: path} do
+    w!(path, "l1\nl2\nl3\n")
+    s = Edit.show(path)
+    # 模拟外部修改
+    w!(path, "CONCURRENT-CHANGE\n")
+
+    assert_raise Edit.RejectError, fn ->
+      Edit.patch(%{path: path, tag: s.tag, ops: [%{op: :replace, from: 1, to: 1, text: "X"}]})
+    end
+
+    # 文件保持并发修改的内容，未被破坏
+    assert File.read!(path) == "CONCURRENT-CHANGE\n"
+  end
+
+  test "权限保留：写入后文件 mode 不变", %{path: path} do
+    w!(path, "a\nb\n")
+    s = Edit.show(path)
+    before = File.stat!(path).mode
+
+    Edit.patch(%{path: path, tag: s.tag, ops: [%{op: :replace, from: 1, to: 1, text: "A"}]})
+
+    assert File.stat!(path).mode == before
+  end
+
+  test "失败原子性：第二个文件校验失败时第一个文件未被写入", %{path: path} do
+    w!(path, "l1\nl2\n")
+    path2 = path <> "_2.txt"
+    w!(path2, "x\ny\n")
+    s1 = Edit.show(path)
+    s2 = Edit.show(path2)
+    orig1 = File.read!(path)
+
+    # 使 path2 校验失败：删除文件并创建同名非空目录（不可读）
+    File.rm(path2)
+    File.mkdir(path2)
+
+    # plan 阶段即失败（File.Error 或 RejectError），此时 write 尚未执行
+    assert_raise File.Error, fn ->
+      Edit.patch([
+        %{path: path, tag: s1.tag, ops: [%{op: :replace, from: 1, to: 1, text: "A"}]},
+        %{path: path2, tag: s2.tag, ops: [%{op: :replace, from: 1, to: 1, text: "Y"}]}
+      ])
+    end
+
+    # 第一个文件未被写入，保持原内容
+    assert File.read!(path) == orig1
+    on_exit(fn -> File.rm_rf(path2) end)
+  end
 end

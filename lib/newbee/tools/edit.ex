@@ -661,25 +661,42 @@ defmodule Newbee.Tools.Edit do
         %{
           plan: plan,
           temp: plan.path <> ".newbee-edit-tmp-" <> nonce,
-          backup: plan.path <> ".newbee-edit-backup-" <> nonce
+          backup: plan.path <> ".newbee-edit-backup-" <> nonce,
+          moved?: false
         }
       end)
 
     try do
       Enum.each(entries, fn %{plan: plan, temp: temp} ->
         File.write!(temp, plan.new_content)
+
+        case File.stat(plan.path) do
+          {:ok, %{mode: mode}} -> File.chmod!(temp, mode)
+          _ -> :ok
+        end
       end)
 
-      case Enum.reduce_while(entries, [], fn %{plan: plan, temp: temp, backup: backup} = entry, moved ->
-             with :ok <- File.rename(plan.path, backup),
-                  :ok <- File.rename(temp, plan.path) do
-               {:cont, [entry | moved]}
-             else
-               {:error, reason} ->
+      case Enum.reduce_while(entries, [], fn
+             %{plan: plan, temp: temp, backup: backup} = entry, moved ->
+               if File.read!(plan.path) != plan.old_content do
                  rollback_entries([entry | moved])
-                 {:halt, {:error, plan.path, reason}}
-             end
+                 {:halt, {:error, plan.path, :concurrent_change}}
+               else
+                 with :ok <- File.rename(plan.path, backup),
+                      :ok <- File.rename(temp, plan.path) do
+                   {:cont, [%{entry | moved?: true} | moved]}
+                 else
+                   {:error, reason} ->
+                     rollback_entries([entry | moved])
+                     {:halt, {:error, plan.path, reason}}
+                 end
+               end
            end) do
+        {:error, failed_path, :concurrent_change} ->
+          raise RejectError,
+            message: "文件在写入前已被并发修改：#{failed_path}，未写入。请重新 show 后重试",
+            category: :concurrent_change
+
         {:error, failed_path, reason} ->
           raise RejectError,
             message: "无法原子替换 #{failed_path}: #{inspect(reason)}",
@@ -709,10 +726,18 @@ defmodule Newbee.Tools.Edit do
   end
 
   defp rollback_entries(entries) do
-    Enum.each(Enum.reverse(entries), fn %{plan: plan, temp: temp, backup: backup} ->
-      File.rm(plan.path)
+    Enum.each(Enum.reverse(entries), fn entry ->
+      %{plan: plan, temp: temp, backup: backup} = entry
 
-      if File.exists?(backup), do: File.rename(backup, plan.path)
+      if entry.moved? do
+        # 已成功替换：删除新内容，恢复备份
+        File.rm(plan.path)
+        if File.exists?(backup), do: File.rename(backup, plan.path)
+      else
+        # 未移动：原文件仍在原位，只清理备份（可能备份存在但第二步失败）
+        if File.exists?(backup), do: File.rename(backup, plan.path)
+      end
+
       File.rm(temp)
     end)
   end
