@@ -60,7 +60,7 @@ defmodule Newbee.Tools.Edit do
   end
 
   defmodule ParseError do
-    defexception [:message]
+    defexception [:message, :code, :hint, :retry]
   end
 
   defmodule RejectError do
@@ -87,15 +87,21 @@ defmodule Newbee.Tools.Edit do
   def patch(%{base64: b}) when is_binary(b), do: patch_base64_decoded(b)
   def patch(%{"base64" => b}) when is_binary(b), do: patch_base64_decoded(b)
 
-  defp patch_base64_decoded(base64) do
-    case Base.decode64(String.trim(base64)) do
-      {:ok, text} -> patch(text)
-      :error -> raise ParseError, message: "invalid base64 patch"
-    end
-  end
-
   def patch(%{files: files}) when is_list(files), do: patch_files(files)
   def patch(%{"files" => files}) when is_list(files), do: patch_files(files)
+
+  def patch(%{snapshot: %{path: p, tag: t}} = opts) when is_binary(p) and is_binary(t) do
+    opts = Map.put(opts, :path, p) |> Map.put(:tag, t)
+    file = normalize_file_map(opts)
+    patch_files([file])
+  end
+
+  def patch(%{"snapshot" => %{"path" => p, "tag" => t}} = opts)
+      when is_binary(p) and is_binary(t) do
+    opts = Map.put(opts, :path, p) |> Map.put(:tag, t)
+    file = normalize_file_map(opts)
+    patch_files([file])
+  end
 
   def patch(%{file: p} = opts) when is_binary(p) and is_map(opts) do
     file = normalize_file_map(opts)
@@ -119,6 +125,38 @@ defmodule Newbee.Tools.Edit do
 
   def patch(list) when is_list(list) do
     patch_files(list)
+  end
+
+  def patch(patch_text) when is_binary(patch_text) do
+    sections = parse(patch_text)
+    check_duplicate_paths!(sections)
+    plans = Enum.map(sections, &plan_section/1)
+    Enum.each(plans, &check_no_op!/1)
+    :ok = write_plans_atomic(plans)
+    plans = Enum.map(plans, fn plan -> %{plan | new_tag: SnapshotStore.promote(plan.path, plan.new_content)} end)
+
+    %{
+      status: :applied,
+      files:
+        Enum.map(plans, fn p ->
+          %{
+            path: p.path,
+            old_tag: p.tag,
+            new_tag: p.new_tag,
+            changed_lines: p.changed_lines,
+            diff: p.diff,
+            context: p.context
+          }
+        end),
+      warnings: []
+    }
+  end
+
+  defp patch_base64_decoded(base64) do
+    case Base.decode64(String.trim(base64)) do
+      {:ok, text} -> patch(text)
+      :error -> raise ParseError, message: "invalid base64 patch"
+    end
   end
 
   defp patch_files(files) do
@@ -150,7 +188,7 @@ defmodule Newbee.Tools.Edit do
 
   defp normalize_file_map(map) when is_map(map) do
     path = fetch_key(map, [:path, :file]) || fetch_key(map, ["path", "file"])
-    tag = fetch_key(map, [:tag, :snapshot, :id]) || fetch_key(map, ["tag", "snapshot", "id"])
+    tag = fetch_tag(map)
 
     cond do
       is_nil(path) ->
@@ -169,6 +207,17 @@ defmodule Newbee.Tools.Edit do
   end
 
   defp normalize_single_edit(opts) do
+    check_ambiguous!(opts, [
+      [:content, :text, :new_text],
+      ["content", "text", "new_text"],
+      [:range, :lines],
+      ["range", "lines"],
+      [:from, :first, :a, :start],
+      ["from", "first", "a", "start"],
+      [:to, :last, :b, :end],
+      ["to", "last", "b", "end"]
+    ])
+
     cond do
       op = fetch_key(opts, [:op, :operation]) || fetch_key(opts, ["op", "operation"]) ->
         %{
@@ -235,6 +284,45 @@ defmodule Newbee.Tools.Edit do
     end)
   end
 
+  # tag 支持 show/2 的完整返回值（%{ok: true, snapshot: t, ...} 或 %{tag: t, text: ...}）
+  defp fetch_tag(map) do
+    raw = fetch_key(map, [:tag, :snapshot, :id]) || fetch_key(map, ["tag", "snapshot", "id"])
+    extract_tag(raw)
+  end
+
+  defp extract_tag(%{tag: t}) when is_binary(t), do: t
+  defp extract_tag(%{"tag" => t}) when is_binary(t), do: t
+  defp extract_tag(%{snapshot: t}) when is_binary(t), do: t
+  defp extract_tag(%{"snapshot" => t}) when is_binary(t), do: t
+  defp extract_tag(t) when is_binary(t), do: t
+  defp extract_tag(_), do: nil
+
+  # 冲突参数检测：多键同时传且值不一致 → :ambiguous_parameter
+  defp check_ambiguous!(map, groups) do
+    Enum.each(groups, fn keys ->
+      vals =
+        Enum.map(keys, fn k ->
+          case Map.fetch(map, k) do
+            {:ok, v} -> {k, v}
+            :error -> nil
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+
+      uniq = vals |> Enum.map(fn {_k, v} -> v end) |> Enum.uniq()
+
+      if length(vals) > 1 and length(uniq) > 1 do
+        names = vals |> Enum.map(fn {k, _v} -> inspect(k) end) |> Enum.join(" 和 ")
+
+        raise ParseError,
+          message: "#{names} 的值不一致，存在歧义，请只保留其中一个",
+          code: :ambiguous_parameter
+      end
+    end)
+
+    map
+  end
+
   defp merge_files(files) do
     files
     |> Enum.group_by(&{&1.path, &1.tag})
@@ -250,7 +338,7 @@ defmodule Newbee.Tools.Edit do
 
   defp edit_to_op(%{op: return_op, range: raw_range, content: body}) do
     range = normalize_show_range(raw_range)
-    op = norm_op(return_op)
+    op = normalize_op_name(return_op)
     lines = content_lines(body)
 
     case {op, range} do
@@ -281,40 +369,7 @@ defmodule Newbee.Tools.Edit do
   defp require_body!(op, nil), do: raise(ParseError, message: "操作 #{inspect(op)} 缺少正文 text/content")
   defp require_body!(_op, _body), do: :ok
 
-  defp norm_op(op) when op in [:replace, :put, "replace", "put"], do: :replace
-  defp norm_op(op) when op in [:delete, :cut, :remove, "delete", "cut", "remove"], do: :delete
-  defp norm_op(op) when op in [:insert_before, :before, "insert_before", "before"], do: :insert_before
-  defp norm_op(op) when op in [:insert_after, :after, "insert_after", "after"], do: :insert_after
-  defp norm_op(other), do: raise(ParseError, message: "未知操作: #{inspect(other)}")
-
-  @doc "应用行号补丁，成功返回 %{status: :applied, files: [...]}。patch_text 宽容：binary | %{patch: text} | %{text: text} | %{patch_text: text}"
-
-  def patch(patch_text) when is_binary(patch_text) do
-    sections = parse(patch_text)
-    check_duplicate_paths!(sections)
-    plans = Enum.map(sections, &plan_section/1)
-    Enum.each(plans, &check_no_op!/1)
-    :ok = write_plans_atomic(plans)
-    plans = Enum.map(plans, fn plan -> %{plan | new_tag: SnapshotStore.promote(plan.path, plan.new_content)} end)
-
-    %{
-      status: :applied,
-      files:
-        Enum.map(plans, fn p ->
-          %{
-            path: p.path,
-            old_tag: p.tag,
-            new_tag: p.new_tag,
-            changed_lines: p.changed_lines,
-            diff: p.diff,
-            context: p.context
-          }
-        end),
-      warnings: []
-    }
-  end
-
-  @doc "读取文件并记录快照，返回 %{tag, text, lines}。range 宽容：:all | {a,b} | [a,b] | a..b | %{first: a, last: b} | \"a..b\" | a"
+  @doc "读取文件并记录快照，返回 %{tag, text, lines, path}（path 可直接用于 patch %{snapshot: shown}）。range 宽容：:all | {a,b} | [a,b] | a..b | %{from: a, to: b} | \"a..b\" | a；无法识别的 range 抛 ParseError(code: :invalid_range)。"
   def show(path, range \\ :all)
 
   def show(%{path: p} = opts, _range) when is_binary(p) do
@@ -373,17 +428,30 @@ defmodule Newbee.Tools.Edit do
         {String.to_integer(t), String.to_integer(t)}
 
       true ->
-        :all
+        raise ParseError,
+          message: "无法识别的 range 字符串: #{inspect(t)}（支持 a..b | a-b | a,b | a | all）",
+          code: :invalid_range
     end
   end
 
   defp normalize_show_range(other) when is_list(other) do
     f = Keyword.get(other, :first) || Keyword.get(other, :start) || Keyword.get(other, :a)
     l = Keyword.get(other, :last) || Keyword.get(other, :end) || Keyword.get(other, :b)
-    if is_integer(f) and is_integer(l), do: {f, l}, else: :all
+
+    if is_integer(f) and is_integer(l) do
+      {f, l}
+    else
+      raise ParseError,
+        message: "无法识别的 range 列表: #{inspect(other)}（需要 [a, b] 或 [a] 或 keyword first/last）",
+        code: :invalid_range
+    end
   end
 
-  defp normalize_show_range(_), do: :all
+  defp normalize_show_range(other) do
+    raise ParseError,
+      message: "无法识别的 range: #{inspect(other)}（支持 :all | {a,b} | [a,b] | a..b | %{from: a, to: b} | \"a..b\" | 整数）",
+      code: :invalid_range
+  end
 
   defp show_range(path, range) do
     content = File.read!(path)
@@ -397,7 +465,7 @@ defmodule Newbee.Tools.Edit do
 
     tag = SnapshotStore.record(path, content, seen_range(start, length(sel)))
     text = sel |> Enum.with_index(start) |> Enum.map(fn {l, n} -> "#{n}| #{l}" end) |> Enum.join("\n")
-    %{tag: tag, text: text, lines: length(sel)}
+    %{tag: tag, text: text, lines: length(sel), path: path}
   end
 
   # ── 解析 ──
