@@ -1,3 +1,21 @@
+defmodule Newbee.Collaboration.SilentStub do
+  @moduledoc false
+  use GenServer
+
+  def start_link(name) do
+    GenServer.start_link(__MODULE__, :ok, name: name)
+  end
+
+  @impl true
+  def init(:ok), do: {:ok, :ok}
+
+  @impl true
+  def handle_cast(_msg, state), do: {:noreply, state}
+
+  @impl true
+  def handle_info(_msg, state), do: {:noreply, state}
+end
+
 defmodule Newbee.Collaboration.CoordinatorTest do
   use ExUnit.Case, async: false
 
@@ -128,6 +146,9 @@ defmodule Newbee.Collaboration.CoordinatorTest do
              Coordinator.create_group(%{"session_id" => "parent", "title" => "成员生命周期"}, server)
 
     group_id = group["group_id"]
+
+    {:ok, _} = Newbee.Collaboration.SilentStub.start_link({:via, Registry, {Newbee.Web.SessionRegistry, "worker"}})
+    {:ok, _} = Newbee.Collaboration.SilentStub.start_link({:via, Registry, {Newbee.Web.SessionRegistry, "reviewer"}})
 
     assert {:ok, _} =
              Coordinator.add_member(
@@ -332,5 +353,104 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     assert [%{"workspace" => restored_workspace}] = detail["tasks"]
     assert restored_workspace["review_status"] == "rejected"
     GenServer.stop(restored)
+  end
+
+  test "delete_group 自动取消孤儿任务后成功删除", %{server: server} do
+    assert {:ok, group} =
+             Coordinator.create_group(%{"session_id" => "parent", "title" => "孤儿删组"}, server)
+
+    group_id = group["group_id"]
+
+    assert {:ok, _} =
+             Coordinator.add_member(
+               group_id,
+               %{"session_id" => "ghost-worker", "parent_session_id" => "parent"},
+               server
+             )
+
+    assert {:ok, task} =
+             Coordinator.create_task(
+               group_id,
+               %{
+                 "created_by_session_id" => "parent",
+                 "assigned_session_id" => "ghost-worker",
+                 "title" => "幽灵任务"
+               },
+               server
+             )
+
+    assert task["status"] == "assigned"
+
+    # ghost-worker 从未启动为真实会话进程 -> 孤儿；先删组报错保护，随后租约窗口过后可清理。
+    # delete_group 内置孤儿回收：立即成功删除。
+    assert {:ok, %{"group_id" => ^group_id}} = Coordinator.delete_group(group_id, "parent", server)
+    assert {:error, "not_found", _} = Coordinator.get(group_id, server)
+  end
+
+  test "活跃会话的任务仍阻止删除（不误伤活任务）", %{server: server} do
+    assert {:ok, group} =
+             Coordinator.create_group(%{"session_id" => "parent", "title" => "活任务保护"}, server)
+
+    group_id = group["group_id"]
+
+    assert {:ok, _} =
+             Coordinator.add_member(
+               group_id,
+               %{"session_id" => "stub-alive", "parent_session_id" => "parent"},
+               server
+             )
+
+    # 用真实进程占位 SessionRegistry，模拟活着的子会话
+    {:ok, stub} =
+      Newbee.Collaboration.SilentStub.start_link({:via, Registry, {Newbee.Web.SessionRegistry, "stub-alive"}})
+
+    assert {:ok, _} =
+             Coordinator.create_task(
+               group_id,
+               %{
+                 "created_by_session_id" => "parent",
+                 "assigned_session_id" => "stub-alive",
+                 "title" => "真活任务"
+               },
+               server
+             )
+
+    assert {:error, "busy", _} = Coordinator.delete_group(group_id, "parent", server)
+
+    GenServer.stop(stub)
+  end
+
+  test "remove_member 自动取消被移除成员的孤儿任务", %{server: server} do
+    assert {:ok, group} =
+             Coordinator.create_group(%{"session_id" => "parent", "title" => "孤儿移除"}, server)
+
+    group_id = group["group_id"]
+
+    assert {:ok, _} =
+             Coordinator.add_member(
+               group_id,
+               %{"session_id" => "ghost-2", "parent_session_id" => "parent"},
+               server
+             )
+
+    assert {:ok, _} =
+             Coordinator.create_task(
+               group_id,
+               %{
+                 "created_by_session_id" => "parent",
+                 "assigned_session_id" => "ghost-2",
+                 "title" => "幽灵任务二"
+               },
+               server
+             )
+
+    assert {:ok, _removed} =
+             Coordinator.remove_member(
+               group_id,
+               %{"session_id" => "ghost-2", "actor_session_id" => "parent"},
+               server
+             )
+
+    refute Coordinator.member?(group_id, "ghost-2", server)
   end
 end
