@@ -17,6 +17,7 @@ defmodule Newbee.Collaboration.Coordinator do
   @deliveries ~w(notify queue wake)
   @max_members 12
   @max_tasks 64
+  @orphan_sweep_interval_ms 60_000
 
   defstruct store: nil, path: nil, groups: %{}, commands: MapSet.new()
 
@@ -95,6 +96,7 @@ defmodule Newbee.Collaboration.Coordinator do
     {:ok, store} = EventStore.start_link(path: path, durability: Keyword.get(opts, :durability, :batch))
 
     state = %__MODULE__{store: store, path: path}
+    schedule_orphan_sweep()
     {:ok, replay(state)}
   end
 
@@ -264,20 +266,25 @@ defmodule Newbee.Collaboration.Coordinator do
     with {:ok, group} <- fetch_group(state, group_id),
          {:ok, attrs} <- normalize_member_removal(attrs),
          :ok <- unique_command(state, attrs["command_id"]),
-         :ok <- ensure_coordinator(group, attrs["actor_session_id"]),
-         {:ok, member} <- removable_member(group, attrs["session_id"]) do
-      event =
-        event(
-          "collab_member_removed",
-          group_id,
-          %{"member" => member, "removed_by_session_id" => attrs["actor_session_id"]},
-          attrs["command_id"]
-        )
+         :ok <- ensure_coordinator(group, attrs["actor_session_id"]) do
+      {state, group} = cancel_orphans(state, group)
 
-      {:ok, persisted} = append(state, event)
-      next = apply_event(state, persisted)
-      broadcast(persisted, group)
-      {:reply, {:ok, member}, next}
+      with {:ok, member} <- removable_member(group, attrs["session_id"]) do
+        event =
+          event(
+            "collab_member_removed",
+            group_id,
+            %{"member" => member, "removed_by_session_id" => attrs["actor_session_id"]},
+            attrs["command_id"]
+          )
+
+        {:ok, persisted} = append(state, event)
+        next = apply_event(state, persisted)
+        broadcast(persisted, group)
+        {:reply, {:ok, member}, next}
+      else
+        {:error, code, message} -> {:reply, {:error, code, message}, state}
+      end
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
@@ -483,6 +490,8 @@ defmodule Newbee.Collaboration.Coordinator do
   def handle_call({:delete_group, group_id, session_id}, _from, state) do
     with {:ok, group} <- fetch_group(state, group_id),
          :ok <- ensure_coordinator(group, session_id) do
+      {state, group} = cancel_orphans(state, group)
+
       active_task? =
         Enum.any?(group["tasks"] || [], fn task ->
           task["status"] not in ["succeeded", "failed", "cancelled"]
@@ -945,6 +954,53 @@ defmodule Newbee.Collaboration.Coordinator do
       _ ->
         false
     end
+  end
+
+  # ── 孤儿任务回收 ──
+  # 子会话崩溃/结束后，其任务会永久卡在 assigned/running，阻塞删组与成员移除。
+  # 孤儿判据：指派会话进程已不存在 + 租约已过期（或从未租出）。
+  # 协调者自建的 pending 任务（无指派）不算孤儿，留给协调者处置。
+
+  defp task_active?(task), do: task["status"] not in ["succeeded", "failed", "cancelled"]
+
+  defp orphan_task?(%{"assigned_session_id" => nil}, _now), do: false
+
+  defp orphan_task?(task, _now) do
+    task_active?(task) and not session_alive?(task["assigned_session_id"]) and
+      not lease_active?(task)
+  end
+
+  defp session_alive?(session_id), do: match?({:ok, _}, Newbee.Web.Session.lookup(session_id))
+
+  defp cancel_orphans(state, group) do
+    now = now_iso()
+
+    (group["tasks"] || [])
+    |> Enum.filter(&orphan_task?(&1, now))
+    |> Enum.reduce({state, group}, fn task, {acc_state, acc_group} ->
+      updated =
+        task
+        |> Map.put("status", "cancelled")
+        |> Map.put("result", "orphan: 子会话已结束且租约过期，自动取消")
+        |> Map.put("updated_at", now)
+
+      event = event("collab_task_updated", acc_group["group_id"], %{"task" => updated}, nil)
+      {:ok, persisted} = append(acc_state, event)
+      next = apply_event(acc_state, persisted)
+      broadcast(persisted, next.groups[acc_group["group_id"]])
+      {next, next.groups[acc_group["group_id"]]}
+    end)
+  end
+
+  defp sweep_orphans(state) do
+    Enum.reduce(state.groups, state, fn {_group_id, group}, acc ->
+      {next, _group} = cancel_orphans(acc, group)
+      next
+    end)
+  end
+
+  defp schedule_orphan_sweep do
+    Process.send_after(self(), :sweep_orphans, @orphan_sweep_interval_ms)
   end
 
   defp task_claimable(task, session_id) do
