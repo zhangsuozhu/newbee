@@ -3080,9 +3080,9 @@ case "goal_round": break;
     applyTheme(cur === "light" ? "dark" : "light", true);
   };
 
-  // ── 思考强度段选器（7 档，输入框旁）──
-   const EFFORT_LEVELS = ["none", "auto", "low", "medium", "high", "xhigh", "max"];
-   const EFFORT_LABELS = {none:"关", auto:"自动", low:"低", medium:"中", high:"高", xhigh:"很高", max:"最高"};
+  // ── 思考强度段选器（8 档，输入框旁，对齐 codex ReasoningEffort）──
+   const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+   const EFFORT_LABELS = {none:"None", minimal:"Minimal", low:"Low", medium:"Medium", high:"High", xhigh:"XHigh", max:"Max", ultra:"Ultra"};
    const effortWrap = $("effort-segments");
    if (effortWrap) {
      const renderSegs = (active) => {
@@ -3106,10 +3106,10 @@ case "goal_round": break;
          effortWrap.appendChild(b);
        });
      };
-     // resume 时按会话恢复选中档（nil → auto）
-     window.__restoreEffort = (effort) => renderSegs(effort === "off" ? "none" : (effort || "auto"));
-     renderSegs("auto");
-   }
+     // resume 时按会话恢复选中档（nil → medium，兼容旧 auto/off）
+     window.__restoreEffort = (effort) => renderSegs(effort === "off" ? "none" : (effort === "auto" ? "medium" : (effort || "medium")));
+     renderSegs("medium");
+    }
 
   $("send").onclick = send;
   $("attach-btn").onclick = () => $("file-input").click();

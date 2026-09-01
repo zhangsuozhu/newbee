@@ -313,7 +313,7 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 
 - **错误自动续跑**：流中断/上游 400/过载（429/5xx）等 `retryable_goal_error` 在 goal 模式下自动重试（`error_retries < max_error_retries`，退避），错误信息可读化回填。
 - **沉睡规则当轮重试**：命中沉睡规则不是冷冰冰的注入——中断当前流 → 注入 reminder → **当前 turn 内自动重试**，错误当口当场纠正（§6.3 从"下轮才看见"升级为"本轮即纠正"）。
-- **思考强度（reasoning_effort）**：7 档 `none/auto/low/medium/high/xhigh/max`，TUI/WebUI 热切，会话级持久化，重启保留；旧值 `off` 自动迁移为 `none`。
+- **思考强度（reasoning_effort）**：8 档 `none/minimal/low/medium/high/xhigh/max/ultra`（对齐 `codex` `ReasoningEffort`，英文展示），TUI/WebUI 热切，会话级持久化，重启保留；旧值 `auto`/`off` 自动迁移（`auto`→`medium` 默认，`off`→`none`）。
 - **多模态输入**：WebUI 图片上传/粘贴（data URL 管线），TUI/CLI 用 `/image <路径>` 发图。
 
 ### 6.2 结果回填的 token 控制

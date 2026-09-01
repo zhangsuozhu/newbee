@@ -890,7 +890,6 @@ defmodule Newbee.LLM.Responses do
   end
 
   defp reasoning(nil), do: nil
-  defp reasoning("max"), do: %{effort: "high"}
   defp reasoning("off"), do: %{effort: "none"}
   defp reasoning(effort), do: %{effort: effort}
 
