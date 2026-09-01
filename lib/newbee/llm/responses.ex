@@ -51,12 +51,36 @@ defmodule Newbee.LLM.Responses do
         [%{"type" => "function_call_output", "call_id" => id, "output" => to_string(content)}]
 
       %{"role" => role} = message when role in ["user", "system"] ->
-        [Map.take(message, ["role", "content", "name"])]
+        [input_message(message)]
 
       _message ->
         []
     end)
   end
+
+  defp input_message(message) do
+    message
+    |> Map.take(["role", "content", "name"])
+    |> Map.update("content", nil, &input_content/1)
+  end
+
+  defp input_content(content) when is_list(content), do: Enum.map(content, &input_content_part/1)
+  defp input_content(content), do: content
+
+  defp input_content_part(%{"type" => "text", "text" => text}) do
+    %{"type" => "input_text", "text" => text}
+  end
+
+  defp input_content_part(%{"type" => "image_url", "image_url" => %{"url" => url} = image}) do
+    %{"type" => "input_image", "image_url" => url}
+    |> maybe_put("detail", image["detail"])
+  end
+
+  defp input_content_part(%{"type" => "image_url", "image_url" => url}) when is_binary(url) do
+    %{"type" => "input_image", "image_url" => url}
+  end
+
+  defp input_content_part(part), do: part
 
   def tools(tools) do
     Enum.map(tools, fn tool ->
