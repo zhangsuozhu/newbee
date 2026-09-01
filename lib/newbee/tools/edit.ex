@@ -28,9 +28,21 @@ defmodule Newbee.Tools.Edit do
       result = Newbee.Tools.Edit.patch(patch_text)
         result = Newbee.Tools.Edit.patch(%{patch: patch_text})
       literal = Newbee.Tools.Edit.source_literal(source_code)
-    # 终极宽松：Base64 绕过所有转义
+    # 结构化入口：edits 列表 / 单操作简写 / 键名宽容
+    result = Newbee.Tools.Edit.patch(%{
+      path: "lib/demo.ex",
+      tag: snapshot.tag,
+      edits: [
+        %{op: :replace, range: 10..12, content: "  def hello(name), do: {:ok, name}"},
+        %{op: :insert_before, line: 5, content: "  @moduledoc false"},
+        %{op: :delete, range: [30, 31]}
+      ]
+    })
+    # 单操作简写（op/from/to/text；path/file；tag/snapshot/ops/changes 均兼容）
+    result = Newbee.Tools.Edit.patch(%{file: "lib/demo.ex", snapshot: snapshot.tag, op: "replace", from: 2, to: 2, text: "B"})
+    # Base64 宽松入口
     base64 = Base.encode64(patch_text)
-    result = Newbee.Tools.Edit.patch_base64(base64)
+    result = Newbee.Tools.Edit.patch(%{base64: base64})
   """
 
   alias Newbee.Tools.Edit.SnapshotStore
@@ -57,14 +69,225 @@ defmodule Newbee.Tools.Edit do
 
   @op_re ~r/^(PUT|CUT)\s+(.+?)\s*(:)?$/
   @range_re ~r/^(\d+)(?:\.\.(\d+))?$/
+  # ── 结构化输入归一 ──
+
+  @doc """
+  结构化补丁入口。除文本 DSL 外，还接受：
+    %{path: p, tag: t, edits: [...]}       单文件、edits 列表
+    %{file: p, snapshot: t, ops: [...]}    键名宽容
+    %{path: p, tag: t, op: :replace, from: a, to: b, text: body}   单操作简写
+    %{path: p, tag: t, delete: [a, b]}     删除简写
+    %{path: p, tag: t, before: n, text: body}  前插简写
+    %{path: p, tag: t, after: n, text: body}   后插简写
+    [%{path: p1, ...}, %{path: p2, ...}]   多文件
+    %{files: [...]}                        多文件包
+  同一路径且 tag 相同时自动合并 edits；同一路径 tag 不同返回冲突。
+  """
+
+  def patch(%{base64: b}) when is_binary(b), do: patch_base64_decoded(b)
+  def patch(%{"base64" => b}) when is_binary(b), do: patch_base64_decoded(b)
+
+  defp patch_base64_decoded(base64) do
+    case Base.decode64(String.trim(base64)) do
+      {:ok, text} -> patch(text)
+      :error -> raise ParseError, message: "invalid base64 patch"
+    end
+  end
+
+  def patch(%{files: files}) when is_list(files), do: patch_files(files)
+  def patch(%{"files" => files}) when is_list(files), do: patch_files(files)
+
+  def patch(%{file: p} = opts) when is_binary(p) and is_map(opts) do
+    file = normalize_file_map(opts)
+    patch_files([file])
+  end
+
+  def patch(%{"file" => p} = opts) when is_binary(p) and is_map(opts) do
+    file = normalize_file_map(opts)
+    patch_files([file])
+  end
+
+  def patch(%{path: p} = opts) when is_binary(p) and is_map(opts) do
+    file = normalize_file_map(opts)
+    patch_files([file])
+  end
+
+  def patch(%{"path" => p} = opts) when is_binary(p) and is_map(opts) do
+    file = normalize_file_map(opts)
+    patch_files([file])
+  end
+
+  def patch(list) when is_list(list) do
+    patch_files(list)
+  end
+
+  defp patch_files(files) do
+    files = Enum.map(files, &normalize_file_map/1)
+    merged = merge_files(files)
+    sections = Enum.map(merged, &file_to_section/1)
+    check_duplicate_paths!(sections)
+    plans = Enum.map(sections, &plan_section/1)
+    Enum.each(plans, &check_no_op!/1)
+    :ok = write_plans_atomic(plans)
+    plans = Enum.map(plans, fn plan -> %{plan | new_tag: SnapshotStore.promote(plan.path, plan.new_content)} end)
+
+    %{
+      status: :applied,
+      files:
+        Enum.map(plans, fn p ->
+          %{
+            path: p.path,
+            old_tag: p.tag,
+            new_tag: p.new_tag,
+            changed_lines: p.changed_lines,
+            diff: p.diff,
+            context: p.context
+          }
+        end),
+      warnings: []
+    }
+  end
+
+  defp normalize_file_map(map) when is_map(map) do
+    path = fetch_key(map, [:path, :file]) || fetch_key(map, ["path", "file"])
+    tag = fetch_key(map, [:tag, :snapshot, :id]) || fetch_key(map, ["tag", "snapshot", "id"])
+
+    cond do
+      is_nil(path) ->
+        raise ParseError, message: "结构化补丁缺少 path/file"
+
+      is_nil(tag) ->
+        raise ParseError, message: "结构化补丁缺少 tag/snapshot"
+
+      fetch_key(map, [:edits, :ops, :changes]) || fetch_key(map, ["edits", "ops", "changes"]) ->
+        edits = fetch_key(map, [:edits, :ops, :changes]) || fetch_key(map, ["edits", "ops", "changes"])
+        %{path: path, tag: tag, edits: List.wrap(edits)}
+
+      true ->
+        %{path: path, tag: tag, edits: [normalize_single_edit(map)]}
+    end
+  end
+
+  defp normalize_single_edit(opts) do
+    cond do
+      op = fetch_key(opts, [:op, :operation]) || fetch_key(opts, ["op", "operation"]) ->
+        %{
+          op: normalize_op_name(op),
+          range: normalize_edit_range(opts),
+          content: fetch_key(opts, [:text, :content, :new_text]) || fetch_key(opts, ["text", "content", "new_text"]),
+          _extra: opts
+        }
+
+      ed = fetch_key(opts, [:delete, :remove]) || fetch_key(opts, ["delete", "remove"]) ->
+        %{op: :delete, range: normalize_edit_range(opts, ed), content: nil}
+
+      n = fetch_key(opts, [:before, :insert_before]) || fetch_key(opts, ["before", "insert_before"]) ->
+        %{
+          op: :insert_before,
+          range: {n, n},
+          content: fetch_key(opts, [:text, :content, :new_text]) || fetch_key(opts, ["text", "content", "new_text"])
+        }
+
+      n = fetch_key(opts, [:after, :insert_after]) || fetch_key(opts, ["after", "insert_after"]) ->
+        %{
+          op: :insert_after,
+          range: {n, n},
+          content: fetch_key(opts, [:text, :content, :new_text]) || fetch_key(opts, ["text", "content", "new_text"])
+        }
+
+      true ->
+        raise ParseError, message: "无法识别的结构化编辑（需要 op/delete/before/after）"
+    end
+  end
+
+  defp normalize_op_name(op) when op in [:replace, :put, "replace", "put"], do: :replace
+  defp normalize_op_name(op) when op in [:delete, :cut, :remove, "delete", "cut", "remove"], do: :delete
+  defp normalize_op_name(op) when op in [:insert_before, :before, "insert_before", "before"], do: :insert_before
+  defp normalize_op_name(op) when op in [:insert_after, :after, "insert_after", "after"], do: :insert_after
+  defp normalize_op_name(other), do: raise(ParseError, message: "未知操作: #{inspect(other)}")
+
+  defp normalize_edit_range(opts, fallback \\ nil) do
+    range =
+      fetch_key(opts, [:range, :lines]) || fetch_key(opts, ["range", "lines"]) ||
+        single_range_from_keys(opts) || fallback
+
+    normalize_show_range(range)
+  end
+
+  defp single_range_from_keys(opts) do
+    from = fetch_key(opts, [:from, :first, :a, :start]) || fetch_key(opts, ["from", "first", "a", "start"])
+    to = fetch_key(opts, [:to, :last, :b, :end]) || fetch_key(opts, ["to", "last", "b", "end"])
+
+    cond do
+      is_integer(from) and is_integer(to) -> {from, to}
+      is_integer(from) -> {from, from}
+      is_integer(fetch_key(opts, [:line, :at])) -> {fetch_key(opts, [:line, :at]), fetch_key(opts, [:line, :at])}
+      true -> nil
+    end
+  end
+
+  defp fetch_key(map, keys) do
+    Enum.find_value(keys, fn k ->
+      case Map.fetch(map, k) do
+        {:ok, v} -> v
+        :error -> nil
+      end
+    end)
+  end
+
+  defp merge_files(files) do
+    files
+    |> Enum.group_by(&{&1.path, &1.tag})
+    |> Enum.map(fn {{path, tag}, group} ->
+      %{path: path, tag: tag, edits: Enum.flat_map(group, & &1.edits)}
+    end)
+  end
+
+  defp file_to_section(%{path: path, tag: tag, edits: edits}) do
+    ops = Enum.map(edits, fn edit -> edit |> normalize_single_edit() |> edit_to_op() end)
+    %{path: path, tag: tag, ops: ops}
+  end
+
+  defp edit_to_op(%{op: return_op, range: raw_range, content: body}) do
+    range = normalize_show_range(raw_range)
+    op = norm_op(return_op)
+    lines = content_lines(body)
+
+    case {op, range} do
+      {:replace, {a, b}} ->
+        require_body!(op, body)
+        {:put, %{a: a, b: b, body: lines}}
+
+      {:delete, {a, b}} ->
+        {:cut, %{a: a, b: b}}
+
+      {:insert_before, {n, n}} ->
+        require_body!(op, body)
+        {:insert_before, %{at: n, body: lines}}
+
+      {:insert_after, {n, n}} ->
+        require_body!(op, body)
+        {:insert_after, %{at: n, body: lines}}
+
+      {op, _} ->
+        raise ParseError, message: "操作 #{op} 的 range 不合法: #{inspect(raw_range)}，插入必须单行"
+    end
+  end
+
+  defp content_lines(nil), do: nil
+  defp content_lines(""), do: nil
+  defp content_lines(body), do: String.split(body, "\n")
+
+  defp require_body!(op, nil), do: raise(ParseError, message: "操作 #{inspect(op)} 缺少正文 text/content")
+  defp require_body!(_op, _body), do: :ok
+
+  defp norm_op(op) when op in [:replace, :put, "replace", "put"], do: :replace
+  defp norm_op(op) when op in [:delete, :cut, :remove, "delete", "cut", "remove"], do: :delete
+  defp norm_op(op) when op in [:insert_before, :before, "insert_before", "before"], do: :insert_before
+  defp norm_op(op) when op in [:insert_after, :after, "insert_after", "after"], do: :insert_after
+  defp norm_op(other), do: raise(ParseError, message: "未知操作: #{inspect(other)}")
 
   @doc "应用行号补丁，成功返回 %{status: :applied, files: [...]}。patch_text 宽容：binary | %{patch: text} | %{text: text} | %{patch_text: text}"
-  def patch(%{patch: p}) when is_binary(p), do: patch(p)
-  def patch(%{"patch" => p}) when is_binary(p), do: patch(p)
-  def patch(%{text: p}) when is_binary(p), do: patch(p)
-  def patch(%{"text" => p}) when is_binary(p), do: patch(p)
-  def patch(%{patch_text: p}) when is_binary(p), do: patch(p)
-  def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
 
   def patch(patch_text) when is_binary(patch_text) do
     sections = parse(patch_text)
@@ -494,30 +717,4 @@ defmodule Newbee.Tools.Edit do
   end
 
   defp seen_range(start, count), do: start..(start + count - 1)//1
-  @doc "Base64 补丁，完全绕过引号/反斜杠/定界符敏感。`base64_patch` 为 Base64 编码后的 patch 文本。"
-  def patch_base64(base64) when is_binary(base64) do
-    case Base.decode64(String.trim(base64)) do
-      {:ok, text} -> patch(text)
-      :error -> raise ParseError, message: "invalid base64 patch"
-    end
-  end
-
-  @doc false
-  def patch_base64(%{patch_base64: b}) when is_binary(b), do: patch_base64(b)
-  @doc false
-  def patch_base64(%{"patch_base64" => b}) when is_binary(b), do: patch_base64(b)
-  @doc false
-  def patch_base64(%{patch: b}) when is_binary(b) do
-    case Base.decode64(String.trim(b)) do
-      {:ok, text} ->
-        if byte_size(text) > 0 and String.contains?(text, "[") do
-          patch(text)
-        else
-          patch(b)
-        end
-
-      _ ->
-        patch(b)
-    end
-  end
 end
