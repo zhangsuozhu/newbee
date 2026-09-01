@@ -28,6 +28,9 @@ defmodule Newbee.Tools.Edit do
       result = Newbee.Tools.Edit.patch(patch_text)
         result = Newbee.Tools.Edit.patch(%{patch: patch_text})
       literal = Newbee.Tools.Edit.source_literal(source_code)
+    # 终极宽松：Base64 绕过所有转义
+    base64 = Base.encode64(patch_text)
+    result = Newbee.Tools.Edit.patch_base64(base64)
   """
 
   alias Newbee.Tools.Edit.SnapshotStore
@@ -56,18 +59,20 @@ defmodule Newbee.Tools.Edit do
   @range_re ~r/^(\d+)(?:\.\.(\d+))?$/
 
   @doc "应用行号补丁，成功返回 %{status: :applied, files: [...]}。patch_text 宽容：binary | %{patch: text} | %{text: text} | %{patch_text: text}"
-def patch(%{patch: p}) when is_binary(p), do: patch(p)
-def patch(%{"patch" => p}) when is_binary(p), do: patch(p)
-def patch(%{text: p}) when is_binary(p), do: patch(p)
-def patch(%{"text" => p}) when is_binary(p), do: patch(p)
-def patch(%{patch_text: p}) when is_binary(p), do: patch(p)
-def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
+  def patch(%{patch: p}) when is_binary(p), do: patch(p)
+  def patch(%{"patch" => p}) when is_binary(p), do: patch(p)
+  def patch(%{text: p}) when is_binary(p), do: patch(p)
+  def patch(%{"text" => p}) when is_binary(p), do: patch(p)
+  def patch(%{patch_text: p}) when is_binary(p), do: patch(p)
+  def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
 
-  def patch(patch_text) do
+  def patch(patch_text) when is_binary(patch_text) do
     sections = parse(patch_text)
+    check_duplicate_paths!(sections)
     plans = Enum.map(sections, &plan_section/1)
     Enum.each(plans, &check_no_op!/1)
-    Enum.each(plans, &write_section/1)
+    :ok = write_plans_atomic(plans)
+    plans = Enum.map(plans, fn plan -> %{plan | new_tag: SnapshotStore.promote(plan.path, plan.new_content)} end)
 
     %{
       status: :applied,
@@ -86,7 +91,7 @@ def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
     }
   end
 
-    @doc "读取文件并记录快照，返回 %{tag, text, lines}。range 宽容：:all | {a,b} | [a,b] | a..b | %{first: a, last: b} | \"a..b\" | a"
+  @doc "读取文件并记录快照，返回 %{tag, text, lines}。range 宽容：:all | {a,b} | [a,b] | a..b | %{first: a, last: b} | \"a..b\" | a"
   def show(path, range \\ :all)
 
   def show(%{path: p} = opts, _range) when is_binary(p) do
@@ -122,22 +127,39 @@ def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
   defp normalize_show_range(%{a: a, b: b}) when is_integer(a) and is_integer(b), do: {a, b}
   defp normalize_show_range(%{"a" => a, "b" => b}) when is_integer(a) and is_integer(b), do: {a, b}
   defp normalize_show_range(a) when is_integer(a), do: {a, a}
+
   defp normalize_show_range(s) when is_binary(s) do
     t = String.trim(s)
+
     cond do
-      t == "" or t == "all" -> :all
-      Regex.match?(~r/^\d+\.\.\d+$/, t) -> t |> String.split("..") |> then(fn [a, b] -> {String.to_integer(a), String.to_integer(b)} end)
-      Regex.match?(~r/^\d+-\d+$/, t) -> t |> String.split("-") |> then(fn [a, b] -> {String.to_integer(a), String.to_integer(b)} end)
-      Regex.match?(~r/^\d+,\d+$/, t) -> t |> String.split(",") |> then(fn [a, b] -> {String.to_integer(String.trim(a)), String.to_integer(String.trim(b))} end)
-      Regex.match?(~r/^\d+$/, t) -> {String.to_integer(t), String.to_integer(t)}
-      true -> :all
+      t == "" or t == "all" ->
+        :all
+
+      Regex.match?(~r/^\d+\.\.\d+$/, t) ->
+        t |> String.split("..") |> then(fn [a, b] -> {String.to_integer(a), String.to_integer(b)} end)
+
+      Regex.match?(~r/^\d+-\d+$/, t) ->
+        t |> String.split("-") |> then(fn [a, b] -> {String.to_integer(a), String.to_integer(b)} end)
+
+      Regex.match?(~r/^\d+,\d+$/, t) ->
+        t
+        |> String.split(",")
+        |> then(fn [a, b] -> {String.to_integer(String.trim(a)), String.to_integer(String.trim(b))} end)
+
+      Regex.match?(~r/^\d+$/, t) ->
+        {String.to_integer(t), String.to_integer(t)}
+
+      true ->
+        :all
     end
   end
+
   defp normalize_show_range(other) when is_list(other) do
     f = Keyword.get(other, :first) || Keyword.get(other, :start) || Keyword.get(other, :a)
     l = Keyword.get(other, :last) || Keyword.get(other, :end) || Keyword.get(other, :b)
     if is_integer(f) and is_integer(l), do: {f, l}, else: :all
   end
+
   defp normalize_show_range(_), do: :all
 
   defp show_range(path, range) do
@@ -269,7 +291,7 @@ def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
       old_lines: lines,
       old_content: snap.text,
       new_content: new_content,
-      new_tag: SnapshotStore.promote(path, new_content),
+      new_tag: nil,
       changed_lines: extent,
       diff: Newbee.Diff.lines(snap.text, new_content) |> Enum.join("\n"),
       context: context_after(new_lines, extent)
@@ -330,6 +352,80 @@ def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
     :ok
   end
 
+  defp check_duplicate_paths!(sections) do
+    paths = Enum.map(sections, & &1.path)
+
+    if length(paths) != length(Enum.uniq(paths)) do
+      raise RejectError,
+        message: "补丁不能重复修改同一路径；请合并为一个节",
+        category: :duplicate_path
+    end
+  end
+
+  defp write_plans_atomic(plans) do
+    entries =
+      Enum.map(plans, fn plan ->
+        nonce = Integer.to_string(System.unique_integer([:positive]))
+
+        %{
+          plan: plan,
+          temp: plan.path <> ".newbee-edit-tmp-" <> nonce,
+          backup: plan.path <> ".newbee-edit-backup-" <> nonce
+        }
+      end)
+
+    try do
+      Enum.each(entries, fn %{plan: plan, temp: temp} ->
+        File.write!(temp, plan.new_content)
+      end)
+
+      case Enum.reduce_while(entries, [], fn %{plan: plan, temp: temp, backup: backup} = entry, moved ->
+             with :ok <- File.rename(plan.path, backup),
+                  :ok <- File.rename(temp, plan.path) do
+               {:cont, [entry | moved]}
+             else
+               {:error, reason} ->
+                 rollback_entries([entry | moved])
+                 {:halt, {:error, plan.path, reason}}
+             end
+           end) do
+        {:error, failed_path, reason} ->
+          raise RejectError,
+            message: "无法原子替换 #{failed_path}: #{inspect(reason)}",
+            category: :edit_write_failed
+
+        _moved ->
+          :ok
+      end
+
+      Enum.each(entries, fn %{plan: plan} ->
+        Newbee.Host.emit(
+          :file_diff,
+          {:file_diff, plan.path, Enum.join(Newbee.Diff.lines(plan.old_content, plan.new_content), "\n"),
+           Newbee.Diff.stats(plan.old_content, plan.new_content)}
+        )
+      end)
+    rescue
+      error ->
+        rollback_entries(entries)
+        reraise error, __STACKTRACE__
+    after
+      Enum.each(entries, fn %{temp: temp, backup: backup} ->
+        File.rm(temp)
+        File.rm(backup)
+      end)
+    end
+  end
+
+  defp rollback_entries(entries) do
+    Enum.each(Enum.reverse(entries), fn %{plan: plan, temp: temp, backup: backup} ->
+      File.rm(plan.path)
+
+      if File.exists?(backup), do: File.rename(backup, plan.path)
+      File.rm(temp)
+    end)
+  end
+
   defp check_no_op!(plan) do
     if plan.new_content == File.read!(plan.path) do
       raise RejectError, message: "no-op：补丁结果与当前内容一致", category: :no_op
@@ -363,7 +459,7 @@ def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
             if Map.has_key?(replaces, n), do: Map.fetch!(replaces, n), else: []
 
           true ->
-            Enum.reverse(Map.get(ins_before, n, [])) ++
+            Map.get(ins_before, n, []) ++
               [Enum.at(lines, n - 1)] ++
               Map.get(ins_after, n, [])
         end
@@ -385,16 +481,6 @@ def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
     |> Enum.join("\n")
   end
 
-  defp write_section(plan) do
-    File.write!(plan.path, plan.new_content)
-
-    Newbee.Host.emit(
-      :file_diff,
-      {:file_diff, plan.path, Enum.join(Newbee.Diff.lines(plan.old_content, plan.new_content), "\n"),
-       Newbee.Diff.stats(plan.old_content, plan.new_content)}
-    )
-  end
-
   defp split_lines(content) do
     has_trailing = String.ends_with?(content, "\n")
     lines = String.split(content, "\n", trim: false)
@@ -408,4 +494,30 @@ def patch(%{"patch_text" => p}) when is_binary(p), do: patch(p)
   end
 
   defp seen_range(start, count), do: start..(start + count - 1)//1
+  @doc "Base64 补丁，完全绕过引号/反斜杠/定界符敏感。`base64_patch` 为 Base64 编码后的 patch 文本。"
+  def patch_base64(base64) when is_binary(base64) do
+    case Base.decode64(String.trim(base64)) do
+      {:ok, text} -> patch(text)
+      :error -> raise ParseError, message: "invalid base64 patch"
+    end
+  end
+
+  @doc false
+  def patch_base64(%{patch_base64: b}) when is_binary(b), do: patch_base64(b)
+  @doc false
+  def patch_base64(%{"patch_base64" => b}) when is_binary(b), do: patch_base64(b)
+  @doc false
+  def patch_base64(%{patch: b}) when is_binary(b) do
+    case Base.decode64(String.trim(b)) do
+      {:ok, text} ->
+        if byte_size(text) > 0 and String.contains?(text, "[") do
+          patch(text)
+        else
+          patch(b)
+        end
+
+      _ ->
+        patch(b)
+    end
+  end
 end

@@ -36,9 +36,9 @@ defmodule Newbee.Tools.EditTest do
     write!(path, "l1\nl2\nl3\nl4\nl5\n")
     r = show(path)
 
-    patch(path <> "#" <> r.tag, "PUT 2..3:\n+L2-new\n+L3-new\nCUT 5\nPUT <1:\n+HEAD\n")
+    patch(path <> "#" <> r.tag, "PUT 2..3:\n+L2-new\n+L3-new\nCUT 5\nPUT <1:\n+HEAD-1\n+HEAD-2\n")
 
-    assert File.read!(path) == "HEAD\nl1\nL2-new\nL3-new\nl4\n"
+    assert File.read!(path) == "HEAD-1\nHEAD-2\nl1\nL2-new\nL3-new\nl4\n"
   end
 
   test "尾部插入 PUT >N", %{path: path} do

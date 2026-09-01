@@ -72,6 +72,8 @@ defmodule Newbee.Collaboration.DispatchTest do
     assert {:ok, first} = Newbee.Tools.Collaboration.delegate("宿主回退任务")
     assert {:ok, second} = Newbee.Tools.Collaboration.delegate("宿主回退任务二")
     assert first.task["group_id"] == second.task["group_id"]
+    assert first.workspace["kind"] == "filesystem_copy"
+    refute Map.has_key?(first.workspace, "base_snapshot")
 
     on_exit(fn ->
       Newbee.Web.Session.destroy(first.session_id)
@@ -81,6 +83,27 @@ defmodule Newbee.Collaboration.DispatchTest do
     end)
   end
 
+  test "无活动群组时不会复用已取消群组" do
+    parent_sid = Newbee.Tools.Collaboration.HostIdentity.session_id()
+
+    assert {:ok, old_group} =
+             Coordinator.create_group(%{"session_id" => parent_sid, "title" => "已取消旧群"})
+
+    assert {:ok, _} =
+             Coordinator.set_group_status(old_group["group_id"], "cancelled", parent_sid)
+
+    assert {:ok, result} =
+             Newbee.Tools.Collaboration.delegate("取消群后继续派发",
+               isolate: false,
+               command_id: "cancelled-fallback-#{System.unique_integer([:positive])}"
+             )
+
+    refute result.task["group_id"] == old_group["group_id"]
+    assert {:ok, new_group} = Coordinator.get(result.task["group_id"])
+    assert new_group["status"] == "running"
+
+    on_exit(fn -> Newbee.Web.Session.destroy(result.session_id) end)
+  end
 
   test "带 token 时按模型身份派生并进入其工作组" do
     assert {:ok, result} =
@@ -88,17 +111,20 @@ defmodule Newbee.Collaboration.DispatchTest do
                Newbee.Tools.Collaboration.delegate("分析认证失败路径",
                  name: "认证分析子代理",
                  description: "找出失败路径并给出测试建议",
-                 role: "reviewer"
+                 role: "tester"
                )
              end)
 
     assert is_binary(result.session_id)
     assert result.member["parent_session_id"] == "model-parent"
+    assert result.member["role"] == "tester"
     assert [group | _] = Coordinator.groups_for_session("model-parent")
     assert result.task["assigned_session_id"] == result.session_id
     assert Coordinator.member?(group["group_id"], result.session_id)
     child_root = Newbee.Session.cwd(result.session_id)
-    assert String.contains?(child_root, Path.join([".newbee", "worktrees"]))
+    assert String.contains?(child_root, Path.join([".newbee", "workspaces"]))
+    assert result.workspace["kind"] == "filesystem_copy"
+    refute Map.has_key?(result.workspace, "base_snapshot")
     assert File.dir?(child_root)
 
     on_exit(fn ->

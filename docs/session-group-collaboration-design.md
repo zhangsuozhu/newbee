@@ -18,7 +18,7 @@
 - **Task 是协作工作单元**：父会话可以把一个结构化任务分派给子会话，子会话返回结构化结果。
 - **Message 是可靠事件**：消息写入协作事件流，再投递给在线 UI 或目标会话；不把消息直接伪装成用户输入。
 - **Coordinator 是单写者**：所有群组、成员、任务、消息状态变化经一个 `Collaboration.Coordinator` 串行裁决。
-- **工作区默认隔离**：写代码的子会话默认使用独立 git worktree；自动合并默认关闭，必须显式审查/集成。
+- **工作区默认隔离**：写代码的子会话默认使用独立文件系统副本；自动应用默认关闭，必须显式审查/集成。Git 仅作为可选适配器。
 - **模型唤醒可控**：消息分为 `notify`（只通知）、`queue`（空闲时处理）和 `wake`（受预算限制触发一轮模型工作）。
 - **上下文必须显式携带身份**：不能继续依赖全局 `Session.current_id/0` 判定“谁在执行”；并行会话必须使用 `ExecutionContext`。
 
@@ -28,7 +28,7 @@
 |---|---|---|
 | 消息传递 | at-least-once + `message_id` 幂等 | 不宣称分布式 exactly-once |
 | 子会话创建者 | 父会话 | 满足“一个会话启动其它会话” |
-| 子会话工作区 | git worktree | 防止并行写入互相覆盖 |
+| 子会话工作区 | 文件系统副本 | 防止并行写入互相覆盖；不要求 Git |
 | 普通聊天消息 | `notify` | 不因聊天无限消耗模型预算 |
 | 任务分派消息 | `wake` 或 `queue` | 让子会话真正开始工作，但有界、可取消 |
 | 自动合并 | 关闭 | 合并是高风险副作用，必须显式操作 |
@@ -156,7 +156,7 @@ created_at / updated_at
 member_id                 membership id，不直接等同 session id
 group_id
 session_id
-role                      coordinator | worker | reviewer | observer
+role                      coordinator | worker | reviewer | observer | tester
 state                     joining | idle | working | waiting | blocked | stopped | failed
 parent_session_id         谁创建/邀请了该成员
 spawned                   是否由群内 spawn 创建
@@ -663,7 +663,7 @@ lib/newbee/collaboration/
 ├── store.ex          # collaboration EventStore、snapshot 和 cursor
 ├── projection.ex     # 事件 → group/member/task/message 物化视图
 ├── dispatcher.ex     # inbox/outbox、ack、重试、wake/queue
-├── workspace.ex      # dedicated worktree / readonly / shared policy
+├── workspace.ex      # filesystem copy / shared policy / optional Git adapter
 ├── context.ex        # ExecutionContext 构造、验证、传播
 └── supervisor.ex     # Coordinator、Dispatcher、恢复任务
 ```
@@ -759,7 +759,7 @@ HTTP 只等待“成员记录和启动请求已受理”，不等待模型完成
 ```text
 none             只读/讨论成员，不允许写型任务
 shared_readonly  可读取指定基准，不可写
- dedicated       独立 git worktree + 分支，允许写和测试
+ dedicated       独立文件系统副本，允许写和测试；Git 可选增强
 shared_write     首版禁用；未来需锁、编辑事务和冲突协议
 ```
 
@@ -912,7 +912,7 @@ Newbee.Tools.Collaboration.report(task_id, result, opts)
 
 工具文档应接入既有 `tool://Newbee.Tools.Collaboration` 渐进式披露，而不是把长协议塞入系统 prompt。
 
-模型调用 `Newbee.Tools.Collaboration.delegate(title, opts)` 时，运行时从当前 evaluator 上下文取得父会话身份；没有工作组会自动创建模型协作组。子代理 ID 由运行时生成，默认进入独立 Git worktree；成员最多 12 个、任务最多 64 个。
+模型调用 `Newbee.Tools.Collaboration.delegate(title, opts)` 时，运行时从当前 evaluator 上下文取得父会话身份；没有工作组会自动创建模型协作组。子代理 ID 由运行时生成，默认进入独立文件系统副本；成员最多 12 个、任务最多 64 个。
 
 ---
 
@@ -1166,7 +1166,7 @@ state.groupSubscriptions = new Set();
 
 - Coordinator 是群元数据单写者。
 - 每个 session 内部仍由 `Web.Session` 串行化 prompt/queue。
-- 每个 dedicated worktree 默认只有一个 active writer lease。
+- 每个 dedicated 副本默认只有一个 active writer lease。
 - EventStore 追加必须经过一个进程，不能由多个会话直接并发写同一文件。
 - 同一 task 的状态转换检查版本/lease，过期更新返回 `lease_lost`。
 - `command_id` 和 `message_id` 是所有可重试命令的幂等边界。
@@ -1190,7 +1190,7 @@ state.groupSubscriptions = new Set();
 | 写事件后投递失败 | 消息已成立 | 从 inbox/cursor 重试 |
 | 投递后成员崩溃 | 未知是否处理 | 用 message_id 重投，接收端去重 |
 | lease 过期 | 任务未确认完成 | 重新排队或标记 blocked |
-| worktree 创建失败 | 成员可存在，任务不可运行 | 成员标记 failed，允许重试/转派 |
+| 工作区副本创建失败 | 成员可存在，任务不可运行 | 成员标记 failed，允许重试/转派 |
 | Coordinator 重启 | 事件保留 | snapshot + replay |
 | WebSocket 断线 | 工作继续 | sinceSeq 补发 |
 | 合并冲突 | 子结果保留 | 人工审查，不覆盖父树 |
@@ -1231,7 +1231,7 @@ state.groupSubscriptions = new Set();
 - `group.member.spawn` 和异步 boot。
 - task 创建/分派/lease/progress/result/retry/cancel。
 - 成员角色和预算/深度/fanout 限制。
-- dedicated worktree 创建与清理。
+- dedicated 文件系统副本创建与清理。
 - 子会话最小 group context 和结构化 result。
 
 完成标准：父 session 创建两个子 session，两个任务并行执行，分别回传结果；父 session 可按 `task_id` 消费结果；一个子会话失败不破坏其它成员。
@@ -1270,7 +1270,7 @@ state.groupSubscriptions = new Set();
 - recipient 解析：session/member/group、空目标、跨群目标。
 - budget、fanout、depth、rate limit。
 - ExecutionContext 序列化、继承和越权拒绝。
-- worktree 路径、base commit、清理失败。
+- 副本路径、基线快照、清理失败。
 
 #### 集成测试
 
@@ -1280,7 +1280,7 @@ state.groupSubscriptions = new Set();
 - 子 session 异步 boot、结果回报和父 session 消费。
 - duplicate delivery 不重复启动任务。
 - EventStore 坏尾帧、Bus 故障、目标进程崩溃。
-- dedicated worktree 并行改动不污染父工作树。
+- dedicated 文件系统副本并行改动不污染父工作树。
 
 #### Web/API 测试
 
@@ -1390,7 +1390,7 @@ collaboration.workspaces = "dedicated"
 | 一个 session 是否可同时进多个 active group | 否，首版最多一个 | 降低身份、预算和 UI 复杂度 |
 | 普通消息是否自动唤醒模型 | 否，默认 notify | 控制成本，避免反馈循环 |
 | 父会话停止后的子会话 | continue | 防止 UI/父进程重启误杀工作 |
-| 子会话写区 | dedicated worktree | 防止静默覆盖 |
+| 子会话写区 | dedicated 文件系统副本 | 防止静默覆盖 |
 | 子任务最大深度 | 2 | 避免无界递归 spawn |
 | 默认最大成员数 | 8 | 防止资源爆炸 |
 | 结果是否自动合并 | 否 | 合并是高风险副作用 |
@@ -1415,7 +1415,7 @@ collaboration.workspaces = "dedicated"
 
 1. A 创建并启动群。
 2. A 通过内部工具或 UI spawn 两个 child session。
-3. 系统为每个 child 建立独立 evaluator、Loop、ExecutionContext 和 dedicated worktree。
+3. 系统为每个 child 建立独立 evaluator、Loop、ExecutionContext 和 dedicated 文件系统副本。
 4. 两个 task 并行运行，互不覆盖父工作树和彼此工作树。
 5. child 回传 `task_result`，包含 summary、测试和 artifact/diff 引用。
 6. A 被 `wake` 一次并消费两个结果；重复投递不重复执行。
@@ -1450,7 +1450,7 @@ collaboration.workspaces = "dedicated"
 - P3 协作安全闭环：只有协调会话可修改群状态；claim 会绑定 lease_owner/lease_until/attempt 并投递到领取者；owner 可在 30-3600 秒范围续租；任务终态向创建者会话一次性回收结构化结果。
 - 自动分派：任务创建并指定成员时，Coordinator 立即把结构化任务提示投递到目标 Web.Session 队列（忙时排队、空闲直接执行）；任务提示带来源标记与 group/task/session id。
 - 模型工具：`Newbee.Tools.Collaboration`（已注册内置插件）供子会话调用——report 更新任务状态/进度/结果，send_message 发群消息，tasks 查询列表。
-- 当前仍未落地：显式 wake/queue 分档调参、dedicated worktree 隔离和显式 integrate 流程；当前 lease/claim/renew、群状态权限和结果回收已作为基础保护落地。
+- 当前仍未落地：显式 wake/queue 分档调参和更丰富的集成策略；文件系统副本隔离、基线快照、审查、冲突检测、显式应用与清理已落地。
 
 
 实现验证以代码测试为准：协作领域/API/Socket 专项测试覆盖消息双向传递、命令和消息幂等、成员权限、任务状态机、重启恢复与群事件帧。
