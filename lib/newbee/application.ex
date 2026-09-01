@@ -40,8 +40,22 @@ defmodule Newbee.Application do
     Newbee.Web.QuickAccess.create_table()
 
     opts = [strategy: :one_for_one, name: Newbee.Supervisor]
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    # 会话索引自愈：启动后异步修补截断的 .index.json（P0）
+    if Mix.env() != :test do
+      Task.start(fn ->
+        try do
+          Newbee.Session.repair_index()
+        rescue
+          _ -> :ok
+        end
+      end)
+    end
+
+    result
   end
+
 
   defp ensure_builtin_tool_contracts! do
     case Newbee.Environment.ToolContract.validate_builtins() do

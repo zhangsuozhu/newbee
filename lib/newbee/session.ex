@@ -11,6 +11,95 @@ defmodule Newbee.Session do
 
   defp index, do: Path.join(root(), ".index.json")
 
+  require Logger
+
+  # -- index self-heal and atomic persist (P0) --
+
+  defp read_index do
+    case File.read(index()) do
+      {:ok, body} ->
+        case Jason.decode(body) do
+          {:ok, entries} when is_list(entries) -> entries
+          _ -> []
+        end
+
+      _ ->
+        []
+    end
+  end
+
+  defp fs_scan_entries do
+    root()
+    |> Path.join("*.jsonl")
+    |> Path.wildcard()
+    |> Enum.flat_map(fn fp ->
+      case File.stat(fp) do
+        {:ok, stat} ->
+          id = Path.basename(fp, ".jsonl")
+
+          [
+            %{
+              "id" => id,
+              "mtime" => posix_mtime(stat.mtime),
+              "created" => created_from_id(id) || posix_mtime(stat.mtime)
+            }
+          ]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  defp merged_index do
+    idx = read_index()
+    fs = fs_scan_entries()
+    fs_map = Map.new(fs, fn e -> {e["id"], e} end)
+    idx_map = Map.new(idx, fn e -> {e["id"], e} end)
+
+    merged_map =
+      Map.merge(fs_map, idx_map, fn _id, fs_v, idx_v ->
+        %{
+          "id" => fs_v["id"],
+          "mtime" => idx_v["mtime"] || fs_v["mtime"],
+          "created" => idx_v["created"] || fs_v["created"]
+        }
+      end)
+
+    merged_map
+    |> Map.values()
+    |> Enum.filter(fn e -> File.regular?(Path.join(root(), e["id"] <> ".jsonl")) end)
+    |> Enum.sort_by(fn e -> e["mtime"] || e["created"] end, :desc)
+  end
+
+  defp persist_index(entries) do
+    File.mkdir_p!(root())
+    tmp = index() <> ".tmp-" <> Integer.to_string(System.unique_integer([:positive])) <> "-" <> Integer.to_string(:erlang.monotonic_time())
+    File.write!(tmp, Jason.encode_to_iodata!(entries))
+    File.rename!(tmp, index())
+    :ok
+  rescue
+    e ->
+      Logger.error("persist_index failed: " <> Exception.message(e))
+      :ok
+  end
+
+  @doc "repair index: union of index and filesystem, persist and return merged list"
+  def repair_index do
+    merged = merged_index()
+    raw = read_index()
+    raw_ids = MapSet.new(raw, fn e -> e["id"] end)
+    merged_ids = MapSet.new(merged, fn e -> e["id"] end)
+
+    if MapSet.size(merged_ids) != MapSet.size(raw_ids) or not MapSet.subset?(raw_ids, merged_ids) do
+      Logger.warning("repair_index: healing " <> Integer.to_string(MapSet.size(raw_ids)) <> " -> " <> Integer.to_string(MapSet.size(merged_ids)) <> " entries")
+      persist_index(merged)
+    end
+
+    merged
+  end
+
+
   @doc "当前活动会话 id（kernel 启动时登记；无会话返回 nil）。"
   def current_id, do: :persistent_term.get({__MODULE__, :current}, nil)
 
@@ -311,22 +400,16 @@ defmodule Newbee.Session do
   end
 
   defp remove_from_index(id) do
-    case File.read(index()) do
-      {:ok, body} ->
-        case Jason.decode(body) do
-          {:ok, entries} when is_list(entries) ->
-            kept = Enum.reject(entries, &(&1["id"] == id))
-            File.write!(index(), Jason.encode_to_iodata!(kept))
-            :ok
-
-          _ ->
-            :ok
-        end
-
-      _ ->
-        :ok
-    end
+    merged = merged_index()
+    kept = Enum.reject(merged, fn e -> e["id"] == id end)
+    persist_index(kept)
+    :ok
+  rescue
+    e ->
+      Logger.error("remove_from_index failed: " <> Exception.message(e))
+      :ok
   end
+
 
   @doc "重命名会话标题：把 title 元信息落到会话目录的 meta.json（list_with_meta 优先读取）。"
   def rename(id, title) when is_binary(id) and is_binary(title) do
@@ -428,71 +511,43 @@ defmodule Newbee.Session do
   def stale_empty_ids(older_than_secs \\ 3600) do
     cutoff = System.system_time(:second) - older_than_secs
 
-    case File.read(index()) do
-      {:ok, body} ->
-        case Jason.decode(body) do
-          {:ok, entries} when is_list(entries) ->
-            entries
-            |> Enum.filter(fn e ->
-              (e["mtime"] || 0) < cutoff and
-                match?({:ok, %{size: 0}}, File.stat(Path.join(root(), "#{e["id"]}.jsonl")))
-            end)
-            |> Enum.map(& &1["id"])
-
-          _ ->
-            []
-        end
-
-      _ ->
-        []
-    end
+    merged_index()
+    |> Enum.filter(fn e ->
+      (e["mtime"] || 0) < cutoff and
+        match?({:ok, %{size: 0}}, File.stat(Path.join(root(), e["id"] <> ".jsonl")))
+    end)
+    |> Enum.map(fn e -> e["id"] end)
+  rescue
+    _ -> []
   end
+
 
   @doc "有效会话总数（transcript 文件仍存在）。供列表分页计算 total/hasMore。"
   def count_valid do
-    case File.read(index()) do
-      {:ok, body} ->
-        case Jason.decode(body) do
-          {:ok, entries} when is_list(entries) ->
-            Enum.count(entries, &File.regular?(Path.join(root(), "#{&1["id"]}.jsonl")))
-
-          _ ->
-            length(build_index())
-        end
-
-      _ ->
-        length(build_index())
-    end
+    length(merged_index())
+  rescue
+    _ -> length(fs_scan_entries())
   end
+
 
   @doc "列出会话元信息（新→旧，默认最多 20 个）：id / when_str / mtime / messages / title。"
   def list_with_meta(n \\ 20, offset \\ 0) do
-    # 读索引（O(1)），只对最近 n 个读消息——避免 stat 全部会话文件（§9.1 极简）。
-    # 按 mtime（最近活动）排序而非 created：仍在跑的旧会话（如长跑自主任务）
-    # 不应被一批新建的空会话挤出列表。
+    merged = merged_index()
+    raw = read_index()
+
+    if length(merged) != length(raw) do
+      spawn(fn -> persist_index(merged) end)
+    end
+
     recent =
-      case File.read(index()) do
-        {:ok, body} ->
-          case Jason.decode(body) do
-            {:ok, entries} when is_list(entries) ->
-              entries
-              |> Enum.filter(&File.regular?(Path.join(root(), "#{&1["id"]}.jsonl")))
-              |> Enum.sort_by(&(&1["mtime"] || &1["created"]), :desc)
-              |> Enum.drop(offset)
-              |> Enum.take(n)
-
-            _ ->
-              build_index() |> Enum.drop(offset) |> Enum.take(n)
-          end
-
-        _ ->
-          build_index() |> Enum.drop(offset) |> Enum.take(n)
-      end
+      merged
+      |> Enum.drop(offset)
+      |> Enum.take(n)
 
     recent
     |> Enum.flat_map(fn entry ->
       id = entry["id"]
-      fp = Path.join(root(), "#{id}.jsonl")
+      fp = Path.join(root(), id <> ".jsonl")
 
       case File.stat(fp) do
         {:ok, stat} ->
@@ -515,72 +570,37 @@ defmodule Newbee.Session do
     end)
   end
 
+
   # 首次无索引时构建（一次性成本；后续 append 增量维护）
   defp build_index do
-    entries =
-      root()
-      |> Path.join("*.jsonl")
-      |> Path.wildcard()
-      |> Enum.flat_map(fn fp ->
-        case File.stat(fp) do
-          {:ok, stat} ->
-            id = Path.basename(fp, ".jsonl")
-
-            [
-              %{
-                "id" => id,
-                "mtime" => posix_mtime(stat.mtime),
-                "created" => created_from_id(id) || posix_mtime(stat.mtime)
-              }
-            ]
-
-          _ ->
-            []
-        end
-      end)
-
-    File.mkdir_p!(root())
-    File.write!(index(), Jason.encode_to_iodata!(entries))
-
-    entries |> Enum.sort_by(&(&1["mtime"] || &1["created"]), :desc)
+    entries = fs_scan_entries()
+    persist_index(entries)
+    entries |> Enum.sort_by(fn e -> e["mtime"] || e["created"] end, :desc)
   end
+
 
   defp touch_index(id) do
-    entries =
-      case File.read(index()) do
-        {:ok, body} ->
-          case Jason.decode(body) do
-            {:ok, list} when is_list(list) -> list
-            _ -> []
-          end
-
-        _ ->
-          []
+    now = System.system_time(:second)
+    merged = merged_index()
+    idx_map = Map.new(merged, fn e -> {e["id"], e} end)
+    existing = Map.get(idx_map, id)
+    created =
+      if existing do
+        existing["created"] || created_from_id(id) || existing["mtime"] || now
+      else
+        created_from_id(id) || now
       end
 
-    now = System.system_time(:second)
-
-    case Enum.find(entries, &(&1["id"] == id)) do
-      nil ->
-        # 新会话：记录创建时间（此后 created 保持不变）
-        File.write!(
-          index(),
-          Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => now} | entries])
-        )
-
-      existing ->
-        # 已有会话：mtime 刷新，created 保留（缺失时回退 mtime）
-        created = existing["created"] || created_from_id(id) || existing["mtime"] || now
-        rest = Enum.reject(entries, &(&1["id"] == id))
-
-        File.write!(
-          index(),
-          Jason.encode_to_iodata!([%{"id" => id, "mtime" => now, "created" => created} | rest])
-        )
-    end
+    updated = %{"id" => id, "mtime" => now, "created" => created}
+    new_map = Map.put(idx_map, id, updated)
+    new_list = new_map |> Map.values() |> Enum.sort_by(fn e -> e["mtime"] || e["created"] end, :desc)
+    persist_index(new_list)
   rescue
-    _ -> :ok
+    e ->
+      Logger.error("touch_index failed: " <> Exception.message(e))
+      :ok
   end
+
 
   # 从会话 id 前缀解析创建时间（YYYYMMDD-HHMMSS-xxxx / YYYYMMDD-HHMMSSxxxx），失败返回 nil。
   # id 前缀是本地时间，需按本地 UTC 偏移换算成 unix 秒（与 System.system_time(:second) 同基准）。
