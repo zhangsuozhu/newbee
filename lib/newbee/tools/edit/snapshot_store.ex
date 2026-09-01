@@ -12,7 +12,16 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   @table :newbee_edit_snapshots
 
   @enforce_keys [:text, :hash, :sha256, :path, :recorded_at]
-  defstruct [:text, :hash, :sha256, :path, :recorded_at, lines: 0, seen: MapSet.new(), has_trailing: true]
+  defstruct [
+    :text,
+    :hash,
+    :sha256,
+    :path,
+    :recorded_at,
+    lines: 0,
+    seen: MapSet.new(),
+    has_trailing: true
+  ]
 
   @type t :: %__MODULE__{
           text: String.t(),
@@ -64,7 +73,8 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
 
   @doc "按标签取该路径快照。"
   @spec fetch(String.t(), String.t()) :: t() | nil
-  def fetch(path, tag), do: history(normalize_path(path)) |> Enum.reverse() |> Enum.find(&(&1.hash == tag))
+  def fetch(path, tag),
+    do: history(normalize_path(path)) |> Enum.reverse() |> Enum.find(&(&1.hash == tag))
 
   @doc "标签是否已知。"
   @spec known?(String.t(), String.t()) :: boolean()
@@ -113,7 +123,8 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
         has_trailing: has_trailing
       }
 
-      {hash, lru_touch(Map.put(store, path, (history ++ [snap]) |> Enum.take(-@max_versions)), path)}
+      {hash,
+       lru_touch(Map.put(store, path, (history ++ [snap]) |> Enum.take(-@max_versions)), path)}
     end)
   end
 
@@ -162,10 +173,9 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   defp with_store(fun), do: with_store(File.cwd!(), fun)
 
   defp with_store(project_root, fun) do
-    # The file is the cross-node source of truth. A global lock protects
-    # concurrent writers when nodes share the same Erlang distribution.
-    lock = {__MODULE__, :snapshot_store, project_root}
-
+    # The file is the cross-node source of truth; an OS-level lock file
+    # serializes writers across processes AND hidden evaluator nodes
+    # (hidden peers are not fully connected, so :global is unusable here).
     transaction = fn ->
       store = read_store(project_root)
       {result, next_store} = fun.(store)
@@ -173,14 +183,73 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
       result
     end
 
-    if Node.alive?(), do: :global.trans(lock, transaction), else: transaction.()
+    with_file_lock(lock_path(project_root), transaction)
   end
+
+  defp lock_path(project_root) do
+    project_hash =
+      :crypto.hash(:sha256, project_root) |> binary_part(0, 4) |> Base.encode16(case: :lower)
+
+    Path.join([Newbee.GlobalStore.root(), "edit_snapshots", project_hash <> ".lock"])
+  end
+
+  @lock_timeout_ms 5_000
+
+  # 简单文件锁：O_EXCL 原子创建 + 过期抢占（持锁进程崩溃后 30s 自动可抢）。
+  defp with_file_lock(path, fun) do
+    File.mkdir_p!(Path.dirname(path))
+    deadline = System.monotonic_time(:millisecond) + @lock_timeout_ms
+    :locked = do_acquire_lock(path, deadline)
+
+    try do
+      fun.()
+    after
+      File.rm(path)
+    end
+  end
+
+  defp do_acquire_lock(path, deadline) do
+    case File.open(path, [:exclusive, :write]) do
+      {:ok, io} ->
+        IO.write(io, inspect(self()))
+        File.close(io)
+        :locked
+
+      {:error, _} ->
+        stale? =
+          case File.stat(path, time: :posix) do
+            {:ok, %File.Stat{mtime: mtime}} ->
+              System.os_time(:second) - mtime_to_seconds(mtime) > 30
+
+            _ ->
+              false
+          end
+
+        if stale?, do: File.rm(path)
+
+        if System.monotonic_time(:millisecond) >= deadline do
+          raise RuntimeError, "snapshot store lock timeout: " <> path
+        end
+
+        Process.sleep(10)
+        do_acquire_lock(path, deadline)
+    end
+  end
+
+  # File.stat(time: :posix) 已返回 Unix 秒；保留 helper 便于锁时钟语义集中。
+  defp mtime_to_seconds(seconds) when is_integer(seconds), do: seconds
 
   defp ensure_table do
     case :ets.whereis(@table) do
       :undefined ->
         try do
-          :ets.new(@table, [:named_table, :public, :set, read_concurrency: true, write_concurrency: true])
+          :ets.new(@table, [
+            :named_table,
+            :public,
+            :set,
+            read_concurrency: true,
+            write_concurrency: true
+          ])
         rescue
           ArgumentError -> @table
         end
@@ -230,7 +299,10 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   end
 
   defp lru_trim(store) do
-    paths = store |> Enum.filter(fn {key, _} -> not match?({:lru, _}, key) end) |> Enum.map(fn {key, _} -> key end)
+    paths =
+      store
+      |> Enum.filter(fn {key, _} -> not match?({:lru, _}, key) end)
+      |> Enum.map(fn {key, _} -> key end)
 
     if length(paths) <= @max_paths do
       store
@@ -248,7 +320,8 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
 
   defp lru_touch(store, path), do: Map.put(store, {:lru, path}, System.system_time(:millisecond))
 
-  defp content_hash(text), do: :crypto.hash(:sha256, text) |> binary_part(0, @tag_bytes) |> Base.encode16(case: :lower)
+  defp content_hash(text),
+    do: :crypto.hash(:sha256, text) |> binary_part(0, @tag_bytes) |> Base.encode16(case: :lower)
 
   # 完整 SHA-256 用于安全校验（短 tag 只作句柄）
   defp full_hash(text), do: :crypto.hash(:sha256, text) |> Base.encode16(case: :lower)

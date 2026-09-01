@@ -20,6 +20,39 @@ defmodule Newbee.DEE.EvaluatorNodeTest do
   end
 
   @tag :node
+  test "peer 使用受控语义名称并隐藏于 global 拓扑" do
+    {:ok, ev} = Evaluator.start(mode: :node, node_label: "Research Agent / α 01")
+    on_exit(fn -> if Process.alive?(ev), do: GenServer.stop(ev) end)
+
+    info = Evaluator.info(ev)
+    primary_name = info.node |> Atom.to_string() |> String.split("@") |> hd()
+
+    assert primary_name =~ ~r/^newbee_eval_primary_research_agent_01_[a-z2-7]+$/
+    assert info.node in Node.list(:hidden)
+    refute info.node in Node.list(:visible)
+
+    # Hidden peer 仍通过跨进程文件锁串行化 Edit 快照写入。
+    assert %{status: :ok} = Evaluator.eval(ev, ~S|Newbee.Tools.Edit.show("mix.exs", {1, 1})|)
+
+    standby =
+      Enum.reduce_while(1..100, nil, fn _, _ ->
+        case Evaluator.info(ev).standby do
+          %{alive: true} = ready ->
+            {:halt, ready}
+
+          _ ->
+            Process.sleep(50)
+            {:cont, nil}
+        end
+      end)
+
+    assert standby
+    standby_name = standby.node |> Atom.to_string() |> String.split("@") |> hd()
+    assert standby_name =~ ~r/^newbee_eval_standby_research_agent_01_[a-z2-7]+$/
+    assert standby.node in Node.list(:hidden)
+  end
+
+  @tag :node
   test "节点崩溃后自动重启，重试当前调用，绑定丢失但可用" do
     {:ok, ev} = Evaluator.start(mode: :node)
     Evaluator.eval(ev, "y = 1")
