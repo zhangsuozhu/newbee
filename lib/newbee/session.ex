@@ -119,6 +119,13 @@ defmodule Newbee.Session do
     dir
   end
 
+  @doc "该会话的 WebUI 上传文件目录（不存在时自动创建）。"
+  def uploads_dir(id) when is_binary(id) do
+    dir = Path.join(artifacts(), id <> "/uploads")
+    File.mkdir_p!(dir)
+    dir
+  end
+
   @doc "新会话或恢复已有会话。"
   def open(id \\ nil) do
     id = id || gen_id()
