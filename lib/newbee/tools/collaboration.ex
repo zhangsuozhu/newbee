@@ -75,11 +75,13 @@ defmodule Newbee.Tools.Collaboration do
   end
 
   defp ensure_group(parent_sid, project_root, title) do
-    case Newbee.Host.call(Newbee.Collaboration.Coordinator, :groups_for_session, [parent_sid]) do
-      [group | _] ->
+    groups = Newbee.Host.call(Newbee.Collaboration.Coordinator, :groups_for_session, [parent_sid])
+
+    case Enum.find(groups, &(&1["status"] == "running")) do
+      group when is_map(group) ->
         {:ok, group}
 
-      [] ->
+      nil ->
         Newbee.Host.call(Newbee.Collaboration.Coordinator, :create_group, [
           %{
             "session_id" => parent_sid,

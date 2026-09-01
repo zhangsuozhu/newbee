@@ -10,9 +10,11 @@ defmodule Newbee.Tools.Structural do
   defp normalize_path(other), do: to_string(other)
 
   defp normalize_module(m) when is_atom(m), do: m
+
   defp normalize_module(m) when is_binary(m) do
     m = String.trim(m)
     m = String.trim_leading(m, "Elixir.")
+
     try do
       String.to_existing_atom("Elixir." <> m)
     rescue
@@ -21,27 +23,29 @@ defmodule Newbee.Tools.Structural do
         Module.concat(parts)
     end
   end
+
   defp normalize_module(%{module: m}), do: normalize_module(m)
   defp normalize_module(%{"module" => m}), do: normalize_module(m)
   defp normalize_module(%{mod: m}), do: normalize_module(m)
   defp normalize_module(%{"mod" => m}), do: normalize_module(m)
-  defp normalize_module(other) when is_atom(other), do: other
-  defp normalize_module(other) when is_binary(other), do: normalize_module(other)
   defp normalize_module(other), do: other
 
   defp normalize_arity(a) when is_integer(a), do: a
+
   defp normalize_arity(a) when is_binary(a) do
     case Integer.parse(String.trim(a)) do
       {n, ""} -> n
       _ -> a
     end
   end
+
   defp normalize_arity(a) when is_atom(a) do
     case Integer.parse(to_string(a)) do
       {n, ""} -> n
       _ -> a
     end
   end
+
   defp normalize_arity(other), do: other
 
   @moduledoc """
@@ -69,6 +73,7 @@ defmodule Newbee.Tools.Structural do
   def insert_function(path, module, def_code) do
     path = normalize_path(path)
     module = normalize_module(module)
+
     with :ok <- validate_syntax(def_code),
          {:ok, src} <- File.read(path),
          {:ok, quoted} <- Sourceror.parse_string(src),
@@ -103,6 +108,7 @@ defmodule Newbee.Tools.Structural do
     module = normalize_module(module)
     arity = normalize_arity(arity)
     name = if is_binary(name), do: String.to_atom(name), else: name
+
     with {:ok, src} <- File.read(path),
          {:ok, quoted} <- Sourceror.parse_string(src),
          {:ok, mod_meta} <- find_module_meta(quoted, module) do
@@ -131,12 +137,10 @@ defmodule Newbee.Tools.Structural do
 
   @doc "列出模块的函数签名。"
 
-
-
-
   def list_functions(path, module) do
     path = normalize_path(path)
     module = normalize_module(module)
+
     with {:ok, src} <- File.read(path),
          {:ok, quoted} <- Sourceror.parse_string(src) do
       case find_module(quoted, module) do
@@ -170,6 +174,7 @@ defmodule Newbee.Tools.Structural do
   @doc "格式化文件（Code.format_string!）。"
   def format(path) do
     path = normalize_path(path)
+
     with {:ok, src} <- File.read(path) do
       write_formatted(path, src)
       {:ok, :formatted}
@@ -280,6 +285,7 @@ defmodule Newbee.Tools.Structural do
       {:error, {_line, error, _token}} -> {:error, %{reason: :syntax_error, hint: "def_code 语法错误: " <> inspect(error)}}
     end
   end
+
   @doc false
   def list_functions(%{path: p, module: m}), do: list_functions(p, m)
   @doc false
@@ -299,11 +305,6 @@ defmodule Newbee.Tools.Structural do
   @doc false
   def replace_function(%{path: p, module: m, name: n, arity: a, code: c}), do: replace_function(p, m, n, a, c)
   @doc false
-  def replace_function(%{"path" => p, "module" => m, "name" => n, "arity" => a, "code" => c}), do: replace_function(p, m, n, a, c)
-
-  @doc false
-  def format(%{path: p}), do: format(p)
-  @doc false
-  def format(%{"path" => p}), do: format(p)
-
+  def replace_function(%{"path" => p, "module" => m, "name" => n, "arity" => a, "code" => c}),
+    do: replace_function(p, m, n, a, c)
 end

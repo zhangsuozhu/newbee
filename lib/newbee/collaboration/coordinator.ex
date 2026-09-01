@@ -12,7 +12,7 @@ defmodule Newbee.Collaboration.Coordinator do
   alias Newbee.EventStore
 
   @default_root Path.join(System.user_home!(), ".newbee/collaboration")
-  @roles ~w(coordinator worker reviewer observer)
+  @roles ~w(coordinator worker reviewer observer tester)
   @message_kinds ~w(chat question task_assign task_progress task_result artifact system error)
   @deliveries ~w(notify queue wake)
   @max_members 12
@@ -84,7 +84,7 @@ defmodule Newbee.Collaboration.Coordinator do
   def renew_task(group_id, task_id, session_id, seconds \\ 300, server \\ __MODULE__),
     do: GenServer.call(server, {:renew_task, group_id, task_id, session_id, seconds})
 
-  def delete_group(group_id, session_id, server \\ __MODULE__),\
+  def delete_group(group_id, session_id, server \\ __MODULE__),
     do: GenServer.call(server, {:delete_group, group_id, session_id})
 
   @impl true
@@ -479,6 +479,7 @@ defmodule Newbee.Collaboration.Coordinator do
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
   end
+
   def handle_call({:delete_group, group_id, session_id}, _from, state) do
     with {:ok, group} <- fetch_group(state, group_id),
          :ok <- ensure_coordinator(group, session_id) do

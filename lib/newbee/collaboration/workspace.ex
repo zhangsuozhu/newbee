@@ -1,12 +1,31 @@
 defmodule Newbee.Collaboration.Workspace do
   @moduledoc """
-  子代理工作区生命周期：创建隔离 Git 工作目录、生成可复核补丁、应用或拒绝，
-  最后安全清理。调用方只能使用 Task 持久化的 workspace 元数据，不能传任意路径。
+  通用子会话工作区：默认文件系统副本，不依赖 Git。
+  `isolate: false` 才使用共享目录，旧的 Git worktree 元数据仍可兼容读取。
   """
 
   @display_patch_limit 600_000
   @session_id_re ~r/\A[0-9A-Za-z._-]{1,96}\z/
   @terminal_review_states ~w(applied rejected)
+
+  @excluded_entries MapSet.new([
+                      ".appimage-cache",
+                      ".cache",
+                      ".git",
+                      ".newbee",
+                      ".newbee-tmp",
+                      ".elixir_ls",
+                      "_build",
+                      "build",
+                      "deps",
+                      "dist",
+                      "cover",
+                      "node_modules",
+                      "tmp",
+                      "erl_crash.dump",
+                      "nohup.out",
+                      "pal"
+                    ])
 
   def prepare(root, child_session_id, mode \\ :auto)
 
@@ -19,13 +38,10 @@ defmodule Newbee.Collaboration.Workspace do
           {:ok, shared_workspace(expanded_root)}
 
         true ->
-          prepare_git_workspace(expanded_root, child_session_id)
+          prepare_filesystem_workspace(expanded_root, child_session_id)
 
         :auto ->
-          case git_repository?(expanded_root) do
-            true -> prepare_git_workspace(expanded_root, child_session_id)
-            false -> {:ok, Map.put(shared_workspace(expanded_root), "warning", "非 Git 项目使用共享目录")}
-          end
+          prepare_filesystem_workspace(expanded_root, child_session_id)
       end
     end
   end
@@ -50,8 +66,8 @@ defmodule Newbee.Collaboration.Workspace do
          :ok <- require_review_state(workspace, "pending"),
          {:ok, patch_info} <- build_patch(workspace),
          :ok <- same_review(expected_sha256, patch_info.patch_sha256),
-         :ok <- maybe_apply_patch(workspace["root"], patch_info) do
-      {:ok, Map.drop(patch_info, [:patch])}
+         :ok <- apply_files(workspace, patch_info.changes) do
+      {:ok, Map.drop(patch_info, [:patch, :changes])}
     end
   end
 
@@ -68,87 +84,35 @@ defmodule Newbee.Collaboration.Workspace do
   def cleanup(task) when is_map(task) do
     with {:ok, workspace} <- cleanup_workspace(task),
          :ok <- require_review_state(workspace, @terminal_review_states),
-         :ok <- remove_git_workspace(workspace) do
+         :ok <- remove_workspace(workspace) do
       {:ok, %{workspace_path: workspace["path"], review_status: "cleaned"}}
     end
   end
 
   @doc false
-  def discard_orphan(%{"kind" => "git_worktree"} = workspace), do: remove_git_workspace(workspace)
+  def discard_orphan(%{"kind" => kind} = workspace) when kind in ["filesystem_copy", "git_worktree"],
+    do: remove_workspace(workspace)
+
   def discard_orphan(_), do: :ok
 
-  defp prepare_git_workspace(root, child_session_id) do
-    with {:ok, repo_root} <- repository_root(root),
-         {:ok, snapshot} <- snapshot_parent_workspace(repo_root, child_session_id) do
-      case materialize_git_workspace(repo_root, child_session_id, snapshot) do
-        {:ok, workspace} ->
-          {:ok, workspace}
-
-        {:error, _, _} = error ->
-          delete_snapshot_ref(repo_root, snapshot.ref)
-          error
-      end
-    end
-  end
-
-  defp materialize_git_workspace(repo_root, child_session_id, snapshot) do
-    path = Path.join([repo_root, ".newbee", "worktrees", child_session_id])
-
-    with :ok <- ensure_expected_path(repo_root, path),
-         :ok <- File.mkdir_p(Path.dirname(path)),
-         {:ok, _} <- normalize_git_result(Newbee.Tools.Git.worktree_add(repo_root, path, snapshot.commit)),
-         {:ok, common_dir} <- common_git_dir(repo_root) do
+  defp prepare_filesystem_workspace(root, child_session_id) do
+    with {:ok, base_snapshot} <- snapshot(root),
+         path <- Path.join([root, ".newbee", "workspaces", child_session_id]),
+         :ok <- ensure_workspace_path(root, path),
+         :ok <- ensure_absent(path),
+         :ok <- File.mkdir_p(path),
+         :ok <- materialize_snapshot(base_snapshot, path),
+         :ok <- write_base_snapshot(path, base_snapshot) do
       {:ok,
        %{
-         "kind" => "git_worktree",
-         "root" => repo_root,
+         "kind" => "filesystem_copy",
+         "root" => root,
          "path" => path,
-         "base_ref" => snapshot.commit,
-         "snapshot_ref" => snapshot.ref,
-         "common_git_dir" => common_dir,
+         "base_ref" => snapshot_ref(base_snapshot),
          "review_status" => "waiting",
          "reviewed_at" => nil,
          "reviewed_by_session_id" => nil
        }}
-    end
-  end
-
-  defp snapshot_parent_workspace(repo_root, child_session_id) do
-    tmp_index = Path.join(System.tmp_dir!(), "newbee-snapshot-#{System.unique_integer([:positive])}")
-    env = [{"GIT_INDEX_FILE", tmp_index}]
-    snapshot_ref = "refs/newbee/collaboration/" <> child_session_id
-
-    try do
-      with {:ok, head} <- git(repo_root, ["rev-parse", "HEAD"]),
-           head = String.trim(head),
-           {:ok, _} <- git(repo_root, ["read-tree", head], env),
-           {:ok, _} <- git(repo_root, ["add", "-A", "--"], env),
-           {:ok, tree} <- git(repo_root, ["write-tree"], env),
-           tree = String.trim(tree),
-           {:ok, head_tree} <- git(repo_root, ["rev-parse", head <> "^{tree}"]) do
-        if tree == String.trim(head_tree) do
-          {:ok, %{commit: head, ref: nil}}
-        else
-          commit_env =
-            env ++
-              [
-                {"GIT_AUTHOR_NAME", "newbee snapshot"},
-                {"GIT_AUTHOR_EMAIL", "snapshot@newbee.local"},
-                {"GIT_COMMITTER_NAME", "newbee snapshot"},
-                {"GIT_COMMITTER_EMAIL", "snapshot@newbee.local"}
-              ]
-
-          with {:ok, commit} <-
-                 git(repo_root, ["commit-tree", tree, "-p", head, "-m", "newbee collaboration snapshot"], commit_env),
-               commit = String.trim(commit),
-               {:ok, _} <- git(repo_root, ["update-ref", snapshot_ref, commit]) do
-            {:ok, %{commit: commit, ref: snapshot_ref}}
-          end
-        end
-      end
-    after
-      File.rm(tmp_index)
-      File.rm(tmp_index <> ".lock")
     end
   end
 
@@ -164,205 +128,340 @@ defmodule Newbee.Collaboration.Workspace do
     }
   end
 
-  defp cleanup_workspace(%{
-         "workspace" =>
-           %{
-             "kind" => "git_worktree",
-             "root" => root,
-             "path" => path,
-             "base_ref" => base_ref
-           } = workspace
-       })
-       when is_binary(root) and is_binary(path) and is_binary(base_ref) do
-    with :ok <- ensure_expected_path(root, path), do: {:ok, workspace}
+  defp cleanup_workspace(%{"workspace" => workspace}) when is_map(workspace) do
+    with :ok <- validate_workspace(workspace), do: {:ok, workspace}
   end
 
   defp cleanup_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
 
   defp task_workspace(%{"workspace" => workspace}) when is_map(workspace) do
     with :ok <- reviewable(workspace),
-         :ok <- validate_git_workspace(workspace) do
+         :ok <- validate_workspace(workspace) do
       {:ok, workspace}
     end
   end
 
   defp task_workspace(_), do: {:error, "workspace_missing", "任务没有可审查的隔离工作区"}
 
-  defp reviewable(%{"kind" => "git_worktree", "review_status" => status})
-       when status != "cleaned",
-       do: :ok
+  defp reviewable(%{"kind" => "shared"}), do: {:error, "not_reviewable", "该子代理使用共享目录，没有独立变更可审查"}
+  defp reviewable(%{"review_status" => "cleaned"}), do: {:error, "workspace_cleaned", "隔离工作区已清理"}
+  defp reviewable(%{"kind" => kind}) when kind in ["filesystem_copy", "git_worktree"], do: :ok
+  defp reviewable(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
 
-  defp reviewable(%{"kind" => "shared"}),
-    do: {:error, "not_reviewable", "该子代理使用共享目录，没有独立变更可审查"}
+  defp validate_workspace(%{"kind" => kind, "root" => root, "path" => path})
+       when kind in ["filesystem_copy", "git_worktree"] and is_binary(root) and is_binary(path) do
+    ensure_workspace_path(root, path)
+  end
 
-  defp reviewable(_), do: {:error, "workspace_cleaned", "隔离工作区已清理或元数据无效"}
+  defp validate_workspace(%{"kind" => "shared", "root" => root, "path" => path}) when is_binary(root) and root == path,
+    do: :ok
+
+  defp validate_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
 
   defp terminal_task(%{"status" => status}) when status in ["succeeded", "failed", "cancelled"], do: :ok
   defp terminal_task(_), do: {:error, "task_not_terminal", "任务结束后才能审查变更"}
 
   defp require_review_state(workspace, expected) when is_binary(expected) do
-    if workspace["review_status"] == expected,
-      do: :ok,
-      else: {:error, "invalid_workspace_state", "当前工作区状态不允许此操作"}
+    if workspace["review_status"] == expected, do: :ok, else: {:error, "invalid_workspace_state", "当前工作区状态不允许此操作"}
   end
 
   defp require_review_state(workspace, allowed) when is_list(allowed) do
-    if workspace["review_status"] in allowed,
-      do: :ok,
-      else: {:error, "invalid_workspace_state", "当前工作区状态不允许清理"}
+    if workspace["review_status"] in allowed, do: :ok, else: {:error, "invalid_workspace_state", "当前工作区状态不允许清理"}
   end
 
   defp build_patch(workspace) do
-    tmp_index = Path.join(System.tmp_dir!(), "newbee-index-#{System.unique_integer([:positive])}")
-    env = [{"GIT_INDEX_FILE", tmp_index}]
-    path = workspace["path"]
-    base_ref = workspace["base_ref"]
+    with {:ok, base} <- snapshot_from_workspace(workspace),
+         {:ok, current} <- snapshot(workspace["path"]) do
+      changes = changes(base, current)
+      patch = render_patch(changes, base, current)
+      sha = sha256(patch)
 
-    try do
-      with {:ok, _} <- git(path, ["read-tree", "HEAD"], env),
-           {:ok, _} <- git(path, ["add", "-A"], env),
-           {:ok, patch} <-
-             git(
-               path,
-               ["diff", "--cached", "--binary", "--full-index", "--no-ext-diff", base_ref, "--"],
-               env
-             ),
-           {:ok, names} <- git(path, ["diff", "--cached", "--name-status", base_ref, "--"], env),
-           {:ok, numstat} <- git(path, ["diff", "--cached", "--numstat", base_ref, "--"], env) do
-        sha = :crypto.hash(:sha256, patch) |> Base.encode16(case: :lower)
-
-        {:ok,
-         %{
-           patch: patch,
-           display_patch: truncate_patch(patch),
-           patch_truncated: byte_size(patch) > @display_patch_limit,
-           patch_sha256: sha,
-           bytes: byte_size(patch),
-           dirty: patch != "",
-           files: parse_files(names, numstat)
-         }}
-      end
-    after
-      File.rm(tmp_index)
-      File.rm(tmp_index <> ".lock")
+      {:ok,
+       %{
+         patch: patch,
+         display_patch: truncate_patch(patch),
+         patch_truncated: byte_size(patch) > @display_patch_limit,
+         patch_sha256: sha,
+         bytes: byte_size(patch),
+         dirty: changes != [],
+         files: Enum.map(changes, &file_summary(&1, base, current)),
+         changes: changes
+       }}
     end
   end
 
-  defp apply_patch(root, patch) do
-    patch_file =
-      Path.join(System.tmp_dir!(), "newbee-review-#{System.unique_integer([:positive])}.patch")
+  defp snapshot_from_workspace(%{"base_snapshot" => snapshot}) when is_map(snapshot), do: {:ok, snapshot}
 
-    try do
-      :ok = File.write(patch_file, patch)
-
-      case git(root, ["apply", "--check", patch_file]) do
-        {:ok, _} ->
-          case git(root, ["apply", "--whitespace=nowarn", patch_file]) do
-            {:ok, _} -> :ok
-            {:error, _, _} = error -> error
-          end
-
-        {:error, _, _} = forward_error ->
-          case git(root, ["apply", "--reverse", "--check", patch_file]) do
-            {:ok, _} -> :ok
-            {:error, _, _} -> forward_error
-          end
-      end
-    after
-      File.rm(patch_file)
-    end
-  end
-
-  defp remove_git_workspace(%{"root" => root, "path" => path} = workspace) do
-    with :ok <- ensure_expected_path(root, path),
-         :ok <- remove_workspace_directory(root, path, workspace),
-         :ok <- delete_snapshot_ref(root, workspace["snapshot_ref"]) do
-      :ok
-    end
-  end
-
-  defp remove_workspace_directory(root, path, workspace) do
-    if File.dir?(path) do
-      with :ok <- validate_git_workspace(workspace) do
-        case apply(Newbee.Tools.Git, :worktree_remove, [root, path]) do
-          {:ok, _} ->
-            :ok
-
-          {:error, {exit_code, output}} ->
-            {:error, "workspace_cleanup_failed", "git exit " <> Integer.to_string(exit_code) <> ": " <> output}
+  defp snapshot_from_workspace(%{"path" => path}) when is_binary(path) do
+    case File.read(base_snapshot_path(path)) do
+      {:ok, binary} ->
+        try do
+          snapshot = :erlang.binary_to_term(binary, [:safe])
+          if is_map(snapshot), do: {:ok, snapshot}, else: {:error, "workspace_snapshot_invalid", "基线快照格式无效"}
+        rescue
+          _ -> {:error, "workspace_snapshot_invalid", "基线快照格式无效"}
         end
+
+      {:error, :enoent} ->
+        {:error, "workspace_snapshot_missing", "工作区缺少基线快照"}
+
+      {:error, reason} ->
+        {:error, "workspace_snapshot_failed", inspect(reason)}
+    end
+  end
+
+  defp snapshot_from_workspace(_), do: {:error, "workspace_snapshot_missing", "工作区缺少基线快照"}
+
+  defp write_base_snapshot(path, snapshot) do
+    sidecar = base_snapshot_path(path)
+    File.write(sidecar, :erlang.term_to_binary(snapshot, [:compressed]))
+  end
+
+  defp base_snapshot_path(path), do: path <> ".base_snapshot.term"
+
+  defp changes(base, current) do
+    paths = (Map.keys(base) ++ Map.keys(current)) |> Enum.uniq() |> Enum.sort()
+
+    Enum.flat_map(paths, fn path ->
+      case {Map.get(base, path), Map.get(current, path)} do
+        {nil, current_file} when is_map(current_file) ->
+          [{:added, path}]
+
+        {base_file, nil} when is_map(base_file) ->
+          [{:deleted, path}]
+
+        {base_file, current_file} when is_map(base_file) and is_map(current_file) ->
+          if base_file["sha256"] != current_file["sha256"], do: [{:modified, path}], else: []
+
+        _ ->
+          []
       end
-    else
+    end)
+  end
+
+  defp file_summary({status, path}, base, current) do
+    old_entry = Map.get(base, path)
+    new_entry = Map.get(current, path)
+    old = decode_snapshot_file(old_entry)
+    new = decode_snapshot_file(new_entry)
+    binary? = binary_snapshot?(old_entry) or binary_snapshot?(new_entry)
+    old_lines = if binary?, do: 0, else: line_count(old)
+    new_lines = if binary?, do: 0, else: line_count(new)
+
+    %{
+      path: path,
+      status: Atom.to_string(status),
+      added: max(new_lines - old_lines, 0),
+      deleted: max(old_lines - new_lines, 0),
+      binary: binary?
+    }
+  end
+
+  defp render_patch(changes, base, current) do
+    Enum.map_join(changes, "\n", fn {status, path} ->
+      old_entry = Map.get(base, path)
+      new_entry = Map.get(current, path)
+
+      if binary_snapshot?(old_entry) or binary_snapshot?(new_entry) do
+        "Binary files " <>
+          if(status == :added, do: "/dev/null", else: "a/" <> path) <>
+          " and " <> if(status == :deleted, do: "/dev/null", else: "b/" <> path) <> " differ"
+      else
+        old = decode_snapshot_file(old_entry)
+        new = decode_snapshot_file(new_entry)
+        old_lines = if old == nil, do: [], else: String.split(old, "\n")
+        new_lines = if new == nil, do: [], else: String.split(new, "\n")
+
+        header =
+          "--- " <>
+            if(status == :added, do: "/dev/null", else: "a/" <> path) <>
+            "\n+++ " <> if(status == :deleted, do: "/dev/null", else: "b/" <> path)
+
+        body =
+          Enum.map_join(old_lines, "\n", &("-" <> &1)) <>
+            if(old_lines == [], do: "", else: "\n") <> Enum.map_join(new_lines, "\n", &("+" <> &1))
+
+        header <> if(body == "", do: "", else: "\n" <> body)
+      end
+    end)
+  end
+
+  defp decode_snapshot_file(%{"encoding" => "base64", "content" => content}), do: Base.decode64!(content)
+  defp decode_snapshot_file(%{"content" => content}), do: content
+  defp decode_snapshot_file(_), do: nil
+  defp binary_snapshot?(%{"encoding" => "base64"}), do: true
+  defp binary_snapshot?(_), do: false
+
+  defp apply_files(workspace, changes) do
+    root = workspace["root"]
+    path = workspace["path"]
+
+    with {:ok, base} <- snapshot_from_workspace(workspace),
+         {:ok, root_now} <- snapshot(root),
+         {:ok, child_now} <- snapshot(path),
+         :ok <- check_conflicts(changes, base, root_now, child_now),
+         :ok <- Enum.reduce(changes, :ok, fn change, :ok -> apply_change(change, root, path) end) do
       :ok
     end
   end
 
-  defp delete_snapshot_ref(_root, nil), do: :ok
+  defp check_conflicts(changes, base, root_now, child_now) do
+    Enum.reduce_while(changes, :ok, fn {status, path}, :ok ->
+      base_file = Map.get(base, path)
+      root_file = Map.get(root_now, path)
+      child_file = Map.get(child_now, path)
 
-  defp delete_snapshot_ref(root, "refs/newbee/collaboration/" <> session_id = ref) do
-    with :ok <- valid_session_id(session_id) do
-      case git(root, ["update-ref", "-d", ref]) do
+      unchanged_or_applied? =
+        is_nil(root_file) or same_file?(root_file, base_file) or same_file?(root_file, child_file)
+
+      allowed? =
+        case status do
+          :added -> unchanged_or_applied?
+          :modified -> unchanged_or_applied?
+          :deleted -> unchanged_or_applied?
+        end
+
+      if allowed?,
+        do: {:cont, :ok},
+        else: {:halt, {:error, "workspace_conflict", "父工作区已修改 " <> path}}
+    end)
+  end
+
+  defp same_file?(%{"sha256" => left}, %{"sha256" => right}), do: left == right
+  defp same_file?(_, _), do: false
+
+  defp apply_change({:added, rel}, root, child), do: copy_child_file(child, root, rel)
+  defp apply_change({:modified, rel}, root, child), do: copy_child_file(child, root, rel)
+
+  defp apply_change({:deleted, rel}, root, _child) do
+    path = safe_join(root, rel)
+
+    case File.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, "workspace_apply_failed", "无法删除 " <> rel <> ": " <> inspect(reason)}
+    end
+  end
+
+  defp copy_child_file(child, root, rel) do
+    source = safe_join(child, rel)
+    target = safe_join(root, rel)
+
+    with :ok <- File.mkdir_p(Path.dirname(target)),
+         :ok <- File.cp(source, target) do
+      :ok
+    else
+      {:error, reason} -> {:error, "workspace_apply_failed", "无法应用 " <> rel <> ": " <> inspect(reason)}
+      other -> other
+    end
+  end
+
+  defp remove_workspace(%{"root" => root, "path" => path}) do
+    with :ok <- ensure_workspace_path(root, path) do
+      File.rm(base_snapshot_path(path))
+
+      case File.rm_rf(path) do
         {:ok, _} -> :ok
-        {:error, _, _} = error -> error
+        {:error, reason, _} -> {:error, "workspace_cleanup_failed", inspect(reason)}
       end
     end
   end
 
-  defp delete_snapshot_ref(_root, _ref), do: {:error, "workspace_ref_invalid", "临时快照引用无效"}
+  defp remove_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
 
-  defp validate_git_workspace(%{
-         "kind" => "git_worktree",
-         "root" => root,
-         "path" => path,
-         "base_ref" => base_ref
-       })
-       when is_binary(root) and is_binary(path) and is_binary(base_ref) do
-    with :ok <- ensure_expected_path(root, path),
-         {:ok, root_common} <- common_git_dir(root),
-         {:ok, child_common} <- common_git_dir(path),
-         true <- root_common == child_common,
-         {:ok, _} <- git(path, ["cat-file", "-e", base_ref <> "^{commit}"]) do
-      :ok
-    else
-      false -> {:error, "workspace_mismatch", "隔离工作区不属于同一 Git 仓库"}
-      {:error, _, _} = error -> error
+  defp snapshot(root), do: snapshot_dir(root, "", %{})
+
+  defp snapshot_dir(dir, rel, acc) do
+    with {:ok, names} <- File.ls(dir) do
+      Enum.reduce_while(names, {:ok, acc}, fn name, {:ok, files} ->
+        if excluded_entry?(name) do
+          {:cont, {:ok, files}}
+        else
+          child = Path.join(dir, name)
+          child_rel = if rel == "", do: name, else: Path.join(rel, name)
+
+          case File.lstat(child) do
+            {:ok, %File.Stat{type: :directory}} ->
+              case snapshot_dir(child, child_rel, files) do
+                {:ok, next} -> {:cont, {:ok, next}}
+                error -> {:halt, error}
+              end
+
+            {:ok, %File.Stat{type: :regular}} ->
+              case File.read(child) do
+                {:ok, content} -> {:cont, {:ok, Map.put(files, child_rel, snapshot_file(content))}}
+                {:error, reason} -> {:halt, {:error, "workspace_snapshot_failed", inspect(reason)}}
+              end
+
+            {:ok, %File.Stat{type: :symlink}} ->
+              {:halt, {:error, "workspace_unsupported_file", "不支持符号链接 " <> child_rel}}
+
+            {:ok, _} ->
+              {:cont, {:ok, files}}
+
+            {:error, reason} ->
+              {:halt, {:error, "workspace_snapshot_failed", inspect(reason)}}
+          end
+        end
+      end)
     end
   end
 
-  defp validate_git_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
+  defp excluded_entry?(name), do: MapSet.member?(@excluded_entries, name) or String.starts_with?(name, "_build")
 
-  defp ensure_expected_path(root, path) do
+  defp snapshot_file(content) do
+    {encoding, stored} = if String.valid?(content), do: {"utf8", content}, else: {"base64", Base.encode64(content)}
+    %{"sha256" => sha256(content), "bytes" => byte_size(content), "encoding" => encoding, "content" => stored}
+  end
+
+  defp snapshot_ref(snapshot), do: sha256(:erlang.term_to_binary(snapshot))
+  defp sha256(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+  defp line_count(nil), do: 0
+  defp line_count(content), do: length(String.split(content, "\n"))
+
+  defp materialize_snapshot(snapshot, target) do
+    snapshot
+    |> Task.async_stream(
+      fn {relative, entry} ->
+        destination = safe_join(target, relative)
+
+        with :ok <- File.mkdir_p(Path.dirname(destination)),
+             :ok <- File.write(destination, decode_snapshot_file(entry)) do
+          :ok
+        end
+      end,
+      max_concurrency: max(System.schedulers_online(), 4),
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Enum.reduce_while(:ok, fn
+      {:ok, :ok}, :ok -> {:cont, :ok}
+      {:ok, {:error, reason}}, :ok -> {:halt, {:error, "workspace_copy_failed", inspect(reason)}}
+      {:exit, reason}, :ok -> {:halt, {:error, "workspace_copy_failed", inspect(reason)}}
+    end)
+  end
+
+  defp ensure_absent(path) do
+    if File.exists?(path), do: {:error, "workspace_exists", "隔离工作区已存在"}, else: :ok
+  end
+
+  defp ensure_workspace_path(root, path) do
     root = Path.expand(root)
     path = Path.expand(path)
-    expected = Path.join([root, ".newbee", "worktrees"]) |> Path.expand()
-    relative = Path.relative_to(path, expected)
+    parent = Path.join([root, ".newbee", "workspaces"]) |> Path.expand()
+    rel = Path.relative_to(path, parent)
 
-    if relative != "." and not String.starts_with?(relative, "..") and
-         Path.dirname(relative) == ".",
-       do: :ok,
-       else: {:error, "workspace_path_invalid", "隔离工作区路径越界"}
+    if rel != "." and not String.starts_with?(rel, "..") and Path.dirname(rel) == ".",
+      do: :ok,
+      else: {:error, "workspace_path_invalid", "隔离工作区路径越界"}
   end
 
-  defp git_repository?(path) do
-    case System.cmd("git", ["-C", path, "rev-parse", "--is-inside-work-tree"], stderr_to_stdout: true) do
-      {output, 0} -> String.trim(output) == "true"
-      _ -> false
-    end
-  rescue
-    _ -> false
-  end
+  defp safe_join(root, rel) do
+    path = Path.expand(Path.join(root, rel))
 
-  defp repository_root(path) do
-    with {:ok, root} <- git(path, ["rev-parse", "--show-toplevel"]) do
-      {:ok, root |> String.trim() |> Path.expand()}
-    end
-  end
-
-  defp common_git_dir(path) do
-    with {:ok, common} <- git(path, ["rev-parse", "--git-common-dir"]) do
-      common = String.trim(common)
-      {:ok, if(Path.type(common) == :absolute, do: Path.expand(common), else: Path.expand(common, path))}
-    end
+    if String.starts_with?(path, Path.expand(root) <> "/") or path == Path.expand(root),
+      do: path,
+      else: raise(ArgumentError, "workspace path escaped root")
   end
 
   defp existing_directory(path) do
@@ -371,18 +470,8 @@ defmodule Newbee.Collaboration.Workspace do
   end
 
   defp valid_session_id(session_id) do
-    if Regex.match?(@session_id_re, session_id),
-      do: :ok,
-      else: {:error, "invalid_session_id", "子会话 ID 含非法字符"}
+    if Regex.match?(@session_id_re, session_id), do: :ok, else: {:error, "invalid_session_id", "子会话 ID 含非法字符"}
   end
-
-  defp normalize_git_result({:ok, output}), do: {:ok, output}
-
-  defp normalize_git_result({:error, {code, output}}),
-    do: {:error, "workspace_create_failed", "git exit #{code}: #{output}"}
-
-  defp maybe_apply_patch(root, %{dirty: true, patch: patch}), do: apply_patch(root, patch)
-  defp maybe_apply_patch(_root, %{dirty: false}), do: :ok
 
   defp same_review(expected, actual) do
     if byte_size(expected) == byte_size(actual) and Plug.Crypto.secure_compare(expected, actual),
@@ -393,52 +482,5 @@ defmodule Newbee.Collaboration.Workspace do
   end
 
   defp truncate_patch(patch) when byte_size(patch) <= @display_patch_limit, do: patch
-
-  defp truncate_patch(patch),
-    do: binary_part(patch, 0, @display_patch_limit) <> "\n… diff 已截断 …\n"
-
-  defp parse_files(names, numstat) do
-    stats =
-      numstat
-      |> String.split("\n", trim: true)
-      |> Map.new(fn line ->
-        case String.split(line, "\t") do
-          [added, deleted, path] ->
-            {path, %{added: parse_count(added), deleted: parse_count(deleted)}}
-
-          _ ->
-            {line, %{added: 0, deleted: 0}}
-        end
-      end)
-
-    names
-    |> String.split("\n", trim: true)
-    |> Enum.map(fn line ->
-      parts = String.split(line, "\t")
-      status = List.first(parts) || "M"
-      path = List.last(parts) || line
-      Map.merge(%{path: path, status: status}, Map.get(stats, path, %{added: 0, deleted: 0}))
-    end)
-  end
-
-  defp parse_count("-"), do: 0
-
-  defp parse_count(value) do
-    case Integer.parse(value) do
-      {number, ""} -> number
-      _ -> 0
-    end
-  end
-
-  defp git(dir, args, env \\ []) do
-    case System.cmd("git", ["-C", dir | args], stderr_to_stdout: true, env: env) do
-      {output, 0} ->
-        {:ok, output}
-
-      {output, code} ->
-        {:error, "git_error", "git exit #{code}: #{String.slice(String.trim(output), 0, 1_000)}"}
-    end
-  rescue
-    error -> {:error, "git_error", Exception.message(error)}
-  end
+  defp truncate_patch(patch), do: binary_part(patch, 0, @display_patch_limit) <> "\n… diff 已截断 …\n"
 end

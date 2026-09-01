@@ -17,8 +17,8 @@ defmodule Newbee do
     - `agent://<id>/<path>` → 子代理结果按路径抠字段
     - `conflict://` → git 合并冲突清单；`conflict://<file>` 冲突块视图
      - `http(s)://`  → 网页（无凭证公开 GET，经 Newbee.Tools.Http）
- 
-  @doc """
+
+  @doc \"""
   统一读取。返回 {:ok, content} | {:error, reason}。
 
     - 目录 → 一层列表（目录名带 / 后缀）
@@ -181,11 +181,13 @@ defmodule Newbee do
             [theirs | _] = String.split(rest, ">>>>>>>", parts: 2)
             "┌─ @ours\n" <> ours <> "└─ @theirs\n" <> theirs
           end)
+
         if blocks == [] do
           {:ok, "（#{path} 无冲突块）"}
         else
           {:ok, Newbee.Trust.envelope(Enum.join(blocks, "\n"), "conflict:" <> path) |> Newbee.Trust.render()}
         end
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -226,6 +228,7 @@ defmodule Newbee do
         [_, n] -> String.to_integer(n)
         _ -> 200
       end
+
     # 优先项目 Event Store（唯一权威，§4.6）；无项目流时回退全局事件日志
     project_events = Newbee.EventStore.replay(Newbee.Environment.Store.path(:events)) |> Enum.take(-n)
     # 历史审计日志（跨会话/跨模型累积）：内容一律视为不可信参考，非当前任务上下文
@@ -234,41 +237,50 @@ defmodule Newbee do
         Enum.map_join(project_events, "\n", &event_line/1)
       else
         events = Newbee.EventLog.read(n)
+
         Enum.map_join(events, "\n", fn e ->
-          session = get_in(e, ["event", "session_id"]) || get_in(e["event"], ["payload", "session_id"])
+          session = event_session(e)
+
           "[#{e["topic"]}] #{if session, do: "session=#{session} ", else: ""}#{inspect(e["event"]) |> String.slice(0, 200)}"
         end)
       end
+
     {:ok, Newbee.Trust.envelope(body, "events://") |> Newbee.Trust.render()}
   end
 
   # 项目事件流行：带时间戳与可选会话标注
   defp event_line(e) do
-    session = get_in(e.data, ["payload", "session_id"]) || get_in(e.data, ["session_id"])
+    session = event_session(e.data)
     ts = e.at || ""
+
     "[#{e.topic}] ##{e.id} #{if session, do: "session=#{session} ", else: ""}@#{ts} #{inspect(e.data) |> String.slice(0, 180)}"
   end
 
- # URL 读取走无凭证的公开 GET（Newbee.Tools.Http，§12 受控 transport 只服务
- # provider 凭证通道）；网页阅读不涉及凭证，不应被域名白名单限制。
- # 仍包 trust envelope 标记来源。
- defp read_url(url) do
-   case Newbee.Tools.Http.get(url) do
+  # 事件行里安全取 session_id：payload 可能是 map 或 {kind, map} 二元组，不能直接 get_in
+  defp event_session(%{"session_id" => sid}) when is_binary(sid), do: sid
+  defp event_session(%{"payload" => payload}) when is_map(payload), do: event_session(payload)
+  defp event_session(%{"payload" => [_kind, payload]}) when is_map(payload), do: event_session(payload)
+  defp event_session(%{"event" => event}) when is_map(event), do: event_session(event)
+  defp event_session(_), do: nil
+
+  # URL 读取走无凭证的公开 GET（Newbee.Tools.Http，§12 受控 transport 只服务
+  # provider 凭证通道）；网页阅读不涉及凭证，不应被域名白名单限制。
+  # 仍包 trust envelope 标记来源。
+  defp read_url(url) do
+    case Newbee.Tools.Http.get(url) do
       {:ok, %{status: status, body: body}} when status in 200..299 and is_binary(body) ->
         content = String.slice(body, 0, 512 * 1024)
         {:ok, Newbee.Trust.envelope(content, "url:" <> url) |> Newbee.Trust.render()}
- 
+
       {:ok, %{status: status, body: body}} when is_binary(body) ->
         {:error, {:http, status, String.slice(body, 0, 300)}}
- 
+
       {:error, reason} ->
         {:error, reason}
- 
-   end
- rescue
-   _ -> {:error, :fetch_failed}
- end
- 
+    end
+  rescue
+    _ -> {:error, :fetch_failed}
+  end
 
   defp read_tool(module_name) do
     # 模块名归一：tool://Newbee.Tools.Edit → :"Elixir.Newbee.Tools.Edit"

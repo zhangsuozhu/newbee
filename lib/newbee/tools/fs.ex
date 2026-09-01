@@ -61,6 +61,8 @@ defmodule Newbee.Tools.Fs do
       Newbee.Tools.Fs.size("mix.exs")
       :ok = Newbee.Tools.Fs.rm("tmp/hello.txt")
       {:ok, _deleted} = Newbee.Tools.Fs.rm_rf("tmp/generated")
+    :ok = Newbee.Tools.Fs.write_base64("tmp/out.txt", Base.encode64("a \"b\" \\ c"))
+    :ok = Newbee.Tools.Fs.write_content("tmp/out2.txt", "base64:" <> Base.encode64(content))
 
   ## 注意
   - `write/2` 经 `Newbee.Host` 代理回主 VM 的 `Staging`；未启动时降级为 `:direct`。
@@ -85,9 +87,10 @@ defmodule Newbee.Tools.Fs do
 
   注意：求值器节点上没有 Staging 进程——经 Newbee.Host 代理回主 VM（§3.4），
   主 VM 无暂存区（app 未启动）时降级直接落盘。"
-    def write(path, content) do
+  def write(path, content) do
     path = normalize_path(path)
     content = normalize_content(content)
+
     with :ok <- guard_path(path) do
       case Newbee.Host.call(Newbee.Staging, :stage, [path, content, :fs_write]) do
         id when is_integer(id) ->
@@ -133,6 +136,7 @@ defmodule Newbee.Tools.Fs do
   @doc "递归删除（高风险，记审计）。"
   def rm_rf(path) do
     path = normalize_path(path)
+
     with :ok <- guard_path(path) do
       Newbee.Host.emit(:audit, {:audit, :dangerous_code, ["File.rm_rf!", path]})
       File.rm_rf(path)
@@ -184,6 +188,7 @@ defmodule Newbee.Tools.Fs do
   @doc "工作目录隔离的 bang 版本；非法路径抛 ArgumentError。"
   def guard_path!(path) do
     path = normalize_path(path)
+
     case guard_path(path) do
       :ok -> :ok
       {:error, %{hint: hint}} -> raise ArgumentError, hint
@@ -199,6 +204,7 @@ defmodule Newbee.Tools.Fs do
   @doc "列出目录（一层）。"
   def ls(dir) do
     dir = normalize_path(dir)
+
     case File.ls(dir) do
       {:ok, entries} ->
         Enum.map(entries, fn e ->
@@ -214,6 +220,7 @@ defmodule Newbee.Tools.Fs do
   @doc "遍历工程树（跳过 _build/deps/.git）。返回相对路径列表。"
   def tree(root \\ ".") do
     root = normalize_path(root)
+
     root
     |> Path.join("**/*")
     |> Path.wildcard()
@@ -226,11 +233,13 @@ defmodule Newbee.Tools.Fs do
   @doc "文件大小（字节）。"
   def size(path) do
     path = normalize_path(path)
+
     case File.stat(path) do
       {:ok, stat} -> stat.size
       _ -> 0
     end
   end
+
   @doc false
   def write(%{path: p, content: c}), do: write(p, c)
   @doc false
@@ -258,4 +267,47 @@ defmodule Newbee.Tools.Fs do
   @doc false
   def append!(%{"path" => p, "content" => c}), do: append!(p, c)
 
+  @doc "Base64 写入，完全绕过 Elixir 字符串转义。`content_base64` 为 Base64 编码后的内容，模型可直接传 `Base.encode64(content)`。"
+  def write_base64(path, base64) when is_binary(path) and is_binary(base64) do
+    path = normalize_path(path)
+
+    case Base.decode64(String.trim(base64)) do
+      {:ok, content} -> write!(path, content)
+      :error -> {:error, :invalid_base64}
+    end
+  end
+
+  @doc false
+  def write_base64(%{path: p, content_base64: b}) when is_binary(p) and is_binary(b), do: write_base64(p, b)
+  @doc false
+  def write_base64(%{"path" => p, "content_base64" => b}) when is_binary(p) and is_binary(b), do: write_base64(p, b)
+  @doc false
+  def write_base64(%{path: p, base64: b}) when is_binary(p) and is_binary(b), do: write_base64(p, b)
+  @doc false
+  def write_base64(%{"path" => p, "base64" => b}) when is_binary(p) and is_binary(b), do: write_base64(p, b)
+  @doc false
+  def write_base64(%{file: p, content_base64: b}) when is_binary(p) and is_binary(b), do: write_base64(p, b)
+
+  @doc "智能写入：若内容以 `base64:` 前缀开头则自动 Base64 解码，否则原样写入。兼容所有形态。"
+  def write_content(path, content) when is_binary(path) and is_binary(content) do
+    path = normalize_path(path)
+
+    cond do
+      String.starts_with?(content, "base64:") ->
+        base64 = String.trim_leading(content, "base64:")
+
+        case Base.decode64(String.trim(base64)) do
+          {:ok, decoded} -> write!(path, decoded)
+          :error -> {:error, :invalid_base64}
+        end
+
+      true ->
+        write!(path, content)
+    end
+  end
+
+  @doc false
+  def write_content(%{path: p, content: c}) when is_binary(p) and is_binary(c), do: write_content(p, c)
+  @doc false
+  def write_content(%{"path" => p, "content" => c}) when is_binary(p) and is_binary(c), do: write_content(p, c)
 end
