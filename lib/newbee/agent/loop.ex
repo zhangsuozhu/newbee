@@ -23,6 +23,7 @@ defmodule Newbee.Agent.Loop do
             compaction_threshold: 0.8,
             compaction_retain: 0.16,
             compaction_max_tokens: 1_024,
+            compaction_output_reserve: nil,
             auto_compact: true,
             # 会话工作目录根（WebUI 选定）；nil = 主节点 File.cwd!
             root: nil,
@@ -286,9 +287,10 @@ defmodule Newbee.Agent.Loop do
        context_window: Keyword.get_lazy(opts, :context_window, fn -> Newbee.LLM.Client.context_window(client) end),
        compaction_threshold: Keyword.get(opts, :compaction_threshold, 0.8),
        compaction_retain: Keyword.get(opts, :compaction_retain, 0.16),
-       compaction_max_tokens: Keyword.get(opts, :compaction_max_tokens, 1_024),
-       auto_compact: Keyword.get(opts, :auto_compact, true),
-       root: Keyword.get(opts, :root)
+        compaction_max_tokens: Keyword.get(opts, :compaction_max_tokens, 1_024),
+        compaction_output_reserve: Keyword.get(opts, :compaction_output_reserve),
+        auto_compact: Keyword.get(opts, :auto_compact, true),
+        root: Keyword.get(opts, :root)
      }}
   end
 
@@ -970,7 +972,7 @@ defmodule Newbee.Agent.Loop do
       emit(state, {:turn_long, step})
     end
 
-    state = maybe_auto_compact(state)
+    state = maybe_auto_compact(state, step)
     state = %{state | messages: repair_history(state.messages)}
     Newbee.DebugLog.log(:turn, "step #{step} messages=#{length(state.messages)}")
     on_text = fn delta -> emit(state, {:text, delta}) end
@@ -1769,29 +1771,72 @@ defmodule Newbee.Agent.Loop do
     _ -> "（摘要失败，历史已截断）"
   end
 
-  # Automatic pressure check follows deepseek-harness: compact before the request,
-  # at a configurable fraction of the model window.
-  defp maybe_auto_compact(%{auto_compact: false} = state), do: state
+  # Automatic pressure check follows Codex: reserve output budget, trigger before the
+  # request, and re-check after compaction so a summary cannot recreate the overflow.
+  defp maybe_auto_compact(%{auto_compact: false} = state, _step), do: state
 
-  defp maybe_auto_compact(state) do
-    pressure = estimate_request_tokens(state.messages)
-    limit = trunc(state.context_window * state.compaction_threshold)
+  defp maybe_auto_compact(state, step) do
+    budget = compaction_budget(state)
 
-    if pressure >= limit and length(state.messages) > 2 do
+    if budget.status != :ok and length(state.messages) > 2 do
       retain = max(trunc(state.context_window * state.compaction_retain), 512)
-      {state, count} = compact_state(state, retain)
-      if count > 0, do: Newbee.DebugLog.log(:compact, "automatic pressure=#{pressure}/#{limit}")
-      state
+      compact_until_budget(state, retain, step, budget, 3)
     else
       state
     end
   end
 
-  defp estimate_request_tokens(messages) do
-    div(byte_size(Jason.encode!(messages)) + 2, 3) + 2_000
-  rescue
-    _ -> Enum.count(messages) * 100
+  defp compact_until_budget(state, _retain, _step, _before, 0), do: state
+
+  defp compact_until_budget(state, retain, step, before, attempts_left) do
+    {next_state, count} = compact_state(state, retain)
+
+    if count == 0 do
+      state
+    else
+      after_budget = compaction_budget(next_state)
+      reason = if step <= 1, do: :pre_request, else: :mid_turn
+
+      details = %{
+        reason: reason,
+        phase: :before_request,
+        status_before: before.status,
+        status_after: after_budget.status,
+        pressure_before: before.request_tokens,
+        pressure_after: after_budget.request_tokens,
+        archived_messages: count,
+        attempts_left: attempts_left - 1
+      }
+
+      emit(next_state, {:compaction_pressure, details})
+      Newbee.DebugLog.log(:compact, compaction_log(details))
+
+      if after_budget.status != :ok and length(next_state.messages) > 2 do
+        compact_until_budget(next_state, max(div(retain, 2), 64), step, after_budget, attempts_left - 1)
+      else
+        next_state
+      end
+    end
   end
+
+  defp compaction_budget(state) do
+    Newbee.Agent.ContextBudget.assess(state.messages,
+      context_window: state.context_window,
+      soft_ratio: state.compaction_threshold,
+      hard_ratio: 0.95,
+      output_reserve: compaction_output_reserve(state)
+    )
+  end
+
+  defp compaction_output_reserve(%{compaction_output_reserve: nil} = state), do: state.compaction_max_tokens
+  defp compaction_output_reserve(%{compaction_output_reserve: n}), do: n
+
+  defp compaction_log(details) do
+    "automatic " <> Atom.to_string(details.reason) <> " pressure " <>
+      to_string(details.pressure_before) <> "->" <> to_string(details.pressure_after) <>
+      " status=" <> Atom.to_string(details.status_after)
+  end
+
 
   defp estimate_message_tokens(message) do
     div(byte_size(Jason.encode!(message)) + 2, 3) + 8
