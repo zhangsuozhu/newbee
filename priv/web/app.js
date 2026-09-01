@@ -233,7 +233,9 @@ const flow = $("flow");
     currentTool: null,        // 进行中的 tool 卡片
     timing: { llmMs: 0, toolMs: 0, llmStart: null, toolStart: null,
               ftSum: 0, ftCount: 0, ftRecorded: false, outTok: 0 },
-    attachments: [],   // [{name, type, dataUrl, size}]
+    attachments: [],   // [{id, name, type, size, isImage, dataUrl}]
+    uploading: 0,
+
     stickBottom: true,
     turnUsage: null,
     turnUsageDetails: [],
@@ -1965,6 +1967,8 @@ case "goal_round": break;
     const seq = ++resumeSeq;
     const stale = () => seq !== resumeSeq || state.sid !== sid;
     exitGroupMode();
+    if (state.sid && state.sid !== sid) discardAttachments(state.sid);
+
     state.sid = sid;
     groupLoadSeq++;
     // 组视图是全局的：切会话不清空 state.groups，避免点到未分组会话时侧栏组瞬间消失。
@@ -2032,6 +2036,8 @@ case "goal_round": break;
   // 点击“新会话”先把 UI 切到空白会话（断掉旧 ws、清屏、显示欢迎卡），
   // RPC/求值器 boot 在后台完成；不再让用户点完干等 1-3s。
   function prepareNewSessionUI(cwd, sid) {
+    if (state.sid && state.sid !== sid) discardAttachments(state.sid);
+
     // 新建会话：不恢复任何草稿（避免旧会话残留文字串台）
     try { localStorage.removeItem("newbee.draft." + sid); } catch (e) {}
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
@@ -2315,9 +2321,11 @@ case "goal_round": break;
     } else {
       const a = document.createElement("a");
       a.href = p.url;
+      a.download = p.name || "file";
       a.className = "media-download";
-      a.textContent = "⬇ 下载 " + (p.name || "文件");
+      a.textContent = "下载 " + (p.name || "文件");
       body.appendChild(a);
+
     }
     d.appendChild(body);
     flow.appendChild(d);
@@ -2481,44 +2489,123 @@ case "goal_round": break;
     });
   }
 
-  // ── 图片附件（上传 / 粘贴 / 预览）──
-  const MAX_ATTACH = 4;
-  const MAX_FILE = 8 * 1024 * 1024; // 8 MiB，与服务端 @max_bytes 一致
+  // ── 文件附件（上传 / 粘贴 / 预览）──
+  const MAX_ATTACH = 8;
+  const MAX_FILE = 20 * 1024 * 1024;
+  const MAX_IMAGE = 8 * 1024 * 1024;
 
-  function addAttachment(file) {
-    if (state.busy) { line("notice", "忙碌中，稍后再添加图片"); return; }
-    if (!file) return;
-    if (!file.type || !file.type.startsWith("image/")) { line("notice", "仅支持图片文件"); return; }
-    if (file.size > MAX_FILE) { line("notice", "图片过大（>8MiB）：" + file.name); return; }
-    if (state.attachments.length >= MAX_ATTACH) { line("notice", "最多同时 " + MAX_ATTACH + " 张图片"); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (state.attachments.length >= MAX_ATTACH) { line("notice", "最多同时 " + MAX_ATTACH + " 张图片"); return; }
-      state.attachments.push({ name: file.name || "image.png", type: file.type, dataUrl: reader.result, size: file.size });
+  function fileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("读取图片预览失败"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function uploadAttachment(file, sid) {
+    const headers = { "content-type": file.type || "application/octet-stream" };
+    if (state.token) headers.authorization = "Bearer " + state.token;
+    const url = `/api/upload/${encodeURIComponent(sid)}?name=${encodeURIComponent(file.name || "file")}`;
+    const res = await fetch(url, { method: "POST", headers, body: file });
+    if (res.status === 401) {
+      setToken(null);
+      showLogin();
+      throw new Error("未登录或会话已过期");
+    }
+    let body = null;
+    try { body = await res.json(); } catch (e) { /* handled below */ }
+    if (!res.ok || !body || !body.ok) {
+      throw new Error(body && body.error ? body.error.message : `上传失败 (HTTP ${res.status})`);
+    }
+    return body.ok;
+  }
+
+  async function deleteAttachment(a, sid = state.sid) {
+    if (!a || !a.id || !sid) return;
+    const headers = {};
+    if (state.token) headers.authorization = "Bearer " + state.token;
+    await fetch(`/api/upload/${encodeURIComponent(sid)}/${encodeURIComponent(a.id)}`, {
+      method: "DELETE", headers,
+    });
+  }
+
+  async function addAttachment(file) {
+    if (state.busy) { line("notice", "忙碌中，稍后再添加文件"); return; }
+    if (!state.sid || !file) return;
+    if (file.size === 0) { line("notice", "不能上传空文件：" + (file.name || "file")); return; }
+    if (file.size > MAX_FILE) { line("notice", "文件过大（>20 MiB）：" + file.name); return; }
+    if (state.attachments.length + state.uploading >= MAX_ATTACH) {
+      line("notice", "每条消息最多 " + MAX_ATTACH + " 个附件"); return;
+    }
+
+    const sid = state.sid;
+    state.uploading += 1;
+    renderAttachPreview();
+    try {
+      const uploaded = await uploadAttachment(file, sid);
+      if (state.sid !== sid) {
+        await deleteAttachment(uploaded, sid).catch(() => {});
+        return;
+      }
+      const isImage = !!uploaded.image && file.size <= MAX_IMAGE;
+      const dataUrl = isImage ? await fileAsDataUrl(file) : null;
+      state.attachments.push({
+        id: uploaded.id,
+        name: uploaded.name,
+        type: uploaded.content_type,
+        size: uploaded.size,
+        isImage,
+        dataUrl,
+      });
+    } catch (e) {
+      line("error", "上传失败：" + e.message);
+    } finally {
+      state.uploading -= 1;
       renderAttachPreview();
-    };
-    reader.readAsDataURL(file);
+    }
   }
 
   function renderAttachPreview() {
     const box = $("attach-preview");
     if (!box) return;
-    if (state.attachments.length === 0) { box.classList.add("hidden"); box.innerHTML = ""; return; }
+    if (state.attachments.length === 0 && state.uploading === 0) {
+      box.classList.add("hidden"); box.innerHTML = ""; return;
+    }
     box.classList.remove("hidden");
     box.innerHTML = "";
     state.attachments.forEach((a, i) => {
       const item = document.createElement("div");
       item.className = "attach-item";
-      const img = document.createElement("img");
-      img.src = a.dataUrl; img.alt = a.name;
+      if (a.isImage && a.dataUrl) {
+        const img = document.createElement("img");
+        img.src = a.dataUrl; img.alt = a.name;
+        item.appendChild(img);
+      } else {
+        const icon = document.createElement("div");
+        icon.className = "attach-file-icon";
+        icon.textContent = (a.name.split(".").pop() || "FILE").slice(0, 5).toUpperCase();
+        item.appendChild(icon);
+      }
       const cap = document.createElement("span");
       cap.className = "attach-name"; cap.textContent = a.name;
+      cap.title = `${a.name} (${fmtBytes(a.size)})`;
       const rm = document.createElement("button");
       rm.className = "attach-remove"; rm.textContent = "×"; rm.title = "移除";
-      rm.onclick = () => { state.attachments.splice(i, 1); renderAttachPreview(); };
-      item.appendChild(img); item.appendChild(cap); item.appendChild(rm);
+      rm.onclick = () => {
+        const removed = state.attachments.splice(i, 1)[0];
+        renderAttachPreview();
+        deleteAttachment(removed).catch(() => {});
+      };
+      item.appendChild(cap); item.appendChild(rm);
       box.appendChild(item);
     });
+    if (state.uploading > 0) {
+      const pending = document.createElement("div");
+      pending.className = "attach-item attach-uploading";
+      pending.textContent = `正在上传 ${state.uploading} 个文件`;
+      box.appendChild(pending);
+    }
   }
 
   function clearAttachments() {
@@ -2526,27 +2613,47 @@ case "goal_round": break;
     renderAttachPreview();
   }
 
-  // 用户行回显：文本 + 图片缩略图
-  function renderUserLine(text, images) {
+
+  function discardAttachments(sid = state.sid) {
+    const pending = state.attachments.slice();
+    clearAttachments();
+    pending.forEach(a => deleteAttachment(a, sid).catch(() => {}));
+  }
+
+  // 用户行回显：文本 + 图片缩略图 + 普通文件
+  function renderUserLine(text, attachments) {
     const d = el("msg-user", "");
     if (text) {
       const span = document.createElement("div");
       span.textContent = text;
       d.appendChild(span);
     }
-    if (images && images.length) {
+    const images = (attachments || []).filter(a => a.isImage && a.dataUrl);
+    if (images.length) {
       const wrap = document.createElement("div");
       wrap.className = "msg-user-images";
-      images.forEach(url => {
+      images.forEach(a => {
         const img = document.createElement("img");
-        img.src = url;
+        img.src = a.dataUrl;
+        img.alt = a.name;
         img.className = "nb-zoomable";
         img.addEventListener("click", (e) => { e.stopPropagation(); openLightbox(img.src, img.alt || "图片"); });
         wrap.appendChild(img);
       });
       d.appendChild(wrap);
     }
-    // 用户消息复制按钮
+    const files = (attachments || []).filter(a => !a.isImage);
+    if (files.length) {
+      const wrap = document.createElement("div");
+      wrap.className = "msg-user-files";
+      files.forEach(a => {
+        const chip = document.createElement("span");
+        chip.className = "msg-user-file";
+        chip.textContent = `${a.name} · ${fmtBytes(a.size)}`;
+        wrap.appendChild(chip);
+      });
+      d.appendChild(wrap);
+    }
     if (text) {
       const cBtn = document.createElement("button");
       cBtn.type = "button";
@@ -2557,19 +2664,16 @@ case "goal_round": break;
       d.appendChild(cBtn);
     }
     scrollBottom();
-    scrollBottom();
   }
 
-
   // 首条提示词即时顶栏取题；服务端 session.list 也会用首条 user 消息自动取题。
-  function applyPromptTitle(text, images) {
-    const raw = String(text || "") || (images && images.length ? "[图片]" : "");
+  function applyPromptTitle(text, attachments) {
+    const raw = String(text || "") || (attachments && attachments.length ? `[附件] ${attachments[0].name}` : "");
     const title = raw.replace(/\s+/g, " ").trim().slice(0, 48);
     const el = $("session-title");
     if (!title || !state.sid) return;
     if (el.textContent === "新会话" || el.textContent === state.sid) el.textContent = title;
 
-    // 侧栏若已加载该会话，也立即换成首条提示词标题；否则等 turn 结束 loadSessions 兜底
     const sess = (state.allSessions || []).find(x => x.id === state.sid);
     if (sess && (!sess.title || sess.title === sess.id || sess.title === "新会话")) {
       sess.title = title;
@@ -2581,42 +2685,45 @@ case "goal_round": break;
   async function send() {
     state.eventCreatedAt = new Date().toISOString();
     const text = input.value.trim();
-    const images = state.attachments.map(x => x.dataUrl);
-    if ((!text && images.length === 0) || !state.sid) return;
+    const attachments = state.attachments.slice();
+    if (state.uploading > 0) { line("notice", "请等待文件上传完成"); return; }
+    if ((!text && attachments.length === 0) || !state.sid) return;
     if (state.busy) {
-      // 排队模式：当前任务完成后由服务端按顺序自动执行
       line("notice", "⏳ 已加入队列：当前任务完成后自动执行");
     } else if (text) {
       lastUserPrompt = text;
     }
     input.value = "";
     autoGrow();
-    saveDraft(""); // 已发送：清空草稿
-    // 回显：文本 + 图片
+    saveDraft("");
     scrollBottom(true);
-    renderUserLine(text, images);
+    renderUserLine(text, attachments);
     if (!state.hasPrompted) {
       state.hasPrompted = true;
       state.titleDirty = true;
-      applyPromptTitle(text, images);
+      applyPromptTitle(text, attachments);
     }
     state.busy = true; setBusy(true);
     resetTurnUsage();
-    clearAttachments();
     try {
-      if (images.length > 0) {
-        // 多模态：必须走 HTTP（data URL 大，走 ws 帧没问题但保持单一路径）
-        await rpc("session.promptImage", { sessionId: state.sid, images, text });
+      if (attachments.length > 0) {
+        await rpc("session.promptAttachments", {
+          sessionId: state.sid,
+          uploadIds: attachments.map(a => a.id),
+          text,
+        });
       } else if (state.ws && state.ws.readyState === 1) {
         state.ws.send(JSON.stringify({ type: "prompt", text }));
       } else {
         await rpc("session.prompt", { sessionId: state.sid, text });
       }
+      clearAttachments();
     } catch (e) {
       line("error", e.message);
       state.busy = false; setBusy(false);
     }
   }
+
 
   function interrupt() {
     if (state.ws && state.ws.readyState === 1) {
