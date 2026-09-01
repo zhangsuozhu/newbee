@@ -101,6 +101,14 @@ defmodule Newbee.Collaboration.Coordinator do
   end
 
   @impl true
+  def handle_info(:sweep_orphans, state) do
+    {:noreply, sweep_orphans(state) |> tap(fn _ -> schedule_orphan_sweep() end)}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+
+  @impl true
   def handle_call({:create_group, attrs}, _from, state) do
     with {:ok, attrs} <- normalize_group(attrs),
          :ok <- unique_command(state, attrs["command_id"]) do
