@@ -2468,10 +2468,10 @@ svg.ico {
     margin-top: 6px;
     font-size: 10px;
     line-height: 1.25;
-    text-align: left;
+    text-align: right;
   }
   .tool-usage, .msg-usage { flex-wrap: wrap; }
-  .msg-time-inline { display: block; width: 100%; }
+  .msg-time-inline { display:block; width:100%; max-width:none; margin-top:4px; }
   .msg-user, .msg-assistant, .msg-boxed, .msg-tool {
     min-width: 0;
   }
