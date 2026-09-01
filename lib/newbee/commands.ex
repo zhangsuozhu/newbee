@@ -621,21 +621,6 @@ defmodule Newbee.Commands do
     :handled
   end
 
-  defp parse_goal_args(arg) do
-    # 支持尾缀 --budget N 和 --max-rounds N
-    {text, budget} = case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, arg) do
-      [_, t, b] -> {String.trim(t), String.to_integer(b)}
-      _ -> {arg, nil}
-    end
-    {text, max_rounds} = case Regex.run(~r/^(.*)\s+--max-rounds\s+(\d+)\s*$/, text) do
-      [_, t, n] -> {String.trim(t), String.to_integer(n)}
-      _ -> {text, nil}
-    end
-    opts = []
-    opts = if budget, do: Keyword.put(opts, :token_budget, budget), else: opts
-    opts = if max_rounds, do: Keyword.put(opts, :max_rounds, max_rounds), else: opts
-    {text, opts}
-  end
 
   defp run("loop", arg, ctx) do
     if ctx.kernel do
@@ -664,20 +649,6 @@ defmodule Newbee.Commands do
     :handled
   end
 
-  defp parse_loop_args(arg) do
-    {task, it} = case Regex.run(~r/^(.*)\s+--iterations\s+(\d+)\s*$/, arg) do
-      [_, t, n] -> {String.trim(t), String.to_integer(n)}
-      _ -> {arg, nil}
-    end
-    {task, budget} = case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, task) do
-      [_, t, b] -> {String.trim(t), String.to_integer(b)}
-      _ -> {task, nil}
-    end
-    opts = []
-    opts = if it, do: Keyword.put(opts, :iterations, it), else: opts
-    opts = if budget, do: Keyword.put(opts, :token_budget, budget), else: opts
-    {task, opts}
-  end
 
 
   # ── /undo：回退到上一 revision（§10：环境版本回退只恢复环境自身）──
@@ -869,5 +840,36 @@ defmodule Newbee.Commands do
       %{session: %Newbee.Session{} = s} -> s
       _ -> nil
     end
+  end
+
+  defp parse_goal_args(arg) do
+    # 支持尾缀 --budget N 和 --max-rounds N
+    {text, budget} = case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, arg) do
+      [_, t, b] -> {String.trim(t), String.to_integer(b)}
+      _ -> {arg, nil}
+    end
+    {text, max_rounds} = case Regex.run(~r/^(.*)\s+--max-rounds\s+(\d+)\s*$/, text) do
+      [_, t, n] -> {String.trim(t), String.to_integer(n)}
+      _ -> {text, nil}
+    end
+    opts = []
+    opts = if budget, do: Keyword.put(opts, :token_budget, budget), else: opts
+    opts = if max_rounds, do: Keyword.put(opts, :max_rounds, max_rounds), else: opts
+    {text, opts}
+  end
+
+  defp parse_loop_args(arg) do
+    {task, it} = case Regex.run(~r/^(.*)\s+--iterations\s+(\d+)\s*$/, arg) do
+      [_, t, n] -> {String.trim(t), String.to_integer(n)}
+      _ -> {arg, nil}
+    end
+    {task, budget} = case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, task) do
+      [_, t, b] -> {String.trim(t), String.to_integer(b)}
+      _ -> {task, nil}
+    end
+    opts = []
+    opts = if it, do: Keyword.put(opts, :iterations, it), else: opts
+    opts = if budget, do: Keyword.put(opts, :token_budget, budget), else: opts
+    {task, opts}
   end
 end

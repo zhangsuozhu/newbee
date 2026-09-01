@@ -61,7 +61,7 @@ defmodule Newbee.Tools.Fs do
       Newbee.Tools.Fs.size("mix.exs")
       :ok = Newbee.Tools.Fs.rm("tmp/hello.txt")
       {:ok, _deleted} = Newbee.Tools.Fs.rm_rf("tmp/generated")
-    :ok = Newbee.Tools.Fs.write_base64("tmp/out.txt", Base.encode64("a \"b\" \\ c"))
+    :ok = Newbee.Tools.Fs.write_base64("tmp/out.txt", Base.encode64("hello"))
     :ok = Newbee.Tools.Fs.write_content("tmp/out2.txt", "base64:" <> Base.encode64(content))
 
   ## 注意

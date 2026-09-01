@@ -1,6 +1,6 @@
 defmodule Newbee.Plugins.Provider.OpenRouter do
   @moduledoc """
-  无凭证 OpenRouter 请求计划器：验证参数并生成 Host 可执行的请求 map；不读 env、不持 key、不发网络请求。
+  无凭证 OpenRouter 请求计划器：验证参数并生成 Host 可执行的请求 map；不读 env、不持 key。
 
   ## 函数清单
   - `plan(model, messages, opts \\\\ []) :: {:ok, map()} | {:error, reason}` — `opts` 支持 `base_url:`、`tools:`、`stream:`、`receive_timeout:`。

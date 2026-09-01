@@ -864,14 +864,6 @@ defmodule Newbee.Agent.Loop do
     """
   end
 
-  defp goal_continue_msg(round) do
-    "（自主模式第 #{round} 轮：目标未确认达成，请继续工作。达成后调用 done 并附总结。）"
-  end
-
-  defp goal_idle_reminder(round) do
-    Newbee.Goal.Steering.idle_reminder(round)
-  end
-
   # helpers delegating to Steering for backward compat
   defp parse_token_budget(nil), do: nil
   defp parse_token_budget(n) when is_integer(n) and n > 0, do: n
@@ -893,7 +885,7 @@ defmodule Newbee.Agent.Loop do
   end
   defp parse_loop_iterations(_), do: 5
 
-  defp loop_iterations(state, %{rounds: r, iterations: max} = loop) when r >= max do
+  defp loop_iterations(state, %{rounds: r, iterations: max} = _loop) when r >= max do
     {{:loop_done, r}, state}
   end
   defp loop_iterations(state, loop) do
@@ -903,7 +895,7 @@ defmodule Newbee.Agent.Loop do
     state = case reply do
       {:done, _} -> state
       {:ask, _} -> state
-      {:text, content} ->
+      {:text, _content} ->
         if loop.token_budget && loop.tokens_used >= loop.token_budget do
           state
         else
