@@ -30,6 +30,8 @@ defmodule Newbee.DEE.Evaluator do
             last_boot_attempt: nil,
             # 会话工作目录（WebUI 选定）：节点 boot 后 cd 过去；nil = 全局默认
             cwd: nil,
+            # 受控诊断标签；节点名仍由系统补齐角色和随机后缀。
+            node_label: "runtime",
             # 宿主进程（会话 kernel）：{pid, mref}；宿主死亡时求值器随停，
             # terminate → stop_all 释放 primary/standby peer 节点（epmd 不残留）
             owner: nil
@@ -83,7 +85,8 @@ defmodule Newbee.DEE.Evaluator do
 
   @doc "取消静默（切换取消时恢复旧 generation 接流量）。"
   def unquiesce(server \\ __MODULE__), do: GenServer.call(server, :unquiesce, 30_000)
-  def reset(server \\ __MODULE__), do: GenServer.call(server, :reset)
+  def reset, do: reset(__MODULE__)
+  def reset(server), do: GenServer.call(server, :reset, @rpc_boot_timeout)
   def dump_bindings(server \\ __MODULE__), do: GenServer.call(server, :dump_bindings)
   def restore_bindings(server \\ __MODULE__, binding), do: GenServer.call(server, {:restore_bindings, binding})
 
@@ -107,12 +110,14 @@ defmodule Newbee.DEE.Evaluator do
 
     # 会话工作目录：boot 后在求值节点上 cd（Fs/Run 工具都以节点 cwd 为根）
     cwd_opt = Keyword.get(opts, :cwd)
+    node_label = normalize_node_label(Keyword.get(opts, :node_label))
+    base_state = %__MODULE__{mode: mode, cwd: cwd_opt, node_label: node_label}
 
     state =
       case mode do
         :local ->
           {:ok, worker} = Newbee.DEE.EvalWorker.start_link()
-          %__MODULE__{mode: :local, worker: worker}
+          %{base_state | worker: worker}
 
         :node ->
           # 主备并行 boot：standby 提前开跑。boot 必须在独立进程跑（不阻塞
@@ -120,15 +125,15 @@ defmodule Newbee.DEE.Evaluator do
           # :peer.start_link 的进程）绑进 peer，origin 死则整个 peer BEAM
           # halt（peer.erl origin_link）。所以 spawn_standby_boot 返回的
           # keeper 在 boot 完成后继续存活，直到 peer 死或 evaluator 停。
-          standby_boot = spawn_standby_boot(%__MODULE__{mode: :node, cwd: cwd_opt})
+          standby_boot = spawn_standby_boot(base_state)
 
-          case boot_node(%__MODULE__{mode: :node, cwd: cwd_opt}) do
+          case boot_node(base_state) do
             {:ok, s} ->
               %{s | standby_boot: standby_boot}
 
             {:error, reason} ->
               Logger.error("evaluator node 初始启动失败: #{inspect(reason)}")
-              %__MODULE__{mode: :node, boot_error: reason, standby_boot: standby_boot}
+              %{base_state | boot_error: reason, standby_boot: standby_boot}
           end
       end
 
@@ -395,11 +400,17 @@ defmodule Newbee.DEE.Evaluator do
   # 启动失败返回 {:error, reason}，绝不抛异常：抛异常会触发 supervisor
   # 无限重启循环（one_for_one），CPU 打满且 eval call 永久挂起（实际事故）。
   # 不设硬性重启上限：每次用随机新名字重建（"拉不来就生成一个新的"）。
-  defp boot_node(state) do
+  defp boot_node(state), do: boot_node(state, :primary)
+
+  defp boot_node(state, role) do
     try do
       ensure_distribution!()
-      name = unique_peer_name()
-      pa_args = [~c"-noshell", ~c"-noinput" | Enum.flat_map(:code.get_path(), &[~c"-pa", &1])]
+      name = unique_peer_name(role, state.node_label)
+
+      # Evaluator peers only need their one-to-one RPC link to the origin. Hidden
+      # nodes stay out of global's fully connected topology, preventing parallel
+      # sessions/test runners from forming overlapping partitions.
+      pa_args = [~c"-noshell", ~c"-noinput", ~c"-hidden" | Enum.flat_map(:code.get_path(), &[~c"-pa", &1])]
 
       # detached: false —— peer 必须自带独立 user 进程。
       # 默认 detached: true 时 peer 的 standard_io 是 relay，io 请求转发给
@@ -415,7 +426,6 @@ defmodule Newbee.DEE.Evaluator do
             {:ok, _} ->
               filter_env(node)
               # 宿主契约（§3.4）：把主节点名注入节点 env，供 Newbee.Host 代理
-              :rpc.call(node, :persistent_term, :put, [{Newbee.Host, :main_node}, Node.self()], @rpc_boot_timeout)
               :rpc.call(node, :persistent_term, :put, [{Newbee.Host, :main_node}, Node.self()], @rpc_boot_timeout)
               :rpc.call(node, :os, :putenv, [~c"NEWBEE_MAIN_NODE", Atom.to_charlist(Node.self())], @rpc_boot_timeout)
 
@@ -502,7 +512,7 @@ defmodule Newbee.DEE.Evaluator do
   # 停主 + 备（含在途的 standby boot keeper）
   defp stop_all(state) do
     if state.standby_boot do
-      Process.exit(state.standby_boot, :kill)
+      Process.exit(state.standby_boot, :shutdown)
     end
 
     if state.standby do
@@ -564,8 +574,8 @@ defmodule Newbee.DEE.Evaluator do
         {nil, %{state | standby_boot: nil}}
     after
       @standby_wait_timeout ->
-        # boot 卡死：杀掉 keeper（其 peer 随之 halt），稍后重试，本调用走 reboot
-        Process.exit(keeper, :kill)
+        # boot 卡死：关闭 keeper（其 peer 随之 halt），稍后重试，本调用走 reboot
+        Process.exit(keeper, :shutdown)
         Process.send_after(self(), :ensure_standby, @standby_retry_ms)
         {nil, %{state | standby_boot: nil}}
     end
@@ -580,7 +590,7 @@ defmodule Newbee.DEE.Evaluator do
 
     keeper =
       spawn(fn ->
-        result = boot_node(state)
+        result = boot_node(state, :standby)
         send(gen, {:standby_boot_result, self(), result})
 
         case result do
@@ -672,10 +682,28 @@ defmodule Newbee.DEE.Evaluator do
     :ok
   end
 
-  defp unique_peer_name do
-    suffix = :crypto.strong_rand_bytes(12) |> Base.encode32(case: :lower, padding: false)
-    String.to_atom("newbee_eval_#{suffix}")
+  defp unique_peer_name(role, label) do
+    suffix = :crypto.strong_rand_bytes(8) |> Base.encode32(case: :lower, padding: false)
+    String.to_atom("newbee_eval_#{role}_#{label}_#{suffix}")
   end
+
+  defp normalize_node_label(nil), do: "runtime"
+
+  defp normalize_node_label(label) when is_atom(label), do: label |> Atom.to_string() |> normalize_node_label()
+
+  defp normalize_node_label(label) when is_binary(label) do
+    label
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "_")
+    |> String.trim("_")
+    |> String.slice(0, 24)
+    |> case do
+      "" -> "runtime"
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_node_label(_label), do: "runtime"
 
   defp filter_env(node) do
     :rpc.call(node, __MODULE__, :__filter_env__, [@env_deny_prefixes, @env_deny_suffixes])

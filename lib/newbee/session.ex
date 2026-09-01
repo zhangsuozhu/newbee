@@ -571,12 +571,6 @@ defmodule Newbee.Session do
   end
 
 
-  # 首次无索引时构建（一次性成本；后续 append 增量维护）
-  defp build_index do
-    entries = fs_scan_entries()
-    persist_index(entries)
-    entries |> Enum.sort_by(fn e -> e["mtime"] || e["created"] end, :desc)
-  end
 
 
   defp touch_index(id) do
