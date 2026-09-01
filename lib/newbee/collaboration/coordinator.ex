@@ -970,7 +970,18 @@ defmodule Newbee.Collaboration.Coordinator do
       not lease_active?(task)
   end
 
-  defp session_alive?(session_id), do: match?({:ok, _}, Newbee.Web.Session.lookup(session_id))
+  defp session_alive?(session_id) do
+    try do
+      case Registry.lookup(Newbee.Web.SessionRegistry, session_id) do
+        [] -> false
+        [{pid, _}] -> Process.alive?(pid)
+        _ -> false
+      end
+    rescue
+      # registry 未启动（非 Web 环境）时视为无活跃会话进程
+      _ -> false
+    end
+  end
 
   defp cancel_orphans(state, group) do
     now = now_iso()
