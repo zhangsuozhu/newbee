@@ -49,7 +49,7 @@ defmodule Newbee.Tools.Structural do
   defp normalize_arity(other), do: other
 
   @moduledoc """
-  Elixir 结构编辑工具：按模块和函数定位 AST 级插入/替换。路径与模块参数宽容：`path` 支持 `binary` | `atom` | `%{path: p}`，`module` 支持 `atom` | `"My.Module"` | `%{module: m}`。
+  Elixir 结构编辑工具：按模块和函数定位 AST 级插入/替换；路径/模块参数宽容。
   与快照行号文本轨（`Tools.Edit`）互补：本模块用 Sourceror
   解析出的行列元数据做结构化插入/替换，落盘后统一 `Code.format_string!`。
 

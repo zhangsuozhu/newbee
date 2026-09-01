@@ -827,98 +827,6 @@ defmodule Newbee.Web.Api do
     end
   end
 
-  # 删除会话前自动解除工作组归属：逐个移出（级联移出其子协作成员）；
-  # 目标会话是协调者则先取消整组再移出所有成员。
-  defp remove_session_from_groups(sid, groups) do
-    Enum.reduce_while(groups, {:ok, []}, fn group, {:ok, notices} ->
-      case remove_from_group(sid, group) do
-        {:ok, note} -> {:cont, {:ok, notices ++ [note]}}
-        {:error, code, message} -> {:halt, {:error, code, message}}
-      end
-    end)
-  end
-
-  defp remove_from_group(sid, group) do
-    group_id = group["group_id"]
-
-    if group["coordinator_session_id"] == sid do
-      dissolve_group_for_delete(sid, group)
-    else
-      members = group["members"] || []
-      children = Enum.filter(members, &(&1["parent_session_id"] == sid))
-
-      with :ok <- cascade_remove_children(group_id, group["coordinator_session_id"], children),
-           {:ok, _member} <-
-             Newbee.Collaboration.Coordinator.remove_member(group_id, %{
-               "session_id" => sid,
-               "actor_session_id" => group["coordinator_session_id"],
-               "command_id" => "delete-remove-#{sid}-#{System.unique_integer([:positive])}"
-             }) do
-        {:ok, "已自动将会话移出工作组「#{group["title"] || group_id}」"}
-      else
-        {:error, code, message} -> {:error, code, message}
-      end
-    end
-  end
-
-  defp cascade_remove_children(group_id, actor_sid, children) do
-    Enum.reduce_while(children, :ok, fn child, :ok ->
-      case Newbee.Collaboration.Coordinator.remove_member(group_id, %{
-             "session_id" => child["session_id"],
-             "actor_session_id" => actor_sid,
-             "command_id" => "delete-remove-child-#{child["session_id"]}-#{System.unique_integer([:positive])}"
-           }) do
-        {:ok, _} -> {:cont, :ok}
-        {:error, code, message} -> {:halt, {:error, code, message}}
-      end
-    end)
-  end
-
-  defp dissolve_group_for_delete(sid, group) do
-    group_id = group["group_id"]
-
-    with {:ok, _} <- Newbee.Collaboration.Coordinator.set_group_status(group_id, "cancelled", sid),
-         :ok <- remove_all_members(group_id, sid, group["members"] || []) do
-      {:ok, "已自动解散工作组「#{group["title"] || group_id}」"}
-    else
-      {:error, code, message} -> {:error, code, message}
-    end
-  end
-
-  defp remove_all_members(group_id, coordinator_sid, members) do
-    members
-    # 先移出子成员，再移出普通成员，最后移出协调者自身
-    |> Enum.sort_by(fn m ->
-      cond do
-        m["session_id"] == coordinator_sid -> 2
-        m["parent_session_id"] -> 0
-        true -> 1
-      end
-    end)
-    |> Enum.reduce_while(:ok, fn member, :ok ->
-      case Newbee.Collaboration.Coordinator.remove_member(group_id, %{
-             "session_id" => member["session_id"],
-             "actor_session_id" => coordinator_sid,
-             "command_id" => "delete-dissolve-#{member["session_id"]}-#{System.unique_integer([:positive])}"
-           }) do
-        {:ok, _} -> {:cont, :ok}
-        {:error, code, message} -> {:halt, {:error, code, message}}
-      end
-    end)
-  end
-
-  defp destroy_session(sid, notices) do
-    case Newbee.Web.Session.destroy(sid) do
-      :ok ->
-        result = %{deleted: sid}
-        result = if notices == [], do: result, else: Map.put(result, :notices, notices)
-        {:ok, result}
-
-      {:error, r} ->
-        {:error, "delete_error", inspect(r)}
-    end
-  end
-
   defp dispatch_rpc("session.rename", %{"sessionId" => sid, "title" => t}) do
     Newbee.Session.rename(sid, String.trim(t || ""))
     {:ok, %{sessionId: sid, title: t}}
@@ -1645,6 +1553,99 @@ defmodule Newbee.Web.Api do
   # this boundary an unknown method raises FunctionClauseError and Plug returns
   # an HTML 500 page, which makes client retries and diagnostics unreliable.
   defp dispatch_rpc(method, _p), do: {:error, "unknown_method", "未知 RPC 方法: #{method}"}
+
+  # 删除会话前自动解除工作组归属：逐个移出（级联移出其子协作成员）；
+  # 目标会话是协调者则先取消整组再移出所有成员。
+  defp remove_session_from_groups(sid, groups) do
+    Enum.reduce_while(groups, {:ok, []}, fn group, {:ok, notices} ->
+      case remove_from_group(sid, group) do
+        {:ok, note} -> {:cont, {:ok, notices ++ [note]}}
+        {:error, code, message} -> {:halt, {:error, code, message}}
+      end
+    end)
+  end
+
+  defp remove_from_group(sid, group) do
+    group_id = group["group_id"]
+
+    if group["coordinator_session_id"] == sid do
+      dissolve_group_for_delete(sid, group)
+    else
+      members = group["members"] || []
+      children = Enum.filter(members, &(&1["parent_session_id"] == sid))
+
+      with :ok <- cascade_remove_children(group_id, group["coordinator_session_id"], children),
+           {:ok, _member} <-
+             Newbee.Collaboration.Coordinator.remove_member(group_id, %{
+               "session_id" => sid,
+               "actor_session_id" => group["coordinator_session_id"],
+               "command_id" => "delete-remove-#{sid}-#{System.unique_integer([:positive])}"
+             }) do
+        {:ok, "已自动将会话移出工作组「#{group["title"] || group_id}」"}
+      else
+        {:error, code, message} -> {:error, code, message}
+      end
+    end
+  end
+
+  defp cascade_remove_children(group_id, actor_sid, children) do
+    Enum.reduce_while(children, :ok, fn child, :ok ->
+      case Newbee.Collaboration.Coordinator.remove_member(group_id, %{
+             "session_id" => child["session_id"],
+             "actor_session_id" => actor_sid,
+             "command_id" => "delete-remove-child-#{child["session_id"]}-#{System.unique_integer([:positive])}"
+           }) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, code, message} -> {:halt, {:error, code, message}}
+      end
+    end)
+  end
+
+  defp dissolve_group_for_delete(sid, group) do
+    group_id = group["group_id"]
+
+    with {:ok, _} <- Newbee.Collaboration.Coordinator.set_group_status(group_id, "cancelled", sid),
+         :ok <- remove_all_members(group_id, sid, group["members"] || []) do
+      {:ok, "已自动解散工作组「#{group["title"] || group_id}」"}
+    else
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp remove_all_members(group_id, coordinator_sid, members) do
+    members
+    # 先移出子成员，再移出普通成员，最后移出协调者自身
+    |> Enum.sort_by(fn m ->
+      cond do
+        m["session_id"] == coordinator_sid -> 2
+        m["parent_session_id"] -> 0
+        true -> 1
+      end
+    end)
+    |> Enum.reduce_while(:ok, fn member, :ok ->
+      case Newbee.Collaboration.Coordinator.remove_member(group_id, %{
+             "session_id" => member["session_id"],
+             "actor_session_id" => coordinator_sid,
+             "command_id" => "delete-dissolve-#{member["session_id"]}-#{System.unique_integer([:positive])}"
+           }) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, code, message} -> {:halt, {:error, code, message}}
+      end
+    end)
+  end
+
+  defp destroy_session(sid, notices) do
+    case Newbee.Web.Session.destroy(sid) do
+      :ok ->
+        result = %{deleted: sid}
+        result = if notices == [], do: result, else: Map.put(result, :notices, notices)
+        {:ok, result}
+
+      {:error, r} ->
+        {:error, "delete_error", inspect(r)}
+    end
+  end
+
 
   defp rpc_command_id(params, prefix) do
     blank_to_nil(params["commandId"]) ||

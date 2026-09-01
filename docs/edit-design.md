@@ -355,7 +355,10 @@ Edit 可以调用格式化器、解析器、LSP 或测试作为提交后验证�
 
 ```text
 Newbee.Tools.Edit                 唯一公开入口：show/2、patch/1、source_literal/1
-Newbee.Tools.Edit.SnapshotStore   会话快照、12 位标签、已读范围与快照提升
+Newbee.Tools.Edit.SnapshotStore   会话快照、12 位短标签、完整 SHA-256、已读范围与快照提升
+
+快照按项目（cwd）隔离持久化到 `~/.newbee/edit_snapshots/<project-hash>.term`，
+路径统一 `Path.expand` 规范化；即使跨求值进程、跨 BEAM 节点也可取回。
 ```
 
 解析、预检、候选生成、no-op 检查和写入事务目前位于 `Edit` 内部私有函数。只有出现可验证的复杂度收益时才拆模块，不为抽象而增加新的工具或公开 API。
@@ -406,11 +409,14 @@ Newbee.Tools.Edit.SnapshotStore   会话快照、12 位标签、已读范围与�
 - stale、越界、未读、重叠和 no-op 预检；
 - 多节预检、diff/context 返回和 `file_diff` 事件；
 - `source_literal/1` 防止二阶插值与分隔符嵌套；
-- 多语言和错误契约回归测试。
+- 多语言和错误契约回归测试；
+- 事务原子落盘：全量预检 → 临时文件 → 原子 rename → 失败按 `moved?` 状态回滚；
+- 写入保留原文件权限，rename 前二次校验磁盘内容，并发修改显式拒绝；
+- 快照按项目 cwd 隔离、携带完整 SHA-256，路径规范化去重。
 
 尚未实现，只有数据证明收益后再做：
 
-- 文件级锁、临时文件替换和崩溃 journal；
+- 文件级锁（当前用进程内全局锁 + rename 原子性）和崩溃 journal；
 - stale 后的安全漂移映射（当前策略是明确拒绝并重新 `show`）；
 - tree-sitter 块选择和跨文件寄存器；
 - 格式化、解析、LSP 或测试后置条件。
