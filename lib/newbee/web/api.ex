@@ -1210,10 +1210,29 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("llm.providerModels", p) do
     name = p["provider"] || ""
     opts = if p["refresh"] == true, do: [refresh: true], else: []
+    base_url = p["baseUrl"]
+    api_key_param = p["apiKey"]
 
-    case Newbee.LLM.Config.provider_models_by_name(name, opts) do
-      nil -> {:error, "unknown_provider", name}
-      models -> {:ok, %{provider: name, models: models}}
+    # 支持未保存/脏数据的 inline 拉取：前端提供 baseUrl/apiKey 时直接 GET /models，不依赖已落盘配置
+    if is_binary(base_url) and String.trim(base_url) != "" do
+      api_key = resolve_inline_api_key(api_key_param, name)
+      inline_provider = %{"baseUrl" => String.trim(base_url), "apiKey" => api_key}
+
+      case Newbee.LLM.Config.fetch_models_inline(inline_provider) do
+        nil ->
+          case Newbee.LLM.Config.provider_models_by_name(name, opts) do
+            nil -> {:error, "fetch_failed", "模型列表拉取失败，请检查 Base URL / API Key"}
+            models -> {:ok, %{provider: name, models: models}}
+          end
+
+        models ->
+          {:ok, %{provider: name, models: models}}
+      end
+    else
+      case Newbee.LLM.Config.provider_models_by_name(name, opts) do
+        nil -> {:error, "unknown_provider", name}
+        models -> {:ok, %{provider: name, models: models}}
+      end
     end
   end
 
@@ -2516,6 +2535,25 @@ defmodule Newbee.Web.Api do
     end
   end
   defp mask_api_key(_), do: ""
+
+  # inline 拉取时的 apiKey 解析：掩码（含 •）则回退到已落盘的真实密钥
+  defp resolve_inline_api_key(api_key, name) when is_binary(api_key) do
+    trimmed = String.trim(api_key)
+
+    cond do
+      trimmed == "" -> ""
+      String.contains?(trimmed, "•") ->
+        case Newbee.LLM.Config.load()["providers"][name] do
+          %{"apiKey" => real} when is_binary(real) -> real
+          _ -> trimmed
+        end
+
+      true ->
+        trimmed
+    end
+  end
+
+  defp resolve_inline_api_key(_, _), do: nil
 
   # 保存/删除后：向所有在线会话热推送配置变更，让前端模型标签/选择器刷新
   defp hot_reload_provider(_name) do
