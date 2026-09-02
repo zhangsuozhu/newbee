@@ -1236,8 +1236,98 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("llm.setContextWindow", _p),
     do: {:error, "bad_request", "缺少 provider / model 参数"}
+  # 模型配置页：新增/更新 provider（含角色绑定）。保存后立即热推在线会话刷新 client。
+  # attrs: %{name, newName?, baseUrl, api, apiKey, models, contextWindow?, contextWindows?,
+  #         responsesContinuation?, extras?, roles?}
+  defp dispatch_rpc("llm.saveProvider", %{"provider" => name} = p) do
+    attrs = %{
+      "newName" => p["newName"],
+      "baseUrl" => p["baseUrl"],
+      "api" => p["api"],
+      "apiKey" => p["apiKey"],
+      "models" => p["models"] || [],
+      "contextWindow" => p["contextWindow"],
+      "contextWindows" => p["contextWindows"],
+      "responsesContinuation" => p["responsesContinuation"],
+      "extras" => p["extras"],
+      "roles" => p["roles"]
+    }
 
-  # 进化域（左侧进化面板数据）
+    case Newbee.LLM.Config.upsert_provider(name, attrs) do
+      :ok ->
+        final_name = p["newName"] || name
+        hot_reload_provider(final_name)
+        {:ok, %{provider: final_name, saved: true}}
+
+      {:error, :bad_provider_name} -> {:error, "bad_provider_name", "厂家名称不能为空"}
+      {:error, :bad_base_url} -> {:error, "bad_base_url", "Base URL 不能为空"}
+      {:error, :bad_api_key} -> {:error, "bad_api_key", "API Key 不能为空"}
+      {:error, {:provider_exists, n}} -> {:error, "provider_exists", "厂家名称已存在：#{n}"}
+      {:error, other} -> {:error, "save_failed", inspect(other)}
+    end
+  end
+
+  defp dispatch_rpc("llm.saveProvider", _p),
+    do: {:error, "bad_request", "缺少 provider 参数"}
+
+  # 模型配置页：删除 provider 并解绑角色
+  defp dispatch_rpc("llm.deleteProvider", %{"provider" => name}) when is_binary(name) do
+    case Newbee.LLM.Config.delete_provider(name) do
+      :ok ->
+        hot_reload_provider(name)
+        {:ok, %{provider: name, deleted: true}}
+
+      {:error, {:unknown_provider, n}} -> {:error, "unknown_provider", n}
+    end
+  end
+
+  defp dispatch_rpc("llm.deleteProvider", _p),
+    do: {:error, "bad_request", "缺少 provider 参数"}
+
+  # 模型配置页：读取完整配置（apiKey 掩码，仅用于编辑回显；不返回明文）
+  defp dispatch_rpc("llm.providerConfig", _p) do
+    cfg = Newbee.LLM.Config.load()
+
+    providers =
+      for {name, p} <- cfg["providers"] || %{}, into: %{} do
+        masked = Map.update(p, "apiKey", "", &mask_api_key/1)
+        {name, masked}
+      end
+
+    %{
+      providers: providers,
+      roles: cfg["roles"] || %{},
+      path: Newbee.LLM.Config.config_path()
+    }
+    |> then(&{:ok, &1})
+  end
+
+  # apiKey 掩码：保留前后各 4 字符便于识别，中间打码；${...} 引用原样保留
+  defp mask_api_key(nil), do: ""
+  defp mask_api_key("${" <> _ = v), do: v
+  defp mask_api_key(v) when is_binary(v) do
+    len = String.length(v)
+    cond do
+      len <= 8 -> String.duplicate("•", len)
+      true -> String.slice(v, 0, 4) <> String.duplicate("•", min(len - 8, 24)) <> String.slice(v, -4, 4)
+    end
+  end
+  defp mask_api_key(_), do: ""
+
+  # 保存/删除后：向所有在线会话热推送配置变更，让前端模型标签/选择器刷新
+  defp hot_reload_provider(_name) do
+    Newbee.Web.SessionRegistry
+    |> Registry.select([{{:_, :"$1", :_}, [], [:"$1"]}])
+    |> Enum.each(fn pid ->
+      GenServer.cast(pid, :hot_model_config_changed)
+    end)
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+
   defp dispatch_rpc("evolution.feed", p) do
     n = min(max(p["n"] || 100, 1), 300)
     {:ok, %{events: project_evolution_events(n)}}

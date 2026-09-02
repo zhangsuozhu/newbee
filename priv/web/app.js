@@ -1876,8 +1876,8 @@ case "goal_round": break;
     }
   }
   // 防御式绑定：目录选择器 DOM 缺失时跳过（不拖垮整个 UI 启动块）
-  if ($("dir-modal") && $("new-session-dir")) {
-  $("new-session-dir").addEventListener("click", () => openDirPicker());
+  if ($("dir-modal") && $("cwd-label")) {
+  $("cwd-label").addEventListener("click", () => openDirPicker());
   $("dir-cancel").addEventListener("click", () => closeDirPicker());
   $("dir-confirm").addEventListener("click", async () => {
     const picked = dirState.cur;
@@ -1924,7 +1924,7 @@ case "goal_round": break;
     const label = $("cwd-label");
     if (!label) return;
      label.innerHTML = cwd ? ICO_FOLDER + " " + escapeHtml(cwd) : "";
-    label.title = cwd ? "当前会话工作目录: " + cwd : "";
+     label.title = cwd ? "点击修改工作目录: " + cwd : "";
   }
 
   // ── 侧栏折叠 ──
@@ -3260,6 +3260,346 @@ case "goal_round": break;
   $("model-label").onclick = openModels;
   $("model-cancel").onclick = () => $("model-modal").classList.add("hidden");
   // model-confirm 的 onclick 在 openModels 里动态绑定（每次打开重新捕获 pending）
+
+  // ════════════════════════ 模型配置弹窗 ════════════════════════
+  const MCFG = {
+    providers: {}, roles: {}, path: "", current: null, dirty: false, origKey: "",
+    ROLES: ["default", "worker", "adapter", "explorer", "plan", "advisor", "verifier"],
+  };
+
+  function mcfgEsc(s) {
+    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  async function openModelConfig() {
+    try {
+      const data = await rpc("llm.providerConfig", {});
+      MCFG.providers = data.providers || {};
+      MCFG.roles = data.roles || {};
+      MCFG.path = data.path || "";
+      $("mcfg-path").textContent = MCFG.path;
+      const def = MCFG.roles.default && MCFG.roles.default.provider;
+      MCFG.current = def && MCFG.providers[def] ? def : Object.keys(MCFG.providers)[0] || null;
+      MCFG.dirty = false;
+      mcfgRenderList();
+      mcfgFlush();
+      $("mcfg-modal").classList.remove("hidden");
+    } catch (e) {
+      line("error", "加载模型配置失败: " + e.message);
+    }
+  }
+
+  function mcfgRenderList() {
+    const box = $("mcfg-providers");
+    box.innerHTML = "";
+    const names = Object.keys(MCFG.providers);
+    if (!names.length) {
+      box.innerHTML = '<div class="mcfg-empty-list">暂无厂家</div>';
+      return;
+    }
+    for (const name of names) {
+      const p = MCFG.providers[name];
+      const n = (p.models || []).length;
+      const el = document.createElement("div");
+      el.className = "mcfg-pitem" + (name === MCFG.current ? " current" : "");
+      el.innerHTML = '<div class="mcfg-pname mono">' + mcfgEsc(name) + "</div>" +
+        '<div class="mcfg-pmeta">' + n + " 模型 · " + mcfgEsc(p.api || "openai-completions") + "</div>";
+      el.onclick = () => mcfgSelect(name);
+      box.appendChild(el);
+    }
+  }
+
+  function mcfgSelect(name) {
+    if (MCFG.current === name) return;
+    MCFG.current = name;
+    MCFG.dirty = false;
+    mcfgRenderList();
+    mcfgFlush();
+    mcfgState("");
+  }
+
+  function mcfgFlush() {
+    const p = MCFG.providers[MCFG.current];
+    const empty = $("mcfg-empty"), form = $("mcfg-form");
+    if (!p) { empty.style.display = "flex"; form.style.display = "none"; return; }
+    empty.style.display = "none"; form.style.display = "block";
+    $("mcfg-name").value = MCFG.current;
+    $("mcfg-api").value = p.api || "openai-completions";
+    $("mcfg-baseurl").value = p.baseUrl || "";
+    $("mcfg-apikey").value = p.apiKey || "";
+    MCFG.origKey = p.apiKey || "";
+    $("mcfg-ctxw").value = p.contextWindow || "";
+    $("mcfg-respcont").checked = !!p.responsesContinuation;
+    mcfgRenderTags();
+    mcfgRenderCtxRows();
+    mcfgRenderRoles();
+    mcfgRenderExtras();
+    $("mcfg-adv").style.display = "none";
+    $("mcfg-adv-toggle").querySelector(".mcfg-chev").textContent = "▶";
+  }
+
+  function mcfgRenderTags() {
+    const p = MCFG.providers[MCFG.current];
+    const box = $("mcfg-mtags");
+    box.innerHTML = "";
+    const models = p.models || [];
+    $("mcfg-mcount").textContent = models.length ? "(" + models.length + ")" : "";
+    for (const m of models) {
+      const t = document.createElement("span");
+      t.className = "mcfg-tag mono";
+      t.innerHTML = mcfgEsc(m) + '<button class="mcfg-x" title="移除">✕</button>';
+      t.querySelector(".mcfg-x").onclick = () => {
+        p.models = models.filter((x) => x !== m);
+        mcfgRenderTags(); mcfgRenderRoles(); mcfgMark();
+      };
+      box.appendChild(t);
+    }
+  }
+
+  function mcfgAddModel() {
+    const input = $("mcfg-minput");
+    const id = input.value.trim();
+    if (!id) return;
+    const p = MCFG.providers[MCFG.current];
+    if (!p.models) p.models = [];
+    if (p.models.includes(id)) { line("warn", "模型已存在: " + id); return; }
+    p.models.push(id);
+    input.value = "";
+    mcfgRenderTags(); mcfgRenderRoles(); mcfgMark();
+  }
+
+  async function mcfgFetchModels() {
+    const btn = $("mcfg-mfetch");
+    btn.disabled = true; btn.textContent = "拉取中…";
+    try {
+      const r = await rpc("llm.providerModels", { provider: MCFG.current, refresh: true });
+      const p = MCFG.providers[MCFG.current];
+      if (!p.models) p.models = [];
+      let added = 0;
+      for (const m of (r.models || [])) if (!p.models.includes(m)) { p.models.push(m); added++; }
+      mcfgRenderTags(); mcfgRenderRoles(); mcfgMark();
+      line("notice", "已拉取 " + (r.models || []).length + " 个模型（新增 " + added + "）");
+    } catch (e) {
+      line("error", "拉取失败: " + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = "拉取";
+    }
+  }
+
+  function mcfgRenderCtxRows() {
+    const p = MCFG.providers[MCFG.current];
+    const wrap = $("mcfg-ctxrows");
+    wrap.innerHTML = "";
+    for (const [m, n] of Object.entries(p.contextWindows || {})) wrap.appendChild(mcfgCtxRow(m, n));
+  }
+  function mcfgCtxRow(m, n) {
+    const row = document.createElement("div");
+    row.className = "mcfg-kvrow";
+    row.innerHTML =
+      '<input type="text" class="cw-m mono" value="' + mcfgEsc(m) + '" placeholder="模型 ID" spellcheck="false" />' +
+      '<input type="number" class="cw-n" value="' + (n || "") + '" min="0" placeholder="tokens" />' +
+      '<button class="mcfg-x" title="删除">✕</button>';
+    row.querySelector(".mcfg-x").onclick = () => { row.remove(); mcfgMark(); };
+    row.querySelectorAll("input").forEach((i) => (i.oninput = () => mcfgMark()));
+    return row;
+  }
+
+  function mcfgRenderRoles() {
+    const p = MCFG.providers[MCFG.current];
+    const box = $("mcfg-roles");
+    box.innerHTML = "";
+    const models = p.models || [];
+    for (const role of MCFG.ROLES) {
+      const r = MCFG.roles[role];
+      const bound = r && r.provider === MCFG.current;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "mcfg-role" + (bound ? " on" : "");
+      chip.textContent = role;
+      chip.title = bound ? ("已绑定 " + r.model + "，点击解绑") : "点击绑定到当前厂家";
+      chip.onclick = () => mcfgToggleRole(role, models);
+      box.appendChild(chip);
+    }
+  }
+  function mcfgToggleRole(role, models) {
+    const r = MCFG.roles[role];
+    const bound = r && r.provider === MCFG.current;
+    if (bound) {
+      if (role === "default") { line("warn", "default 是聊天默认角色，请先绑定其他模型"); return; }
+      delete MCFG.roles[role];
+    } else {
+      if (!models.length) { line("warn", "请先添加至少一个模型"); return; }
+      MCFG.roles[role] = { provider: MCFG.current, model: models[0] };
+    }
+    mcfgRenderRoles(); mcfgMark();
+  }
+
+  function mcfgRenderExtras() {
+    const p = MCFG.providers[MCFG.current];
+    const wrap = $("mcfg-exrows");
+    wrap.innerHTML = "";
+    const reserved = new Set(["baseUrl", "api", "apiKey", "models", "contextWindows", "contextWindow", "responsesContinuation"]);
+    for (const [k, v] of Object.entries(p)) {
+      if (reserved.has(k)) continue;
+      wrap.appendChild(mcfgExRow(k, typeof v === "object" ? JSON.stringify(v) : String(v)));
+    }
+  }
+  function mcfgExRow(k, v) {
+    const row = document.createElement("div");
+    row.className = "mcfg-kvrow";
+    row.innerHTML =
+      '<input type="text" class="ex-k mono" value="' + mcfgEsc(k) + '" placeholder="字段名" spellcheck="false" />' +
+      '<input type="text" class="ex-v mono" value="' + mcfgEsc(v) + '" placeholder="JSON 值" spellcheck="false" />' +
+      '<button class="mcfg-x" title="删除">✕</button>';
+    row.querySelector(".mcfg-x").onclick = () => { row.remove(); mcfgMark(); };
+    row.querySelectorAll("input").forEach((i) => (i.oninput = () => mcfgMark()));
+    return row;
+  }
+
+  function mcfgToggleAdv() {
+    const adv = $("mcfg-adv");
+    const open = adv.style.display === "none";
+    adv.style.display = open ? "block" : "none";
+    $("mcfg-adv-toggle").querySelector(".mcfg-chev").textContent = open ? "▼" : "▶";
+  }
+
+  function mcfgMark() { MCFG.dirty = true; mcfgState("未保存", "dirty"); }
+  function mcfgState(text, cls) {
+    const s = $("mcfg-state");
+    s.textContent = text || "";
+    s.className = "mcfg-state" + (cls ? " " + cls : "");
+  }
+
+  function mcfgCollect() {
+    const p = MCFG.providers[MCFG.current];
+    if (!p) return null;
+    const name = $("mcfg-name").value.trim();
+    const baseUrl = $("mcfg-baseurl").value.trim();
+    let apiKey = $("mcfg-apikey").value.trim();
+    if (!name) { line("error", "厂家名称不能为空"); return null; }
+    if (!baseUrl) { line("error", "Base URL 不能为空"); return null; }
+    if (!apiKey) { line("error", "API Key 不能为空（可填 ${ENV_VAR}）"); return null; }
+    if (apiKey === MCFG.origKey) apiKey = null;
+
+    const ctxw = {};
+    $("mcfg-ctxrows").querySelectorAll(".mcfg-kvrow").forEach((row) => {
+      const m = row.querySelector(".cw-m").value.trim();
+      const n = parseInt(row.querySelector(".cw-n").value, 10);
+      if (m && n > 0) ctxw[m] = n;
+    });
+
+    const extras = {};
+    const reserved = new Set(["baseUrl", "api", "apiKey", "models", "contextWindows", "contextWindow", "responsesContinuation"]);
+    $("mcfg-exrows").querySelectorAll(".mcfg-kvrow").forEach((row) => {
+      const k = row.querySelector(".ex-k").value.trim();
+      const raw = row.querySelector(".ex-v").value.trim();
+      if (!k || reserved.has(k)) return;
+      try { extras[k] = JSON.parse(raw); } catch (_) { extras[k] = raw; }
+    });
+
+    const roles = {};
+    for (const role of MCFG.ROLES) {
+      const r = MCFG.roles[role];
+      if (r && r.provider === MCFG.current) roles[role] = r.model;
+    }
+
+    return {
+      provider: MCFG.current,
+      newName: name,
+      baseUrl: baseUrl,
+      api: $("mcfg-api").value,
+      apiKey: apiKey,
+      models: p.models || [],
+      contextWindow: parseInt($("mcfg-ctxw").value, 10) || null,
+      contextWindows: ctxw,
+      responsesContinuation: $("mcfg-respcont").checked,
+      extras: extras,
+      roles: roles,
+    };
+  }
+
+  async function mcfgSave() {
+    const attrs = mcfgCollect();
+    if (!attrs) return;
+    const btn = $("mcfg-save");
+    btn.disabled = true; btn.textContent = "保存中…";
+    try {
+      const payload = Object.assign({}, attrs);
+      if (payload.apiKey === null) payload.apiKey = MCFG.origKey;
+      const r = await rpc("llm.saveProvider", payload);
+      MCFG.dirty = false;
+      MCFG.current = r.provider;
+      const data = await rpc("llm.providerConfig", {});
+      MCFG.providers = data.providers || {};
+      MCFG.roles = data.roles || {};
+      mcfgRenderList(); mcfgFlush();
+      mcfgState("已保存", "saved");
+      line("notice", "模型配置已保存");
+      const def = MCFG.roles.default;
+      if (def) $("model-label").textContent = def.provider + "/" + def.model;
+    } catch (e) {
+      line("error", "保存失败: " + e.message);
+      mcfgState("保存失败", "dirty");
+    } finally {
+      btn.disabled = false; btn.textContent = "保存";
+    }
+  }
+
+  async function mcfgDelete() {
+    if (!MCFG.current) return;
+    if (!confirm("确定删除厂家 " + MCFG.current + " ？引用它的角色将被解绑。")) return;
+    try {
+      await rpc("llm.deleteProvider", { provider: MCFG.current });
+      delete MCFG.providers[MCFG.current];
+      for (const [role, r] of Object.entries(MCFG.roles)) if (r.provider === MCFG.current) delete MCFG.roles[role];
+      MCFG.current = Object.keys(MCFG.providers)[0] || null;
+      MCFG.dirty = false;
+      mcfgRenderList(); mcfgFlush();
+      line("notice", "已删除厂家");
+    } catch (e) {
+      line("error", "删除失败: " + e.message);
+    }
+  }
+
+  function mcfgAddProvider() {
+    const name = prompt("新厂家名称（小写英文键名）：", "");
+    if (!name || !name.trim()) return;
+    const key = name.trim();
+    if (MCFG.providers[key]) { line("warn", "厂家已存在: " + key); return; }
+    MCFG.providers[key] = { baseUrl: "", api: "openai-completions", apiKey: "", models: [] };
+    MCFG.current = key;
+    MCFG.dirty = true;
+    mcfgRenderList(); mcfgFlush();
+    mcfgState("新厂家，待保存", "dirty");
+    $("mcfg-baseurl").focus();
+  }
+
+  function mcfgClose() {
+    if (MCFG.dirty && !confirm("有未保存的修改，确定关闭？")) return;
+    $("mcfg-modal").classList.add("hidden");
+  }
+
+  $("model-config-btn").onclick = openModelConfig;
+  $("mcfg-close").onclick = mcfgClose;
+  $("mcfg-cancel").onclick = mcfgClose;
+  $("mcfg-save").onclick = mcfgSave;
+  $("mcfg-delete").onclick = mcfgDelete;
+  $("mcfg-add").onclick = mcfgAddProvider;
+  $("mcfg-madd").onclick = mcfgAddModel;
+  $("mcfg-mfetch").onclick = mcfgFetchModels;
+  $("mcfg-adv-toggle").onclick = mcfgToggleAdv;
+  $("mcfg-ctxadd").onclick = () => { $("mcfg-ctxrows").appendChild(mcfgCtxRow("", "")); mcfgMark(); };
+  $("mcfg-exadd").onclick = () => { $("mcfg-exrows").appendChild(mcfgExRow("", "")); mcfgMark(); };
+  $("mcfg-minput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); mcfgAddModel(); } });
+  $("mcfg-eye").onclick = () => {
+    const i = $("mcfg-apikey");
+    i.type = i.type === "password" ? "text" : "password";
+  };
+  $("mcfg-modal").addEventListener("mousedown", (e) => { if (e.target === $("mcfg-modal")) mcfgClose(); });
+  ["mcfg-name", "mcfg-baseurl", "mcfg-apikey", "mcfg-ctxw"].forEach((id) => $(id).addEventListener("input", () => mcfgMark()));
+  $("mcfg-api").addEventListener("change", () => mcfgMark());
+  $("mcfg-respcont").addEventListener("change", () => mcfgMark());
+
   input.addEventListener("input", () => {
     autoGrow();
     saveDraft(input.value);
