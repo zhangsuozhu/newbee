@@ -1302,30 +1302,6 @@ defmodule Newbee.Web.Api do
     |> then(&{:ok, &1})
   end
 
-  # apiKey 掩码：保留前后各 4 字符便于识别，中间打码；${...} 引用原样保留
-  defp mask_api_key(nil), do: ""
-  defp mask_api_key("${" <> _ = v), do: v
-  defp mask_api_key(v) when is_binary(v) do
-    len = String.length(v)
-    cond do
-      len <= 8 -> String.duplicate("•", len)
-      true -> String.slice(v, 0, 4) <> String.duplicate("•", min(len - 8, 24)) <> String.slice(v, -4, 4)
-    end
-  end
-  defp mask_api_key(_), do: ""
-
-  # 保存/删除后：向所有在线会话热推送配置变更，让前端模型标签/选择器刷新
-  defp hot_reload_provider(_name) do
-    Newbee.Web.SessionRegistry
-    |> Registry.select([{{:_, :"$1", :_}, [], [:"$1"]}])
-    |> Enum.each(fn pid ->
-      GenServer.cast(pid, :hot_model_config_changed)
-    end)
-
-    :ok
-  rescue
-    _ -> :ok
-  end
 
 
   defp dispatch_rpc("evolution.feed", p) do
@@ -2528,6 +2504,32 @@ defmodule Newbee.Web.Api do
   defp truthy?(value), do: value in [true, "true", 1, "1"]
 
   # JSON 安全化（atom key / datetime / tuple）
+
+  # apiKey 掩码：保留前后各 4 字符便于识别，中间打码；${...} 引用原样保留
+  defp mask_api_key(nil), do: ""
+  defp mask_api_key("${" <> _ = v), do: v
+  defp mask_api_key(v) when is_binary(v) do
+    len = String.length(v)
+    cond do
+      len <= 8 -> String.duplicate("•", len)
+      true -> String.slice(v, 0, 4) <> String.duplicate("•", min(len - 8, 24)) <> String.slice(v, -4, 4)
+    end
+  end
+  defp mask_api_key(_), do: ""
+
+  # 保存/删除后：向所有在线会话热推送配置变更，让前端模型标签/选择器刷新
+  defp hot_reload_provider(_name) do
+    Newbee.Web.SessionRegistry
+    |> Registry.select([{{:_, :"$1", :_}, [], [:"$1"]}])
+    |> Enum.each(fn pid ->
+      GenServer.cast(pid, :hot_model_config_changed)
+    end)
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
   defp json_safe(%{__struct__: _} = v), do: v |> Map.from_struct() |> json_safe()
   defp json_safe(%{} = v), do: Map.new(v, fn {k, val} -> {to_string(k), json_safe(val)} end)
   defp json_safe(v) when is_list(v), do: Enum.map(v, &json_safe/1)
