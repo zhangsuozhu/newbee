@@ -124,6 +124,11 @@ defmodule Newbee.Environment.Coordinator do
   @doc "自治升档证据汇总（§8.1 挣来的自治）。"
   def autonomy_evidence(server \\ __MODULE__), do: GenServer.call(server, :autonomy_evidence)
 
+  @doc "同步运行中 Coordinator 的自治档位，并记录审计事件。"
+  def set_autonomy(server \\ __MODULE__, level) do
+    GenServer.call(server, {:set_autonomy, level})
+  end
+
   # ── init：崩溃恢复 = 从最近 checkpoint 重放事件流重建快照（§4.6）──
 
   @impl true
@@ -431,6 +436,19 @@ defmodule Newbee.Environment.Coordinator do
       end
 
     {:reply, :ok, state}
+  end
+
+  def handle_call({:set_autonomy, level}, _from, state) do
+    if level in Autonomy.levels() do
+      append_event(state, :autonomy_changed, %{
+        "from" => to_string(state.autonomy),
+        "to" => to_string(level)
+      })
+
+      {:reply, :ok, %{state | autonomy: level}}
+    else
+      {:reply, {:error, :invalid_level}, state}
+    end
   end
 
   def handle_call(:current, _from, state) do
@@ -1191,16 +1209,34 @@ defmodule Newbee.Environment.Coordinator do
     }
   end
 
-  defp replay_coverage(_state) do
-    # 回放覆盖率 = 有回放证据的 change / 全部已评测 change（§8.1 证据之一）
+  defp replay_coverage(state) do
+    # 回放覆盖率 = 真正执行 counterfactual 的 change / 全部已评测 change。
+    # Ring 不要求回放时 Verifier 会写 skipped=true，这不构成回放证据。
     evaluated =
-      Store.dir(:changes)
-      |> Path.join("*/change.json")
-      |> Path.wildcard()
-      |> length()
+      state.changes
+      |> Map.values()
+      |> Enum.filter(&is_map(&1.evaluation_result))
 
-    if evaluated == 0, do: 0.0, else: 1.0
+    case evaluated do
+      [] ->
+        0.0
+
+      changes ->
+        covered = Enum.count(changes, &counterfactual_evidence?/1)
+        covered / length(changes)
+    end
   end
+
+  defp counterfactual_evidence?(change) do
+    result = change.evaluation_result
+    layers = result["layers"] || result[:layers] || %{}
+    counterfactual = layers["counterfactual"] || layers[:counterfactual]
+
+    is_map(counterfactual) and map_size(counterfactual) > 0 and
+      not truthy?(counterfactual["skipped"] || counterfactual[:skipped])
+  end
+
+  defp truthy?(value), do: value in [true, "true"]
 
   defp now_iso, do: DateTime.utc_now() |> DateTime.to_iso8601()
 

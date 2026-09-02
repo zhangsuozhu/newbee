@@ -67,38 +67,28 @@ defmodule Newbee.Collaboration.DispatchTest do
     refute_receive {:stub_got, _, {:collaboration_task, _}}, 200
   end
 
-  test "无 token 时回退到稳定宿主身份，仍受成员校验约束" do
-    # fix_gate：宿主直调（无 Loop token）回退 HostIdentity；同一项目复用同一宿主组。
-    assert {:ok, first} = Newbee.Tools.Collaboration.delegate("宿主回退任务")
-    assert {:ok, second} = Newbee.Tools.Collaboration.delegate("宿主回退任务二")
-    assert first.task["group_id"] == second.task["group_id"]
-    assert first.workspace["kind"] == "filesystem_copy"
-    refute Map.has_key?(first.workspace, "base_snapshot")
-
-    on_exit(fn ->
-      Newbee.Web.Session.destroy(first.session_id)
-      Newbee.Web.Session.destroy(second.session_id)
-      Newbee.Collaboration.Workspace.discard_orphan(first.workspace)
-      Newbee.Collaboration.Workspace.discard_orphan(second.workspace)
-    end)
+  test "无 token 时拒绝派生子代理" do
+    assert {:error, "no_execution_context", _} =
+             Newbee.Tools.Collaboration.delegate("无上下文任务")
   end
 
   test "无活动群组时不会复用已取消群组" do
-    parent_sid = Newbee.Tools.Collaboration.HostIdentity.session_id()
-
-    assert {:ok, old_group} =
-             Coordinator.create_group(%{"session_id" => parent_sid, "title" => "已取消旧群"})
-
-    assert {:ok, _} =
-             Coordinator.set_group_status(old_group["group_id"], "cancelled", parent_sid)
+    parent_sid = "cancelled-parent"
 
     assert {:ok, result} =
-             Newbee.Tools.Collaboration.delegate("取消群后继续派发",
-               isolate: false,
-               command_id: "cancelled-fallback-#{System.unique_integer([:positive])}"
-             )
+             with_identity(parent_sid, File.cwd!(), fn ->
+               assert {:ok, old_group} =
+                        Coordinator.create_group(%{"session_id" => parent_sid, "title" => "已取消旧群"})
 
-    refute result.task["group_id"] == old_group["group_id"]
+               assert {:ok, _} =
+                        Coordinator.set_group_status(old_group["group_id"], "cancelled", parent_sid)
+
+               Newbee.Tools.Collaboration.delegate("取消群后继续派发",
+                 isolate: false,
+                 command_id: "cancelled-fallback-#{System.unique_integer([:positive])}"
+               )
+             end)
+
     assert {:ok, new_group} = Coordinator.get(result.task["group_id"])
     assert new_group["status"] == "running"
 

@@ -27,6 +27,7 @@ defmodule Newbee.Environment.CapabilityGate do
     "Newbee.Tools.Git" => [:shell, :fs],
     "Newbee.Tools.Scaffold" => [:shell, :fs],
     "Newbee.Tools.Http" => [:net],
+    "Newbee.Tools.Browser" => [:browser, :net, :fs, :shell],
     "Newbee.Tools.Search" => [:fs],
     "Newbee.Tools.Json" => [],
     "Newbee.Tools.Introspect" => [],
@@ -78,23 +79,22 @@ defmodule Newbee.Environment.CapabilityGate do
     end)
   end
 
- defp check_capabilities(mod_str, plugin_id, release_id) do
-   required = Map.get(@module_capabilities, mod_str, [])
- 
-   declared =
-     case Newbee.Environment.PluginManager.fetch_or_builtin(release_id) do
-       {:ok, release} ->
-         release.capabilities
- 
-       _ ->
-         # release 物化缺失/内容寻址失效时回退 builtin 静态声明
-         # （plugins.ex 是能力权威；运行时释放物不应反向削弱静态契约）
-         case Newbee.Plugins.builtin(plugin_id) do
-           nil -> []
-           builtin -> builtin.capabilities
-         end
-     end
- 
+  defp check_capabilities(mod_str, plugin_id, release_id) do
+    required = Map.get(@module_capabilities, mod_str, [])
+
+    declared =
+      case Newbee.Environment.PluginManager.fetch_or_builtin(release_id) do
+        {:ok, release} ->
+          release.capabilities
+
+        _ ->
+          # release 物化缺失/内容寻址失效时回退 builtin 静态声明
+          # （plugins.ex 是能力权威；运行时释放物不应反向削弱静态契约）
+          case Newbee.Plugins.builtin(plugin_id) do
+            nil -> []
+            builtin -> builtin.capabilities
+          end
+      end
 
     missing = required -- declared
 

@@ -453,4 +453,69 @@ defmodule Newbee.Collaboration.CoordinatorTest do
 
     refute Coordinator.member?(group_id, "ghost-2", server)
   end
+
+  test "claim 后可续租，accepted 可直接完成", %{server: server} do
+    assert {:ok, group} =
+             Coordinator.create_group(%{"session_id" => "parent", "title" => "lease 测试"}, server)
+
+    group_id = group["group_id"]
+
+    assert {:ok, _} =
+             Coordinator.add_member(group_id, %{"session_id" => "child"}, server)
+
+    assert {:ok, task} =
+             Coordinator.create_task(
+               group_id,
+               %{
+                 "created_by_session_id" => "parent",
+                 "assigned_session_id" => "child",
+                 "title" => "短任务"
+               },
+               server
+             )
+
+    assert {:ok, claimed} = Coordinator.claim_task(group_id, task["task_id"], "child", server)
+    assert claimed["lease_owner"] == "child"
+    assert {:ok, renewed} = Coordinator.renew_task(group_id, task["task_id"], "child", 60, server)
+    assert renewed["lease_owner"] == "child"
+
+    assert {:ok, done} =
+             Coordinator.update_task(
+               group_id,
+               task["task_id"],
+               %{"session_id" => "child", "status" => "succeeded", "result" => "done"},
+               server
+             )
+
+    assert done["status"] == "succeeded"
+
+    assert {:ok, accepted_task} =
+             Coordinator.create_task(
+               group_id,
+               %{
+                 "created_by_session_id" => "parent",
+                 "assigned_session_id" => "child",
+                 "title" => "直接完成"
+               },
+               server
+             )
+
+    assert {:ok, _} =
+             Coordinator.update_task(
+               group_id,
+               accepted_task["task_id"],
+               %{"session_id" => "child", "status" => "accepted"},
+               server
+             )
+
+    assert {:ok, accepted_done} =
+             Coordinator.update_task(
+               group_id,
+               accepted_task["task_id"],
+               %{"session_id" => "child", "status" => "succeeded"},
+               server
+             )
+
+    assert accepted_done["status"] == "succeeded"
+  end
 end

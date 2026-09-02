@@ -64,6 +64,13 @@ defmodule Newbee.Collaboration.CapabilityTest do
     File.rm_rf!(root)
   end
 
+  test "无 capability 上下文时拒绝协作调用" do
+    Process.delete({Newbee.Tools.Collaboration, :context})
+
+    assert {:error, "no_execution_context", _} =
+             Newbee.Tools.Collaboration.tasks("group-without-context")
+  end
+
   defp eventually(fun), do: eventually(fun, 20)
 
   defp eventually(fun, attempts) when attempts > 0 do

@@ -307,6 +307,8 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 2. **常驻能力索引**：全部内置 tool/workflow/projection/provider 各一行“何时用”，预算 ≤1.8KB；不展开函数表。
 3. **按需 `tool://`**：模块用途、边界和示例 + `Code.fetch_docs` 自动生成的真实调用签名与 `@doc`，单模块预算 ≤3.5KB。手写函数清单不重复进入模型上下文。
 
+- **浏览器自动化 Plugin**（`Newbee.Tools.Browser`）：动作计划在隔离 Playwright 上执行，覆盖导航、定位器交互、DOM 查询、标签页、Cookie/存储、下载、PDF 和截图；`backend: "screen"` 是显式授权的 X11 可见窗口降级路径，不默认触碰用户桌面。
+
 每个模型可见函数必须有 `@doc` 和调用示例；`@doc false` 只用于 RPC/内部入口。API 删除或默认参数变化由契约测试校验，避免说明漂移。
 
 **健壮性（2026-08 落地）**：

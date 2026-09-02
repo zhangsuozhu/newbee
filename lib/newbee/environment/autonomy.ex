@@ -64,10 +64,21 @@ defmodule Newbee.Environment.Autonomy do
 
     File.mkdir_p!(Path.dirname(@config))
     File.write!(@config, Jason.encode!(Map.put(cfg, "autonomy", to_string(level)), pretty: true))
+    sync_coordinator(level)
     :ok
   end
 
   def set(level) when is_atom(level), do: {:error, :invalid_level}
+
+  defp sync_coordinator(level) do
+    coordinator = Newbee.Environment.Coordinator
+
+    if Process.whereis(coordinator) do
+      Newbee.Environment.Coordinator.set_autonomy(coordinator, level)
+    end
+  catch
+    :exit, _reason -> :ok
+  end
 
   defp normalize(l) when l in @levels, do: l
   defp normalize(_), do: @default
