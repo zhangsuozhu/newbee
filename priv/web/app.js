@@ -4,6 +4,28 @@
   const ICO_FOLDER = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><path d="M3 8V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><path d="M3 8l2.4 9.1A2 2 0 0 0 7.3 19h12.2a1 1 0 0 0 1-1.3L18 11H5L3 8z"/></svg>';
   const ICO_SIDEBAR_COLLAPSE = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg>';
   const ICO_SIDEBAR_EXPAND = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg>';
+  // ── 工具结果解包：剥离 Trust Envelope（<<<data ...>>>），历史回放与实时共用 ──
+  function unwrapToolContent(text) {
+    if (!text) return "";
+    const s = String(text);
+    if (s.startsWith("<<<data")) {
+      const start = s.indexOf(">\n");
+      if (start !== -1) {
+        const end = s.lastIndexOf("\n<<<end");
+        if (end !== -1 && end > start) {
+          return s.slice(start + 2, end).trimStart();
+        }
+      }
+      const lines = s.split("\n");
+      if (lines.length >= 3 && lines[0].startsWith("<<<data") && lines[lines.length - 1].startsWith("<<<end")) {
+        return lines.slice(1, -1).join("\n").trimStart();
+      }
+    }
+    return s;
+  }
+  function isToolError(text) {
+    return unwrapToolContent(text).trimStart().startsWith("✗");
+  }
   // ── Markdown 渲染器（零依赖，覆盖 newbee.Markdown 同语法集，输出安全 HTML）──
   // 语法：ATX 标题、围栏代码块、引用、无序/有序/任务列表、水平线、表格、
   // 行内 **bold** *italic* `code` [text](url) ~~del~~。全部经 escapeHtml 防注入。
@@ -424,7 +446,7 @@ const flow = $("flow");
       case "text": appendStream(p.delta, p.created_at); break;
       case "reasoning": appendReasoning(p.delta, p.created_at); break;
       case "tool_start": toolStart(p); break;
-      case "tool_result": toolResult(p.text, true, p.duration_ms); break;
+      case "tool_result": toolResult(p.text, !isToolError(p.text), p.duration_ms); break;
       case "tool_error": toolResult(p.text, false); break;
       case "done": {
         finishTurn();
@@ -832,16 +854,20 @@ case "goal_round": break;
   function toolResult(text, ok, durationMs) {
     const card = state.currentToolCard;
     if (!state.currentTool || !card) return;
-    state.currentTool.classList.add(ok ? "ok" : "err");
-    addToolStatus(card, ok);
-    state.currentTool.textContent = (text || "").split("\n").slice(0, 30).join("\n");
-    if (!ok && lastUserPrompt) {
+    const inner = unwrapToolContent(text);
+    // 若调用方误传 ok=true 但内容实为错误，以内容为准（防重复 tool_result 覆盖）
+    const finalOk = isToolError(inner) ? false : ok;
+    state.currentTool.classList.remove("ok", "err");
+    state.currentTool.classList.add(finalOk ? "ok" : "err");
+    addToolStatus(card, finalOk);
+    state.currentTool.textContent = inner.split("\n").slice(0, 30).join("\n");
+    if (!finalOk && lastUserPrompt) {
       addRetryButton(card);
     }
     stampDuration(card, durationMs);
     const srcCode = card.querySelector(".tool-code")?.textContent || "";
-    addToolCopyButton(card, text, srcCode);
-    mcToolResult(ok, durationMs);
+    addToolCopyButton(card, inner, srcCode);
+    mcToolResult(finalOk, durationMs);
     state.currentTool = null;
     state.currentToolCard = null;
   }
@@ -2451,19 +2477,23 @@ case "goal_round": break;
         }
       }
     } else if (m.role === "tool") {
-      const ok = !(m.content || "").startsWith("✗");
+      const inner = unwrapToolContent(m.content || "");
+      const ok = !isToolError(m.content || "");
       const host = (m.toolCallId && replayToolCards[m.toolCallId]) || null;
       if (host) {
         const resEl = host.querySelector(".tool-result");
         if (resEl) {
+          resEl.classList.remove("ok", "err");
           resEl.classList.add(ok ? "ok" : "err");
-          resEl.textContent = (m.content || "").split("\n").slice(0, 30).join("\n");
+          resEl.textContent = inner.split("\n").slice(0, 30).join("\n");
         }
         addToolStatus(host, ok);
-        addToolCopyButton(host, m.content, host.querySelector(".tool-code")?.textContent || "");
+        addToolCopyButton(host, inner, host.querySelector(".tool-code")?.textContent || "");
         delete replayToolCards[m.toolCallId];
       } else {
-        renderReplayTool("tool", "", "", m.content, ok);
+        const _c = renderReplayTool("tool", "", "", inner, ok);
+        addToolStatus(_c, ok);
+        addToolCopyButton(_c, inner, "");
       }
     } else if (m.role === "archive") {
       const d = el("msg-archive", "");
