@@ -462,6 +462,48 @@ const flow = $("flow");
         break;
       }
       case "interrupted": finishTurn(); line("notice", "已中断"); break;
+      case "session_cleared": {
+        finishTurn();
+        try { localStorage.removeItem("newbee.draft." + state.sid); } catch (e) {}
+        resetStreamState();
+        flow.innerHTML = "";
+        renderWelcome();
+        state.hasPrompted = false;
+        state.titleDirty = false;
+        hidePermission();
+        clearAttachments();
+        setBusy(false);
+        if (p.text) line("notice", p.text);
+        break;
+      }
+      case "session_renewed": {
+        finishTurn();
+        const newSid = p.sessionId;
+        // 后端新实现同 sid 清空：直接清面板；旧实现子 sid：resume 到新 transcript
+        if (newSid && newSid === state.sid && !state.creatingSession) {
+          try { localStorage.removeItem("newbee.draft." + state.sid); } catch (e) {}
+          resetStreamState();
+          flow.innerHTML = "";
+          renderWelcome();
+          state.hasPrompted = false;
+          state.titleDirty = false;
+          hidePermission();
+          clearAttachments();
+          setBusy(false);
+          line("notice", p.text || "已开启新会话");
+        } else if (newSid && newSid !== state.sid && !state.creatingSession) {
+          try { localStorage.removeItem("newbee.draft." + state.sid); } catch (e) {}
+          (async () => {
+            try {
+              await resume(newSid);
+              line("notice", "已开启新会话");
+            } catch (e) {
+              line("error", "切换新会话失败: " + e.message);
+            }
+          })();
+        }
+        break;
+      }
       case "permission_ask": showPermission(p.preview); break;
       case "usage": setUsage(p.usage); handleBubbleUsage(p.usage); break;
       case "compacted": line("notice", `历史已压缩 ${p.count} 条`); break;
@@ -2703,6 +2745,16 @@ case "goal_round": break;
   async function send() {
     state.eventCreatedAt = new Date().toISOString();
     const text = input.value.trim();
+    // /new 在 WebUI 等同 "+ 新会话"：本地走 newSession() 全新 sid + 清空视图，避免后端旧重启路径的历史串台
+    if (text === "/new" || text.startsWith("/new ")) {
+      input.value = "";
+      autoGrow();
+      saveDraft("");
+      if (typeof newSession === "function") {
+        try { await newSession(); } catch (e) { line("error", e.message); }
+      }
+      return;
+    }
     const attachments = state.attachments.slice();
     if (state.uploading > 0) { line("notice", "请等待文件上传完成"); return; }
     if ((!text && attachments.length === 0) || !state.sid) return;
