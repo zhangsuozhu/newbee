@@ -95,26 +95,35 @@ defmodule Newbee.DEE.EvaluatorLongTaskTest do
 
   @tag :node
   @tag timeout: 30_000
-  test "Ring0 shell 保留 evaluator 的 worktree cwd" do
+  test "Ring0 shell 始终恢复 evaluator 的 worktree cwd" do
     cwd =
       Path.join(
         System.tmp_dir!(),
         "newbee-worktree-cwd-#{System.unique_integer([:positive, :monotonic])}"
       )
 
+    other = cwd <> "-other"
     File.mkdir_p!(cwd)
+    File.mkdir_p!(other)
     {:ok, ev} = Evaluator.start(mode: :node, cwd: cwd)
 
     on_exit(fn ->
       if Process.alive?(ev), do: GenServer.stop(ev)
       File.rm_rf(cwd)
+      File.rm_rf(other)
     end)
 
     command_module = "Newbee.Tools." <> "Run"
-    result = Evaluator.eval(ev, command_module <> ~S|.sh_long("pwd")|)
+    initial = Evaluator.eval(ev, command_module <> ~S|.sh("pwd")|)
+    assert initial.status == :ok
+    assert initial.value =~ cwd
 
-    assert result.status == :ok
-    assert result.value =~ cwd
+    assert %{status: :ok, cwd: ^other} = Evaluator.eval(ev, "File.cd!(" <> inspect(other) <> ")")
+    restored = Evaluator.eval(ev, command_module <> ~S|.sh("pwd")|)
+
+    assert restored.status == :ok
+    assert restored.value =~ cwd
+    refute restored.value =~ other
   end
 
   @tag :node

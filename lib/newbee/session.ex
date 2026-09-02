@@ -197,7 +197,7 @@ defmodule Newbee.Session do
     end
   end
 
-  @doc "读取会话首次请求的稳定 system prompt；旧会话没有时返回 nil。"
+  @doc "读取当前工作根对应的稳定 system prompt；旧会话没有时返回 nil。"
   def system_prompt(%__MODULE__{dir: dir}) do
     case File.read(Path.join(dir, "system-prompt.md")) do
       {:ok, prompt} -> prompt
@@ -206,7 +206,7 @@ defmodule Newbee.Session do
     end
   end
 
-  @doc "持久化会话首次请求的 system prompt，供同会话恢复时原样复用。"
+  @doc "持久化当前工作根的 system prompt；切换工作根时覆盖。"
   def save_system_prompt(%__MODULE__{dir: dir}, prompt) when is_binary(prompt) do
     File.write!(Path.join(dir, "system-prompt.md"), prompt)
     prompt
@@ -457,17 +457,17 @@ defmodule Newbee.Session do
     end
   end
 
-  @doc "读取该会话绑定的项目工作目录（工作区）；未绑定时返回 nil（沿用全局默认）。"
+  @doc "读取该会话绑定的绝对项目工作根；旧会话尚未绑定时返回 nil。"
   def cwd(id) when is_binary(id) do
     case metadata(id)["cwd"] do
-      cwd when is_binary(cwd) and cwd != "" -> cwd
+      cwd when is_binary(cwd) and cwd != "" -> Path.expand(cwd)
       _ -> nil
     end
   end
 
-  @doc "绑定该会话的项目工作目录（WebUI 新建会话时选定）。"
+  @doc "绑定该会话的唯一绝对项目工作根。"
   def set_cwd(id, cwd) when is_binary(id) and is_binary(cwd) do
-    update_metadata(id, &Map.put(&1, "cwd", cwd))
+    update_metadata(id, &Map.put(&1, "cwd", Path.expand(cwd)))
   end
 
   @doc "读取该会话的思考强度（nil = 未设置，用 client 默认）。"
