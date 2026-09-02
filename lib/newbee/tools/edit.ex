@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Edit do
   @moduledoc """
-  唯一公开文本补丁工具（docs/edit-design.md §4.2）：快照标签 + 原始行范围 + 最终内容。
+  文本补丁工具（docs/edit-design.md）：快照标签+行范围+最终内容。
 
       [path#tag]
       PUT N..M:      用 + 正文替换原快照 N..M 行（含端点）
