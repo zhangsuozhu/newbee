@@ -1159,7 +1159,7 @@ defmodule Newbee.Collaboration.Coordinator do
     allowed = %{
       "pending" => ~w(cancelled assigned),
       "assigned" => ~w(accepted running cancelled),
-      "accepted" => ~w(running blocked cancelled),
+      "accepted" => ~w(running blocked succeeded failed cancelled),
       "running" => ~w(blocked succeeded failed cancelled),
       "blocked" => ~w(running failed cancelled)
     }

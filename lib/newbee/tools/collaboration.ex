@@ -28,11 +28,13 @@ defmodule Newbee.Tools.Collaboration do
 
   ## 函数清单
 
-  - `delegate(title, opts \\\\ [])` — 派生子代理；opts: `name:/role:/description:/acceptance:/isolate:`
-  - `report(group_id, task_id, session_id, status, opts \\\\ [])` — 子代理调用
-  - `renew(group_id, task_id, session_id, seconds \\\\ 300)` — 子代理续期
+  - `delegate(title, opts \\ [])` — 派生子代理；opts: `name:/role:/description:/acceptance:/isolate:`
+  - `claim_task(group_id, task_id)` — 以当前会话身份领取任务并取得 lease
+  - `report(group_id, task_id, session_id, status, opts \\ [])` — 子代理调用
+  - `renew(group_id, task_id, session_id, seconds \\ 300)` — 子代理续期
   - `tasks(group_id)` — 列出组内任务
-  - `send_message(group_id, session_id, body, opts \\\\ [])` — 发消息；opts: `to:/kind:/delivery:`
+  - `send_message(group_id, session_id, body, opts \\ [])` — 发消息；opts: `to:/kind:/delivery:`
+
 
   ## 安全约束
 
@@ -44,6 +46,9 @@ defmodule Newbee.Tools.Collaboration do
 
     Newbee.Tools.Collaboration.delegate("修复 token 过期路径", name: "认证修复", role: "worker")
     Newbee.Tools.Collaboration.delegate("补充并发测试", name: "并发测试", role: "tester")
+    {:ok, _task} = Newbee.Tools.Collaboration.claim_task("g1", "t1")
+    Newbee.Tools.Collaboration.report("g1", "t1", "s1", :accepted)
+
     Newbee.Tools.Collaboration.report("g1", "t1", "s1", :running, progress: "50%")
     Newbee.Tools.Collaboration.renew("g1", "t1", "s1", 600)
     Newbee.Tools.Collaboration.tasks("g1")
@@ -111,7 +116,20 @@ defmodule Newbee.Tools.Collaboration do
     end
   end
 
-  @doc "续期任务租约（秒），默认 300。"
+  @doc "以当前 capability 身份领取任务并取得 lease。"
+  def claim_task(group_id, task_id) when is_binary(group_id) and is_binary(task_id) do
+    with {:ok, identity} <- collaboration_identity() do
+      Newbee.Host.call(Newbee.Collaboration.Coordinator, :claim_task, [
+        group_id,
+        task_id,
+        identity.session_id
+      ])
+    end
+  end
+
+  def claim_task(_group_id, _task_id), do: {:error, "bad_request", "group_id 和 task_id 必须是字符串"}
+
+  @doc "续期任务租约（秒），默认 300；必须先 claim_task/2。"
   def renew(group_id, task_id, session_id, seconds \\ 300) do
     with {:ok, identity} <- collaboration_identity(),
          :ok <- same_identity(identity.session_id, session_id) do
@@ -163,9 +181,7 @@ defmodule Newbee.Tools.Collaboration do
         Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token])
 
       _ ->
-        host_sid = Newbee.Tools.Collaboration.HostIdentity.session_id()
-        project_root = Newbee.Tools.Collaboration.HostIdentity.project_root()
-        {:ok, %{session_id: host_sid, project_root: project_root}}
+        {:error, "no_execution_context", "协作调用必须运行在 Agent.Loop 签发的 capability 上下文中"}
     end
   end
 

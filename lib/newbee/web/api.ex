@@ -688,10 +688,17 @@ defmodule Newbee.Web.Api do
       cond do
         busy_member ->
           title = Newbee.Session.custom_title(busy_member["session_id"]) || busy_member["session_id"]
-          {:error, "busy", "组内会话「#{title}（#{String.slice(busy_member["session_id"], -6, 6)}）」正在运行，无法删除整组。请先等待该会话空闲或点“停止”。"}
+
+          {:error, "busy",
+           "组内会话「#{title}（#{String.slice(busy_member["session_id"], -6, 6)}）」正在运行，无法删除整组。请先等待该会话空闲或点“停止”。"}
 
         active_tasks != [] ->
-          names = active_tasks |> Enum.map(fn t -> "#{t["title"] || t["task_id"]}（#{t["status"]}）" end) |> Enum.join("、") |> String.slice(0, 120)
+          names =
+            active_tasks
+            |> Enum.map(fn t -> "#{t["title"] || t["task_id"]}（#{t["status"]}）" end)
+            |> Enum.join("、")
+            |> String.slice(0, 120)
+
           {:error, "busy", "组内有进行中任务无法删除：#{names}。请先完成/取消这些任务，或等待子会话结束。"}
 
         true ->
@@ -814,9 +821,13 @@ defmodule Newbee.Web.Api do
             busy_member =
               Enum.find(busy_group["members"] || [], fn m -> Newbee.Web.Session.peek_busy(m["session_id"]) end)
 
-            busy_title = busy_member && (Newbee.Session.custom_title(busy_member["session_id"]) || String.slice(busy_member["session_id"], -6, 6))
+            busy_title =
+              busy_member &&
+                (Newbee.Session.custom_title(busy_member["session_id"]) ||
+                   String.slice(busy_member["session_id"], -6, 6))
 
-            {:error, "busy", "所属工作组「#{busy_group["title"] || busy_group["group_id"]}」内会话「#{busy_title}」正在运行，无法删除。请先等待其空闲。"}
+            {:error, "busy",
+             "所属工作组「#{busy_group["title"] || busy_group["group_id"]}」内会话「#{busy_title}」正在运行，无法删除。请先等待其空闲。"}
           else
             case remove_session_from_groups(sid, groups) do
               {:ok, notices} -> destroy_session(sid, notices)
@@ -1645,7 +1656,6 @@ defmodule Newbee.Web.Api do
         {:error, "delete_error", inspect(r)}
     end
   end
-
 
   defp rpc_command_id(params, prefix) do
     blank_to_nil(params["commandId"]) ||

@@ -129,6 +129,20 @@ defmodule Newbee.Daemon do
       other ->
         Logger.warning("adapter cycle: #{inspect(other)}")
     end
+
+    case Newbee.Agent.Adapter.maintain() do
+      %{deopts: deopts, canaries: canaries, promotions: promotions}
+      when deopts != [] or canaries != [] or promotions != [] ->
+        Logger.info(
+          "adapter maintenance: #{inspect(%{deopts: deopts, canaries: canaries, promotions: promotions}, limit: 12)}"
+        )
+
+      {:error, reason} ->
+        Logger.warning("adapter maintenance skipped: #{inspect(reason)}")
+
+      _ ->
+        :ok
+    end
   rescue
     error ->
       Logger.error("adapter cycle crashed: #{Exception.format(:error, error, __STACKTRACE__)}")

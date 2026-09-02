@@ -74,7 +74,12 @@ defmodule Newbee.Session do
 
   defp persist_index(entries) do
     File.mkdir_p!(root())
-    tmp = index() <> ".tmp-" <> Integer.to_string(System.unique_integer([:positive])) <> "-" <> Integer.to_string(:erlang.monotonic_time())
+
+    tmp =
+      index() <>
+        ".tmp-" <>
+        Integer.to_string(System.unique_integer([:positive])) <> "-" <> Integer.to_string(:erlang.monotonic_time())
+
     File.write!(tmp, Jason.encode_to_iodata!(entries))
     File.rename!(tmp, index())
     :ok
@@ -92,7 +97,11 @@ defmodule Newbee.Session do
     merged_ids = MapSet.new(merged, fn e -> e["id"] end)
 
     if MapSet.size(merged_ids) != MapSet.size(raw_ids) or not MapSet.subset?(raw_ids, merged_ids) do
-      Logger.warning("repair_index: healing " <> Integer.to_string(MapSet.size(raw_ids)) <> " -> " <> Integer.to_string(MapSet.size(merged_ids)) <> " entries")
+      Logger.warning(
+        "repair_index: healing " <>
+          Integer.to_string(MapSet.size(raw_ids)) <> " -> " <> Integer.to_string(MapSet.size(merged_ids)) <> " entries"
+      )
+
       persist_index(merged)
     end
 
@@ -410,7 +419,6 @@ defmodule Newbee.Session do
       :ok
   end
 
-
   @doc "重命名会话标题：把 title 元信息落到会话目录的 meta.json（list_with_meta 优先读取）。"
   def rename(id, title) when is_binary(id) and is_binary(title) do
     update_metadata(id, &Map.put(&1, "title", title))
@@ -521,14 +529,12 @@ defmodule Newbee.Session do
     _ -> []
   end
 
-
   @doc "有效会话总数（transcript 文件仍存在）。供列表分页计算 total/hasMore。"
   def count_valid do
     length(merged_index())
   rescue
     _ -> length(fs_scan_entries())
   end
-
 
   @doc "列出会话元信息（新→旧，默认最多 20 个）：id / when_str / mtime / messages / title。"
   def list_with_meta(n \\ 20, offset \\ 0) do
@@ -570,14 +576,12 @@ defmodule Newbee.Session do
     end)
   end
 
-
-
-
   defp touch_index(id) do
     now = System.system_time(:second)
     merged = merged_index()
     idx_map = Map.new(merged, fn e -> {e["id"], e} end)
     existing = Map.get(idx_map, id)
+
     created =
       if existing do
         existing["created"] || created_from_id(id) || existing["mtime"] || now
@@ -594,7 +598,6 @@ defmodule Newbee.Session do
       Logger.error("touch_index failed: " <> Exception.message(e))
       :ok
   end
-
 
   # 从会话 id 前缀解析创建时间（YYYYMMDD-HHMMSS-xxxx / YYYYMMDD-HHMMSSxxxx），失败返回 nil。
   # id 前缀是本地时间，需按本地 UTC 偏移换算成 unix 秒（与 System.system_time(:second) 同基准）。

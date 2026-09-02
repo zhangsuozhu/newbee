@@ -19,6 +19,8 @@ defmodule Newbee.Agent.Adapter do
   alias Newbee.Agent.Protocol
   alias Newbee.Environment.{Autonomy, Coordinator, Jit}
 
+  @tool_api_pattern ~r/(?:Newbee\.Tools\.)?([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*\.[a-z_][A-Za-z0-9_!?]*)(?:\/\d+)?/
+
   @doc """
   一轮进化循环：收集信号 → 合成提案 → 逐提案走 Change 生命周期。
   client_fun 可注入（测试用假客户端）。返回每个提案的处理结果。
@@ -282,6 +284,92 @@ defmodule Newbee.Agent.Adapter do
     end)
   end
 
+  @doc """
+  运行每轮进化后的维护检查：active release deopt + 成熟 canary 晋升。
+
+  维护与新信号合成解耦，因此 `run_once/1` 返回 `:no_signals` 时仍会执行。
+  """
+  def maintain(opts \\ []) do
+    coordinator = Keyword.get(opts, :coordinator, Coordinator)
+    canaries = promote_ready_canaries(coordinator, opts)
+    current = Coordinator.current(coordinator)
+
+    release_ids =
+      current.active
+      |> Map.values()
+      |> Enum.uniq()
+
+    %{
+      deopts: check_deopts(release_ids, coordinator),
+      canaries: canaries,
+      promotions: promote_need_clusters(Keyword.put(opts, :coordinator, coordinator))
+    }
+  catch
+    :exit, reason -> {:error, {:coordinator_down, reason}}
+  end
+
+  @doc """
+  在 autonomous 档位晋升已稳定驻留的 canary。
+
+  默认驻留窗口为 10 分钟。实际激活仍走 Coordinator 的完整合取门；
+  stale base 等拒绝会作为 `{:kept, change_id, reason}` 返回。
+  """
+  def promote_ready_canaries(coordinator \\ Coordinator, opts \\ []) do
+    min_age_ms = Keyword.get(opts, :canary_min_age_ms, :timer.minutes(10))
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+
+    case Coordinator.current(coordinator) do
+      %{autonomy: :autonomous} ->
+        coordinator
+        |> Coordinator.changes()
+        |> Enum.filter(&mature_canary?(&1, now, min_age_ms))
+        |> Enum.map(fn change ->
+          case Coordinator.activate(coordinator, change.change_id) do
+            :ok -> {:activated, change.change_id}
+            {:error, reason} -> {:kept, change.change_id, reason}
+          end
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  @doc """
+  将重复 need 按稳定 capability 键聚类，达到阈值后调度一次 L1→L2 晋升。
+
+  默认阈值为 3，每轮最多创建 1 个 Change。晋升严格走 Coordinator + Verifier；
+  observe/emergency_stop 档不创建候选。Change evidence 中的 message_id 是消费水位，
+  同一批 need 不会重复晋升。
+  """
+  def promote_need_clusters(opts \\ []) do
+    coordinator = Keyword.get(opts, :coordinator, Coordinator)
+    threshold = positive_integer(opts[:need_promotion_threshold], 3)
+    max_promotions = positive_integer(opts[:max_need_promotions], 1)
+    current = Coordinator.current(coordinator)
+
+    if current.autonomy in [:observe, :emergency_stop] do
+      []
+    else
+      needs = Keyword.get_lazy(opts, :needs, fn -> Protocol.messages(kind: :need) end)
+      consumed = consumed_need_ids(Coordinator.changes(coordinator))
+
+      needs
+      |> Enum.filter(&valid_need?/1)
+      |> Enum.uniq_by(& &1["message_id"])
+      |> Enum.group_by(&need_cluster_key/1)
+      |> Enum.reject(fn {key, _messages} -> is_nil(key) end)
+      |> Enum.map(fn {key, messages} ->
+        pending = Enum.reject(messages, &MapSet.member?(consumed, &1["message_id"]))
+        %{key: key, messages: messages, pending: pending}
+      end)
+      |> Enum.filter(&(length(&1.pending) >= threshold))
+      |> Enum.sort_by(fn cluster -> {-length(cluster.pending), cluster.key} end)
+      |> Enum.take(max_promotions)
+      |> Enum.map(&promote_need_cluster(&1, current.active, coordinator, threshold))
+    end
+  end
+
   # ContextQuality 质量 deopt 判据：release 注入上下文的实证质量。
   # Collector 未运行（无账本）时优雅 :keep——度量缺失不阻塞既有成本侧 deopt。
   @doc false
@@ -315,10 +403,175 @@ defmodule Newbee.Agent.Adapter do
     _ -> :keep
   end
 
+  defp mature_canary?(%{status: :canary, updated_at: updated_at}, now, min_age_ms)
+       when is_binary(updated_at) and is_integer(min_age_ms) and min_age_ms >= 0 do
+    with {:ok, entered_at, _offset} <- DateTime.from_iso8601(updated_at) do
+      DateTime.diff(now, entered_at, :millisecond) >= min_age_ms
+    else
+      _ -> false
+    end
+  end
+
+  defp mature_canary?(_change, _now, _min_age_ms), do: false
+
+  defp promote_need_cluster(cluster, active, coordinator, threshold) do
+    plugin_id = "rule.jit_need_" <> short_hash(cluster.key)
+    pattern = cluster_pattern(cluster)
+    injection = cluster_injection(cluster)
+
+    artifact =
+      Jit.promote_l1_to_l2(cluster.key, pattern, injection, plugin_id: plugin_id)
+
+    message_ids = cluster.pending |> Enum.map(& &1["message_id"]) |> Enum.sort()
+
+    evidence = %{
+      jit_promotion: "l1_to_l2",
+      cluster_key: cluster.key,
+      message_ids: message_ids,
+      pending_count: length(message_ids),
+      total_count: length(cluster.messages),
+      threshold: threshold
+    }
+
+    release_attrs = %{
+      plugin_id: artifact.plugin_id,
+      kind: artifact.kind,
+      parent_release: active[artifact.plugin_id],
+      source_files: %{
+        "#{slug(artifact.plugin_id)}.ex" =>
+          rule_source(cluster.key, artifact.spec.pattern, artifact.spec.injection, artifact.plugin_id)
+      },
+      usage: artifact.spec.injection
+    }
+
+    with {:ok, change} <-
+           Coordinator.propose_change(coordinator, %{
+             reason: artifact.reason,
+             evidence: [evidence],
+             request_id: "jit_need:" <> short_hash(Enum.join(message_ids, ",")),
+             author_agent: :adapter
+           }),
+         {:ok, release} <-
+           Coordinator.candidate_ready(coordinator, change.change_id, release_attrs) do
+      Protocol.candidate_ready(change.change_id, release.plugin_id, release.release_id, %{
+        "ring" => Autonomy.ring_of(release.kind),
+        "jit_promotion" => "l1_to_l2",
+        "cluster_key" => cluster.key
+      })
+
+      {:ok, change.change_id, release.plugin_id, length(message_ids)}
+    else
+      {:error, reason} -> {:error, cluster.key, reason}
+      other -> {:error, cluster.key, other}
+    end
+  end
+
+  defp consumed_need_ids(changes) do
+    changes
+    |> Enum.flat_map(fn change ->
+      (change.evidence || [])
+      |> Enum.filter(fn evidence ->
+        (evidence["jit_promotion"] || evidence[:jit_promotion]) == "l1_to_l2"
+      end)
+      |> Enum.flat_map(fn evidence -> evidence["message_ids"] || evidence[:message_ids] || [] end)
+    end)
+    |> MapSet.new()
+  end
+
+  defp valid_need?(%{"message_id" => id, "payload" => payload})
+       when is_binary(id) and is_map(payload) do
+    capability = payload["capability"]
+    is_binary(capability) and String.trim(capability) != ""
+  end
+
+  defp valid_need?(_message), do: false
+
+  defp need_cluster_key(%{"payload" => payload}) do
+    expected_api = canonical_api(payload["expected_api"])
+    capability = payload["capability"]
+
+    cond do
+      expected_api -> "api:" <> expected_api
+      api = capability_api(capability) -> "api:" <> api
+      true -> "text:" <> short_hash(normalize_capability(capability))
+    end
+  end
+
+  defp canonical_api(value) when is_binary(value) do
+    value = String.trim(value)
+
+    cond do
+      value == "" ->
+        nil
+
+      api = capability_api(value) ->
+        api
+
+      Regex.match?(~r/^[a-z_][a-z0-9_!?]*(?:\/\d+)?$/i, value) ->
+        value |> String.replace(~r/\/\d+$/, "") |> String.downcase()
+
+      true ->
+        nil
+    end
+  end
+
+  defp canonical_api(_value), do: nil
+
+  defp capability_api(value) when is_binary(value) do
+    case Regex.run(@tool_api_pattern, value, capture: :all_but_first) do
+      [api] -> String.downcase(api)
+      _ -> nil
+    end
+  end
+
+  defp capability_api(_value), do: nil
+
+  defp normalize_capability(value) do
+    value
+    |> String.downcase()
+    |> String.replace(~r/\s+/u, " ")
+    |> String.trim()
+  end
+
+  defp cluster_pattern(%{key: "api:" <> api}) do
+    escaped = Regex.escape(api)
+    prefix = if String.contains?(api, "."), do: "(?:Newbee\\.Tools\\.)?", else: ""
+    "(?i)" <> prefix <> escaped
+  end
+
+  defp cluster_pattern(%{messages: [message | _]}) do
+    "(?i)" <> Regex.escape(message["payload"]["capability"])
+  end
+
+  defp cluster_injection(cluster) do
+    requirements =
+      cluster.messages
+      |> Enum.map(&get_in(&1, ["payload", "capability"]))
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.take(12)
+      |> Enum.map_join("\n", &"- #{&1}")
+
+    ("Repeated needs for #{cluster.key} reached the JIT promotion threshold. " <>
+       "When this capability is relevant, account for these observed requirements:\n" <>
+       requirements)
+    |> String.slice(0, 4_000)
+  end
+
+  defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value, default), do: default
+
+  defp short_hash(value) do
+    :crypto.hash(:sha256, value)
+    |> Base.encode16(case: :lower)
+    |> String.slice(0, 12)
+  end
+
   # ── helpers ──
 
   # rule release 的源码：一个实现 contract 的规则模块（pattern/injection 即数据）
-  defp rule_source(id, pattern, injection) do
+  defp rule_source(id, pattern, injection, plugin_id \\ nil) do
+    plugin_id = plugin_id || "rule." <> slug(id)
     mod = Module.concat(["Newbee", "Plugins", "Rules", Macro.camelize(slug(id))])
 
     """
@@ -327,7 +580,7 @@ defmodule Newbee.Agent.Adapter do
       @behaviour Newbee.Environment.PluginContract
 
       @impl true
-      def id, do: "rule.#{slug(id)}"
+      def id, do: #{inspect(plugin_id)}
       @impl true
       def version, do: "1.0.0"
       @impl true
@@ -335,7 +588,7 @@ defmodule Newbee.Agent.Adapter do
       @impl true
       def dependencies, do: []
 
-      def pattern, do: ~r"#{pattern}"
+      def pattern, do: Regex.compile!(#{inspect(pattern)})
       def injection, do: #{inspect(injection)}
     end
     """

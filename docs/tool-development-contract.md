@@ -64,6 +64,8 @@ Newbee.Environment.ToolContract.template(Newbee.Plugins.MyTool, "tool.my_tool")
 - 不要为同一操作提供多个名称；默认参数足以表达的场景不加别名。
 - 返回结构变更时，同步 `@doc`、示例、Reader 测试和调用方。
 
+浏览器类工具应把隔离自动化和桌面控制分开：默认使用独立 profile 的 Playwright；操作现有窗口的 `screen` 后端必须显式选择，并在 `effects` 中声明进程、外部连接和文件写入。
+
 ## 5. 模型提示三层预算
 
 1. `Codec.tools/0` 常驻 function schema：≤1.5KB。
