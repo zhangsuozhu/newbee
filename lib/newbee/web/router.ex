@@ -24,6 +24,38 @@ defmodule Newbee.Web.Router do
     |> halt()
   end
 
+  post "/api/upload/:sid" do
+    conn = fetch_query_params(conn)
+    name = conn.query_params["name"] || "file"
+
+    content_type =
+      case get_req_header(conn, "content-type") do
+        [type | _] -> type
+        _ -> "application/octet-stream"
+      end
+
+    case read_upload_body(conn) do
+      {:ok, binary, conn} ->
+        case Newbee.Upload.store(URI.decode(sid), name, content_type, binary) do
+          {:ok, item} -> upload_reply(conn, 201, %{ok: item})
+          {:error, code, message} -> upload_reply(conn, 400, %{error: %{code: code, message: message}})
+        end
+
+      {:error, :too_large, conn} ->
+        upload_reply(conn, 413, %{error: %{code: "too_large", message: "文件超过 20 MiB 上限"}})
+
+      {:error, reason, conn} ->
+        upload_reply(conn, 400, %{error: %{code: "upload_failed", message: inspect(reason)}})
+    end
+  end
+
+  delete "/api/upload/:sid/:upload_id" do
+    case Newbee.Upload.delete(URI.decode(sid), URI.decode(upload_id)) do
+      :ok -> upload_reply(conn, 200, %{ok: %{deleted: upload_id}})
+      {:error, code, message} -> upload_reply(conn, 400, %{error: %{code: code, message: message}})
+    end
+  end
+
   forward("/api", to: Newbee.Web.Api)
   # ── 媒体上屏：模型上屏的多媒体文件（图片/音频/视频），以不透明 id 作为令牌 ──
   # 认证：受整体 require_auth（远程强制 Bearer）保护；浏览器 <img>/<video> 标签
@@ -224,6 +256,58 @@ defmodule Newbee.Web.Router do
   end
 
   defp time_ago(_), do: "刚刚"
+
+  defp read_upload_body(conn) do
+    case get_req_header(conn, "content-length") do
+      [value | _] ->
+        case Integer.parse(value) do
+          {size, ""} ->
+            if size > Newbee.Upload.max_bytes(),
+              do: {:error, :too_large, conn},
+              else: read_upload_body(conn, [], 0)
+
+          _ ->
+            read_upload_body(conn, [], 0)
+        end
+
+      _ ->
+        read_upload_body(conn, [], 0)
+    end
+  end
+
+  defp read_upload_body(conn, chunks, size) do
+    case Plug.Conn.read_body(conn, length: 1_048_576, read_length: 1_048_576) do
+      {:ok, data, conn} ->
+        finish_upload_body(conn, chunks, data, size)
+
+      {:more, data, conn} ->
+        next_size = size + byte_size(data)
+
+        if next_size > Newbee.Upload.max_bytes() do
+          {:error, :too_large, conn}
+        else
+          read_upload_body(conn, [data | chunks], next_size)
+        end
+
+      {:error, reason} ->
+        {:error, reason, conn}
+    end
+  end
+
+  defp finish_upload_body(conn, chunks, data, size) do
+    if size + byte_size(data) > Newbee.Upload.max_bytes() do
+      {:error, :too_large, conn}
+    else
+      {:ok, IO.iodata_to_binary(Enum.reverse([data | chunks])), conn}
+    end
+  end
+
+  defp upload_reply(conn, status, body) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(status, Jason.encode_to_iodata!(body))
+    |> halt()
+  end
 
   defp inside_root?(path, root) do
     path == root or String.starts_with?(path, root <> "/")

@@ -14,8 +14,9 @@ defmodule Newbee.Tools.Media do
 
   @doc "把文件上屏到当前会话。返回 {:ok, payload} | {:error, code, msg}。"
   def show(path, opts \\ []) when is_binary(path) do
-    sid = current_session_id()
-    Newbee.Media.show(sid, path, opts)
+    with {:ok, sid} <- current_session_id() do
+      Newbee.Media.show(sid, path, opts)
+    end
   end
 
   @doc "把文件上屏到指定会话。"
@@ -25,22 +26,38 @@ defmodule Newbee.Tools.Media do
 
   @doc "列出当前会话已上屏媒体。"
   def list do
-    sid = current_session_id()
-    Newbee.Media.list(sid)
+    with {:ok, sid} <- current_session_id() do
+      Newbee.Media.list(sid)
+    end
   end
 
   @doc "删除已上屏媒体。"
   def delete(media_id) when is_binary(media_id) do
-    sid = current_session_id()
-    Newbee.Media.delete(sid, media_id)
+    with {:ok, sid} <- current_session_id() do
+      Newbee.Media.delete(sid, media_id)
+    end
   end
 
-  # 当前会话 id 从主节点取（DEE 求值节点与主 VM 的 persistent_term 不共享；
-  # Host.call 在 on_main? 时本地调用，否则 RPC 到主节点）。
+  # 当前会话 id：模型 cell 携带的是主节点签发的短时 capability，而不是可伪造的
+  # session_id 字符串。回主节点校验令牌后解析真实会话；无效令牌失败关闭。
+  # 没有 capability 时保留 CLI/TUI 直跑路径，回退到主节点 current。
   defp current_session_id do
+    case Process.get({__MODULE__, :capability}) do
+      token when is_binary(token) ->
+        case Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token]) do
+          {:ok, %{session_id: sid}} when is_binary(sid) -> {:ok, sid}
+          _ -> {:error, "invalid_context", "媒体会话 capability 无效"}
+        end
+
+      _ ->
+        fallback_session_id()
+    end
+  end
+
+  defp fallback_session_id do
     case Newbee.Host.call(Newbee.Session, :current_id, []) do
-      id when is_binary(id) -> id
-      _ -> "unknown"
+      id when is_binary(id) -> {:ok, id}
+      _ -> {:error, "no_session", "当前没有可用会话"}
     end
   end
 end

@@ -876,6 +876,27 @@ defmodule Newbee.Web.Api do
     end
   end
 
+  defp dispatch_rpc("session.promptAttachments", %{
+         "sessionId" => sid,
+         "uploadIds" => upload_ids
+       } = payload) do
+    text = Map.get(payload, "text", "")
+
+    with {:ok, pid} <- find_session(sid),
+         {:ok, prepared} <- Newbee.Upload.prepare_prompt(sid, upload_ids, text) do
+      if prepared.images == [] do
+        Newbee.Web.Session.prompt(pid, prepared.text)
+      else
+        Newbee.Web.Session.prompt_images(pid, prepared.images, prepared.text)
+      end
+
+      {:ok, %{accepted: true, files: length(prepared.files)}}
+    end
+  end
+
+  defp dispatch_rpc("session.promptAttachments", _payload),
+    do: {:error, "bad_request", "需要 sessionId、uploadIds 和 text 字段"}
+
   defp dispatch_rpc("session.cancel", %{"sessionId" => sid}) do
     with {:ok, pid} <- find_session(sid) do
       Newbee.Web.Session.interrupt(pid)
