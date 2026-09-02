@@ -850,6 +850,28 @@ defmodule Newbee.Web.Session do
     {:noreply, fail_pending(st)}
   end
 
+  def handle_info({:kernel_restarted, {:ok, kernel}}, %{booting: true} = st) do
+    case Newbee.Agent.Loop.set_root(kernel, Newbee.Session.cwd(st.sid)) do
+      {:ok, _root} ->
+        if Process.alive?(kernel), do: Process.link(kernel)
+        boot_client = st.boot_client
+        st = %{st | kernel: kernel, booting: false, boot_client: nil}
+        if boot_client && st.client && st.client != boot_client do
+          try do Newbee.Agent.Loop.switch_model(kernel, st.client) catch _, _ -> :ok end
+        end
+        {:noreply, dispatch_pending(st)}
+      {:error, reason} ->
+        if Process.alive?(kernel), do: GenServer.stop(kernel, :normal, 5_000)
+        broadcast(st.sid, :error, %{message: "⚠ 会话工作目录对齐失败：" <> inspect(reason)})
+        {:noreply, st |> Map.put(:booting, false) |> Map.put(:boot_client, nil) |> fail_pending()}
+    end
+  end
+
+  def handle_info({:kernel_restarted, {:error, reason}}, st) do
+    broadcast(st.sid, :error, %{message: "⚠ 会话内核重启失败：" <> inspect(reason)})
+    {:noreply, %{st | booting: false, boot_client: nil} |> fail_pending()}
+  end
+
   def handle_info({:turn_finished, result}, st) do
     st = %{st | turns: st.turns + 1}
     save_stats(st)
@@ -945,18 +967,49 @@ defmodule Newbee.Web.Session do
   end
 
   defp restart_kernel(st) do
-    if st.kernel && Process.alive?(st.kernel), do: GenServer.stop(st.kernel)
+    # /new：异步重启，避免在 GenServer 回调里同步 GenServer.stop + start_kernel(1~3s)
+    # 阻塞 session.state 5s 轮询（日志里 exited in GenServer.call :state 5000）。
+    if st.kernel && Process.alive?(st.kernel) do
+      old = st.kernel
+      Task.start(fn -> try do GenServer.stop(old, :normal, 5_000) catch _, _ -> :ok end end)
+    end
 
-    kernel =
-      start_kernel(
-        st.sid <> "-w" <> Integer.to_string(:erlang.unique_integer([:positive])),
-        st.client,
-        self()
-      )
+    sid = st.sid
+    client = st.client
+    parent = self()
 
-    broadcast(st.sid, :notice, %{text: "已开启新会话"})
-    %{st | kernel: kernel}
+    # 清空当前会话 transcript / bindings，得到全新对话；保留 sid 不变，事件路由仍对齐
+    try do
+      sess = Newbee.Session.open(sid)
+      File.write!(sess.transcript, "")
+      art = Path.join([Newbee.GlobalStore.root(), "session-artifacts", sid])
+      for name <- ["bindings.json", "bindings.etf", "system-prompt.md"] do
+        File.rm(Path.join(art, name))
+      end
+    rescue
+      _ -> :ok
+    end
+
+    # 立即让前端清空视图，后台再起新 kernel（复用 boot 异步语义）
+    broadcast(sid, :session_cleared, %{text: "已开启新会话"})
+    broadcast(sid, :session_renewed, %{sessionId: sid, text: "已开启新会话"})
+
+    spawn(fn ->
+      result =
+        try do
+          {:ok, start_kernel(sid, client, parent)}
+        rescue
+          e -> {:error, Exception.message(e)}
+        catch
+          :exit, r -> {:error, "exit: " <> inspect(r)}
+        end
+
+      send(parent, {:kernel_restarted, result})
+    end)
+
+    %{st | kernel: nil, booting: true, busy: false, queue: :queue.new(), boot_client: client}
   end
+
 
   # kernel 为 nil = 会话初始化时配置无效。给出可操作提示，不启动必死的 Task。
   defp do_submit(%{kernel: nil} = st, _text) do

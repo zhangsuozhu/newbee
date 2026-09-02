@@ -1,5 +1,11 @@
 # AGENTS.md — 项目约定与工作流记忆
 
+## 编译纪律（强制）
+
+- 任何提交前：`mix compile --warnings-as-errors` 必须零错误零警告；`MIX_ENV=test mix compile --warnings-as-errors` 同样必须通过。
+- 依赖库（deps/）自身的警告不在此列，但**本项目 `lib/`、`test/` 代码不允许出现任何编译错误或警告**——不管是新引入的还是历史遗留，发现即修，不许带病提交。
+- 修改工具 API / 模块签名时同步契约测试，编译警告（如 unused、deprecated）一律当场清理。
+
 ## GitHub 协作工作流（本仓库）
 
 ### 仓库拓扑
