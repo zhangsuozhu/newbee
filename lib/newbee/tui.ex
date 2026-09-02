@@ -69,7 +69,9 @@ defmodule Newbee.TUI do
             ft_count: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
-            cached_tokens: 0
+            cached_tokens: 0,
+            cache_write_tokens: 0,
+            uncached_prompt_tokens: 0
 
   @scrollback 5_000
 
@@ -899,6 +901,9 @@ defmodule Newbee.TUI do
           ) || 0,
         else: cr0
 
+    cw = to_num(usage["cache_write_tokens"] || usage[:cache_write_tokens]) || 0
+    uncached = to_num(usage["uncached_prompt_tokens"] || usage[:uncached_prompt_tokens]) || max(pt - cr, 0)
+
     %{
       state
       | usage: merge_usage(state.usage, usage),
@@ -907,7 +912,9 @@ defmodule Newbee.TUI do
         steps: state.steps + 1,
         prompt_tokens: state.prompt_tokens + pt,
         completion_tokens: state.completion_tokens + ct,
-        cached_tokens: state.cached_tokens + cr
+        cached_tokens: state.cached_tokens + cr,
+        cache_write_tokens: state.cache_write_tokens + cw,
+        uncached_prompt_tokens: state.uncached_prompt_tokens + uncached
     }
   end
 
@@ -1608,7 +1615,7 @@ defmodule Newbee.TUI do
       if state.prompt_tokens > 0 do
         pct = state.cached_tokens * 100.0 / state.prompt_tokens
         formatted = :io_lib.format("~.2f", [pct]) |> IO.iodata_to_binary()
-        "缓存 #{formatted}%"
+        "缓存 " <> formatted <> "% · 写入 " <> human_tok(state.cache_write_tokens)
       end
 
     # —— 输入/输出 ——

@@ -10,7 +10,7 @@ defmodule Newbee.RequestEnvelope do
   """
 
   @file_name "last-routed-request.json"
-  @version 1
+  @version 2
 
   @doc """
   记录即将发出的标准路由请求。
@@ -29,14 +29,17 @@ defmodule Newbee.RequestEnvelope do
       when is_list(messages) and is_list(tools) do
     path = path_for(session)
 
+    route = Newbee.LLM.Client.cache_route(client)
+
     env = %{
       "version" => @version,
       "base_url" => client.base_url,
       "model" => client.model,
+      "route" => route,
       "tools" => tools,
       "messages" => messages,
       "message_count" => length(messages),
-      "sha256" => sha256(messages, tools),
+      "sha256" => sha256(messages, tools, route),
       "recorded_at" => iso_now()
     }
 
@@ -73,15 +76,15 @@ defmodule Newbee.RequestEnvelope do
   end
 
   @doc """
-  命中资格：快照存在且 route（base_url + model + tools）与当前 client 一致。
+  命中资格：快照存在且 route（base_url、model、API 模式、reasoning、cache key、缓存选项等）与当前 client 一致。
 
-  tools 一致性保证摘要请求与路由请求落在同一 provider 缓存条目：工具 schema
-  升级后旧快照的 tools 与当前请求不同，回放旧 tools 命不中新缓存域，故视为
-  失配走抽取路径（下一轮真实请求 record 新快照后恢复命中）。
+  tools 与请求属性都必须一致，避免把只共享消息前缀、但实际 provider 请求体不同的摘要请求误判为可复用。
+  旧版本快照没有完整 route 指纹，会在读取时失配并回到有界抽取路径。
   """
   def hit_eligible?(env, %Newbee.LLM.Client{} = client) when is_map(env) do
     env["base_url"] == client.base_url and
       env["model"] == client.model and
+      env["route"] == Newbee.LLM.Client.cache_route(client) and
       tools_current?(env["tools"])
   end
 
@@ -120,12 +123,12 @@ defmodule Newbee.RequestEnvelope do
 
   defp valid?(env) do
     is_binary(env["base_url"]) and is_binary(env["model"]) and
-      is_list(env["tools"]) and is_list(env["messages"]) and
-      is_integer(env["message_count"])
+      is_map(env["route"]) and is_list(env["tools"]) and is_list(env["messages"]) and
+      is_integer(env["message_count"]) and env["message_count"] == length(env["messages"])
   end
 
-  defp sha256(messages, tools) do
-    :crypto.hash(:sha256, Jason.encode_to_iodata!(%{"messages" => messages, "tools" => tools}))
+  defp sha256(messages, tools, route) do
+    :crypto.hash(:sha256, Jason.encode_to_iodata!(%{"messages" => messages, "tools" => tools, "route" => route}))
     |> Base.encode16(case: :lower)
   end
 

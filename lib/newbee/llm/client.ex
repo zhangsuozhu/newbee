@@ -27,6 +27,7 @@ defmodule Newbee.LLM.Client do
             responses_mode: :chat,
             responses_continuation: false,
             responses_checkpoint: nil,
+            prompt_cache_options: nil,
             req_options: []
 
   # ── cache_key 派生 ──
@@ -72,7 +73,23 @@ defmodule Newbee.LLM.Client do
       responses_mode: normalize_responses_mode(mode),
       responses_continuation: continuation,
       responses_checkpoint: Keyword.get(opts, :responses_checkpoint),
+      prompt_cache_options: normalize_prompt_cache_options(Keyword.get(opts, :prompt_cache_options)),
       req_options: Keyword.get(opts, :req_options, [])
+    }
+  end
+
+  @doc false
+  def cache_route(%__MODULE__{} = client) do
+    %{
+      "base_url" => client.base_url,
+      "model" => client.model,
+      "api" => client.api,
+      "responses_mode" => to_string(client.responses_mode),
+      "reasoning_effort" => client.reasoning_effort,
+      "vision" => client.vision,
+      "cache_key" => client.cache_key,
+      "responses_continuation" => client.responses_continuation,
+      "prompt_cache_options" => client.prompt_cache_options
     }
   end
 
@@ -138,6 +155,27 @@ defmodule Newbee.LLM.Client do
 
   def normalize_reasoning_effort("off"), do: "none"
   def normalize_reasoning_effort(effort), do: effort
+
+  defp normalize_prompt_cache_options(nil), do: nil
+
+  defp normalize_prompt_cache_options(options) when is_map(options) do
+    mode = Map.get(options, "mode") || Map.get(options, :mode)
+    ttl = Map.get(options, "ttl") || Map.get(options, :ttl)
+
+    if mode in ["explicit", :explicit] and valid_prompt_cache_ttl?(ttl) do
+      %{"mode" => "explicit", "ttl" => ttl}
+    else
+      nil
+    end
+  end
+
+  defp normalize_prompt_cache_options(_), do: nil
+
+  defp valid_prompt_cache_ttl?(ttl) when is_binary(ttl) do
+    Regex.match?(~r/^\d+(?:s|m|h|d)$/, ttl)
+  end
+
+  defp valid_prompt_cache_ttl?(_), do: false
 
   @doc "获取模型上下文窗口；显式配置优先，否则查询 provider 元数据，失败回退 256K。"
   def context_window(%__MODULE__{context_window: n}) when is_integer(n) and n > 0, do: n
@@ -495,6 +533,7 @@ defmodule Newbee.LLM.Client do
       when is_map(usage) do
     prompt = usage["prompt_tokens"] || usage[:prompt_tokens] || 0
     cache_read = usage["cache_read_tokens"] || usage[:cache_read_tokens] || 0
+    cache_write = usage["cache_write_tokens"] || usage[:cache_write_tokens] || 0
 
     hit_rate =
       if is_number(prompt) and prompt > 0 do
@@ -507,7 +546,7 @@ defmodule Newbee.LLM.Client do
     sys = if is_list(messages), do: Enum.count(messages, fn m -> (m["role"] || m[:role]) == "system" end), else: 0
     his = if cnt > 0, do: max(cnt - sys - 1, 0), else: 0
 
-    token_line = "prompt=#{prompt} prompt_read=#{cache_read} rate=#{hit_rate}"
+    token_line = "prompt=#{prompt} prompt_read=#{cache_read} prompt_write=#{cache_write} rate=#{hit_rate}"
 
     line =
       if cnt > 0 and sys >= 0 do
@@ -824,11 +863,16 @@ defmodule Newbee.LLM.Client do
   @doc false
   def normalize_usage(usage) when is_map(usage) do
     cache_read =
-      usage["cache_read_input_tokens"] || usage["cached_tokens"] ||
+      usage["cache_read_tokens"] || usage[:cache_read_tokens] ||
+        usage["cache_read_input_tokens"] || usage[:cache_read_input_tokens] ||
+        usage["cached_tokens"] || usage[:cached_tokens] ||
         get_in(usage, ["prompt_tokens_details", "cached_tokens"]) ||
-        usage["prompt_cache_hit_tokens"]
+        get_in(usage, [:prompt_tokens_details, :cached_tokens]) ||
+        usage["prompt_cache_hit_tokens"] || usage[:prompt_cache_hit_tokens]
 
-    cache_write = usage["cache_write_input_tokens"] || usage["cache_write_tokens"]
+    cache_write =
+      usage["cache_write_tokens"] || usage[:cache_write_tokens] ||
+        usage["cache_write_input_tokens"] || usage[:cache_write_input_tokens]
 
     usage =
       usage
@@ -837,7 +881,8 @@ defmodule Newbee.LLM.Client do
 
     case usage["prompt_tokens"] do
       prompt_tokens when is_number(prompt_tokens) ->
-        Map.put(usage, "uncached_prompt_tokens", max(prompt_tokens - (cache_read || 0), 0))
+        normalized_read = usage["cache_read_tokens"] || 0
+        Map.put(usage, "uncached_prompt_tokens", max(prompt_tokens - normalized_read, 0))
 
       _ ->
         usage

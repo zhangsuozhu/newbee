@@ -36,10 +36,12 @@ defmodule Newbee.LLM.Config do
 
     unless provider, do: raise("model.json: 未知 provider #{inspect(provider_name)}")
 
+    api = get_in(provider, ["modelApis", model]) || provider["api"] || "openai-completions"
+
     Newbee.LLM.Client.new(
       provider: provider_name,
       base_url: provider["baseUrl"],
-      api: get_in(provider, ["modelApis", model]) || provider["api"] || "openai-completions",
+      api: api,
       model: model,
       api_key: expand_env(provider["apiKey"]),
       reasoning_effort: role_cfg["reasoningEffort"],
@@ -49,9 +51,33 @@ defmodule Newbee.LLM.Config do
       vision: Map.get(role_cfg, "vision", Map.get(provider, "vision", true)),
       responses_continuation: Map.get(provider, "responsesContinuation", false),
       # 会话级缓存路由键：显式 opts > 角色配置 cacheKey；nil 时由 Loop 补齐。
-      cache_key: Keyword.get(opts, :cache_key) || role_cfg["cacheKey"]
+      cache_key: Keyword.get(opts, :cache_key) || role_cfg["cacheKey"],
+      # GPT-5.6 显式缓存是 opt-in；没有 promptCacheOptions 时不改变请求体。
+      prompt_cache_options: prompt_cache_options(provider, model, role_cfg)
     )
   end
+
+  # promptCacheOptions 支持 provider 级默认、按 model 覆盖和 role 级覆盖。
+  # 只有配置了该字段且 mode/ttl 通过 Client 校验后，Responses 才会发送它。
+  defp prompt_cache_options(provider, model, role_cfg) do
+    provider_options = provider["promptCacheOptions"]
+    role_options = role_cfg["promptCacheOptions"]
+
+    raw =
+      cond do
+        prompt_cache_options_map?(provider_options) -> provider_options
+        is_map(provider_options) -> Map.get(provider_options, model) || role_options
+        true -> role_options
+      end
+
+    if is_map(raw) and raw["enabled"] in [false, "false"], do: nil, else: raw
+  end
+
+  defp prompt_cache_options_map?(options) when is_map(options) do
+    Map.has_key?(options, "mode") or Map.has_key?(options, :mode)
+  end
+
+  defp prompt_cache_options_map?(_), do: false
 
   @doc "读取某 provider 下单模型的上下文窗口覆盖值；未设置返回 nil。"
   def context_window_override(provider_name, model)

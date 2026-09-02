@@ -9,21 +9,54 @@ defmodule Newbee.LLM.ResponsesContinuation do
 
   @version 1
 
-  def plan(nil, _envelope, _input), do: :full
-
-  def plan(path, envelope, input) when is_binary(path) and is_map(envelope) and is_list(input) do
-    with %{} = checkpoint <- load(path),
-         true <- checkpoint["envelope_sha256"] == sha256(envelope),
-         count when is_integer(count) and count >= 0 <- checkpoint["input_count"],
-         true <- length(input) > count,
-         {prefix, delta} <- Enum.split(input, count),
-         true <- checkpoint["input_sha256"] == sha256(prefix),
-         response_id when is_binary(response_id) and response_id != "" <- checkpoint["response_id"] do
-      {:continue, response_id, delta}
-    else
-      _ -> :full
+  @doc false
+  def plan(path, envelope, input) do
+    case plan_with_reason(path, envelope, input) do
+      {:continue, _response_id, _delta} = result -> result
+      {:full, _reason} -> :full
     end
   end
+
+  @doc false
+  def plan_with_reason(nil, _envelope, _input), do: {:full, :no_checkpoint_path}
+
+  def plan_with_reason(path, envelope, input)
+      when is_binary(path) and is_map(envelope) and is_list(input) do
+    case load(path) do
+      nil ->
+        {:full, :missing_or_invalid_checkpoint}
+
+      checkpoint ->
+        count = checkpoint["input_count"]
+
+        cond do
+          checkpoint["envelope_sha256"] != sha256(envelope) ->
+            {:full, :request_properties_changed}
+
+          not is_integer(count) or count < 0 ->
+            {:full, :invalid_input_count}
+
+          length(input) <= count ->
+            {:full, :input_is_not_a_strict_extension}
+
+          true ->
+            {prefix, delta} = Enum.split(input, count)
+
+            cond do
+              checkpoint["input_sha256"] != sha256(prefix) ->
+                {:full, :input_prefix_changed}
+
+              not (is_binary(checkpoint["response_id"]) and checkpoint["response_id"] != "") ->
+                {:full, :missing_response_id}
+
+              true ->
+                {:continue, checkpoint["response_id"], delta}
+            end
+        end
+    end
+  end
+
+  def plan_with_reason(_path, _envelope, _input), do: {:full, :invalid_arguments}
 
   def commit(nil, _envelope, _input, _response_id), do: :ok
 

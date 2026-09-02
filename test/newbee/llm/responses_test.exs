@@ -33,7 +33,7 @@ defmodule Newbee.LLM.ResponsesTest do
           "input_tokens" => 20,
           "output_tokens" => 5,
           "total_tokens" => 25,
-          "input_tokens_details" => %{"cached_tokens" => 8}
+          "input_tokens_details" => %{"cached_tokens" => 8, "cache_write_tokens" => 3}
         }
       })
     end
@@ -57,7 +57,7 @@ defmodule Newbee.LLM.ResponsesTest do
     assert_received {:request, "/responses", body}
     assert_received {:text, "working"}
     assert body["input"] == [%{"role" => "user", "content" => "hi"}]
-    assert body["reasoning"] == %{"effort" => "high"}
+    assert body["reasoning"] == %{"effort" => "max"}
     assert body["prompt_cache_key"] == "newbee-responses-session"
     assert [%{"type" => "function", "name" => "run_elixir"} | _] = body["tools"]
     assert message["content"] == "working"
@@ -72,6 +72,31 @@ defmodule Newbee.LLM.ResponsesTest do
 
     assert usage["prompt_tokens"] == 20
     assert usage["cache_read_tokens"] == 8
+    assert usage["cache_write_tokens"] == 3
+  end
+
+  test "explicit prompt cache options are sent only when configured" do
+    test_pid = self()
+
+    plug = fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:cache_request, Jason.decode!(body)})
+      Req.Test.json(conn, %{"output" => [], "usage" => %{}})
+    end
+
+    client =
+      Client.new(
+        api: "openai-responses",
+        model: "gpt-5.6-sol",
+        api_key: "test",
+        base_url: "http://localhost",
+        prompt_cache_options: %{"mode" => "explicit", "ttl" => "30m"},
+        req_options: [plug: plug, retry: false]
+      )
+
+    assert {:ok, _message, _usage} = Client.stream_chat(client, [user("hi")])
+    assert_received {:cache_request, body}
+    assert body["prompt_cache_options"] == %{"mode" => "explicit", "ttl" => "30m"}
   end
 
   test "legacy off effort is sent as none" do
@@ -539,6 +564,7 @@ defmodule Newbee.LLM.ResponsesTest do
       "usage" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
     }
   end
+
   test "capability downgrade persists to disk and survives process restart (NEWBEE_HOME)" do
     # 隔离持久化文件到临时 HOME，避免污染真实 ~/.newbee，也不污染 async 兄弟测试
     tmp_home = Path.join(System.tmp_dir!(), "newbee-home-#{System.unique_integer([:positive])}")
@@ -570,5 +596,4 @@ defmodule Newbee.LLM.ResponsesTest do
     other = {"http://localhost", "test/other-#{System.unique_integer([:positive])}"}
     assert Newbee.LLM.ResponsesCapabilities.load(other) == %{}
   end
-
 end
