@@ -2,7 +2,7 @@ defmodule Newbee.Tools.Browser do
   @behaviour Newbee.Environment.PluginContract
 
   @moduledoc """
-  浏览器自动化工具：隔离 Playwright 浏览器 + 明确选择的 X11 可见窗口后端。
+  浏览器自动化：隔离 Playwright + 可选 X11 可见窗口。
 
   默认后端是隔离浏览器；只有用户明确传 `backend: \"screen\"` 时才会聚焦和操作现有桌面窗口。
   动作在一次有序计划中执行，避免每个点击都重新启动浏览器。输出文件限制在工程目录、`~/.newbee` 或 `/tmp`。

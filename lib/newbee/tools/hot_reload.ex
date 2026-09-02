@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.HotReload do
   @moduledoc """
-  Elixir/BEAM 模块热替换工具；从完整源码或文件加载，不接收 diff/模块名+片段。
+  BEAM 模块热替换：从完整源码或文件加载。
   默认作用当前节点；传 `target: :main` 经 RPC 作用 newbee 主节点。
 
   ## 函数清单

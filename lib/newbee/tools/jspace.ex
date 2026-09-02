@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.JSpace do
   @moduledoc """
-  长任务台账工具：把 goal/core/verified/open/next 持久化，跨压缩与会话恢复。
+  长任务台账：goal/core/verified/next 持久化，跨压缩恢复。
   复杂多步任务使用；简单任务不要创建 ledger。
 
   ## 函数清单

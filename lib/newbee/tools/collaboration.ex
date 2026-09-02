@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Collaboration do
   @moduledoc """
-  会话群协作：把大任务拆给子代理并行干，自己保留主线。
+  会话群协作(legacy)：拆任务并行。优先用 Hive。
 
   ## 何时 delegate
 
@@ -28,12 +28,12 @@ defmodule Newbee.Tools.Collaboration do
 
   ## 函数清单
 
-  - `delegate(title, opts \\ [])` — 派生子代理；opts: `name:/role:/description:/acceptance:/isolate:`
+  - `delegate(title, opts \\\\ [])` — 派生子代理；opts: `name:/role:/description:/acceptance:/isolate:`
   - `claim_task(group_id, task_id)` — 以当前会话身份领取任务并取得 lease
-  - `report(group_id, task_id, session_id, status, opts \\ [])` — 子代理调用
-  - `renew(group_id, task_id, session_id, seconds \\ 300)` — 子代理续期
+  - `report(group_id, task_id, session_id, status, opts \\\\ [])` — 子代理调用
+  - `renew(group_id, task_id, session_id, seconds \\\\ 300)` — 子代理续期
   - `tasks(group_id)` — 列出组内任务
-  - `send_message(group_id, session_id, body, opts \\ [])` — 发消息；opts: `to:/kind:/delivery:`
+  - `send_message(group_id, session_id, body, opts \\\\ [])` — 发消息；opts: `to:/kind:/delivery:`
 
 
   ## 安全约束
