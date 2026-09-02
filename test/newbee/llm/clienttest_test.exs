@@ -28,6 +28,26 @@ defmodule Newbee.LLM.ClientTest do
     assert u["cache_read_tokens"] == 40
   end
 
+  test "cache route includes all request-shaping fields" do
+    base = Client.new(model: "m", api_key: "t", base_url: "http://localhost", cache_key: "k")
+    changed = %{base | reasoning_effort: "high"}
+
+    refute Client.cache_route(base) == Client.cache_route(changed)
+    assert Client.cache_route(base)["cache_key"] == "k"
+  end
+
+  test "cache write and uncached prompt tokens normalize without negative values" do
+    usage =
+      Client.normalize_usage(%{
+        "prompt_tokens" => 100,
+        "cache_read_tokens" => 140,
+        "cache_write_tokens" => 12
+      })
+
+    assert usage["cache_write_tokens"] == 12
+    assert usage["uncached_prompt_tokens"] == 0
+  end
+
   test "结果 usage 解包兼容流式裸 usage 与 complete 包装层" do
     raw = %{"prompt_tokens" => 100, "cache_read_tokens" => 80}
 
@@ -42,14 +62,14 @@ defmodule Newbee.LLM.ClientTest do
 
     assert Client.cache_hit_line(client, usage, "stream_chat") ==
              "cache-hit provider=sample-provider model=sample-model-1 task=stream_chat " <>
-               "prompt=4392 prompt_read=3840 rate=87.4%"
+               "prompt=4392 prompt_read=3840 prompt_write=0 rate=87.4%"
   end
 
   test "cache-hit 无 usage 时命中率显示 n/a" do
     client = Client.new(provider: "opencode", model: "ox-alpha-free", api_key: "test")
 
     assert Client.cache_hit_line(client, %{}, "complete") =~
-             "provider=opencode model=ox-alpha-free task=complete prompt=0 prompt_read=0 rate=n/a"
+             "provider=opencode model=ox-alpha-free task=complete prompt=0 prompt_read=0 prompt_write=0 rate=n/a"
   end
 
   test "stream_chat 返回的 tool_calls 按 index 聚合" do

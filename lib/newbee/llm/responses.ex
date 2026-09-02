@@ -107,11 +107,17 @@ defmodule Newbee.LLM.Responses do
     full_body = full_body(client, logical_input, wire_tools, opts, caps)
     envelope = Map.delete(full_body, :input)
 
-    plan =
+    {plan, plan_reason} =
       if client.responses_continuation and caps.continuation and not state.force_full do
-        Continuation.plan(client.responses_checkpoint, envelope, logical_input)
+        case Continuation.plan_with_reason(client.responses_checkpoint, envelope, logical_input) do
+          {:continue, _response_id, _delta} = continuation_plan ->
+            {continuation_plan, :continue}
+
+          {:full, reason} ->
+            {:full, reason}
+        end
       else
-        :full
+        {:full, :disabled}
       end
 
     {request_body, continued?} =
@@ -122,7 +128,11 @@ defmodule Newbee.LLM.Responses do
           {full_body |> Map.put(:input, delta) |> Map.put(:previous_response_id, response_id), true}
 
         :full ->
-          Newbee.DebugLog.log(:llm, "responses full input_items=#{length(logical_input)}")
+          Newbee.DebugLog.log(
+            :llm,
+            "responses full input_items=#{length(logical_input)} continuation=#{plan_reason}"
+          )
+
           {full_body, false}
       end
 
@@ -167,6 +177,7 @@ defmodule Newbee.LLM.Responses do
     |> maybe_put(:temperature, Keyword.get(opts, :temperature))
     |> maybe_put(:reasoning, reasoning(client.reasoning_effort))
     |> maybe_put(:prompt_cache_key, client.cache_key)
+    |> maybe_put(:prompt_cache_options, client.prompt_cache_options)
     |> maybe_put(:store, if(client.responses_continuation and caps.continuation, do: true))
     |> maybe_put(:include, if(caps.encrypted_reasoning, do: ["reasoning.encrypted_content"]))
     |> Map.merge(Keyword.get(opts, :extra, %{}))
@@ -805,6 +816,7 @@ defmodule Newbee.LLM.Responses do
       |> :persistent_term.get(%{})
       |> Map.get(scope, %{})
       |> Map.merge(load_persisted(scope))
+
     configured_stream = Map.get(client, :responses_stream, :auto)
 
     stream =
@@ -865,10 +877,10 @@ defmodule Newbee.LLM.Responses do
       caps.continuation and
           (String.contains?(text, "previous_response_id requires") or
              String.contains?(text, "api-key account") or
-             String.contains?(text, "previous_response_id") and
-               (String.contains?(text, "requires") or String.contains?(text, "not supported") or
-                  String.contains?(text, "unsupported") or String.contains?(text, "billing") or
-                  String.contains?(text, "quota"))) ->
+             (String.contains?(text, "previous_response_id") and
+                (String.contains?(text, "requires") or String.contains?(text, "not supported") or
+                   String.contains?(text, "unsupported") or String.contains?(text, "billing") or
+                   String.contains?(text, "quota")))) ->
         {:continuation, false}
 
       caps.stream and
@@ -901,7 +913,9 @@ defmodule Newbee.LLM.Responses do
 
   defp previous_response_not_found?(body) when is_binary(body) do
     case Jason.decode(body) do
-      {:ok, decoded} -> previous_response_not_found?(decoded)
+      {:ok, decoded} ->
+        previous_response_not_found?(decoded)
+
       _ ->
         String.contains?(String.downcase(body), "previous_response_not_found") or
           String.contains?(String.downcase(body), "referenced response not found")
@@ -922,11 +936,14 @@ defmodule Newbee.LLM.Responses do
   defp previous_response_not_found?(_), do: false
 
   defp usage(usage) do
+    details = usage["input_tokens_details"] || %{}
+
     Newbee.LLM.Client.normalize_usage(%{
       "prompt_tokens" => usage["input_tokens"] || 0,
       "completion_tokens" => usage["output_tokens"] || 0,
       "total_tokens" => usage["total_tokens"] || 0,
-      "cache_read_tokens" => get_in(usage, ["input_tokens_details", "cached_tokens"]) || 0
+      "cache_read_tokens" => details["cached_tokens"] || 0,
+      "cache_write_tokens" => details["cache_write_tokens"] || 0
     })
   end
 

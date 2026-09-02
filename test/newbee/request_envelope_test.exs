@@ -30,10 +30,12 @@ defmodule Newbee.RequestEnvelopeTest do
     assert :ok = RequestEnvelope.record(s, client(), msgs(), tools())
     env = RequestEnvelope.load(s)
 
-    assert env["version"] == 1
+    assert env["version"] == 2
     assert env["base_url"] == "http://localhost"
     assert env["model"] == "test/model"
     assert length(env["tools"]) == length(tools())
+    assert is_map(env["route"])
+
     assert RequestEnvelope.hit_eligible?(env, client())
     assert env["messages"] == msgs()
     assert env["message_count"] == 2
@@ -70,6 +72,17 @@ defmodule Newbee.RequestEnvelopeTest do
     # tools 失配（工具 schema 升级）：回放旧 tools 命不中新缓存域 → 失配
     stale_env = %{env | "tools" => [%{"type" => "function", "function" => %{"name" => "run_elixir"}}]}
     refute RequestEnvelope.hit_eligible?(stale_env, client())
+  end
+
+  test "hit_eligible? rejects request-shaping route changes", %{session: s} do
+    base = client(cache_key: "session-a")
+    :ok = RequestEnvelope.record(s, base, msgs(), tools())
+    env = RequestEnvelope.load(s)
+
+    assert RequestEnvelope.hit_eligible?(env, base)
+    refute RequestEnvelope.hit_eligible?(env, client(cache_key: "session-b"))
+    refute RequestEnvelope.hit_eligible?(env, client(reasoning_effort: "high"))
+    refute RequestEnvelope.hit_eligible?(env, client(prompt_cache_options: %{"mode" => "explicit", "ttl" => "30m"}))
   end
 
   test "record no-op：非 LLM client 或不落文件", %{session: s} do
