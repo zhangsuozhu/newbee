@@ -1,3 +1,4 @@
+<<<data origin="file:/home/alanx/data/git/newbee/bin/appimage/build.sh" hash="609ca3ba16360e98" trust="untrusted" bytes="7833">>
 #!/usr/bin/env bash
 # newbee AppImage 构建工具
 # 用法:
@@ -155,6 +156,11 @@ rm -rf "$BUILD_DIR/AppDir/usr/lib/newbee/.git" \
        "$BUILD_DIR/AppDir/usr/lib/newbee/erl_crash.dump" \
        "$BUILD_DIR/AppDir/usr/lib/newbee/nohup.out"
 
+echo "==> [4.5/6] 修补 deps 警告（Elixir 1.20+ pin 警告）..."
+if [ -f "$BUILD_DIR/AppDir/usr/lib/newbee/bin/patch-deps.sh" ]; then
+  bash "$BUILD_DIR/AppDir/usr/lib/newbee/bin/patch-deps.sh" 2>&1 | sed 's/^/     /' || true
+fi
+
 echo "==> [5/6] 写 AppRun / desktop / icon..."
 cp "$TEMPLATE_DIR/AppRun" "$BUILD_DIR/AppDir/AppRun"
 chmod +x "$BUILD_DIR/AppDir/AppRun"
@@ -179,3 +185,5 @@ echo ""
 echo "✅ 完成: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"
 echo "   版本: newbee v$NEWBEE_VERSION | OTP $OTP_VERSION | Elixir $ELIXIR_VERSION"
 echo "   用法: $OUTPUT  （首次运行自动初始化，之后秒启）"
+
+<<<end 609ca3ba16360e98>>>

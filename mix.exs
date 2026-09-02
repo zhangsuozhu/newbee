@@ -8,7 +8,8 @@ defmodule Newbee.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
-      deps: deps()
+      deps: deps(),
+      aliases: aliases()
     ]
   end
 
@@ -30,6 +31,13 @@ defmodule Newbee.MixProject do
       {:bandit, "~> 1.5"},
       {:websock_adapter, "~> 0.5"},
       {:wax_, "~> 0.7"}
+    ]
+  end
+
+  defp aliases do
+    [
+      "deps.patch": ["cmd bash bin/patch-deps.sh"],
+      setup: ["deps.get", "deps.patch", "compile"]
     ]
   end
 end

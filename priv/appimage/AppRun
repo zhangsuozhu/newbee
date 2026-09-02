@@ -29,10 +29,16 @@ if [ ! -f "$USER_ROOT/mix.exs" ]; then
   mkdir -p "$USER_ROOT"
   cp -a "$NEWBEE_SRC/." "$USER_ROOT/" 2>/dev/null || true
   chmod -R u+w "$USER_ROOT" 2>/dev/null || true
+  if [ -f "$USER_ROOT/bin/patch-deps.sh" ]; then
+    (cd "$USER_ROOT" && bash bin/patch-deps.sh 2>&1 | sed 's/^/[newbee] patch-deps: /') || true
+  fi
   (cd "$USER_ROOT" && MIX_ENV=dev mix deps.compile 2>&1 && mix compile 2>&1) || true
   echo "[newbee] Initialized. Launching..."
 elif [ ! -d "$USER_ROOT/_build/dev" ]; then
   echo "[newbee] Workspace found; running one-time compile..."
+  if [ -f "$USER_ROOT/bin/patch-deps.sh" ]; then
+    (cd "$USER_ROOT" && bash bin/patch-deps.sh 2>&1 | sed 's/^/[newbee] patch-deps: /') || true
+  fi
   (cd "$USER_ROOT" && MIX_ENV=dev mix deps.compile 2>&1 && mix compile 2>&1) || true
 fi
 
