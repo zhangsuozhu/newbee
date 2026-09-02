@@ -208,4 +208,109 @@ defmodule Newbee.LLM.ConfigTest do
       assert p.contextWindow == 200_000
     end
   end
+
+  describe "upsert_provider / delete_provider" do
+    setup do
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "newbee-configtest-1788344020549056864_21314/model.json"
+        )
+
+      File.mkdir_p!(Path.dirname(tmp))
+
+      File.write!(
+        tmp,
+        Jason.encode!(%{
+          "providers" => %{
+            "openrouter" => %{
+              "baseUrl" => "https://openrouter.ai/api/v1",
+              "apiKey" => "real-secret-key",
+              "models" => ["m1"]
+            }
+          },
+          "roles" => %{"default" => %{"provider" => "openrouter", "model" => "m1"}}
+        })
+      )
+
+      System.put_env("NEWBEE_MODEL_JSON", tmp)
+
+      on_exit(fn ->
+        System.delete_env("NEWBEE_MODEL_JSON")
+        File.rm_rf!(Path.dirname(tmp))
+      end)
+
+      :ok
+    end
+
+    test "新增 provider 并绑定 default 角色" do
+      assert :ok =
+               Newbee.LLM.Config.upsert_provider("zhipu", %{
+                 "baseUrl" => "https://open.bigmodel.cn/api/paas/v4",
+                 "api" => "openai-completions",
+                 "apiKey" => "zk",
+                 "models" => ["glm-5.3-flash"],
+                 "roles" => %{"default" => "glm-5.3-flash"}
+               })
+
+      cfg = Newbee.LLM.Config.load()
+      assert cfg["providers"]["zhipu"]["baseUrl"] == "https://open.bigmodel.cn/api/paas/v4"
+      assert cfg["providers"]["zhipu"]["models"] == ["glm-5.3-flash"]
+      assert cfg["roles"]["default"] == %{"provider" => "zhipu", "model" => "glm-5.3-flash"}
+    end
+
+    test "更新时 apiKey 传 nil 保留原值" do
+      assert :ok =
+               Newbee.LLM.Config.upsert_provider("openrouter", %{
+                 "baseUrl" => "https://openrouter.ai/api/v1",
+                 "apiKey" => nil,
+                 "models" => ["m1", "m2"]
+               })
+
+      cfg = Newbee.LLM.Config.load()
+      assert cfg["providers"]["openrouter"]["apiKey"] == "real-secret-key"
+      assert cfg["providers"]["openrouter"]["models"] == ["m1", "m2"]
+    end
+
+    test "重命名 provider 时角色跟随" do
+      assert :ok =
+               Newbee.LLM.Config.upsert_provider("openrouter", %{
+                 "newName" => "or",
+                 "baseUrl" => "https://openrouter.ai/api/v1",
+                 "apiKey" => nil,
+                 "models" => ["m1"]
+               })
+
+      cfg = Newbee.LLM.Config.load()
+      refute Map.has_key?(cfg["providers"], "openrouter")
+      assert Map.has_key?(cfg["providers"], "or")
+      assert cfg["roles"]["default"]["provider"] == "or"
+    end
+
+    test "重命名到已存在的键被拒绝" do
+      Newbee.LLM.Config.upsert_provider("x", %{"baseUrl" => "u", "apiKey" => "k", "models" => []})
+
+      assert {:error, {:provider_exists, "x"}} =
+               Newbee.LLM.Config.upsert_provider("openrouter", %{"newName" => "x", "baseUrl" => "u", "apiKey" => nil, "models" => []})
+    end
+
+    test "缺少必填字段拒绝" do
+      assert {:error, :bad_base_url} = Newbee.LLM.Config.upsert_provider("p", %{"baseUrl" => "", "apiKey" => "k"})
+      assert {:error, :bad_api_key} = Newbee.LLM.Config.upsert_provider("newp", %{"baseUrl" => "u", "apiKey" => ""})
+    end
+
+    test "delete_provider 解绑角色并回退 default" do
+      Newbee.LLM.Config.upsert_provider("zhipu", %{"baseUrl" => "u2", "apiKey" => "k", "models" => ["g1"]})
+      assert :ok = Newbee.LLM.Config.delete_provider("openrouter")
+      cfg = Newbee.LLM.Config.load()
+      refute Map.has_key?(cfg["providers"], "openrouter")
+      assert cfg["roles"]["default"]["provider"] == "zhipu"
+      assert cfg["roles"]["default"]["model"] == "g1"
+    end
+
+    test "delete 未知 provider 报错" do
+      assert {:error, {:unknown_provider, "nosuch"}} = Newbee.LLM.Config.delete_provider("nosuch")
+    end
+  end
 end
+

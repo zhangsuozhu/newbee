@@ -17,7 +17,6 @@
     </div>
     <div class="session-actions">
       <button id="new-session" class="btn-primary" style="border-radius:12px">+ 新会话</button>
-      <button id="new-session-dir" class="btn-ghost" style="border-radius:12px" title="修改当前会话工作目录"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><path d="M3 8l2.4 9.1A2 2 0 0 0 7.3 19h12.2a1 1 0 0 0 1-1.3L18 11H5L3 8z"/></svg> 选目录</button>
     </div>
     <div class="session-search">
       <input id="session-search" type="search" placeholder="搜索会话…" />
@@ -33,6 +32,10 @@
     <div class="sidebar-foot">
       <div id="cwd-label" class="cwd-label" title="当前会话工作目录"></div>
       <div id="model-label" class="model-label" title="点击切换模型"></div>
+      <button id="model-config-btn" class="model-config-btn" title="模型配置（厂家 / 模型 / 参数）">
+        <svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+
       <button id="logout-btn" class="logout-btn hidden" title="退出登录">
         <svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         <span>退出登录</span>
@@ -299,6 +302,118 @@
     </div>
   </div>
 </div>
+
+<div id="mcfg-modal" class="modal hidden">
+  <div class="modal-box mcfg-box">
+    <div class="modal-title mcfg-title">
+      <span>模型配置</span>
+      <span class="mcfg-path mono" id="mcfg-path"></span>
+      <button class="icon-btn mcfg-close" id="mcfg-close" title="关闭">✕</button>
+    </div>
+
+    <div class="mcfg-layout">
+      <!-- 左：厂家列表 -->
+      <div class="mcfg-plist">
+        <div class="mcfg-plist-head">
+          <span>厂家</span>
+          <button class="btn-ghost mcfg-add-btn" id="mcfg-add" title="新增厂家">＋</button>
+        </div>
+        <div id="mcfg-providers" class="mcfg-providers"></div>
+      </div>
+
+      <!-- 右：编辑表单 -->
+      <div class="mcfg-editor" id="mcfg-editor">
+        <div class="mcfg-empty" id="mcfg-empty">← 选择左侧厂家，或点「＋」新增</div>
+        <div class="mcfg-form" id="mcfg-form" style="display:none">
+
+          <div class="mcfg-row">
+            <div class="mcfg-field">
+              <label>厂家名称 <i>*</i></label>
+              <input type="text" id="mcfg-name" spellcheck="false" placeholder="openrouter" />
+            </div>
+            <div class="mcfg-field">
+              <label>API 协议</label>
+              <select id="mcfg-api">
+                <option value="openai-completions">openai-completions</option>
+                <option value="responses">responses</option>
+                <option value="anthropic">anthropic</option>
+                <option value="gemini">gemini</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="mcfg-field">
+            <label>Base URL <i>*</i></label>
+            <input type="text" id="mcfg-baseurl" spellcheck="false" placeholder="https://api.example.com/v1" />
+          </div>
+
+          <div class="mcfg-field">
+            <label>API Key <i>*</i></label>
+            <div class="mcfg-keyrow">
+              <input type="password" id="mcfg-apikey" spellcheck="false" autocomplete="off" placeholder="sk-... 或 ${ENV_VAR}" />
+              <button class="icon-btn" id="mcfg-eye" title="显示/隐藏">👁</button>
+            </div>
+            <div class="mcfg-hint">支持 <code>${ENV_VAR}</code> 环境变量引用，密钥不落盘</div>
+          </div>
+
+          <div class="mcfg-field">
+            <label>可用模型 <span class="mcfg-count" id="mcfg-mcount"></span></label>
+            <div class="mcfg-tags" id="mcfg-mtags"></div>
+            <div class="mcfg-madd">
+              <input type="text" id="mcfg-minput" spellcheck="false" placeholder="输入模型 ID，回车添加" />
+              <button class="btn-ghost" id="mcfg-madd">添加</button>
+              <button class="btn-ghost" id="mcfg-mfetch" title="从 baseUrl 的 /models 拉取">拉取</button>
+            </div>
+          </div>
+
+          <!-- 高级配置：默认折叠 -->
+          <button class="mcfg-adv-toggle" id="mcfg-adv-toggle">
+            <span class="mcfg-chev">▶</span> 高级配置
+          </button>
+          <div class="mcfg-adv" id="mcfg-adv" style="display:none">
+            <div class="mcfg-row">
+              <div class="mcfg-field">
+                <label>默认上下文窗口</label>
+                <input type="number" id="mcfg-ctxw" min="0" placeholder="128000" />
+              </div>
+              <div class="mcfg-field">
+                <label>Responses 续写</label>
+                <label class="mcfg-check"><input type="checkbox" id="mcfg-respcont" /> 启用</label>
+              </div>
+            </div>
+
+            <div class="mcfg-field">
+              <label>单模型上下文窗口覆盖</label>
+              <div id="mcfg-ctxrows"></div>
+              <button class="btn-ghost mcfg-mini" id="mcfg-ctxadd">＋ 添加覆盖</button>
+            </div>
+
+            <div class="mcfg-field">
+              <label>角色绑定</label>
+              <div class="mcfg-roles" id="mcfg-roles"></div>
+              <div class="mcfg-hint">勾选后该角色使用当前厂家的所选模型；default 为聊天默认</div>
+            </div>
+
+            <div class="mcfg-field">
+              <label>额外字段（原样写入 JSON）</label>
+              <div id="mcfg-exrows"></div>
+              <button class="btn-ghost mcfg-mini" id="mcfg-exadd">＋ 添加字段</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-actions mcfg-foot">
+      <span class="mcfg-state" id="mcfg-state"></span>
+      <button class="btn-ghost" id="mcfg-delete">删除厂家</button>
+      <button class="btn-ghost" id="mcfg-cancel">取消</button>
+      <button class="btn-allow" id="mcfg-save">保存</button>
+    </div>
+  </div>
+</div>
+
 
 
 <div id="confirm-modal" class="modal hidden">

@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>newbee · 模型配置</title>
+<style>
+:root {
+  --nb-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --nb-mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, Menlo, 'PingFang SC', monospace;
+  --nb-bg: #0f1115;
+  --nb-panel: #161a21;
+  --nb-elev: #1d232d;
+  --nb-border: #2a313c;
+  --nb-label-1: #e8ecf1;
+  --nb-label-2: #b6bdc9;
+  --nb-label-3: #7d8590;
+  --nb-caption: #656d76;
+  --nb-accent: #6c8cff;
+  --nb-green: #3fb950;
+  --nb-red: #f85149;
+  --nb-warn: #e5a13d;
+  --nb-radius: 8px;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--nb-bg); color: var(--nb-label-1);
+  font: 14px/1.55 var(--nb-font);
+  -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: var(--nb-mono); }
+button { font-family: inherit; }
+
+/* ── 顶部栏 ── */
+.topbar {
+  height: 52px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 16px; background: var(--nb-panel); border-bottom: 1px solid var(--nb-border);
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+.brand .logo { width: 18px; height: 18px; border-radius: 5px; background: var(--nb-accent); display: inline-flex; align-items: center; justify-content: center; color: #0b0e14; font-size: 11px; font-weight: 800; }
+.brand .sep { color: var(--nb-caption); margin: 0 2px; }
+.brand .sub { color: var(--nb-label-3); font-weight: 400; }
+.top-right { display: flex; align-items: center; gap: 10px; }
+.path-badge {
+  font-family: var(--nb-mono); font-size: 11px; color: var(--nb-label-3);
+  border: 1px solid var(--nb-border); border-radius: 4px; padding: 2px 8px; background: var(--nb-bg);
+}
+.mode-badge {
+  font-size: 11px; color: var(--nb-warn); border: 1px solid var(--nb-warn); border-radius: 4px;
+  padding: 2px 8px; opacity: .9;
+}
+
+/* ── 演示横幅 ── */
+.banner {
+  background: #1a2233; border-bottom: 1px solid #2a3a55; color: var(--nb-label-2);
+  font-size: 12px; padding: 7px 16px; display: flex; gap: 10px; align-items: center;
+}
+.banner b { color: var(--nb-accent-soft, #a5bffc); font-weight: 600; }
+.banner a { color: var(--nb-accent); cursor: pointer; text-decoration: none; margin-left: auto; }
+.banner a:hover { text-decoration: underline; }
+
+/* ── 主布局 ── */
+.wrap { display: flex; height: calc(100vh - 88px); }
+
+/* ── 左侧厂家列表 ── */
+.plist { width: 300px; min-width: 300px; background: var(--nb-panel); border-right: 1px solid var(--nb-border); display: flex; flex-direction: column; }
+.plist-head { padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--nb-border); }
+.plist-head h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--nb-label-2); letter-spacing: .5px; }
+.plist-body { flex: 1; overflow-y: auto; padding: 6px 0; }
+.pitem { padding: 10px 14px; cursor: pointer; border-left: 3px solid transparent; border-bottom: 1px solid rgba(42,49,60,.55); transition: background .15s; }
+.pitem:hover { background: var(--nb-elev); }
+.pitem.current { background: var(--nb-elev); border-left-color: var(--nb-accent); }
+.pitem .pname { font-family: var(--nb-mono); font-size: 13px; color: var(--nb-label-1); display: flex; align-items: center; gap: 8px; }
+.pitem .pname .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--nb-green); flex-shrink: 0; }
+.pitem .pmeta { font-size: 11px; color: var(--nb-label-3); margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pill { font-size: 10px; font-family: var(--nb-mono); border: 1px solid var(--nb-border); color: var(--nb-label-3); border-radius: 3px; padding: 0 5px; line-height: 16px; }
+.pill.api { color: var(--nb-accent); border-color: rgba(108,140,255,.4); }
+.empty-hint { padding: 30px 20px; text-align: center; color: var(--nb-caption); font-size: 12px; border: 1px dashed var(--nb-border); border-radius: var(--nb-radius); margin: 14px; }
+
+/* ── 右侧编辑区 ── */
+.editor { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.editor-scroll { flex: 1; overflow-y: auto; padding: 18px 22px 30px; }
+.editor-scroll::-webkit-scrollbar, .plist-body::-webkit-scrollbar { width: 8px; }
+.editor-scroll::-webkit-scrollbar-thumb, .plist-body::-webkit-scrollbar-thumb { background: var(--nb-border); border-radius: 4px; }
+
+.card { background: var(--nb-panel); border: 1px solid var(--nb-border); border-radius: var(--nb-radius); margin-bottom: 14px; padding: 16px 18px; }
+.card-title { font-size: 12px; font-weight: 600; color: var(--nb-label-2); letter-spacing: .8px; text-transform: uppercase; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+.card-title .count { font-size: 11px; color: var(--nb-caption); font-family: var(--nb-mono); }
+
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; }
+.form-grid .span2 { grid-column: 1 / -1; }
+.field label { display: block; font-size: 12px; color: var(--nb-label-3); margin-bottom: 5px; }
+.field label .req { color: var(--nb-red); }
+input[type=text], input[type=password], input[type=number], input[type=url], select, textarea {
+  width: 100%; background: var(--nb-bg); color: var(--nb-label-1);
+  border: 1px solid var(--nb-border); border-radius: 5px; padding: 7px 10px; font-size: 13px;
+  outline: none; transition: border-color .15s, box-shadow .15s;
+}
+input:focus, select:focus, textarea:focus { border-color: var(--nb-accent); box-shadow: 0 0 0 2px rgba(108,140,255,.18); }
+input::placeholder, textarea::placeholder { color: var(--nb-caption); }
+select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--nb-label-3) 50%), linear-gradient(135deg, var(--nb-label-3) 50%, transparent 50%); background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 26px; }
+.keyrow { display: flex; gap: 6px; }
+.keyrow input { flex: 1; }
+.eye-btn { width: 34px; border: 1px solid var(--nb-border); background: var(--nb-elev); color: var(--nb-label-2); border-radius: 5px; cursor: pointer; font-size: 13px; }
+.eye-btn:hover { color: var(--nb-label-1); }
+.hint { font-size: 11px; color: var(--nb-caption); margin-top: 5px; line-height: 1.5; }
+.hint code { font-family: var(--nb-mono); color: var(--nb-accent-soft, #a5bffc); font-size: 10.5px; background: rgba(108,140,255,.1); border-radius: 3px; padding: 0 4px; }
+
+/* ── 模型标签 ── */
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.tag {
+  display: inline-flex; align-items: center; gap: 6px; font-family: var(--nb-mono); font-size: 12px;
+  background: var(--nb-elev); border: 1px solid var(--nb-border); color: var(--nb-label-1);
+  border-radius: 5px; padding: 3px 6px 3px 10px;
+}
+.tag .x { border: none; background: none; color: var(--nb-caption); cursor: pointer; font-size: 12px; padding: 0 2px; border-radius: 3px; }
+.tag .x:hover { color: var(--nb-red); background: rgba(248,81,73,.12); }
+.tag-add-row { display: flex; gap: 6px; }
+#model-add { max-width: 340px; }
+.row-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+
+/* ── 高级配置折叠 ── */
+.adv-toggle {
+  width: 100%; display: flex; align-items: center; gap: 8px; background: none; border: none;
+  color: var(--nb-label-2); font-size: 12px; font-weight: 600; letter-spacing: .8px; text-transform: uppercase;
+  cursor: pointer; padding: 2px 0;
+}
+.adv-toggle .chev { transition: transform .2s var(--nb-ease, cubic-bezier(.4,0,.2,1)); font-size: 10px; }
+.card.advanced.open .chev { transform: rotate(90deg); }
+.adv-body { display: none; margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--nb-border); }
+.card.advanced.open .adv-body { display: block; }
+.check-field { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--nb-label-2); cursor: pointer; user-select: none; }
+input[type=checkbox] { accent-color: var(--nb-accent); width: 15px; height: 15px; cursor: pointer; }
+
+/* ── 角色绑定 ── */
+.role-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.role-chip {
+  font-family: var(--nb-mono); font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--nb-border); color: var(--nb-label-3); cursor: pointer; background: var(--nb-bg); transition: all .15s;
+}
+.role-chip.on { border-color: var(--nb-accent); color: var(--nb-label-1); background: rgba(108,140,255,.14); }
+
+/* ── KV 编辑器 ── */
+.kv-title { font-size: 12px; color: var(--nb-label-3); margin: 14px 0 8px; }
+.kv-row { display: grid; grid-template-columns: 1.4fr 1fr auto; gap: 8px; margin-bottom: 8px; }
+.kv-row .del { border: 1px solid var(--nb-border); background: var(--nb-elev); color: var(--nb-caption); border-radius: 5px; width: 30px; cursor: pointer; }
+.kv-row .del:hover { color: var(--nb-red); border-color: rgba(248,81,73,.5); }
+
+/* ── 底部操作条 ── */
+.editor-foot { display: flex; align-items: center; gap: 10px; padding: 12px 22px; border-top: 1px solid var(--nb-border); background: var(--nb-panel); }
+.save-state { margin-right: auto; font-size: 12px; color: var(--nb-caption); display: flex; align-items: center; gap: 6px; }
+.save-state .ico { width: 7px; height: 7px; border-radius: 50%; background: var(--nb-caption); }
+.save-state.saved { color: var(--nb-green); }
+.save-state.saved .ico { background: var(--nb-green); box-shadow: 0 0 6px rgba(63,185,80,.5); }
+.save-state.dirty { color: var(--nb-warn); }
+.save-state.dirty .ico { background: var(--nb-warn); }
+
+/* ── 按钮 ── */
+.btn { border-radius: 6px; border: 1px solid transparent; padding: 7px 14px; font-size: 13px; cursor: pointer; transition: all .15s; }
+.btn.primary { background: var(--nb-accent); color: #0b0e14; font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.ghost { background: transparent; border-color: var(--nb-border); color: var(--nb-label-2); }
+.btn.ghost:hover { background: var(--nb-elev); color: var(--nb-label-1); }
+.btn.danger { background: transparent; border-color: rgba(248,81,73,.45); color: var(--nb-red); }
+.btn.danger:hover { background: rgba(248,81,73,.12); }
+.btn.small { padding: 3px 10px; font-size: 12px; border-radius: 5px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.spinning { pointer-events: none; opacity: .7; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { display: inline-block; width: 11px; height: 11px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; margin-right: 5px; }
+
+/* ── 弹窗 ── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(5,7,10,.62); display: flex; align-items: center; justify-content: center; z-index: 50; backdrop-filter: blur(2px); }
+.modal-overlay.hidden { display: none; }
+.modal-card { background: var(--nb-panel); border: 1px solid var(--nb-border); border-radius: 10px; width: min(760px, 92vw); max-height: 82vh; display: flex; flex-direction: column; box-shadow: 0 18px 50px rgba(0,0,0,.5); }
+.modal-head { padding: 13px 18px; border-bottom: 1px solid var(--nb-border); display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; }
+.modal-close { background: none; border: none; color: var(--nb-label-3); font-size: 16px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
+.modal-close:hover { color: var(--nb-label-1); background: var(--nb-elev); }
+.modal-body { padding: 14px 18px; overflow: auto; }
+.modal-body pre { margin: 0; font-family: var(--nb-mono); font-size: 12px; line-height: 1.6; color: var(--nb-label-2); white-space: pre-wrap; word-break: break-all; }
+.modal-foot { padding: 11px 18px; border-top: 1px solid var(--nb-border); display: flex; justify-content: flex-end; gap: 8px; }
+.diff-add { color: var(--nb-green); }
+.diff-del { color: var(--nb-red); }
+
+/* ── Toast ── */
+#toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%) translateY(16px); background: var(--nb-elev); border: 1px solid var(--nb-border); color: var(--nb-label-1); font-size: 13px; padding: 9px 18px; border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.45); opacity: 0; pointer-events: none; transition: all .25s var(--nb-ease, cubic-bezier(.4,0,.2,1)); z-index: 99; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.ok { border-color: rgba(63,185,80,.55); }
+#toast.err { border-color: rgba(248,81,73,.55); }
+#toast .t-ico { margin-right: 6px; }
+
+/* 配置目录微卡片（保存后 JSON 预览里的提示） */
+.dir-note { font-size: 11px; color: var(--nb-caption); margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<!-- ═══ 顶部栏 ═══ -->
+<div class="topbar">
+  <div class="brand">
+    <span class="logo">⚡</span>
+    <span>newbee</span>
+    <span class="sep">/</span>
+    <span class="sub">模型配置</span>
+  </div>
+  <div class="top-right">
+    <span class="path-badge" id="cfg-path">~/.newbee/model.json</span>
+    <span class="mode-badge">演示原型</span>
+  </div>
+</div>
+
+<div class="banner">
+  <span><b>💡 交互 Demo</b> —— 所有数据保存在浏览器内存中，可自由增删改；点「保存」会弹出即将写入 <span class="mono">model.json</span> 的 JSON 预览。</span>
+  <a onclick="resetDemo()">重置演示数据</a>
+</div>
+
+<div class="wrap">
+
+  <!-- ═══ 左侧：厂家列表 ═══ -->
+  <aside class="plist">
+    <div class="plist-head">
+      <h2>厂家 · PROVIDERS</h2>
+      <button class="btn primary small" onclick="addProvider()">＋ 新增厂家</button>
+    </div>
+    <div class="plist-body" id="provider-list"></div>
+  </aside>
+
+  <!-- ═══ 右侧：编辑区 ═══ -->
+  <main class="editor">
+    <div class="editor-scroll" id="editor-scroll">
+
+      <!-- 空状态 -->
+      <div id="empty-state" style="height:100%;display:flex;align-items:center;justify-content:center;padding:60px 20px;">
+        <div class="empty-hint" style="width:100%;max-width:420px;padding:40px;">
+          <div style="font-size:26px;margin-bottom:12px;">🗂️</div>
+          <div style="font-weight:600;margin-bottom:6px;">尚未配置任何模型厂家</div>
+          <div style="margin-bottom:16px;">点击左侧「＋ 新增厂家」，填写 baseUrl 与模型列表，保存后即可立即在聊天页选用。</div>
+          <button class="btn primary" onclick="addProvider()">＋ 新增厂家</button>
+        </div>
+      </div>
+
+      <div id="editor-content" style="display:none;">
+
+        <!-- 基本信息 -->
+        <div class="card">
+          <div class="card-title">基本信息 <span class="count" id="provider-name-label"></span></div>
+          <div class="form-grid">
+            <div class="field">
+              <label>厂家名称 <span class="req">*</span></label>
+              <input type="text" id="f-provider-name" placeholder="如 openrouter / zhipu / anthropic" spellcheck="false">
+              <div class="hint">将作为 <code>providers.&lt;名称&gt;.</code> 的键；建议小写英文、不加空格。修改名称 = 重命名。</div>
+            </div>
+            <div class="field">
+              <label>API 协议 <span class="req">*</span></label>
+              <select id="f-api">
+                <option value="openai-completions">openai-completions（OpenAI 兼容 /v1/chat/completions）</option>
+                <option value="responses">responses（OpenAI Responses）</option>
+                <option value="anthropic">anthropic（Claude Messages）</option>
+                <option value="gemini">gemini（Google）</option>
+              </select>
+            </div>
+            <div class="field span2">
+              <label>Base URL <span class="req">*</span></label>
+              <input type="url" id="f-baseurl" placeholder="https://api.example.com/v1" spellcheck="false">
+              <div class="hint">API 端点根地址，不含 <code>/chat/completions</code>；对 <code>openai-completions</code> 协议自动追加。</div>
+            </div>
+            <div class="field span2">
+              <label>API Key <span class="req">*</span></label>
+              <div class="keyrow">
+                <input type="password" id="f-apikey" placeholder="sk-... 或 ${ENV_VAR} 环境变量引用" spellcheck="false" autocomplete="off">
+                <button class="eye-btn" id="eye-toggle" title="显示/隐藏">👁</button>
+              </div>
+              <div class="hint">支持直接粘贴密钥，或使用 <code>${MY_API_KEY}</code>（环境变量）与 <code>${prime:NAME}</code>（从 ~/.prime/agent/auth.json 读取），密钥不必明文落盘。</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 模型列表 -->
+        <div class="card">
+          <div class="card-title">可用模型 <span class="count" id="models-count"></span></div>
+          <div class="tags" id="model-tags"></div>
+          <div class="tag-add-row">
+            <input type="text" id="model-add" placeholder="输入模型 ID 后回车，如 deepseek/deepseek-v4-flash-0731" spellcheck="false">
+            <button class="btn ghost small" onclick="addModelTag()">添加</button>
+            <button class="btn ghost small" id="fetch-models" onclick="fetchModels()" title="向 baseUrl 的 /models 接口拉取清单">
+              从 /models 拉取
+              <span id="fetch-spinner" style="display:none;" class="spinner"></span>
+            </button>
+          </div>
+          <div class="hint">保存后：<code>providers.&lt;名称&gt;.models</code> 会被更新为上面的清单；聊天页模型选择器即按此清单展示。</div>
+        </div>
+
+        <!-- 高级配置（折叠） -->
+        <div class="card advanced" id="adv-card">
+          <button class="adv-toggle" onclick="toggleAdv(this)">
+            <span class="chev">▶</span> 高级配置
+            <span class="count" style="font-weight:400;">contextWindow · contextWindows · 角色绑定 · 额外字段</span>
+          </button>
+
+          <div class="adv-body">
+            <div class="form-grid">
+              <div class="field">
+                <label>默认上下文窗口 (contextWindow)</label>
+                <input type="number" id="f-ctxw" placeholder="如 128000" min="0">
+                <div class="hint">该厂家所有模型的上下文窗口默认值（整数 token 数）；模型级覆盖见下。</div>
+              </div>
+              <div class="field">
+                <label>Responses 续写 (responsesContinuation)</label>
+                <label class="check-field" style="margin-top:8px;">
+                  <input type="checkbox" id="f-resp-cont"> 启用 previous_response_id 续写
+                </label>
+              </div>
+            </div>
+
+            <div class="kv-title">单模型上下文窗口覆盖 (contextWindows) —— 覆盖自动探测/默认值</div>
+            <div id="ctxw-rows"></div>
+            <button class="btn ghost small" onclick="addCtxwRow()">＋ 添加覆盖</button>
+
+            <div class="kv-title">角色绑定 (roles) —— 该厂家名下的模型可同时绑定多个角色</div>
+            <div class="role-chips" id="role-chips"></div>
+            <div class="hint">绑定后：<code>roles.&lt;角色&gt;.provider</code> 指向当前厂家、<code>model</code> 指向所选模型；default 角色即聊天默认模型。取消所有角色勾选则保留 provider 但移除此厂家的默认绑定。</div>
+
+            <div class="kv-title">额外 provider 字段 —— 原样写入 JSON（如 promptCacheOptions、vision 等）</div>
+            <div id="extra-rows"></div>
+            <button class="btn ghost small" onclick="addExtraRow()">＋ 添加字段</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 底部操作条 -->
+    <div class="editor-foot">
+      <span class="save-state" id="save-state"><span class="ico"></span><span id="save-state-text">就绪</span></span>
+      <button class="btn ghost" onclick="deleteProvider()">删除厂家</button>
+      <button class="btn ghost" onclick="previewJson()">预览 JSON</button>
+      <button class="btn primary" id="save-btn" onclick="saveProvider()">💾 保存</button>
+    </div>
+  </main>
+</div>
+
+<!-- ═══ JSON 预览弹窗 ═══ -->
+<div class="modal-overlay hidden" id="preview-modal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <span>💾 保存预览 —— 即将写入 <span class="mono">model.json</span></span>
+      <button class="modal-close" onclick="closePreview()">✕</button>
+    </div>
+    <div class="modal-body" style="max-height:56vh;overflow:auto;">
+      <pre id="preview-code"></pre>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" onclick="closePreview()">取消</button>
+      <button class="btn primary" id="confirm-save" onclick="confirmSave()">✓ 确认写入</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+/* ════════════════════════════ 演示数据（内存态） ════════════════════════════ */
+// 模拟 ~/.newbee/model.json 结构
+let MODEL_JSON = {
+  providers: {
+    "openrouter": {
+      baseUrl: "https://openrouter.ai/api/v1",
+      api: "openai-completions",
+      apiKey: "${OPENROUTER_API_KEY}",
+      models: ["deepseek/deepseek-v4-flash-0731", "anthropic/claude-sonnet-4.5", "openai/gpt-5.1-mini"],
+      contextWindows: { "deepseek/deepseek-v4-flash-0731": 1000000 }
+    },
+    "zhipu": {
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+      api: "openai-completions",
+      apiKey: "******demo-key******",
+      models: ["glm-5.3-flash", "glm-5.1"],
+      contextWindow: 128000
+    }
+  },
+  roles: {
+    "default": { provider: "openrouter", model: "deepseek/deepseek-v4-flash-0731", contextWindow: 1000000 },
+    "worker": { provider: "openrouter", model: "anthropic/claude-sonnet-4.5" }
+  }
+};
+
+const ROLE_NAMES = ["default", "worker", "adapter", "explorer", "plan", "advisor", "verifier"];
+let currentProvider = null;       // 当前编辑的 provider 名称
+let dirty = false;                // 是否有未保存修改
+let dirtyTimer = null;
+
+/* DOM 快捷 */
+function $(id) { return document.getElementById(id); }
+
+/* ════════════════════════════ 左侧厂家列表 ════════════════════════════ */
+function renderProviderList() {
+  const list = $("provider-list");
+  const names = Object.keys(MODEL_JSON.providers);
+  list.innerHTML = "";
+
+  if (!names.length) {
+    list.innerHTML = '<div class="empty-hint">暂无厂家。点击右上角「＋ 新增厂家」开始配置。</div>';
+    return;
+  }
+
+  for (const name of names) {
+    const p = MODEL_JSON.providers[name];
+    const models = (p.models || []).length;
+    const roles = Object.entries(MODEL_JSON.roles)
+      .filter(([, r]) => r.provider === name)
+      .map(([role]) => role);
+    const el = document.createElement("div");
+    el.className = "pitem" + (name === currentProvider ? " current" : "");
+    el.innerHTML =
+      '<div class="pname"><span class="dot"></span>' + esc(name) + "</div>" +
+      '<div class="pmeta">' +
+        '<span class="pill">' + models + ' 模型</span>' +
+        '<span class="pill api">' + esc(p.api || "openai-completions") + "</span>" +
+        (roles.length ? '<span class="pill" style="color:var(--nb-green)">' + roles.map(esc).join(", ") + "</span>" : "") +
+        '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px">' + esc(p.baseUrl || "") + "</span>" +
+      "</div>";
+    el.onclick = () => selectProvider(name);
+    list.appendChild(el);
+  }
+}
+
+function selectProvider(name) {
+  if (dirty) {
+    if (!confirm("当前有未保存的修改，切换厂家将丢弃。确定切换？")) return;
+    dirty = false;
+  }
+  currentProvider = name;
+  flushToUI();
+  renderProviderList();
+  markSaved("已加载 " + name);
+}
+
+/* ════════════════════════════ UI <-> state 同步 ════════════════════════════ */
+function flushToUI() {
+  const p = MODEL_JSON.providers[currentProvider];
+  if (!p) { $("editor-content").style.display = "none"; $("empty-state").style.display = "flex"; return; }
+
+  $("empty-state").style.display = "none";
+  $("editor-content").style.display = "block";
+
+  $("f-provider-name").value = currentProvider;
+  $("provider-name-label").textContent = "providers." + currentProvider + ".";
+  $("f-api").value = p.api || "openai-completions";
+  $("f-baseurl").value = p.baseUrl || "";
+  $("f-apikey").value = p.apiKey || "";
+  $("f-ctxw").value = p.contextWindow ?? "";
+  $("f-resp-cont").checked = !!p.responsesContinuation;
+
+  renderModelTags();
+  renderCtxwRows();
+  renderRoleChips();
+  renderExtraRows();
+
+  // 角色绑定情况
+  updateRoleSummary();
+}
+
+/* ── 模型标签 ── */
+function renderModelTags() {
+  const p = MODEL_JSON.providers[currentProvider];
+  const box = $("model-tags");
+  box.innerHTML = "";
+  const models = p.models || [];
+  $("models-count").textContent = models.length + " 个";
+  for (const m of models) {
+    const t = document.createElement("span");
+    t.className = "tag";
+    t.innerHTML = esc(m) + '<button class="x" title="移除">✕</button>';
+    t.querySelector(".x").onclick = () => { p.models = models.filter(x => x !== m); renderModelTags(); markDirty(); };
+    box.appendChild(t);
+  }
+}
+
+function addModelTag() {
+  const input = $("model-add");
+  const id = input.value.trim();
+  if (!id) return;
+  const p = MODEL_JSON.providers[currentProvider];
+  if (!p.models) p.models = [];
+  if (p.models.includes(id)) { toast("模型已存在：" + id, "err"); return; }
+  p.models.push(id);
+  input.value = "";
+  renderModelTags();
+  markDirty();
+  toast("已添加：<b>" + esc(id) + "</b>");
+}
+
+/* ── 上下文窗口覆盖 ── */
+function renderCtxwRows() {
+  const p = MODEL_JSON.providers[currentProvider];
+  const wrap = $("ctxw-rows");
+  wrap.innerHTML = "";
+  const cw = p.contextWindows || {};
+  for (const [model, n] of Object.entries(cw)) {
+    wrap.appendChild(makeCtxwRow(model, n));
+  }
+}
+
+function makeCtxwRow(model, n) {
+  const row = document.createElement("div");
+  row.className = "kv-row";
+  row.innerHTML =
+    '<input type="text" class="cw-model" value="' + escAttr(model) + '" placeholder="模型 ID" spellcheck="false">' +
+    '<input type="number" class="cw-n" value="' + escAttr(String(n)) + '" min="0" placeholder="上下文窗口 tokens">' +
+    '<button class="del" title="删除">✕</button>';
+  row.querySelector(".del").onclick = () => { row.remove(); markDirty(); };
+  row.querySelector("input").oninput = () => markDirty();
+  row.querySelector(".cw-n").oninput = () => markDirty();
+  return row;
+}
+
+function addCtxwRow() {
+  $("ctxw-rows").appendChild(makeCtxwRow("", ""));
+  markDirty();
+}
+
+function collectCtxw() {
+  const out = {};
+  for (const row of $("ctxw-rows").querySelectorAll(".kv-row")) {
+    const m = row.querySelector(".cw-model").value.trim();
+    const n = parseInt(row.querySelector(".cw-n").value, 10);
+    if (m && n > 0) out[m] = n;
+  }
+  return out;
+}
+
+/* ── 角色绑定 ── */
+function renderRoleChips() {
+  const box = $("role-chips");
+  box.innerHTML = "";
+  const p = MODEL_JSON.providers[currentProvider];
+  // 当前厂家可绑定的模型 = 已配置 models（无 models 时允许任意填写）
+  const models = p.models || [];
+
+  for (const role of ROLE_NAMES) {
+    const r = MODEL_JSON.roles[role];
+    const bound = r && r.provider === currentProvider;
+    const chip = document.createElement("div");
+    chip.className = "role-chip" + (bound ? " on" : "");
+    chip.innerHTML = esc(role) + (bound && r.model ? ' <span style="opacity:.75">· ' + esc(r.model) + "</span>" : "");
+    chip.title = "点击绑定/解绑 " + role + " 角色";
+    chip.onclick = () => toggleRole(role, chip);
+    box.appendChild(chip);
+  }
+
+  // 新增：模型选择触发器
+  bindRoleSelect();
+}
+
+function toggleRole(role, chip) {
+  const p = MODEL_JSON.providers[currentProvider];
+  const r = MODEL_JSON.roles[role];
+  const bound = r && r.provider === currentProvider;
+  const models = p.models || [];
+
+  if (bound) {
+    if (role === "default") {
+      toast("default 是聊天默认角色，请先绑定其他模型再解绑", "err");
+      return;
+    }
+    delete MODEL_JSON.roles[role];
+    chip.classList.remove("on");
+    chip.innerHTML = esc(role);
+    markDirty();
+    toast("已解绑角色 " + esc(role));
+    return;
+  }
+
+  // 绑定：需要选模型
+  if (!models.length) {
+    toast("请先在上方「可用模型」至少添加一个模型，再绑定角色", "err");
+    return;
+  }
+  const model = models.length === 1 ? models[0] : pickModelDialogue(role, models);
+  if (!model) return;
+  MODEL_JSON.roles[role] = { provider: currentProvider, model: model };
+  chip.classList.add("on");
+  chip.innerHTML = esc(role) + ' <span style="opacity:.75">· ' + esc(model) + "</span>";
+  markDirty();
+  toast("已绑定：" + esc(role) + " → <b>" + esc(model) + "</b>");
+}
+
+// 简单下拉选择（demo 用 prompt 模拟选择器；真实实现会内嵌下拉）
+function pickModelDialogue(role, models) {
+  const list = models.map((m, i) => (i + 1) + ". " + m).join("\n");
+  const ans = prompt("为角色 " + role + " 选择模型：\n\n" + list + "\n\n输入序号或直接粘贴模型 ID", models[0]);
+  if (!ans) return null;
+  const idx = parseInt(ans, 10);
+  if (idx >= 1 && idx <= models.length) return models[idx - 1];
+  return ans.trim() || null;
+}
+
+function bindRoleSelect() {
+  // demo 占位：真实实现会把 prompt 换成内嵌下拉
+}
+
+// 更新角色绑定摘要（顶部小字）
+function updateRoleSummary() {
+  const p = MODEL_JSON.providers[currentProvider];
+  if (!p) return;
+  const bound = Object.entries(MODEL_JSON.roles).filter(([, r]) => r.provider === currentProvider);
+  // 已通过 chips 展示，无需额外 DOM
+}
+
+/* ── 额外字段 KV ── */
+function renderExtraRows() {
+  const p = MODEL_JSON.providers[currentProvider];
+  const wrap = $("extra-rows");
+  wrap.innerHTML = "";
+  const reserved = new Set(["baseUrl", "api", "apiKey", "models", "contextWindows", "contextWindow", "responsesContinuation"]);
+  for (const [k, v] of Object.entries(p)) {
+    if (reserved.has(k)) continue;
+    wrap.appendChild(makeExtraRow(k, v));
+  }
+}
+
+function makeExtraRow(k, v) {
+  const row = document.createElement("div");
+  row.className = "kv-row";
+  const str = typeof v === "object" ? JSON.stringify(v) : String(v);
+  row.innerHTML =
+    '<input type="text" class="ex-k" value="' + escAttr(k) + '" placeholder="字段名" spellcheck="false">' +
+    '<input type="text" class="ex-v" value="' + escAttr(str) + '" placeholder="JSON 值（保留引号/对象写法）" spellcheck="false">' +
+    '<button class="del" title="删除">✕</button>';
+  row.querySelector(".del").onclick = () => { row.remove(); markDirty(); };
+  row.querySelectorAll("input").forEach(i => i.oninput = () => markDirty());
+  return row;
+}
+
+function addExtraRow() {
+  $("extra-rows").appendChild(makeExtraRow("", ""));
+  markDirty();
+}
+
+function collectExtra() {
+  const out = {};
+  const reserved = new Set(["baseUrl", "api", "apiKey", "models", "contextWindows", "contextWindow", "responsesContinuation"]);
+  for (const row of $("extra-rows").querySelectorAll(".kv-row")) {
+    const k = row.querySelector(".ex-k").value.trim();
+    const raw = row.querySelector(".ex-v").value.trim();
+    if (!k || reserved.has(k)) continue;
+    if (raw === "") { out[k] = ""; continue; }
+    // 尝试解析为 JSON 值，失败则当作字符串
+    try { out[k] = JSON.parse(raw); } catch (_) { out[k] = raw; }
+  }
+  return out;
+}
+
+/* ════════════════════════════ 新增/删除厂家 ════════════════════════════ */
+function addProvider() {
+  if (dirty && !confirm("当前有未保存的修改，新建厂家将丢弃。继续？")) return;
+  const name = prompt("新的厂家名称（键名，小写英文）：", "new-provider");
+  if (!name || !name.trim()) return;
+  const key = name.trim();
+  if (MODEL_JSON.providers[key]) { toast("厂家已存在：" + esc(key), "err"); return; }
+  MODEL_JSON.providers[key] = { baseUrl: "", api: "openai-completions", apiKey: "", models: [] };
+  currentProvider = key;
+  dirty = false;
+  flushToUI();
+  renderProviderList();
+  markDirty();
+  toast("已创建厂家 <b>" + esc(key) + "</b>，请填写信息");
+}
+
+function deleteProvider() {
+  if (!currentProvider) return;
+  const p = MODEL_JSON.providers[currentProvider];
+  const boundRoles = Object.entries(MODEL_JSON.roles).filter(([, r]) => r.provider === currentProvider).map(([r]) => r);
+  let msg = "确定删除厂家 " + currentProvider + " ？";
+  if (boundRoles.length) msg += "\n\n⚠ 以下角色正绑定到它，将一并解绑：" + boundRoles.join(", ");
+  if (!confirm(msg)) return;
+  delete MODEL_JSON.providers[currentProvider];
+  // 解绑引用它的角色
+  for (const [role, r] of Object.entries(MODEL_JSON.roles)) {
+    if (r.provider === currentProvider) delete MODEL_JSON.roles[role];
+  }
+  currentProvider = null;
+  dirty = false;
+  flushToUI();
+  renderProviderList();
+  markSaved("已删除厂家");
+}
+
+/* ════════════════════════════ 高级折叠 ════════════════════════════ */
+function toggleAdv(btn) {
+  const card = btn.closest(".advanced");
+  card.classList.toggle("open");
+  btn.querySelector(".chev").textContent = card.classList.contains("open") ? "▼" : "▶";
+}
+
+/* ════════════════════════════ 收集表单 → 更新 STATE ════════════════════════════ */
+function collectFromUI() {
+  const p = MODEL_JSON.providers[currentProvider];
+  if (!p) return null;
+
+  // 基本信息
+  const newName = $("f-provider-name").value.trim();
+  const baseUrl = $("f-baseurl").value.trim();
+  const api = $("f-api").value;
+  const apiKey = $("f-apikey").value.trim();
+
+  // 校验
+  if (!newName) { toast("厂家名称不能为空", "err"); return null; }
+  if (!baseUrl) { toast("Base URL 不能为空", "err"); return null; }
+  if (!apiKey) { toast("API Key 不能为空（可填 ${ENV_VAR} 引用）", "err"); return null; }
+
+  // 名称变化 = 重命名（连带 roles 引用更新）
+  if (newName !== currentProvider) {
+    if (MODEL_JSON.providers[newName]) { toast("厂家名称已存在：" + esc(newName), "err"); return null; }
+    delete MODEL_JSON.providers[currentProvider];
+    for (const [role, r] of Object.entries(MODEL_JSON.roles)) {
+      if (r.provider === currentProvider) r.provider = newName;
+    }
+    MODEL_JSON.providers[newName] = p;
+    currentProvider = newName;
+  }
+
+  p.baseUrl = baseUrl;
+  p.api = api;
+  p.apiKey = apiKey;
+  p.models = p.models || [];
+  p.contextWindows = collectCtxw();
+  if (Object.keys(p.contextWindows).length === 0) delete p.contextWindows;
+  const ctxw = parseInt($("f-ctxw").value, 10);
+  if (ctxw > 0) p.contextWindow = ctxw; else delete p.contextWindow;
+
+  if ($("f-resp-cont").checked) p.responsesContinuation = true; else delete p.responsesContinuation;
+
+  // 额外字段（覆盖）
+  const extra = collectExtra();
+  const reserved = new Set(["baseUrl", "api", "apiKey", "models", "contextWindows", "contextWindow", "responsesContinuation"]);
+  for (const k of Object.keys(p)) if (!reserved.has(k)) delete p[k];
+  Object.assign(p, extra);
+
+  return p;
+}
+
+/* ════════════════════════════ 保存 ════════════════════════════ */
+function saveProvider() {
+  const p = collectFromUI();
+  if (!p) return;
+  renderProviderList();          // 左侧立即反映重命名等
+  previewJson();                 // 展示将写入的 JSON
+}
+
+// 构建完整 model.json（所有厂家）预览
+function buildFullJson() {
+  return {
+    providers: MODEL_JSON.providers,
+    roles: MODEL_JSON.roles
+  };
+}
+
+const KEY_MASK = /(api[_k]?ey|secret|token|passw[o]?rd)/i;
+
+function previewJson() {
+  const full = buildFullJson();
+  const pretty = JSON.stringify(full, null, 2)
+    .split("\n").map(l => KEY_MASK.test(l) ? l.replace(/:\s*"[^"]*"/, ': "••••••••"') : l).join("\n");
+  $("preview-code").textContent = pretty;
+  $("preview-modal").classList.remove("hidden");
+}
+
+function confirmSave() {
+  $("preview-modal").classList.add("hidden");
+  dirty = false;
+  renderProviderList();
+  markSaved("已保存到 " + $("cfg-path").textContent);
+  toast("💾 已保存 model.json", "ok");
+  // demo：真实实现在此调用后端 RPC（如 llm.saveProvider），并 hot 推送在线会话
+}
+
+function closePreview() { $("preview-modal").classList.add("hidden"); }
+
+/* ════════════════════════════ 从 /models 拉取（demo 模拟） ════════════════════════════ */
+function fetchModels() {
+  const p = collectFromUI();
+  if (!p || !p.baseUrl) return;
+  const btn = $("fetch-models");
+  btn.classList.add("spinning");
+  $("fetch-spinner").style.display = "inline-block";
+  // demo 模拟网络延迟；真实实现调用 llm.providerModels RPC（已有）
+  setTimeout(() => {
+    btn.classList.remove("spinning");
+    $("fetch-spinner").style.display = "none";
+    const mock = mockFetchModels(p.baseUrl);
+    if (!p.models) p.models = [];
+    for (const m of mock) if (!p.models.includes(m)) p.models.push(m);
+    renderModelTags();
+    markDirty();
+    toast("已从 /models 拉取 " + mock.length + " 个模型（demo 模拟）", "ok");
+  }, 600);
+}
+
+function mockFetchModels(baseUrl) {
+  if (/openrouter/i.test(baseUrl)) return ["deepseek/deepseek-v4-flash-0731", "anthropic/claude-sonnet-4.5", "openai/gpt-5.1-mini", "qwen/qwen3.5-coder"];
+  if (/bigmodel|zhipu/i.test(baseUrl)) return ["glm-5.3-flash", "glm-5.1", "glm-4.7"];
+  if (/anthropic/i.test(baseUrl)) return ["claude-sonnet-4.5", "claude-opus-4.6"];
+  return ["sample-model-a", "sample-model-b", "sample-model-c"];
+}
+
+/* ════════════════════════════ 辅助 ════════════════════════════ */
+function markDirty() {
+  dirty = true;
+  const st = $("save-state");
+  st.className = "save-state dirty";
+  $("save-state-text").textContent = "有未保存修改";
+  clearTimeout(dirtyTimer);
+  dirtyTimer = setTimeout(() => { /* 防抖，用于真实场景自动保存 */ }, 3000);
+}
+
+function markSaved(msg) {
+  dirty = false;
+  const st = $("save-state");
+  st.className = "save-state saved";
+  $("save-state-text").textContent = msg || "已保存";
+  setTimeout(() => { if (!dirty) { st.className = "save-state"; $("save-state-text").textContent = "就绪"; } }, 2200);
+}
+
+let toastTimer = null;
+function toast(html, kind) {
+  const t = $("toast");
+  t.className = "show" + (kind === "ok" ? " ok" : kind === "err" ? " err" : "");
+  t.innerHTML = '<span class="t-ico">' + (kind === "err" ? "⚠️" : kind === "ok" ? "✅" : "🔔") + "</span>" + html;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), kind === "err" ? 3200 : 2000);
+}
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function escAttr(s) { return esc(s).replace(/'/g, "&#39;"); }
+
+/* ── 事件绑定 ── */
+$("eye-toggle").onclick = () => {
+  const i = $("f-apikey");
+  i.type = i.type === "password" ? "text" : "password";
+  $("eye-toggle").textContent = i.type === "password" ? "👁" : "🙈";
+};
+
+// 编辑立刻标记 dirty
+["f-provider-name", "f-baseurl", "f-apikey", "f-ctxw"].forEach(id => {
+  $(id).addEventListener("input", () => markDirty());
+});
+$("f-api").addEventListener("change", () => markDirty());
+$("f-resp-cont").addEventListener("change", () => markDirty());
+
+// 模型输入回车
+$("model-add").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); addModelTag(); } });
+
+// Esc 关闭弹窗
+document.addEventListener("keydown", e => { if (e.key === "Escape") closePreview(); });
+
+// 点击遮罩关闭
+$("preview-modal").addEventListener("click", e => { if (e.target === $("preview-modal")) closePreview(); });
+
+/* ── 重置演示 ── */
+function resetDemo() {
+  if (dirty && !confirm("重置将丢弃所有演示修改。确定？")) return;
+  location.reload();
+}
+
+/* ── 初始化 ── */
+currentProvider = Object.keys(MODEL_JSON.providers)[0] || null;
+flushToUI();
+renderProviderList();
+</script>
+
+</body>
+</html>

@@ -198,6 +198,227 @@ defmodule Newbee.LLM.Config do
         :ok
     end
   end
+  @doc """
+  WebUI 模型配置页：新增/更新一个 provider，并可选地更新角色绑定。
+
+  ## 参数
+    * `name` — provider 键名（原名称，用于定位；新增时传 nil 或与 `new_name` 相同）
+    * `attrs` — 字符串键 map，可含：
+        - "newName"   — 重命名后的键名（缺省 = name）
+        - "baseUrl"   — API 根地址（必填）
+        - "api"       — 协议（openai-completions / responses / anthropic / gemini）
+        - "apiKey"    — 密钥或 ${ENV} 引用
+        - "models"    — 模型 id 列表（list of string）
+        - "contextWindow"    — provider 级默认上下文窗口（正整数或 nil 清除）
+        - "contextWindows"   — 单模型覆盖表 %{"model" => n}（空 map 清除）
+        - "responsesContinuation" — boolean（false 清除）
+        - "extras"    — %{"k" => v} 额外字段，原样写入（保留键外的任意字段）
+        - "roles"     — %{"role" => model_id} 绑定；model_id 为 nil/"" 解绑
+  返回 :ok | {:error, reason}。校验失败时不落盘。
+  """
+  def upsert_provider(name, attrs) when is_binary(name) and is_map(attrs) do
+    new_name = attrs |> Map.get("newName", name) |> to_string() |> String.trim()
+    base_url = attrs |> Map.get("baseUrl", "") |> to_string() |> String.trim()
+
+    # apiKey 为 nil 表示"保持原值"（前端掩码未改动）；空串视为待保留/新建必填
+    api_key = attrs["apiKey"]
+    existing = (load()["providers"] || %{})[name]
+
+    cond do
+      new_name == "" -> {:error, :bad_provider_name}
+      base_url == "" -> {:error, :bad_base_url}
+      # 新建（无 existing）且未提供 key → 拒绝；更新且 apiKey=nil → 保留原值
+      is_nil(existing) and (is_nil(api_key) or to_string(api_key) |> String.trim() == "") ->
+        {:error, :bad_api_key}
+      true -> do_upsert_provider(name, new_name, attrs)
+    end
+  end
+
+  def upsert_provider(_, _), do: {:error, :bad_request}
+
+  defp do_upsert_provider(name, new_name, attrs) do
+    cfg = load()
+    providers = cfg["providers"] || %{}
+
+    # 重名检查（重命名到新键时，新键不能已被占用）
+    if new_name != name and Map.has_key?(providers, new_name) do
+      {:error, {:provider_exists, new_name}}
+    else
+      existing = providers[name] || %{}
+
+      provider =
+        existing
+        # 清掉受管字段，由 attrs 重建（保留未受管的额外字段在 extras 里）
+        |> Map.drop(["baseUrl", "api", "apiKey", "models", "contextWindows", "contextWindow", "responsesContinuation"])
+        |> Map.put("baseUrl", attrs["baseUrl"] |> to_string() |> String.trim())
+        |> Map.put("api", attrs |> Map.get("api", "openai-completions") |> to_string())
+        |> Map.put("models", sanitize_models(attrs["models"]))
+        |> put_api_key(attrs["apiKey"], existing)
+        |> maybe_put_ctxw(attrs["contextWindow"])
+
+        |> maybe_put_ctxws(attrs["contextWindows"])
+        |> maybe_put_resp_cont(attrs["responsesContinuation"])
+        |> Map.merge(sanitize_extras(attrs["extras"]))
+
+      providers =
+        providers
+        |> Map.delete(name)
+        |> Map.put(new_name, provider)
+
+      roles = update_roles(cfg["roles"] || %{}, name, new_name, attrs["roles"])
+
+      cfg = cfg |> Map.put("providers", providers) |> Map.put("roles", roles)
+      write_config!(cfg)
+      :ok
+    end
+  end
+
+  defp sanitize_models(list) when is_list(list) do
+    list |> Enum.map(&to_string/1) |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == "")) |> Enum.uniq()
+  end
+
+  defp sanitize_models(_), do: []
+
+
+  # apiKey 处理：nil/空串 → 保留 existing 原值；否则用新值（去除首尾空白）
+  defp put_api_key(provider, nil, existing), do: Map.put(provider, "apiKey", existing["apiKey"] || "")
+  defp put_api_key(provider, new, _existing) do
+    v = new |> to_string() |> String.trim()
+    Map.put(provider, "apiKey", v)
+  end
+
+  defp maybe_put_ctxw(p, n) when is_integer(n) and n > 0, do: Map.put(p, "contextWindow", n)
+  defp maybe_put_ctxw(p, s) when is_binary(s) do
+    case Integer.parse(String.trim(s)) do
+      {n, ""} when n > 0 -> Map.put(p, "contextWindow", n)
+      _ -> p
+    end
+  end
+  defp maybe_put_ctxw(p, _), do: p
+
+  defp maybe_put_ctxws(p, map) when is_map(map) and map_size(map) > 0 do
+    clean =
+      map
+      |> Enum.map(fn {k, v} -> {to_string(k), to_pos_int(v)} end)
+      |> Enum.filter(fn {k, v} -> k != "" and is_integer(v) end)
+      |> Map.new()
+    if map_size(clean) > 0, do: Map.put(p, "contextWindows", clean), else: p
+  end
+  defp maybe_put_ctxws(p, _), do: p
+
+  defp to_pos_int(n) when is_integer(n) and n > 0, do: n
+  defp to_pos_int(s) when is_binary(s) do
+    case Integer.parse(String.trim(s)) do
+      {n, ""} when n > 0 -> n
+      _ -> nil
+    end
+  end
+  defp to_pos_int(_), do: nil
+
+  defp maybe_put_resp_cont(p, true), do: Map.put(p, "responsesContinuation", true)
+  defp maybe_put_resp_cont(p, "true"), do: Map.put(p, "responsesContinuation", true)
+  defp maybe_put_resp_cont(p, _), do: p
+
+  defp sanitize_extras(map) when is_map(map) do
+    reserved = ~w(newName baseUrl api apiKey models contextWindow contextWindows responsesContinuation roles extras)
+    Map.drop(map, reserved)
+  end
+  defp sanitize_extras(_), do: %{}
+
+  # roles 更新：
+  # 1) 先把所有引用旧名的角色 provider 改为新名（重命名跟随）
+  # 2) 再按 attrs["roles"] 增删绑定（model nil/"" = 解绑）
+  defp update_roles(roles, old_name, new_name, nil) do
+    # 无显式绑定变更：只做重命名跟随
+    Map.new(roles, fn
+      {role, %{"provider" => ^old_name} = r} -> {role, Map.put(r, "provider", new_name)}
+      {role, r} -> {role, r}
+    end)
+  end
+
+  defp update_roles(roles, old_name, new_name, binds) when is_map(binds) do
+    roles =
+      Map.new(roles, fn
+        {role, %{"provider" => ^old_name} = r} -> {role, Map.put(r, "provider", new_name)}
+        {role, r} -> {role, r}
+      end)
+
+    Enum.reduce(binds, roles, fn
+      {role, model}, acc when is_binary(role) ->
+        model = model |> to_string() |> String.trim()
+
+        cond do
+          model == "" ->
+            # 解绑：仅当该角色正绑定到这个 provider 时才移除，避免误删别家绑定
+            case acc[role] do
+              %{"provider" => ^new_name} -> Map.delete(acc, role)
+              _ -> acc
+            end
+
+          role == "" ->
+            acc
+
+          true ->
+            # 绑定/换绑：provider 指向当前，model 指向所选
+            Map.put(acc, role, %{"provider" => new_name, "model" => model})
+        end
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  @doc """
+  WebUI 模型配置页：删除一个 provider，并解绑所有指向它的角色。
+  返回 :ok | {:error, {:unknown_provider, name}}。default 角色被解绑时会
+  回退到剩余的第一个 provider（若还有），保证聊天不中断。
+  """
+  def delete_provider(name) when is_binary(name) do
+    cfg = load()
+    providers = cfg["providers"] || %{}
+
+    if Map.has_key?(providers, name) do
+      providers = Map.delete(providers, name)
+
+      {roles, removed_default?} =
+        Enum.reduce(cfg["roles"] || %{}, {%{}, false}, fn
+          {role, %{"provider" => ^name}}, {acc, _} -> {acc, role == "default"}
+          {role, r}, {acc, d} -> {Map.put(acc, role, r), d}
+        end)
+
+      # default 被删：回退到剩余 provider 的第一个模型，保证聊天可用
+      roles =
+        if removed_default? and map_size(providers) > 0 do
+          {fallback_name, fallback_p} = Enum.at(providers, 0)
+          fallback_model =
+            case fallback_p["models"] do
+              [m | _] when is_binary(m) -> m
+              _ -> nil
+            end
+
+          if fallback_model do
+            Map.put(roles, "default", %{"provider" => fallback_name, "model" => fallback_model})
+          else
+            roles
+          end
+        else
+          roles
+        end
+
+      cfg = cfg |> Map.put("providers", providers) |> Map.put("roles", roles)
+      write_config!(cfg)
+      :ok
+    else
+      {:error, {:unknown_provider, name}}
+    end
+  end
+
+  def delete_provider(_), do: {:error, :bad_request}
+
+
+  @doc "当前生效的配置文件路径（找不到时返回将要创建的 ~/.newbee/model.json 路径）。"
+  def config_path, do: config_target()
+
 
   # 当前生效的配置文件路径（找不到则创建 ~/.newbee/model.json）
   defp config_target do
