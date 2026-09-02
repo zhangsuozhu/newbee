@@ -420,7 +420,7 @@ defmodule Newbee.DEE.Evaluator do
       # elixir 启动时 io:setopts(standard_io, [binary]) 会得到 {error, :enotsup}
       # 导致 elixir application 启动失败（实际事故：在 DEE 里跑 mix test /
       # 嵌套起 evaluator 全部 unavailable）。
-      case :peer.start_link(%{name: name, args: pa_args, wait_boot: @peer_boot_timeout, detached: false}) do
+      case :peer.start_link(%{name: name, args: pa_args, wait_boot: @peer_boot_timeout, detached: false, connection: {{127, 0, 0, 1}, 0}}) do
         {:ok, peer, node} ->
           Newbee.DebugLog.log(:boot, "peer up node=#{node}")
 
