@@ -28,7 +28,7 @@ defmodule Newbee.DEE.Evaluator do
             restarts: 0,
             boot_error: nil,
             last_boot_attempt: nil,
-            # 会话工作目录（WebUI 选定）：节点 boot 后 cd 过去；nil = 全局默认
+            # 会话稳定工作根；nil 仅供无会话的测试/诊断 evaluator。
             cwd: nil,
             # 受控诊断标签；节点名仍由系统补齐角色和随机后缀。
             node_label: "runtime",
@@ -108,15 +108,15 @@ defmodule Newbee.DEE.Evaluator do
     mode = Keyword.get(opts, :mode, :node)
     if mode == :node, do: Process.flag(:trap_exit, true)
 
-    # 会话工作目录：boot 后在求值节点上 cd（Fs/Run 工具都以节点 cwd 为根）
-    cwd_opt = Keyword.get(opts, :cwd)
+    # 会话工作目录是 evaluator 的稳定根；每个 cell 开始前由 EvalWorker 重新恢复。
+    cwd_opt = Keyword.get(opts, :cwd) |> normalize_cwd()
     node_label = normalize_node_label(Keyword.get(opts, :node_label))
     base_state = %__MODULE__{mode: mode, cwd: cwd_opt, node_label: node_label}
 
     state =
       case mode do
         :local ->
-          {:ok, worker} = Newbee.DEE.EvalWorker.start_link()
+          {:ok, worker} = Newbee.DEE.EvalWorker.start_link(cwd: cwd_opt)
           %{base_state | worker: worker}
 
         :node ->
@@ -219,7 +219,7 @@ defmodule Newbee.DEE.Evaluator do
       case state.mode do
         :local ->
           GenServer.stop(state.worker)
-          {:ok, w} = Newbee.DEE.EvalWorker.start_link()
+          {:ok, w} = Newbee.DEE.EvalWorker.start_link(cwd: state.cwd)
           %{state | worker: w}
 
         :node ->
@@ -246,13 +246,14 @@ defmodule Newbee.DEE.Evaluator do
   end
 
   def handle_call({:set_cwd, cwd}, _from, state) when is_binary(cwd) do
+    cwd = normalize_cwd(cwd)
     targets = [primary_target(state), state.standby] |> Enum.reject(&is_nil/1)
     results = Enum.map(targets, &remote_call(&1, {:set_cwd, cwd}))
 
     if Enum.all?(results, &match?({:ok, :ok}, &1)) do
       {:reply, :ok, %{state | cwd: cwd}}
     else
-      {:reply, {:error, :node_down}, state}
+      {:reply, {:error, {:cwd_unavailable, results}}, state}
     end
   end
 
@@ -283,6 +284,7 @@ defmodule Newbee.DEE.Evaluator do
        mode: state.mode,
        node: state.node,
        peer: state.peer,
+       cwd: state.cwd,
        restarts: state.restarts,
        alive: alive?(state),
        standby: standby_info(state),
@@ -429,12 +431,11 @@ defmodule Newbee.DEE.Evaluator do
               :rpc.call(node, :persistent_term, :put, [{Newbee.Host, :main_node}, Node.self()], @rpc_boot_timeout)
               :rpc.call(node, :os, :putenv, [~c"NEWBEE_MAIN_NODE", Atom.to_charlist(Node.self())], @rpc_boot_timeout)
 
-              case :rpc.call(node, Newbee.DEE.EvalWorker, :start, [[]], @rpc_boot_timeout) do
+              case :rpc.call(node, Newbee.DEE.EvalWorker, :start, [[cwd: state.cwd]], @rpc_boot_timeout) do
                 {:ok, worker} ->
                   Newbee.DebugLog.log(:boot, "worker up #{inspect(worker)}")
                   Newbee.Environment.Generation.load_active_into(node)
-                  # 注意：保留 state.restarts —— maybe_reboot 在 boot 前自增，
-                  apply_session_cwd(node, state.cwd)
+                  # 注意：保留 state.restarts —— maybe_reboot 在 boot 前自增。
                   {:ok, %{state | peer: peer, node: node, worker: worker, boot_error: nil}}
 
                 bad ->
@@ -469,21 +470,6 @@ defmodule Newbee.DEE.Evaluator do
       :peer.stop(peer)
     catch
       _, _ -> :ok
-    end
-  end
-
-  # 会话工作目录：节点 boot 后 cd 过去（primary/standby 都经 boot_node，重建不丢）。
-  # 失败不致命——降级为全局默认目录继续。
-  defp apply_session_cwd(_node, nil), do: :ok
-
-  defp apply_session_cwd(node, dir) when is_binary(dir) do
-    case :rpc.call(node, File, :cd!, [dir], @rpc_boot_timeout) do
-      :ok ->
-        :ok
-
-      bad ->
-        Newbee.DebugLog.log(:boot, "session cwd cd failed #{inspect(bad)} dir=#{dir}")
-        :ok
     end
   end
 
@@ -704,6 +690,8 @@ defmodule Newbee.DEE.Evaluator do
   end
 
   defp normalize_node_label(_label), do: "runtime"
+  defp normalize_cwd(nil), do: nil
+  defp normalize_cwd(cwd) when is_binary(cwd), do: Path.expand(cwd)
 
   defp filter_env(node) do
     :rpc.call(node, __MODULE__, :__filter_env__, [@env_deny_prefixes, @env_deny_suffixes])
@@ -720,5 +708,6 @@ defmodule Newbee.DEE.Evaluator do
     |> Enum.each(&:os.unsetenv(String.to_charlist(&1)))
   end
 
+  @doc "切换并持久化 evaluator 的稳定工作根；所有可用 worker 必须同时成功。"
   def set_cwd(server \\ __MODULE__, cwd), do: GenServer.call(server, {:set_cwd, cwd}, @rpc_boot_timeout)
 end

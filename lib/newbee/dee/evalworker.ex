@@ -11,7 +11,7 @@ defmodule Newbee.DEE.EvalWorker do
   def default_timeout, do: @default_timeout
   @active_key :newbee_eval_active_task
 
-  defstruct binding: [], count: 0, quiesced: false
+  defstruct binding: [], count: 0, quiesced: false, cwd: nil
 
   @doc false
   def active_pid(key) do
@@ -36,7 +36,16 @@ defmodule Newbee.DEE.EvalWorker do
   def start(opts \\ []), do: GenServer.start(__MODULE__, opts)
 
   @impl true
-  def init(_), do: {:ok, %__MODULE__{}}
+  def init(opts) do
+    requested = Keyword.get(opts, :cwd)
+
+    with {:ok, cwd} <- normalize_cwd(requested),
+         :ok <- restore_cwd(cwd) do
+      {:ok, %__MODULE__{cwd: cwd}}
+    else
+      {:error, reason} -> {:stop, {:invalid_cwd, requested, reason}}
+    end
+  end
 
   @impl true
   def handle_call({:eval, _code, _opts}, _from, %{quiesced: true} = state) do
@@ -47,11 +56,26 @@ defmodule Newbee.DEE.EvalWorker do
   end
 
   def handle_call({:eval, code, opts}, _from, state) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-    {result, new_binding, count} = run_cell(code, state.binding, timeout, state.count, opts)
-    # §9.1：绑定 GC——LRU + 大小预算，冷值逐出为 ArtifactRef（pin 不动）
-    {new_binding, _evicted} = maybe_gc(new_binding, count)
-    {:reply, result, %{state | binding: new_binding, count: count}}
+    case restore_cwd(state.cwd) do
+      :ok ->
+        timeout = Keyword.get(opts, :timeout, @default_timeout)
+        {result, new_binding, count} = run_cell(code, state.binding, timeout, state.count, opts)
+        result = Map.put(result, :cwd, current_cwd())
+        # §9.1：绑定 GC——LRU + 大小预算，冷值逐出为 ArtifactRef（pin 不动）
+        {new_binding, _evicted} = maybe_gc(new_binding, count)
+        {:reply, result, %{state | binding: new_binding, count: count}}
+
+      {:error, reason} ->
+        result = %{
+          status: :error,
+          error: "session working directory unavailable: #{inspect(state.cwd)} (#{inspect(reason)})",
+          output: "",
+          warnings: "",
+          cwd: current_cwd()
+        }
+
+        {:reply, result, state}
+    end
   end
 
   def handle_call(:quiesce, _from, state), do: {:reply, :ok, %{state | quiesced: true}}
@@ -66,19 +90,37 @@ defmodule Newbee.DEE.EvalWorker do
   end
 
   def handle_call({:set_cwd, cwd}, _from, state) when is_binary(cwd) do
-    reply =
-      case File.cd(cwd) do
-        :ok -> :ok
-        {:error, reason} -> {:error, reason}
-      end
-
-    {:reply, reply, state}
+    with {:ok, expanded} <- normalize_cwd(cwd),
+         :ok <- restore_cwd(expanded) do
+      {:reply, :ok, %{state | cwd: expanded}}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
   end
 
-  def handle_call({:set_cwd, nil}, _from, state), do: {:reply, :ok, state}
+  def handle_call({:set_cwd, nil}, _from, state), do: {:reply, :ok, %{state | cwd: nil}}
 
   def handle_call({:restore_bindings, binding}, _from, state) do
     {:reply, :ok, %{state | binding: binding}}
+  end
+
+  defp normalize_cwd(nil), do: {:ok, nil}
+
+  defp normalize_cwd(cwd) when is_binary(cwd) do
+    expanded = Path.expand(cwd)
+    if File.dir?(expanded), do: {:ok, expanded}, else: {:error, :enoent}
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  defp restore_cwd(nil), do: :ok
+  defp restore_cwd(cwd), do: File.cd(cwd)
+
+  defp current_cwd do
+    case File.cwd() do
+      {:ok, cwd} -> cwd
+      {:error, _} -> nil
+    end
   end
 
   # ── cell 执行 ──

@@ -367,6 +367,112 @@ defmodule Newbee.Agent.LoopTest do
     assert {:text, "ok"} = Loop.submit(kernel, "继续")
     Newbee.Session.delete(sid)
   end
+  test "切换会话根会同步 evaluator、元数据和 system prompt" do
+    original = File.cwd!()
+    base = Path.join(System.tmp_dir!(), "newbee-loop-root-#{System.unique_integer([:positive])}")
+    root_a = Path.join(base, "a")
+    root_b = Path.join(base, "b")
+    sid = "test_workspace_root_#{System.unique_integer([:positive])}"
+    File.mkdir_p!(root_a)
+    File.mkdir_p!(root_b)
+    {:ok, ev} = Evaluator.start(mode: :local, cwd: root_a)
+
+    {:ok, kernel} =
+      Loop.start_link(
+        client: %{},
+        evaluator: ev,
+        session_id: sid,
+        root: root_a,
+        client_fun: scripted([])
+      )
+
+    on_exit(fn ->
+      if Process.alive?(kernel), do: GenServer.stop(kernel)
+      if Process.alive?(ev), do: GenServer.stop(ev)
+      if File.dir?(original), do: File.cd!(original)
+      Newbee.Session.delete(sid)
+      File.rm_rf!(base)
+    end)
+
+    assert Newbee.Session.cwd(sid) == root_a
+    assert {:ok, ^root_b} = Loop.set_root(kernel, root_b)
+
+    state = :sys.get_state(kernel)
+    prompt = hd(state.messages)["content"]
+    assert state.root == root_b
+    assert Newbee.Session.cwd(sid) == root_b
+    assert prompt =~ "当前工程根目录: #{root_b}"
+    refute prompt =~ "当前工程根目录: #{root_a}\n"
+    assert Newbee.Session.system_prompt(state.session) == prompt
+    assert Evaluator.info(ev).cwd == root_b
+    assert %{status: :ok, value: cwd_value, cwd: ^root_b} = Evaluator.eval(ev, "File.cwd!()")
+    assert cwd_value == inspect(root_b)
+  end
+
+  test "进入同仓库 worktree 后自动把它提升为会话根" do
+    original = File.cwd!()
+    base = Path.join(System.tmp_dir!(), "newbee-loop-worktree-#{System.unique_integer([:positive])}")
+    repo = Path.join(base, "repo")
+    worktree = Path.join(base, "worktree")
+    File.mkdir_p!(repo)
+    File.write!(Path.join(repo, "base.txt"), "base\n")
+    assert {_, 0} = System.cmd("git", ["-C", repo, "init", "-q"])
+    assert {_, 0} = System.cmd("git", ["-C", repo, "add", "base.txt"])
+
+    assert {_, 0} =
+             System.cmd("git", [
+               "-C",
+               repo,
+               "-c",
+               "user.email=test@local",
+               "-c",
+               "user.name=test",
+               "commit",
+               "-q",
+               "-m",
+               "base"
+             ])
+
+    assert {_, 0} =
+             System.cmd("git", ["-C", repo, "worktree", "add", "-q", "-b", "session-worktree", worktree])
+
+    {:ok, ev} = Evaluator.start(mode: :local, cwd: repo)
+    test_pid = self()
+    code = "File.cd!(" <> inspect(worktree) <> ")"
+
+    script = [
+      fn _messages, _on_text -> {:ok, tool_msg(code), %{}} end,
+      fn _messages, _on_text -> {:ok, done_msg("worktree ready"), %{}} end
+    ]
+
+    {:ok, kernel} =
+      Loop.start_link(
+        client: %{},
+        evaluator: ev,
+        session: false,
+        root: repo,
+        render: fn event -> send(test_pid, event) end,
+        client_fun: scripted(script)
+      )
+
+    on_exit(fn ->
+      if Process.alive?(kernel), do: GenServer.stop(kernel)
+      if Process.alive?(ev), do: GenServer.stop(ev)
+      if File.dir?(original), do: File.cd!(original)
+      File.rm_rf!(base)
+    end)
+
+    assert {:done, "worktree ready"} = Loop.submit(kernel, "switch")
+    assert_receive {:workspace_changed, ^worktree}
+
+    state = :sys.get_state(kernel)
+    assert state.root == worktree
+    assert Evaluator.info(ev).cwd == worktree
+    assert hd(state.messages)["content"] =~ "当前工程根目录: #{worktree}"
+    assert %{status: :ok, value: cwd_value, cwd: ^worktree} = Evaluator.eval(ev, "File.cwd!()")
+    assert cwd_value == inspect(worktree)
+  end
+
 end
 
 :ok

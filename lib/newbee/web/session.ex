@@ -37,28 +37,56 @@ defmodule Newbee.Web.Session do
     end
   end
 
-  @doc "确保会话存在：resume 已有 session id 或新建。cwd 给定时绑定会话工作目录（仅对新建生效）。返回 {:ok, pid, sid}。"
+  @doc "确保会话存在并绑定唯一绝对工作根；显式 cwd 无效时返回错误，已有会话可在空闲时切换。"
   def ensure(sid \\ nil, cwd \\ nil) do
     sid = sid || gen_session_id()
 
     case lookup(sid) do
       {:ok, pid} ->
-        {:ok, pid, sid}
+        with :ok <- maybe_rebind_existing(pid, sid, cwd) do
+          {:ok, pid, sid}
+        end
 
       {:error, :not_found} ->
-        cwd =
-          case cwd && Newbee.Web.Workspace.valid_dir?(cwd) do
-            {:ok, expanded} -> expanded
-            _ -> nil
+        with {:ok, resolved} <- resolve_session_cwd(sid, cwd),
+             :ok <- Newbee.Session.set_cwd(sid, resolved) do
+          case DynamicSupervisor.start_child(Newbee.Web.SessionSup, {__MODULE__, sid}) do
+            {:ok, pid} -> {:ok, pid, sid}
+            {:error, {:already_started, pid}} -> {:ok, pid, sid}
+            other -> other
           end
-
-        if cwd, do: Newbee.Session.set_cwd(sid, cwd)
-
-        case DynamicSupervisor.start_child(Newbee.Web.SessionSup, {__MODULE__, sid}) do
-          {:ok, pid} -> {:ok, pid, sid}
-          {:error, {:already_started, pid}} -> {:ok, pid, sid}
-          other -> other
         end
+    end
+  end
+
+  defp resolve_session_cwd(sid, requested) do
+    candidate = requested || Newbee.Session.cwd(sid) || File.cwd!()
+
+    case Newbee.Web.Workspace.valid_dir?(candidate) do
+      {:ok, expanded} -> {:ok, expanded}
+      :error when is_binary(requested) -> {:error, :invalid_directory}
+      :error -> {:error, :workspace_unavailable}
+    end
+  end
+
+  defp maybe_rebind_existing(_pid, _sid, nil), do: :ok
+
+  defp maybe_rebind_existing(pid, sid, requested) do
+    case Newbee.Web.Workspace.valid_dir?(requested) do
+      {:ok, expanded} ->
+        current = Newbee.Session.cwd(sid)
+
+        if is_binary(current) and Path.expand(current) == expanded do
+          :ok
+        else
+          case set_cwd(pid, expanded) do
+            {:ok, _} -> :ok
+            {:error, _} = error -> error
+          end
+        end
+
+      :error ->
+        {:error, :invalid_directory}
     end
   end
 
@@ -165,7 +193,7 @@ defmodule Newbee.Web.Session do
   def switch_model(pid, provider, model),
     do: GenServer.call(pid, {:switch_model, provider, model}, 10_000)
 
-  @doc "热更新思考强度（reasoning_effort）；持久化到会话 meta，重启后保留。"
+  @doc "切换会话工作根；同步 evaluator、Agent 上下文和持久化提示词。"
   def set_cwd(pid, cwd), do: GenServer.call(pid, {:set_cwd, cwd}, 120_000)
   def set_effort(pid, effort), do: GenServer.call(pid, {:set_effort, effort}, 10_000)
 
@@ -627,10 +655,13 @@ defmodule Newbee.Web.Session do
     end
   end
 
+  def handle_call({:set_cwd, _cwd}, _from, %{busy: true} = st) do
+    {:reply, {:error, :session_busy}, st}
+  end
+
   def handle_call({:set_cwd, cwd}, _from, st) when is_binary(cwd) do
     with {:ok, expanded} <- Newbee.Web.Workspace.valid_dir?(cwd),
          :ok <- set_kernel_cwd(st, expanded) do
-      :ok = Newbee.Session.set_cwd(st.sid, expanded)
       {:reply, {:ok, expanded}, st}
     else
       :error -> {:reply, {:error, :invalid_directory}, st}
@@ -776,23 +807,36 @@ defmodule Newbee.Web.Session do
   end
 
   def handle_info({:kernel_booted, {:ok, kernel}}, %{booting: true} = st) do
-    # start_kernel 在临时 spawn 进程内 start_link；spawn 正常退出后 kernel 仍存活，
-    # 这里补 link 回本会话进程，维持原有的会话死→kernel 死生命周期。
-    if Process.alive?(kernel), do: Process.link(kernel)
+    # boot 期间 cwd 可能已被用户切换；挂回前必须按 Session 最新值再次对齐。
+    case Newbee.Agent.Loop.set_root(kernel, Newbee.Session.cwd(st.sid)) do
+      {:ok, _root} ->
+        # start_kernel 在临时 spawn 进程内 start_link；spawn 正常退出后 kernel 仍存活，
+        # 这里补 link 回本会话进程，维持原有的会话死→kernel 死生命周期。
+        if Process.alive?(kernel), do: Process.link(kernel)
 
-    boot_client = st.boot_client
-    st = %{st | kernel: kernel, booting: false, boot_client: nil}
+        boot_client = st.boot_client
+        st = %{st | kernel: kernel, booting: false, boot_client: nil}
 
-    # boot 期间用户可能已热切模型/思考强度；用会话当前 client 覆盖启动时快照。
-    if boot_client && st.client && st.client != boot_client do
-      try do
-        Newbee.Agent.Loop.switch_model(kernel, st.client)
-      catch
-        _, _ -> :ok
-      end
+        # boot 期间用户可能已热切模型/思考强度；用会话当前 client 覆盖启动时快照。
+        if boot_client && st.client && st.client != boot_client do
+          try do
+            Newbee.Agent.Loop.switch_model(kernel, st.client)
+          catch
+            _, _ -> :ok
+          end
+        end
+
+        {:noreply, dispatch_pending(st)}
+
+      {:error, reason} ->
+        if Process.alive?(kernel), do: GenServer.stop(kernel, :normal, 5_000)
+
+        broadcast(st.sid, :error, %{
+          message: "⚠ 会话工作目录对齐失败：#{inspect(reason)}。请选择有效项目目录后重试。"
+        })
+
+        {:noreply, st |> Map.put(:booting, false) |> Map.put(:boot_client, nil) |> fail_pending()}
     end
-
-    {:noreply, dispatch_pending(st)}
   end
 
   def handle_info({:kernel_booted, {:error, reason}}, st) do
@@ -969,13 +1013,12 @@ defmodule Newbee.Web.Session do
     %{st | busy: true}
   end
 
-  defp set_kernel_cwd(%{kernel: nil}, _cwd), do: :ok
+  defp set_kernel_cwd(%{kernel: nil, sid: sid}, cwd), do: Newbee.Session.set_cwd(sid, cwd)
 
   defp set_kernel_cwd(%{kernel: kernel}, cwd) do
-    case Newbee.SessionEvaluators.lookup(kernel) do
-      {:ok, {evaluator, _scope}} -> Newbee.DEE.Evaluator.set_cwd(evaluator, cwd)
-      {:ok, evaluator} -> Newbee.DEE.Evaluator.set_cwd(evaluator, cwd)
-      :error -> {:error, :evaluator_not_found}
+    case Newbee.Agent.Loop.set_root(kernel, cwd) do
+      {:ok, _root} -> :ok
+      {:error, _} = error -> error
     end
   end
 
@@ -1084,6 +1127,7 @@ defmodule Newbee.Web.Session do
   defp encode_event({:permission_ask, {:permission_ask, preview}}), do: %{preview: preview}
   defp encode_event({:usage, usage}), do: %{usage: usage}
   defp encode_event({:compacted, n}), do: %{count: n}
+  defp encode_event({:workspace_changed, cwd}), do: %{cwd: cwd}
 
   defp encode_event({:rule_hit, hits}) when is_list(hits),
     do: %{hits: Enum.map(hits, &Map.take(&1, [:id, :injection]))}

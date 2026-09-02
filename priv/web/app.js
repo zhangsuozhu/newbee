@@ -466,6 +466,12 @@ const flow = $("flow");
       case "usage": setUsage(p.usage); handleBubbleUsage(p.usage); break;
       case "compacted": line("notice", `历史已压缩 ${p.count} 条`); break;
       case "model_switched": $("model-label").textContent = p.model; break;
+      case "workspace_changed":
+        state.cwd = p.cwd || state.cwd;
+        updateCwdLabel(state.cwd);
+        loadSessions();
+        line("notice", `当前会话工作目录已切换为 ${state.cwd}`);
+        break;
       // 上下文窗口覆盖热更新（当前会话模型匹配时服务端推送）：顶栏用量标签立即反映新值
       case "context_window_changed": refreshStats(); break;
       case "goal_start": line("notice", `目标开始: ${p.text}`); break;

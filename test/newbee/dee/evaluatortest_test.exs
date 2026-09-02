@@ -77,6 +77,39 @@ defmodule Newbee.DEE.EvaluatorTest do
     assert Evaluator.bindings_summary(ev) == []
   end
 
+  test "每个 evaluator 在 cell 前恢复自己的稳定工作根" do
+    original = File.cwd!()
+    base = Path.join(System.tmp_dir!(), "newbee-evaluator-cwd-#{System.unique_integer([:positive])}")
+    root_a = Path.join(base, "a")
+    root_b = Path.join(base, "b")
+    File.mkdir_p!(root_a)
+    File.mkdir_p!(root_b)
+    {:ok, ev_a} = Evaluator.start(mode: :local, cwd: root_a)
+    {:ok, ev_b} = Evaluator.start(mode: :local, cwd: root_b)
+
+    on_exit(fn ->
+      if Process.alive?(ev_a), do: GenServer.stop(ev_a)
+      if Process.alive?(ev_b), do: GenServer.stop(ev_b)
+      if File.dir?(original), do: File.cd!(original)
+      File.rm_rf!(base)
+    end)
+
+    assert %{status: :ok, value: value_a, cwd: ^root_a} = Evaluator.eval(ev_a, "File.cwd!()")
+    assert value_a == inspect(root_a)
+    assert %{status: :ok, value: value_b, cwd: ^root_b} = Evaluator.eval(ev_b, "File.cwd!()")
+    assert value_b == inspect(root_b)
+
+    assert %{status: :ok, cwd: ^root_b} = Evaluator.eval(ev_a, "File.cd!(" <> inspect(root_b) <> ")")
+
+    assert %{status: :ok, value: restored, cwd: ^root_a} =
+             Evaluator.eval(ev_a, "File.cwd!()")
+
+    assert restored == inspect(root_a)
+    shell = Evaluator.eval(ev_a, ~S|Newbee.Tools.Run.sh("pwd").output|)
+    assert shell.status == :ok
+    assert shell.value =~ root_a
+  end
+
   defp wait_until(predicate, remaining) when remaining <= 0, do: predicate.()
 
   defp wait_until(predicate, remaining) do

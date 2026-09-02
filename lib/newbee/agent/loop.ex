@@ -25,7 +25,7 @@ defmodule Newbee.Agent.Loop do
             compaction_max_tokens: 1_024,
             compaction_output_reserve: nil,
             auto_compact: true,
-            # 会话工作目录根（WebUI 选定）；nil = 主节点 File.cwd!
+            # 会话唯一绝对工作根；启动时物化，切换时与 evaluator/prompt 同步。
             root: nil,
             # 宿主进程 monitor 引用（web 会话进程）；宿主死亡 → kernel 自停，
             # 链式触发会话私有求值器释放（见 evaluator_owned / Evaluator.monitor_owner）
@@ -66,6 +66,8 @@ defmodule Newbee.Agent.Loop do
   def loop(kernel, task, opts \\ []), do: GenServer.call(kernel, {:loop, task, opts}, :infinity)
 
   def usage(kernel), do: GenServer.call(kernel, :usage)
+  @doc "切换会话的唯一工作根，并同步 evaluator、持久化元数据和 system prompt。"
+  def set_root(kernel, root), do: GenServer.call(kernel, {:set_root, root}, 120_000)
 
   @doc "热切模型：不丢会话/绑定/消息，只换 LLM client 与流式入口。返回 :ok | {:error, reason}。"
   def switch_model(kernel, client) when is_map(client) do
@@ -126,13 +128,16 @@ defmodule Newbee.Agent.Loop do
     client = Keyword.fetch!(opts, :client)
     render = Keyword.get(opts, :render, fn _ -> :ok end)
     evaluator = Keyword.get(opts, :evaluator, Newbee.DEE.Evaluator)
-    root = Keyword.get(opts, :root)
+    requested_root = Keyword.get(opts, :root)
 
     session_seed =
       if Keyword.get(opts, :session, true),
         do: Newbee.Session.open(Keyword.get(opts, :session_id))
 
     session_id = if session_seed, do: session_seed.id
+    root = initial_root(requested_root, session_seed)
+    if session_seed, do: Newbee.Session.set_cwd(session_seed.id, root)
+    _ = set_evaluator_cwd(evaluator, root)
 
     # 会话级隔离：每个会话一个中断 scope（注入 client），evaluator 注册到
     # SessionEvaluators（key = 本 Loop pid），interrupt 只作用本会话。
@@ -245,14 +250,7 @@ defmodule Newbee.Agent.Loop do
       check_beam_snapshot(session)
     end
 
-    prompt =
-      case session do
-        nil ->
-          system_prompt(root)
-
-        session ->
-          Newbee.Session.system_prompt(session) || Newbee.Session.save_system_prompt(session, system_prompt(root))
-      end
+    prompt = initial_system_prompt(session, root)
 
     # 同一 session 的 system prompt 是请求头：首次生成后持久化，恢复时逐字复用。
     # 历史消息只追加，因而后续请求可作为上一次请求的 provider cache prefix extension。
@@ -290,7 +288,7 @@ defmodule Newbee.Agent.Loop do
         compaction_max_tokens: Keyword.get(opts, :compaction_max_tokens, 1_024),
         compaction_output_reserve: Keyword.get(opts, :compaction_output_reserve),
         auto_compact: Keyword.get(opts, :auto_compact, true),
-        root: Keyword.get(opts, :root)
+        root: root
      }}
   end
 
@@ -479,6 +477,17 @@ defmodule Newbee.Agent.Loop do
 
 
 
+
+  def handle_call({:set_root, root}, _from, state) when is_binary(root) do
+    case transition_root(state, root) do
+      {:ok, next} ->
+        emit(next, {:workspace_changed, next.root})
+        {:reply, {:ok, next.root}, next}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
 
   def handle_call({:switch_model, client}, _from, state) do
     # 不丢会话/绑定/消息/中断 scope，仅替换后续 turn 所用的 client 与 client_fun。
@@ -1532,25 +1541,33 @@ defmodule Newbee.Agent.Loop do
     Newbee.DebugLog.log(:tool, "eval start #{title}")
 
     eval_result =
-      try do
-        with {:ok, token} <- issue_collaboration_capability(state) do
-          _ = Newbee.DEE.Evaluator.eval(state.evaluator, collaboration_context_put(token), media_capability: token)
-
+      case set_evaluator_cwd(state.evaluator, state.root) do
+        :ok ->
           try do
-            Newbee.DEE.Evaluator.eval(state.evaluator, code, media_capability: token)
-          after
-            # token 清理独立成步：保留裸代码的顶层绑定；主节点撤销阻止 token 复用
-            Newbee.DEE.Evaluator.eval(state.evaluator, @collab_context_delete, media_capability: token)
-            Newbee.Collaboration.Capability.revoke(token)
+            with {:ok, token} <- issue_collaboration_capability(state) do
+              _ = Newbee.DEE.Evaluator.eval(state.evaluator, collaboration_context_put(token), media_capability: token)
+
+              try do
+                Newbee.DEE.Evaluator.eval(state.evaluator, code, media_capability: token)
+              after
+                # token 清理独立成步：保留裸代码的顶层绑定；主节点撤销阻止 token 复用
+                Newbee.DEE.Evaluator.eval(state.evaluator, @collab_context_delete, media_capability: token)
+                Newbee.Collaboration.Capability.revoke(token)
+              end
+            else
+              _ -> Newbee.DEE.Evaluator.eval(state.evaluator, code)
+            end
+          rescue
+            e ->
+              Newbee.DebugLog.log(:tool, "eval raised #{inspect(e)}")
+              %{status: :error, error: inspect(e), output: "", warnings: ""}
           end
-        else
-          _ -> Newbee.DEE.Evaluator.eval(state.evaluator, code)
-        end
-      rescue
-        e ->
-          Newbee.DebugLog.log(:tool, "eval raised #{inspect(e)}")
-          %{status: :error, error: inspect(e), output: ""}
+
+        {:error, reason} ->
+          %{status: :error, error: "session workspace unavailable: #{state.root} (#{inspect(reason)})", output: "", warnings: ""}
       end
+
+    {state, eval_result} = reconcile_eval_cwd(state, eval_result)
 
     if Newbee.LLM.Client.interrupted?(state.client) or eval_interrupted?(eval_result) do
       Newbee.DebugLog.log(:tool, "eval interrupted title=#{title}")
@@ -2246,6 +2263,161 @@ defp final_check(%{progress: nil} = state), do: {:done, state}
       {nil, inherited} when not is_nil(inherited) -> Map.put(client, field, inherited)
       _ -> client
     end
+  end
+
+  defp initial_root(requested_root, session) do
+    saved_root = if session, do: Newbee.Session.cwd(session.id)
+    Path.expand(requested_root || saved_root || File.cwd!())
+  end
+
+  defp initial_system_prompt(nil, root), do: system_prompt(root)
+
+  defp initial_system_prompt(session, root) do
+    case Newbee.Session.system_prompt(session) do
+      prompt when is_binary(prompt) ->
+        if prompt_for_root?(prompt, root),
+          do: prompt,
+          else: Newbee.Session.save_system_prompt(session, system_prompt(root))
+
+      _ ->
+        Newbee.Session.save_system_prompt(session, system_prompt(root))
+    end
+  end
+
+  defp prompt_for_root?(prompt, root) do
+    String.contains?(prompt, "\n当前工程根目录: #{root}\n")
+  end
+
+  defp transition_root(state, root) do
+    expanded = Path.expand(root)
+
+    cond do
+      not File.dir?(expanded) ->
+        {:error, :invalid_directory}
+
+      expanded == state.root ->
+        with :ok <- set_evaluator_cwd(state.evaluator, expanded) do
+          persist_root(state.session, expanded, nil)
+          {:ok, state}
+        end
+
+      true ->
+        case set_evaluator_cwd(state.evaluator, expanded) do
+          :ok ->
+            case rebuild_root_state(state, expanded) do
+              {:ok, next} ->
+                {:ok, next}
+
+              {:error, _} = error ->
+                _ = set_evaluator_cwd(state.evaluator, state.root)
+                error
+            end
+
+          {:error, _} = error ->
+            error
+        end
+    end
+  end
+
+  defp rebuild_root_state(state, root) do
+    prompt = system_prompt(root)
+    :ok = persist_root(state.session, root, prompt)
+    {:ok, %{state | root: root, messages: replace_system_prompt(state.messages, prompt)}}
+  rescue
+    e -> {:error, {:workspace_projection_failed, Exception.message(e)}}
+  end
+
+  defp persist_root(nil, _root, _prompt), do: :ok
+
+  defp persist_root(session, root, prompt) do
+    :ok = Newbee.Session.set_cwd(session.id, root)
+    if is_binary(prompt), do: Newbee.Session.save_system_prompt(session, prompt)
+    :ok
+  end
+
+  defp replace_system_prompt([%{"role" => "system"} = first | rest], prompt) do
+    [Map.put(first, "content", prompt) | rest]
+  end
+
+  defp replace_system_prompt(messages, prompt) do
+    [%{"role" => "system", "content" => prompt} | messages]
+  end
+
+  defp set_evaluator_cwd(nil, _root), do: :ok
+
+  defp set_evaluator_cwd(evaluator, root) do
+    Newbee.DEE.Evaluator.set_cwd(evaluator, root)
+  rescue
+    e -> {:error, {:evaluator_cwd_failed, Exception.message(e)}}
+  catch
+    :exit, reason -> {:error, {:evaluator_cwd_failed, reason}}
+  end
+
+  defp reconcile_eval_cwd(state, %{cwd: observed} = result) when is_binary(observed) do
+    case linked_worktree_transition(state.root, observed) do
+      {:adopt, root} ->
+        case transition_root(state, root) do
+          {:ok, next} ->
+            emit(next, {:workspace_changed, root})
+            {next, append_eval_warning(result, "session adopted linked Git worktree: #{root}")}
+
+          {:error, reason} ->
+            {state, append_eval_warning(result, "linked worktree switch failed: #{inspect(reason)}")}
+        end
+
+      :same ->
+        {state, result}
+
+      :unrelated ->
+        warning =
+          "ignored persistent cwd change to #{Path.expand(observed)}; session root remains #{state.root}"
+
+        {state, append_eval_warning(result, warning)}
+    end
+  end
+
+  defp reconcile_eval_cwd(state, result), do: {state, result}
+
+  defp append_eval_warning(result, warning) do
+    current = Map.get(result, :warnings) || ""
+    warnings = if current == "", do: warning, else: current <> "\n" <> warning
+    Map.put(result, :warnings, warnings)
+  end
+
+  defp linked_worktree_transition(root, observed) do
+    root = Path.expand(root)
+    observed = Path.expand(observed)
+
+    cond do
+      within_root?(observed, root) ->
+        :same
+
+      true ->
+        with {:ok, current} <- git_workspace(root),
+             {:ok, candidate} <- git_workspace(observed),
+             true <- current.common_dir == candidate.common_dir,
+             false <- current.top == candidate.top do
+          {:adopt, candidate.top}
+        else
+          _ -> :unrelated
+        end
+    end
+  end
+
+  defp within_root?(path, "/"), do: String.starts_with?(path, "/")
+  defp within_root?(path, root), do: path == root or String.starts_with?(path, root <> "/")
+
+  defp git_workspace(path) do
+    with true <- File.dir?(path),
+         {top, 0} <- System.cmd("git", ["-C", path, "rev-parse", "--show-toplevel"], stderr_to_stdout: true),
+         {common, 0} <-
+           System.cmd("git", ["-C", path, "rev-parse", "--git-common-dir"], stderr_to_stdout: true) do
+      {:ok, %{top: top |> String.trim() |> Path.expand(), common_dir: common |> String.trim() |> Path.expand(path)}}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
   end
 
   # ── system prompt = 环境物化视图（§4.6）──

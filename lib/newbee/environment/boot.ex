@@ -62,18 +62,25 @@ defmodule Newbee.Environment.Boot do
       {:ok, ev} ->
         ev
 
-      {:error, _reason} ->
+      {:error, reason} ->
         if Keyword.get(opts, :log, true) do
-          IO.puts("\e[33m⚠ 求值器启动失败，降级复用具名求值器\e[0m")
+          IO.puts("\e[33m⚠ 求值器节点启动失败，降级为会话私有本地 evaluator：#{inspect(reason)}\e[0m")
         end
 
-        case Process.whereis(Newbee.DEE.Evaluator) do
-          nil ->
-            {:ok, ev} = Newbee.DEE.Evaluator.start(name: Newbee.DEE.Evaluator)
+        case Keyword.get(opts, :session_id) do
+          sid when is_binary(sid) ->
+            {:ok, ev} = Newbee.DEE.Evaluator.start(mode: :local, cwd: Keyword.get(opts, :cwd), node_label: sid)
             ev
 
-          pid ->
-            pid
+          _ ->
+            case Process.whereis(Newbee.DEE.Evaluator) do
+              nil ->
+                {:ok, ev} = Newbee.DEE.Evaluator.start(name: Newbee.DEE.Evaluator)
+                ev
+
+              pid ->
+                pid
+            end
         end
     end
   end
