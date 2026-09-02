@@ -3454,7 +3454,11 @@ case "goal_round": break;
     const btn = $("mcfg-mfetch");
     btn.disabled = true; btn.textContent = "拉取中…";
     try {
-      const r = await rpc("llm.providerModels", { provider: MCFG.current, refresh: true });
+      const baseUrl = $("mcfg-baseurl").value.trim();
+      const apiKey = $("mcfg-apikey").value.trim();
+      if (!baseUrl) { line("error", "Base URL 不能为空"); btn.disabled = false; btn.textContent = "拉取"; return; }
+      if (!apiKey) { line("error", "API Key 不能为空"); btn.disabled = false; btn.textContent = "拉取"; return; }
+      const r = await rpc("llm.providerModels", { provider: MCFG.current, baseUrl: baseUrl, apiKey: apiKey, refresh: true });
       const p = MCFG.providers[MCFG.current];
       if (!p.models) p.models = [];
       let added = 0;
@@ -3606,9 +3610,7 @@ case "goal_round": break;
     const btn = $("mcfg-save");
     btn.disabled = true; btn.textContent = "保存中…";
     try {
-      const payload = Object.assign({}, attrs);
-      if (payload.apiKey === null) payload.apiKey = MCFG.origKey;
-      const r = await rpc("llm.saveProvider", payload);
+      const r = await rpc("llm.saveProvider", attrs);
       MCFG.dirty = false;
       MCFG.current = r.provider;
       const data = await rpc("llm.providerConfig", {});

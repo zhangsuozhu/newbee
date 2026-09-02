@@ -228,7 +228,7 @@ defmodule Newbee.LLM.Config do
       new_name == "" -> {:error, :bad_provider_name}
       base_url == "" -> {:error, :bad_base_url}
       # 新建（无 existing）且未提供 key → 拒绝；更新且 apiKey=nil → 保留原值
-      is_nil(existing) and (is_nil(api_key) or to_string(api_key) |> String.trim() == "") ->
+      is_nil(existing) and (is_nil(api_key) or to_string(api_key) |> String.trim() == "" or String.contains?(to_string(api_key), "•")) ->
         {:error, :bad_api_key}
       true -> do_upsert_provider(name, new_name, attrs)
     end
@@ -282,10 +282,15 @@ defmodule Newbee.LLM.Config do
 
   # apiKey 处理：nil/空串 → 保留 existing 原值；否则用新值（去除首尾空白）
   defp put_api_key(provider, nil, existing), do: Map.put(provider, "apiKey", existing["apiKey"] || "")
-  defp put_api_key(provider, new, _existing) do
-    v = new |> to_string() |> String.trim()
-    Map.put(provider, "apiKey", v)
+  defp put_api_key(provider, new, existing) when is_binary(new) do
+    v = String.trim(new)
+    if v == "" or String.contains?(v, "•") do
+      Map.put(provider, "apiKey", existing["apiKey"] || "")
+    else
+      Map.put(provider, "apiKey", v)
+    end
   end
+  defp put_api_key(provider, _new, existing), do: Map.put(provider, "apiKey", existing["apiKey"] || "")
 
   defp maybe_put_ctxw(p, n) when is_integer(n) and n > 0, do: Map.put(p, "contextWindow", n)
   defp maybe_put_ctxw(p, s) when is_binary(s) do
@@ -560,6 +565,11 @@ defmodule Newbee.LLM.Config do
 
   defp static_models(provider) do
     Enum.filter(provider["models"] || [], &is_binary/1)
+  end
+
+  @doc "供 Web API 对未保存/脏数据的 inline 模型列表拉取（不走缓存，直接 GET /models）"
+  def fetch_models_inline(provider) when is_map(provider) do
+    fetch_models(provider)
   end
 
   # 只保留正整数覆盖项（配置文件可能被手编辑出脏数据）
