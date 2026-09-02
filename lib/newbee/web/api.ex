@@ -673,6 +673,7 @@ defmodule Newbee.Web.Api do
       {:error, code, message} -> {:error, code, message}
     end
   end
+
   defp dispatch_rpc("group.delete", %{"groupId" => group_id, "sessionId" => sid}) do
     with {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id),
          :ok <- require_group_coordinator(group_id, sid) do
@@ -876,10 +877,13 @@ defmodule Newbee.Web.Api do
     end
   end
 
-  defp dispatch_rpc("session.promptAttachments", %{
-         "sessionId" => sid,
-         "uploadIds" => upload_ids
-       } = payload) do
+  defp dispatch_rpc(
+         "session.promptAttachments",
+         %{
+           "sessionId" => sid,
+           "uploadIds" => upload_ids
+         } = payload
+       ) do
     text = Map.get(payload, "text", "")
 
     with {:ok, pid} <- find_session(sid),
