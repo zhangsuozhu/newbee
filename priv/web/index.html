@@ -119,28 +119,29 @@
     <div id="mc-collaboration" class="mc-pane hidden">
       <div class="mc-pane-head">
         <span id="mc-collab-title">协作消息</span>
+        <span id="mc-collab-unread" class="collab-unread hidden" title="未读协作动态"></span>
+        <span id="mc-group-status" class="collab-group-status" title="工作组状态"></span>
+        <span id="mc-group-lifecycle" class="collab-lifecycle"></span>
         <button id="mc-collab-refresh" class="icon-btn" title="刷新">↻</button>
       </div>
       <div id="mc-collab-members" class="collab-member-strip"></div>
+      <div class="collab-activity-head"><span>动态</span><button id="mc-collab-activity-more" class="btn-ghost" title="展开或收起全部动态">展开全部</button></div>
       <div id="mc-collab-activity" class="collab-activity-list"></div>
       <div id="mc-collab-list" class="collab-message-list"></div>
-      <div class="collab-composer">
-        <select id="mc-collab-recipient" title="消息接收者"></select>
-        <select id="mc-collab-delivery" title="投递方式：仅通知不唤醒模型；排队处理会传给对方 AI；立即处理在对方空闲时马上开始">
-          <option value="notify">仅通知</option>
-          <option value="queue">排队处理</option>
-          <option value="wake">立即处理</option>
-        </select>
-        <textarea id="mc-collab-input" rows="2" placeholder="给协作会话发消息…"></textarea>
-        <button id="mc-collab-send" class="btn-primary">发送</button>
-      </div>
-    </div>
     <div id="mc-tasks" class="mc-pane hidden">
       <div class="mc-pane-head">
         <span id="mc-task-title">工作项</span>
+        <span id="mc-task-attention" class="collab-unread hidden" title="需要你注意的工作项"></span>
         <button id="mc-task-new" class="icon-btn" title="新建工作项">+</button>
       </div>
+      <div id="mc-task-filters" class="collab-filter-row" role="group" aria-label="工作项筛选">
+        <button data-task-filter="all" class="active" title="显示全部工作项">全部</button>
+        <button data-task-filter="mine" title="分派给我或由我创建的">我相关</button>
+        <button data-task-filter="attention" title="受阻、失败或待审查的优先">需注意</button>
+        <button data-task-filter="review" title="有待审查变更的">待审查</button>
+      </div>
       <div id="mc-task-list" class="collab-task-list"></div>
+    </div>
     </div>
 
     <div id="mc-files" class="mc-pane">
@@ -230,7 +231,7 @@
   <div class="modal-box">
     <div class="modal-title">组成工作组</div>
     <div class="group-modal-fields">
-      <label>名称<input id="group-name-input" type="text" placeholder="例如：认证重构" maxlength="80" /></label>
+<div id="group-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="组成工作组">
       <label>共同目标<textarea id="group-goal-input" rows="3" placeholder="这些会话共同完成什么？" maxlength="2000"></textarea></label>
       <div id="group-member-chips" class="group-member-chips"></div>
     </div>
@@ -240,15 +241,14 @@
     </div>
   </div>
 </div>
-
-<div id="delegate-modal" class="modal hidden">
+<div id="delegate-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="让另一个 AI 帮忙">
   <div class="modal-box">
     <div class="modal-title">让另一个 AI 帮忙</div>
     <div class="modal-body">系统会创建一个关联会话。它仍然出现在左侧，可以随时点进去查看。</div>
     <div class="group-modal-fields">
       <label>会话名称<input id="delegate-name" type="text" placeholder="例如：认证测试" maxlength="80" /></label>
       <label>让它负责什么？<textarea id="delegate-task" rows="4" placeholder="例如：补充过期凭证和登录失败测试" maxlength="2000"></textarea></label>
-      <label>验收标准<input id="delegate-acceptance" type="text" placeholder="例如：相关测试全部通过" maxlength="500" /></label>
+      <label>验收标准（口头约定，需人工核对）<input id="delegate-acceptance" type="text" placeholder="例如：相关测试全部通过" maxlength="500" /></label>
     </div>
     <div class="modal-actions">
       <button class="btn-ghost" id="delegate-cancel">取消</button>
@@ -257,13 +257,16 @@
   </div>
 </div>
 
-<div id="task-modal" class="modal hidden">
+<div id="task-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="新建工作项">
   <div class="modal-box">
     <div class="modal-title">新建工作项</div>
     <div class="group-modal-fields">
       <label>工作项名称<input id="task-name" type="text" placeholder="例如：补充认证测试" maxlength="160" /></label>
       <label>交给谁？<select id="task-owner"></select></label>
       <label>说明<textarea id="task-description" rows="3" placeholder="工作内容和注意事项" maxlength="2000"></textarea></label>
+      <div class="task-accept-label">成功标准（可选；界面约定，需人工核对，不是机器验收）</div>
+      <div id="task-acceptance-list" class="task-accept-list"></div>
+      <button class="btn-ghost" id="task-acceptance-add" type="button" title="加一条成功标准：命令 / 文件存在 / 文件哈希">+ 加一条成功标准</button>
     </div>
     <div class="modal-actions">
       <button class="btn-ghost" id="task-cancel">取消</button>

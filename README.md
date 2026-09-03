@@ -135,9 +135,17 @@
 
 *Foreground Worker ships. Background Adapter evolves. Decoupled via idempotent protocol, isolated incentives.*
 
+### 会话 Hive v2：有界、可验收的并行协作
+`Newbee.Tools.Hive` 在同一个持久 `Collaboration.Coordinator` 上提供 DAG Board、revision CAS、事件等待、定向消息、Persona 与过滤后的 context fork。worker 只能提交结果，Lead 在受信主节点执行结构化验收后才能标记成功；派生深度、累计数量、任务/载荷/上下文都有硬上限。
+
+这是一套协作正确性机制，不是“更多代理一定更好”的承诺，也不是代码执行沙箱。设计依据、论文数据、限制和复现命令见 [`docs/collab-v2-analysis.md`](docs/collab-v2-analysis.md)。
+
+*Hive v2 adds a durable DAG board, revision CAS, event-driven waits, bounded context forks, and Lead-owned verification on the existing Coordinator. It governs collaboration; it does not claim universal multi-agent gains or sandbox untrusted project code.*
+
 ---
 
 ## ⚡ 快速开始 / Quick Start
+
 
 ```bash
 # 工具链 — OTP 29 + Elixir 1.20

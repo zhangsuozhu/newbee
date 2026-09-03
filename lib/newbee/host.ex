@@ -50,11 +50,16 @@ defmodule Newbee.Host do
     :ok
   end
 
-  def call(module, fun, args) when is_atom(module) and is_atom(fun) and is_list(args) do
+  def call(module, fun, args) when is_atom(module) and is_atom(fun) and is_list(args),
+    do: call(module, fun, args, 30_000)
+
+  def call(module, fun, args, timeout)
+      when is_atom(module) and is_atom(fun) and is_list(args) and
+             (timeout == :infinity or (is_integer(timeout) and timeout > 0)) do
     if on_main?() do
       apply(module, fun, args)
     else
-      :rpc.call(main_node(), module, fun, args, 30_000)
+      :rpc.call(main_node(), module, fun, args, timeout)
     end
   end
 

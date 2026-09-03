@@ -272,6 +272,10 @@ const flow = $("flow");
     groupActivity: [],
     groupTasks: [],
     taskReviews: {},
+    taskFilter: "all",
+    activityExpanded: false,
+    collabUnread: {},
+    collabSeen: loadCollabSeen(),
     fileAttribution: {},
     groupBySession: {},
     selectedSessions: new Set(),
@@ -1034,6 +1038,12 @@ case "goal_round": break;
     if (expectedSeq !== groupLoadSeq || state.sid !== expectedSid) return;
     const ref = state.groupBySession[expectedSid] || null;
     const delegate = $("delegate-session");
+    const paintDelegate = (visible, enabled, hint) => {
+      if (!delegate) return;
+      delegate.classList.toggle("hidden", !visible);
+      delegate.disabled = !enabled;
+      if (hint) delegate.title = hint;
+    };
     if (!ref) {
       state.activeGroupId = null;
       state.activeGroup = null;
@@ -1041,7 +1051,7 @@ case "goal_round": break;
       state.groupActivity = [];
       state.groupTasks = [];
       state.taskReviews = {};
-      if (delegate) delegate.classList.add("hidden");
+      paintDelegate(false, false, "让另一个 AI 分担当前工作");
       renderCollaborationPane();
       renderCollaborationTasks();
       return;
@@ -1049,6 +1059,12 @@ case "goal_round": break;
     const groupId = ref.group.group_id;
     if (state.activeGroupId !== groupId) state.taskReviews = {};
     state.activeGroupId = groupId;
+    if (ref.group.coordinator_session_id === expectedSid) {
+      paintDelegate(true, true, "让另一个 AI 分担当前工作");
+    } else {
+      paintDelegate(true, false, "仅工作组协调者可派生子会话（你是成员，可发协作消息向协调者申请）");
+    }
+
     if (delegate) delegate.classList.toggle("hidden", ref.group.coordinator_session_id !== expectedSid);
     try {
       const [group, messages, activity, tasks] = await Promise.all([
@@ -1075,8 +1091,156 @@ case "goal_round": break;
     renderCollaborationTasks();
   }
 
+  // ── 协作未读：按组记忆已读事件水位（localStorage 持久），MC 未展开或页签不在协作时计未读 ──
+  function loadCollabSeen() {
+    try { return JSON.parse(localStorage.getItem("newbee.collab.seen") || "{}") || {}; }
+    catch (e) { return {}; }
+  }
+  function saveCollabSeen() {
+    try { localStorage.setItem("newbee.collab.seen", JSON.stringify(state.collabSeen || {})); } catch (e) {}
+  }
+  function collabUnreadCount(groupId) {
+    return (state.collabUnread && state.collabUnread[groupId]) || 0;
+  }
+  function maxEventId(events) {
+    let max = 0;
+    (events || []).forEach((e) => { const id = Number(e.event_id || 0); if (id > max) max = id; });
+    return max;
+  }
+  function viewingCollabNow() {
+    return typeof MC !== "undefined" && MC.open && (MC.tab === "collaboration" || MC.tab === "tasks");
+  }
+  function markCollabSeen(groupId) {
+    if (!groupId) return;
+    const seen = Math.max(maxEventId(state.groupActivity), Number((state.collabSeen || {})[groupId] || 0));
+    state.collabSeen[groupId] = seen;
+    if (state.collabUnread) delete state.collabUnread[groupId];
+    saveCollabSeen();
+    updateCollabBadges();
+  }
+  function bumpCollabUnread(groupId, eventId) {
+    if (!groupId) return;
+    const seen = Number((state.collabSeen || {})[groupId] || 0);
+    if (Number(eventId || 0) <= seen) return;
+    if (groupId === state.activeGroupId && viewingCollabNow()) {
+      state.collabSeen[groupId] = Math.max(seen, Number(eventId || 0));
+      saveCollabSeen();
+      return;
+    }
+    state.collabUnread[groupId] = (state.collabUnread[groupId] || 0) + 1;
+    updateCollabBadges();
+    if (typeof renderSessionList === "function") renderSessionList();
+  }
+  function updateCollabBadges() {
+    const badge = $("mc-collab-unread");
+    if (badge) {
+      const n = state.activeGroupId ? collabUnreadCount(state.activeGroupId) : 0;
+      badge.classList.toggle("hidden", !n);
+      if (n) badge.textContent = n > 99 ? "99+" : String(n);
+    }
+    const attention = $("mc-task-attention");
+    if (attention) {
+      const n = (state.groupTasks || []).filter((t) => taskAttentionKind(t)).length;
+      attention.classList.toggle("hidden", !n);
+      if (n) attention.textContent = n > 99 ? "99+" : String(n);
+    }
+    const expand = $("mc-expand");
+    if (expand) {
+      const total = Object.values(state.collabUnread || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+      expand.classList.toggle("has-unread", total > 0);
+      expand.title = total > 0 ? `打开 Mission Control（${total} 条未读协作动态）` : "打开 Mission Control";
+    }
+  }
+
+  // ── 协作标签与真状态：kind 徽标 / 验证 / 群状态 / 成员 presence（以后端运行时为准，不再恒绿） ──
+  function messageKindLabel(kind) {
+    return ({ chat: "闲聊", question: "提问", task_assign: "分派", task_progress: "进展", task_result: "结果", artifact: "附件", system: "系统", error: "错误" })[kind] || kind || "闲聊";
+  }
+  function verificationLabel(v) {
+    const s = v && v.status;
+    return s === "passed" ? "验证通过" : s === "failed" ? "验证未通过" : s === "pending" ? "待验证" : (s || "");
+  }
+  function groupStatusLabel(status) {
+    return ({ running: "进行中", paused: "已暂停", cancelled: "已取消", draft: "草稿", completed: "已完成", failed: "失败" })[status] || status || "";
+  }
+  function sessionRuntime(sessionId) {
+    return (state.allSessions || []).find((s) => s.id === sessionId) || null;
+  }
+  function memberPresence(sessionId) {
+    const s = sessionRuntime(sessionId);
+    if (!s) return { cls: "offline", label: "离线" };
+    if (s.busy) return { cls: "busy", label: "工作中" };
+    return s.running ? { cls: "online", label: "在线" } : { cls: "offline", label: "离线" };
+  }
+  function memberCurrentTask(sessionId) {
+    const open = (state.groupTasks || []).filter((t) => t.assigned_session_id === sessionId);
+    const live = open.filter((t) => ["succeeded", "failed", "cancelled"].indexOf(t.status || "") < 0);
+    live.sort((a, b) => String(a.updated_at || a.created_at || "") < String(b.updated_at || b.created_at || "") ? 1 : -1);
+    return live[0] || null;
+  }
+
+  // ── 任务筛选排序与卡片增强：风险置顶 / 验收展示 / 依赖链 / 验证徽标 ──
+  function taskAttentionKind(task) {
+    const status = task.status || "";
+    if (status === "blocked" || status === "failed") return "risk";
+    const ws = task.workspace && task.workspace.review_status;
+    if (ws === "pending") return "review";
+    return null;
+  }
+  function taskMatchesFilter(task) {
+    const f = state.taskFilter || "all";
+    if (f === "mine") return task.assigned_session_id === state.sid || task.created_by_session_id === state.sid;
+    if (f === "attention") return !!taskAttentionKind(task);
+    if (f === "review") return task.workspace && task.workspace.review_status === "pending";
+    return true;
+  }
+  function taskSortRank(task) {
+    const k = taskAttentionKind(task);
+    if (k === "risk") return 0;
+    if (k === "review") return 1;
+    if (["succeeded", "failed", "cancelled"].indexOf(task.status || "") < 0) return 2;
+    return 3;
+  }
+  function compareTasks(a, b) {
+    const r = taskSortRank(a) - taskSortRank(b);
+    if (r) return r;
+    const au = a.updated_at || a.created_at || "";
+    const bu = b.updated_at || b.created_at || "";
+    return au < bu ? 1 : au > bu ? -1 : 0;
+  }
+  function renderAcceptance(task) {
+    const acc = task.acceptance;
+    if (Array.isArray(acc)) {
+      if (!acc.length) return '<div class="collab-accept-empty">未设成功标准</div>';
+      const rows = acc.map((c) => {
+        if (!c || typeof c !== "object") return "";
+        if (c.kind === "command") return '<div class="collab-accept-item"><span class="collab-accept-kind">命令</span><code>' + escapeHtml(c.program || "") + " " + escapeHtml((c.args || []).join(" ")) + "</code></div>";
+        if (c.kind === "file_exists") return '<div class="collab-accept-item"><span class="collab-accept-kind">文件存在</span><code>' + escapeHtml(c.path || "") + "</code></div>";
+        if (c.kind === "file_sha256") return '<div class="collab-accept-item"><span class="collab-accept-kind">文件哈希</span><code>' + escapeHtml(c.path || "") + "</code></div>";
+        return '<div class="collab-accept-item"><span class="collab-accept-kind">' + escapeHtml(c.kind || "标准") + "</span></div>";
+      }).join("");
+      return '<div class="collab-accept-list">' + rows + "</div>";
+    }
+    if (typeof acc === "string" && acc.trim()) return '<div class="collab-accept-verbal">' + escapeHtml(acc) + '<span class="collab-accept-note">口头约定·需人工核对</span></div>';
+    return '<div class="collab-accept-empty">未设成功标准</div>';
+  }
+  function renderDepends(task) {
+    const deps = task.depends_on || [];
+    if (!deps.length) return "";
+    const byId = {};
+    (state.groupTasks || []).forEach((t) => { byId[t.task_id] = t; });
+    const chips = deps.map((id) => {
+      const t = byId[id];
+      const label = t ? ((t.title || "工作项") + "·" + taskStatusLabel(t.status)) : ("未知 " + String(id).slice(-6));
+      return '<button class="collab-dep-chip" data-dep-task="' + escapeHtml(id) + '" title="前置工作项">' + escapeHtml(label) + "</button>";
+    }).join("");
+    return '<div class="collab-depends">前置：' + chips + "</div>";
+  }
+
   function renderCollaborationPane() {
     const list = $("mc-collab-list");
+
+
     const members = $("mc-collab-members");
     const recipient = $("mc-collab-recipient");
     if (!list || !members || !recipient) return;
@@ -1095,9 +1259,15 @@ case "goal_round": break;
     $("mc-collab-title").textContent = group.title || "协作消息";
     $("mc-collab-input").disabled = false;
     $("mc-collab-send").disabled = false;
+    renderGroupStatus(group);
+    const keepRecipient = recipient.value;
     members.innerHTML = (group.members || []).map((member) => {
       const active = member.session_id === state.sid ? " active" : "";
-      return `<button class="collab-member${active}" data-session="${escapeHtml(member.session_id)}"><span class="sess-dot ${member.state === "working" ? "busy" : "online"}"></span><b>${escapeHtml(sessionDisplayName(member.session_id))}</b><small>${escapeHtml(member.role || "worker")}</small></button>`;
+      const presence = memberPresence(member.session_id);
+      const current = memberCurrentTask(member.session_id);
+      const doing = current ? ` · ${current.title || "工作项"}` : "";
+      const title = `${sessionDisplayName(member.session_id)}（${member.role || "worker"}）· ${presence.label}${doing}`;
+      return '<button class="collab-member' + active + '" data-session="' + escapeHtml(member.session_id) + '" title="' + escapeHtml(title) + '"><span class="sess-dot ' + presence.cls + '"></span><b>' + escapeHtml(sessionDisplayName(member.session_id)) + "</b><small>" + escapeHtml(member.role || "worker") + " · " + presence.label + doing + "</small></button>";
     }).join("");
     members.querySelectorAll("[data-session]").forEach((button) => {
       button.onclick = () => resume(button.dataset.session);
@@ -1107,6 +1277,7 @@ case "goal_round": break;
       (group.members || []).filter((m) => m.session_id !== state.sid).map((m) =>
         `<option value="${escapeHtml(m.session_id)}">发给：${escapeHtml(sessionDisplayName(m.session_id))}</option>`
       ).join("");
+    if (keepRecipient && recipient.querySelector(`option[value="${CSS.escape(keepRecipient)}"]`)) recipient.value = keepRecipient;
 
     renderCollaborationActivity();
 
@@ -1114,11 +1285,16 @@ case "goal_round": break;
     list.innerHTML = messages.length ? messages.map((message) => {
       const target = message.to_session_id ? sessionDisplayName(message.to_session_id) : "所有协作会话";
       const mine = message.sender_session_id === state.sid ? " mine" : "";
-      const badge = message.delivery && message.delivery !== "notify" ? ` <em class="collab-dbadge">${escapeHtml(deliveryLabel(message.delivery))}</em>` : "";
-      const at = message.created_at ? new Date(message.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-      return `<article class="collab-message${mine}"><div class="collab-message-head"><b>${escapeHtml(sessionDisplayName(message.sender_session_id))}</b><span>→ ${escapeHtml(target)}</span>${badge}<time>${escapeHtml(at)}</time></div><div>${escapeHtml(message.body || "")}</div></article>`;
+      const kindBadge = message.kind && message.kind !== "chat" ? ' <em class="collab-kbadge">' + escapeHtml(messageKindLabel(message.kind)) + "</em>" : "";
+      const deliveryBadge = message.delivery && message.delivery !== "notify" ? ' <em class="collab-dbadge">' + escapeHtml(deliveryLabel(message.delivery)) + "</em>" : "";
+      const when = message.created_at ? new Date(message.created_at) : null;
+      const at = when ? when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+      const full = when ? when.toLocaleString() : "";
+      return '<article class="collab-message' + mine + '"><div class="collab-message-head"><b>' + escapeHtml(sessionDisplayName(message.sender_session_id)) + "</b><span>→ " + escapeHtml(target) + "</span>" + kindBadge + deliveryBadge + '<time title="' + escapeHtml(full) + '">' + escapeHtml(at) + "</time></div><div>" + escapeHtml(message.body || "") + "</div></article>";
     }).join("") : '<div class="collab-empty">还没有协作消息</div>';
     list.scrollTop = list.scrollHeight;
+    markCollabSeen(group.group_id);
+
   }
 
   function collaborationActivitySummary(event) {
@@ -1140,10 +1316,59 @@ case "goal_round": break;
     return null;
   }
 
+  // ── 群生命周期入口：状态徽标 + 协调者专属暂停/恢复/取消（后端仅 running/paused/cancelled） ──
+  function renderGroupStatus(group) {
+    const badge = $("mc-group-status");
+    const lifecycle = $("mc-group-lifecycle");
+    const status = group.status || "running";
+    if (badge) {
+      badge.textContent = groupStatusLabel(status);
+      badge.className = "collab-group-status " + status;
+    }
+    if (!lifecycle) return;
+    const isCoord = group.coordinator_session_id === state.sid;
+    if (!isCoord) { lifecycle.innerHTML = ""; return; }
+    const buttons = [];
+    if (status === "running") buttons.push('<button class="btn-ghost" data-group-pause title="暂停：保留消息和任务，不再启动新的模型工作">暂停</button>');
+    if (status === "paused") buttons.push('<button class="btn-ghost" data-group-resume title="恢复模型工作">恢复</button>');
+    if (status === "running" || status === "paused") buttons.push('<button class="btn-danger" data-group-cancel title="取消整个工作组（事件保留，可审计）">取消</button>');
+    lifecycle.innerHTML = buttons.join("");
+    const pause = lifecycle.querySelector("[data-group-pause]");
+    const resume = lifecycle.querySelector("[data-group-resume]");
+    const cancel = lifecycle.querySelector("[data-group-cancel]");
+    if (pause) pause.onclick = () => setGroupStatusAction("paused");
+    if (resume) resume.onclick = () => setGroupStatusAction("running");
+    if (cancel) cancel.onclick = () => setGroupStatusAction("cancelled");
+  }
+  async function setGroupStatusAction(status) {
+    const group = state.activeGroup;
+    if (!group) return;
+    const label = groupStatusLabel(status);
+    const go = async () => {
+      try {
+        await rpc("group.setStatus", { groupId: group.group_id, sessionId: state.sid, status });
+        await loadActiveGroup();
+        line("notice", "工作组已" + label);
+      } catch (e) { line("error", "工作组" + label + "失败: " + e.message); }
+    };
+    if (status === "cancelled") {
+      confirmDialog("取消工作组「" + (group.title || "") + "」？消息和任务事件保留，可审计。", go, { confirmLabel: "取消工作组", confirmClass: "btn-deny" });
+    } else {
+      go();
+    }
+  }
+
   function renderCollaborationActivity() {
     const host = $("mc-collab-activity");
     if (!host) return;
-    const rows = (state.groupActivity || []).map((event) => ({ event, summary: collaborationActivitySummary(event) })).filter((row) => row.summary).slice(-8).reverse();
+    const more = $("mc-collab-activity-more");
+    const all = (state.groupActivity || []).map((event) => ({ event, summary: collaborationActivitySummary(event) })).filter((row) => row.summary);
+    const expanded = !!state.activityExpanded;
+    const rows = (expanded ? all : all.slice(-8)).reverse();
+    if (more) {
+      more.classList.toggle("hidden", all.length <= 8);
+      more.textContent = expanded ? "只看最近" : `展开全部（${all.length}）`;
+    }
     host.innerHTML = rows.length ? rows.map(({ event, summary }) => {
       const at = event.at ? new Date(event.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
       const session = summary.sessionId ? ` data-activity-session="${escapeHtml(summary.sessionId)}"` : "";
@@ -1159,14 +1384,16 @@ case "goal_round": break;
   }
 
   function formatTaskResult(result) {
+
     if (result == null) return "";
     if (typeof result === "string") return result;
     try { return JSON.stringify(result, null, 2); } catch (_) { return String(result); }
   }
 
   function taskStatusLabel(status) {
-    return ({ pending: "未开始", assigned: "已分派", accepted: "已接受", running: "进行中", blocked: "受阻", succeeded: "已完成", failed: "失败", cancelled: "已取消" })[status] || status || "未开始";
+    return ({ pending: "未开始", assigned: "已分派", accepted: "已接受", running: "进行中", blocked: "受阻", submitted: "已提交待验", succeeded: "已完成", failed: "失败", cancelled: "已取消" })[status] || status || "未开始";
   }
+
 
   function workspaceStatusLabel(status) {
     return ({ waiting: "等待任务完成", pending: "待审查", applied: "已应用", rejected: "已拒绝", cleaned: "已释放", not_applicable: "共享目录" })[status] || status || "";
@@ -1213,25 +1440,38 @@ case "goal_round": break;
     if (!list || !create) return;
     const group = state.activeGroup;
     create.disabled = !group;
+    document.querySelectorAll("#mc-task-filters [data-task-filter]").forEach((b) => {
+      b.classList.toggle("active", (b.dataset.taskFilter || "all") === (state.taskFilter || "all"));
+    });
     if (!group) {
       $("mc-task-title").textContent = "工作项";
       list.innerHTML = '<div class="collab-empty">当前会话没有工作组</div>';
+      updateCollabBadges();
       return;
     }
 
     $("mc-task-title").textContent = `${group.title || "工作组"} · 工作项`;
-    const tasks = state.groupTasks || [];
-    list.innerHTML = tasks.length ? tasks.map((task) => {
+    const tasks = (state.groupTasks || []).slice().sort(compareTasks);
+      return `<article class="collab-task ${escapeHtml(status)}${attention ? " attention-" + attention : ""}" data-task-anchor="${escapeHtml(task.task_id)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}${proto}${verify}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))} · ${updated}</div>${progress}${result}${renderAcceptance(task)}${renderDepends(task)}${claim}${actions}${workspaceControls(task, group)}</article>`;
+
+    const hiddenCount = tasks.length - visible.length;
+    list.innerHTML = tasks.length ? (visible.map((task) => {
       const owner = task.assigned_session_id ? sessionDisplayName(task.assigned_session_id) : "未分配";
       const status = task.status || "pending";
+      const attention = taskAttentionKind(task);
       const progress = task.progress ? `<div class="collab-task-progress">进度：${escapeHtml(String(task.progress))}</div>` : "";
       const result = task.result != null && status !== "pending" && status !== "assigned" ? `<div class="collab-task-result"><strong>${status === "succeeded" ? "结果" : "失败信息"}</strong><div>${escapeHtml(formatTaskResult(task.result))}</div></div>` : "";
       const claim = !task.assigned_session_id && status === "pending" ? `<button class="btn-ghost" data-claim="${escapeHtml(task.task_id)}">领取</button>` : "";
       const actions = task.assigned_session_id ? `<div class="collab-task-actions"><button class="btn-ghost" data-open-session="${escapeHtml(task.assigned_session_id)}">查看会话</button><button class="btn-ghost" data-message-session="${escapeHtml(task.assigned_session_id)}">发消息</button></div>` : "";
-      return `<article class="collab-task ${escapeHtml(status)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))}</div>${progress}${result}${claim}${actions}${workspaceControls(task, group)}</article>`;
-    }).join("") : '<div class="collab-empty">暂无工作项</div>';
+      const verify = task.verification && task.verification.status ? `<span class="collab-verify-badge ${escapeHtml(task.verification.status)}">${escapeHtml(verificationLabel(task.verification))}</span>` : "";
+      const proto = task.protocol_version === 2 ? '<span class="collab-proto-badge" title="结构化验收 · 机器可验证">v2</span>' : "";
+      const updated = task.updated_at ? `<span class="collab-task-updated" title="${escapeHtml(task.updated_at)}">更新 ${escapeHtml(task.updated_at.slice(0, 16).replace("T", " "))}</span>` : "";
+      return `<article class="collab-task ${escapeHtml(status)}${attention ? " attention-" + attention : ""}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}${proto}${verify}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))} · ${updated}</div>${progress}${result}${renderAcceptance(task)}${renderDepends(task)}${claim}${actions}${workspaceControls(task, group)}</article>`;
+    }).join("") + (hiddenCount ? `<div class="collab-empty">已按筛选隐藏 ${hiddenCount} 项（点“全部”查看）</div>` : "")) : '<div class="collab-empty">暂无工作项</div>';
     bindTaskActions(group, list);
+    updateCollabBadges();
   }
+
 
   function bindTaskActions(group, list) {
     list.querySelectorAll("[data-open-session]").forEach((button) => { button.onclick = () => resume(button.dataset.openSession); });
@@ -1255,6 +1495,14 @@ case "goal_round": break;
     list.querySelectorAll("[data-apply-task]").forEach((button) => { button.onclick = () => applyTaskWorkspace(button.dataset.applyTask, button.dataset.sha); });
     list.querySelectorAll("[data-reject-task]").forEach((button) => { button.onclick = () => rejectTaskWorkspace(button.dataset.rejectTask); });
     list.querySelectorAll("[data-cleanup-task]").forEach((button) => { button.onclick = () => cleanupTaskWorkspace(button.dataset.cleanupTask); });
+    list.querySelectorAll("[data-dep-task]").forEach((button) => {
+      button.onclick = () => {
+        const el = list.querySelector(`[data-task-anchor="${CSS.escape(button.dataset.depTask)}"]`);
+        if (el) { el.scrollIntoView({ block: "center" }); el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1600); }
+        else line("notice", "前置工作项不在当前筛选或分组中");
+      };
+    });
+
   }
 
   async function reviewTaskWorkspace(taskId) {
@@ -1372,18 +1620,63 @@ case "goal_round": break;
     }
   }
 
+
+  // ── 成功标准编辑器：command / file_exists / file_sha256 三类（与后端 Verification 合同对齐） ──
+  // 说明：界面建任务走老协议透存（v1），此处是“写下来的约定，需人工核对”，不是机器验收。
+  function addAcceptanceRow(kind, main, extra) {
+    const host = $("task-acceptance-list");
+    if (!host) return;
+    const row = document.createElement("div");
+    row.className = "task-accept-row";
+    row.innerHTML = '<select class="task-accept-kind" title="标准类型">'
+      + '<option value="command">命令</option>'
+      + '<option value="file_exists">文件存在</option>'
+      + '<option value="file_sha256">文件哈希</option>'
+      + '</select>'
+      + '<input class="task-accept-main" type="text" placeholder="程序（如 mix test）或路径" maxlength="500" />'
+      + '<input class="task-accept-extra" type="text" placeholder="参数（空格分隔）或 sha256" maxlength="500" />'
+      + '<button class="btn-ghost task-accept-remove" type="button" title="删除这条">×</button>';
+    row.querySelector(".task-accept-kind").value = kind || "command";
+    row.querySelector(".task-accept-main").value = main || "";
+    row.querySelector(".task-accept-extra").value = extra || "";
+    row.querySelector(".task-accept-remove").onclick = () => row.remove();
+    host.appendChild(row);
+  }
+  function buildTaskAcceptance() {
+    const rows = Array.from(document.querySelectorAll("#task-acceptance-list .task-accept-row"));
+    const out = [];
+    for (const row of rows) {
+      const kind = row.querySelector(".task-accept-kind").value;
+      const main = row.querySelector(".task-accept-main").value.trim();
+      const extra = row.querySelector(".task-accept-extra").value.trim();
+      if (!main) return { error: "成功标准有一行未填（程序或路径不能为空）" };
+      if (kind === "command") {
+        out.push({ kind: "command", program: main.split(/\s+/)[0], args: (main.split(/\s+/).slice(1).join(" ") + " " + extra).trim().split(/\s+/).filter(Boolean) });
+      } else if (kind === "file_exists") {
+        out.push({ kind: "file_exists", path: main });
+      } else {
+        if (!/^[0-9a-fA-F]{64}$/.test(extra)) return { error: "文件哈希需要 64 位十六进制 sha256（填在第二格）" };
+        out.push({ kind: "file_sha256", path: main, sha256: extra.toLowerCase() });
+      }
+    }
+    return { criteria: out };
+  }
   function openTaskModal() {
     if (!state.activeGroup) return;
     $("task-name").value = "";
     $("task-description").value = "";
     $("task-owner").innerHTML = '<option value="">暂不分配</option>' + (state.activeGroup.members || []).map((member) => `<option value="${escapeHtml(member.session_id)}">${escapeHtml(sessionDisplayName(member.session_id))}</option>`).join("");
+    $("task-acceptance-list").innerHTML = "";
     $("task-modal").classList.remove("hidden");
     $("task-name").focus();
   }
 
   async function createCollaborationTask() {
     const title = $("task-name").value.trim();
+
     if (!state.activeGroup || !title) { $("task-name").focus(); return; }
+    const built = buildTaskAcceptance();
+    if (built.error) { line("error", "创建工作项失败: " + built.error); return; }
     const button = $("task-confirm");
     button.disabled = true;
     try {
@@ -1393,6 +1686,7 @@ case "goal_round": break;
         assignedSessionId: $("task-owner").value || null,
         title,
         description: $("task-description").value.trim(),
+        acceptance: built.criteria,
         commandId: `task-create-${Date.now()}`,
       });
       $("task-modal").classList.add("hidden");
@@ -1400,8 +1694,8 @@ case "goal_round": break;
     } catch (e) { line("error", "创建工作项失败: " + e.message); }
     finally { button.disabled = false; }
   }
-
   async function sendCollaborationMessage() {
+
     const inputEl = $("mc-collab-input");
     const body = inputEl.value.trim();
     if (!body || !state.activeGroup) return;
@@ -1437,7 +1731,9 @@ case "goal_round": break;
   async function onGroupEvent(frame) {
     const topic = frame && frame.topic;
     const payload = (frame && frame.payload) || {};
+    if (frame && frame.groupId) bumpCollabUnread(frame.groupId, frame.eventId);
     if (topic === "collab_permission_ask" && payload.request_session_id !== state.sid && (payload.approver_session_ids || []).includes(state.sid)) {
+
       showPermission(payload.preview, payload.request_session_id);
       line("notice", `协作会话 ${sessionDisplayName(payload.request_session_id)} 请求权限，请审批`);
     } else if (topic === "collab_delegated" && payload.member && payload.task) {
@@ -1473,13 +1769,27 @@ case "goal_round": break;
     $("delegate-confirm").onclick = delegateSession;
     $("task-cancel").onclick = () => $("task-modal").classList.add("hidden");
     $("task-confirm").onclick = createCollaborationTask;
+    $("task-acceptance-add").onclick = () => addAcceptanceRow("command", "", "");
     $("mc-task-new").onclick = openTaskModal;
     $("mc-collab-refresh").onclick = loadActiveGroup;
     $("mc-collab-send").onclick = sendCollaborationMessage;
+    document.querySelectorAll("#mc-task-filters [data-task-filter]").forEach((b) => {
+      b.onclick = () => { state.taskFilter = b.dataset.taskFilter || "all"; renderCollaborationTasks(); };
+    });
+    const more = $("mc-collab-activity-more");
+    if (more) more.onclick = () => { state.activityExpanded = !state.activityExpanded; renderCollaborationActivity(); };
     $("mc-collab-input").addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendCollaborationMessage(); }
     });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      ["group-modal", "delegate-modal", "task-modal"].forEach((id) => {
+        const m = $(id);
+        if (m) m.classList.add("hidden");
+      });
+    });
   }
+
 
   function showPermission(preview, requestSessionId) {
     state.permissionSessionId = requestSessionId || state.sid;
@@ -1647,7 +1957,10 @@ case "goal_round": break;
       const busyCount = members.filter((m) => { const s = findSession(m.session_id); return s.busy; }).length;
       const busyHint = busyCount ? ` <span class="session-group-busy">● ${busyCount} 运行中</span>` : "";
       const canDelete = group.coordinator_session_id === state.sid;
-      header.innerHTML = `<button class="session-group-toggle" title="${collapsed ? "展开" : "收起"}">${toggleIcon}</button><span class="session-group-title">${escapeHtml(group.title || group.goal || "会话组")}</span><span class="session-group-count">${members.length} 成员</span>${busyHint}${group.current_session_member ? '<span class="group-current-badge">当前</span>' : ""}<button class="session-group-delete ${canDelete ? "" : "hidden"}" title="${busyCount ? "组内有运行中会话，无法删除整组" : "删除整组及组内全部会话（不可恢复）"}">🗑 删除整组</button>`;
+      const unread = collabUnreadCount(group.group_id);
+      const unreadHint = unread ? `<span class="session-group-unread" title="${unread} 条未读协作动态">${unread > 99 ? "99+" : unread} 未读</span>` : "";
+      header.innerHTML = `<button class="session-group-toggle" title="${collapsed ? "展开" : "收起"}">${toggleIcon}</button><span class="session-group-title">${escapeHtml(group.title || group.goal || "会话组")}</span><span class="session-group-count">${members.length} 成员</span>${busyHint}${unreadHint}${group.current_session_member ? '<span class="group-current-badge">当前</span>' : ""}<button class="session-group-delete ${canDelete ? "" : "hidden"}" title="${busyCount ? "组内有运行中会话，无法删除整组" : "删除整组及组内全部会话（不可恢复）"}">🗑 删除整组</button>`;
+
       header.onclick = (e) => {
         if (e.target.closest(".session-group-delete")) return;
         toggleGroupCollapse(group.group_id);
@@ -4283,6 +4596,7 @@ case "goal_round": break;
       if (MC.tab === "evolution") refreshEvolution();
       if (MC.tab === "overview") refreshMCOverview();
       if (MC.tab === "diff") refreshMCDiff();
+      if ((MC.tab === "collaboration" || MC.tab === "tasks") && state.activeGroupId) markCollabSeen(state.activeGroupId);
     } else {
       panel.classList.add("hidden");
       expandBtn.classList.remove("hidden");
@@ -4295,10 +4609,12 @@ case "goal_round": break;
     document.querySelectorAll(".mc-tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
     document.querySelectorAll(".mc-pane").forEach((p) => p.classList.add("hidden"));
     $("mc-" + tab).classList.remove("hidden");
+    if ((tab === "collaboration" || tab === "tasks") && state.activeGroupId) markCollabSeen(state.activeGroupId);
     if (tab === "diff") refreshMCDiff();
     if (tab === "overview") refreshMCOverview();
     if (tab === "evolution") refreshEvolution();
   }
+
 
   // ── 文件变更追踪 ──
   async function refreshMCFiles() {
