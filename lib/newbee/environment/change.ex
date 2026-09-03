@@ -31,6 +31,7 @@ defmodule Newbee.Environment.Change do
             evaluation_plan: %{},
             evaluation_result: nil,
             rollback_of: nil,
+            human_brief: nil,
             status: :requested,
             created_at: nil,
             updated_at: nil
@@ -58,6 +59,7 @@ defmodule Newbee.Environment.Change do
       evaluation_plan: Map.get(attrs, :evaluation_plan, %{}),
       evaluation_result: Map.get(attrs, :evaluation_result),
       rollback_of: Map.get(attrs, :rollback_of),
+      human_brief: Map.get(attrs, :human_brief),
       status: to_atom(Map.get(attrs, :status, :requested)),
       created_at: Map.get(attrs, :created_at) || now,
       updated_at: Map.get(attrs, :updated_at) || now
@@ -92,6 +94,7 @@ defmodule Newbee.Environment.Change do
       "evaluation_plan" => c.evaluation_plan,
       "evaluation_result" => c.evaluation_result,
       "rollback_of" => c.rollback_of,
+      "human_brief" => c.human_brief,
       "status" => to_string(c.status),
       "created_at" => c.created_at,
       "updated_at" => c.updated_at
@@ -114,6 +117,7 @@ defmodule Newbee.Environment.Change do
       evaluation_plan: m["evaluation_plan"] || %{},
       evaluation_result: m["evaluation_result"],
       rollback_of: m["rollback_of"],
+      human_brief: m["human_brief"],
       status: to_atom(m["status"] || "requested"),
       created_at: m["created_at"],
       updated_at: m["updated_at"]
