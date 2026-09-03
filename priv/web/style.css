@@ -2729,3 +2729,32 @@ svg.ico {
 .task-accept-row select,.task-accept-row input{background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--fg);font-size:12px;padding:6px 8px;min-width:0}
 #delegate-session:disabled{opacity:.55;cursor:not-allowed}
 #delegate-session:disabled{opacity:.55;cursor:not-allowed}
+
+/* ── 进化 UX 重构（H2/H8：人话 + 渐进披露）+ 徽标代替抢焦点（H3）── */
+.evo-intro { margin: 10px 12px 0; padding: 10px 11px; border: 1px solid var(--nb-border); border-radius: 8px; background: var(--nb-bg-elev); }
+.evo-intro-text strong { display: block; color: var(--nb-label-1); font-size: 12px; line-height: 1.4; }
+.evo-intro-text span { display: block; margin-top: 3px; color: var(--nb-label-2); font-size: 11px; line-height: 1.5; }
+.evo-how-btn { margin-top: 8px; font-size: 11px; }
+.evo-guide { margin: 8px 12px 0; padding: 10px 12px; border-left: 3px solid var(--nb-warn); background: var(--nb-bg); border-radius: 0 8px 8px 0; }
+.evo-guide ol { margin: 0 0 6px 16px; padding: 0; color: var(--nb-label-2); font-size: 11px; line-height: 1.6; }
+.evo-guide .evo-gloss { color: var(--nb-label-caption); font-size: 10px; line-height: 1.5; }
+.evo-guide.hidden { display: none; }
+.evo-autonomy-explain { display: block; margin-top: 3px; color: var(--nb-label-caption); font-size: 10px; line-height: 1.45; white-space: normal; }
+.evo-decide-section { border-bottom: 2px solid var(--nb-border); }
+.evo-decide-q { padding: 8px 9px 0; color: var(--nb-warn); font-size: 11px; font-weight: 700; }
+.evo-facts { display: flex; flex-direction: column; gap: 3px; padding: 7px 9px; border-top: 1px dashed var(--nb-border); color: var(--nb-label-2); font-size: 10.5px; line-height: 1.5; }
+.evo-pipeline { display: flex; align-items: center; gap: 4px; padding: 6px 9px; color: var(--nb-label-caption); font-size: 10px; }
+.evo-pipeline i { font-style: normal; opacity: .5; }
+.evo-pipe-done { color: var(--nb-green); }
+.evo-pipe-now { color: var(--nb-warn); font-weight: 700; }
+.evo-pipe-todo { opacity: .7; }
+.evo-approve-big { font-weight: 700; padding: 6px 12px; }
+.evo-tech { margin: 0 9px 8px; }
+.evo-tech summary { cursor: pointer; color: var(--nb-label-caption); font-size: 10px; }
+.evo-tech pre { margin: 6px 0 0; padding: 8px; background: var(--nb-bg); border: 1px solid var(--nb-border); border-radius: 6px; font-size: 9px; overflow: auto; }
+.evo-celebrate { color: var(--nb-green); }
+.evo-layer em.evo-layer-cn { display: block; font-style: normal; font-size: 9px; opacity: .85; }
+.mc-tab { position: relative; }
+.mc-badge { display: inline-block; min-width: 16px; height: 16px; line-height: 16px; margin-left: 4px; padding: 0 4px; border-radius: 8px; background: var(--nb-warn, #ff9800); color: #fff; font-size: 10px; font-weight: 700; text-align: center; vertical-align: 1px; }
+.mc-badge.hidden { display: none; }
+.hidden { display: none !important; }

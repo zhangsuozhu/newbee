@@ -2094,11 +2094,13 @@ case "goal_round": break;
   let confirmCb = null;
   function confirmDialog(text, cb, options = {}) {
     const ok = $("confirm-ok");
+    const cancel = $("confirm-cancel");
     const confirmClass = ["btn-primary", "btn-allow", "btn-deny"].includes(options.confirmClass)
       ? options.confirmClass
       : "btn-primary";
     $("confirm-body").textContent = text;
     ok.textContent = options.confirmLabel || "确认";
+    if (cancel) cancel.textContent = options.cancelLabel || "取消";
     ok.className = confirmClass;
     $("confirm-modal").classList.remove("hidden");
     confirmCb = cb;
@@ -3351,14 +3353,15 @@ case "goal_round": break;
     sendBtn.setAttribute("aria-label", sendBtn.title);
     if (b) {
       showTurnStatus();
-      // AI 开始工作时，自动展开 MC 步骤 tab（如果 MC 已打开）
-      if (MC.open) switchMCTab("steps");
+      // 修复抢焦点：AI 起止不再强制 switchMCTab。用户停留在哪个 tab 就留在哪个 tab，
+      // 新步骤只亮徽标（updateMCBadges），把控制权还给用户。
+      if (MC.open && MC.tab !== "steps") { MC.stepsUnread++; updateMCBadges(); }
     } else {
       clearTurnStatus();
-      // AI 完成时，自动切换到文件 tab
+      // 完成时静默刷新文件列表，不切换 tab；若用户不在文件 tab则亮徽标。
       if (MC.open) {
-        switchMCTab("files");
         refreshMCFiles();
+        if (MC.tab !== "files") { MC.filesUnread++; updateMCBadges(); }
       }
     }
   }
@@ -4179,9 +4182,14 @@ case "goal_round": break;
       const revision = coordinator && coordinator.active_revision != null ? coordinator.active_revision : null;
       $("evo-revision").textContent = revision == null ? "r-" : "r" + revision;
       $("evo-autonomy").textContent = st.autonomy_label || st.autonomy || "-";
-      $("evo-open-count").textContent = coordinator ? coordinator.open_count || 0 : "-";
+      const axEl = $("evo-autonomy-explain");
+      if (axEl) { axEl.textContent = st.autonomy_explain || ""; axEl.title = st.autonomy_explain || ""; }
+      const decideCount = (st.changes || []).filter((c) => c.can_approve).length;
+      $("evo-open-count").textContent = coordinator ? (decideCount || coordinator.open_count || 0) : "-";
       $("evo-release-count").textContent = coordinator ? coordinator.active_count || 0 : "-";
       $("evo-signal-count").textContent = (st.pending_signals || []).length;
+      // 有待决策但用户不在进化 tab：亮徽标，不抢焦点。
+      if (decideCount > 0 && !(MC.open && MC.tab === "evolution")) { MC.evoUnread = decideCount; updateMCBadges(); }
 
       const degraded = coordinator && (coordinator.degraded || []).length > 0;
       const health = $("evo-revision-health");
@@ -4203,55 +4211,130 @@ case "goal_round": break;
     }
   }
 
+  // 人话翻译层（H2）：Ring/验证门/原因全部说人话，ID 降为副标题。
+  function evoRingExplain(ring) {
+    if (ring == null) return "影响范围未知 · 按最谨慎处理";
+    if (ring === 3 || ring === "3") return "影响小 · 单个工具改进（最稳）";
+    if (ring === 2 || ring === "2") return "影响中 · 规则/提示词改进";
+    if (ring === 1 || ring === "1") return "影响大 · 底层能力变更";
+    if (ring === 0 || ring === "0") return "不允许自动激活";
+    return "影响范围 Ring " + ring;
+  }
+  function evoLayerExplain(key) {
+    const m = { static: "格式与静态检查：语法/结构是否合法", deterministic: "确定性复测：同样输入是否稳定产出", counterfactual: "历史回放：过去失败用新方案能否过", usage: "真实使用观察：线上试用效果", longitudinal: "长期跟踪：长时间是否稳定" };
+    return m[key] || key;
+  }
+  function evoStageOf(change) {
+    const st = change.derived_status || change.status || "";
+    if (change.can_approve) return 3;
+    if (st === "canary" || st === "suggestion_ready") return 3;
+    if (st === "evaluating" || st === "building") return 2;
+    if (st === "requested" || st === "building") return 1;
+    return 2;
+  }
+  function evoPipelineHtml(stage) {
+    const names = ["信号", "候选", "验证", "门控", "版本"];
+    // stage: 0-4 当前走到哪
+    const idx = stage === 3 ? 3 : stage >= 4 ? 4 : stage;
+    return '<div class="evo-pipeline">' + names.map((n, i) => {
+      const cls = i < idx ? "done" : i === idx ? "now" : "todo";
+      const dot = i < idx ? "●" : i === idx ? "◐" : "○";
+      return `<span class="evo-pipe-${cls}" title="${i < idx ? "已完成" : i === idx ? "进行中" : "待进行"}">${dot} ${n}</span>${i < names.length - 1 ? "<i>→</i>" : ""}`;
+    }).join("") + "</div>";
+  }
+
   function renderEvoChanges(changes) {
-    const box = $("evo-changes-list");
-    if (!box) return;
-    const open = changes.filter((c) => !c.terminal);
-    const shown = open.length ? open : changes.slice(0, 3);
-    $("evo-change-summary").textContent = open.length ? `${open.length} 个开放` : "无开放 Change";
+    const decideBox = $("evo-decide-list");
+    const progressBox = $("evo-progress-list");
+    const compatBox = $("evo-changes-list");
+    const decideSummary = $("evo-decide-summary");
+    const progressSummary = $("evo-progress-summary");
+    const legacySummary = $("evo-change-summary");
+    const all = Array.isArray(changes) ? changes : [];
+    const decide = all.filter((c) => c.can_approve);
+    const reeval = all.filter((c) => c.can_reevaluate && !c.can_approve);
+    const progress = all.filter((c) => !c.terminal && !c.can_approve && !c.can_reevaluate);
+    const done = all.filter((c) => c.terminal).slice(0, 2);
+    if (legacySummary) legacySummary.textContent = decide.length ? `${decide.length} 个待决策` : "无";
+    if (decideSummary) decideSummary.textContent = decide.length ? `${decide.length} 个等你批准` : reeval.length ? `${reeval.length} 个需重新验证` : "暂无需要你决定的事项";
+    if (progressSummary) progressSummary.textContent = progress.length ? `${progress.length} 个进行中` : done.length ? "暂无进行中（最近已完成见下）" : "暂无";
 
-    if (!shown.length) {
-      box.innerHTML = '<div class="evo-empty">暂无 Change。输入信号后，Adapter 会生成最小候选并进入验证。</div>';
-      return;
+    if (decideBox) {
+      if (!decide.length && !reeval.length) {
+        decideBox.innerHTML = '<div class="evo-empty evo-celebrate">✓ 暂无需要你决定的改进，环境稳定运行中。<br>有新的验证通过的改进时，这里会出现“批准并激活”按钮。</div>';
+      } else {
+        decideBox.innerHTML = [...decide, ...reeval].map(renderEvoDecideCard).join("");
+        decideBox.querySelectorAll(".evo-approve").forEach((b) => { b.onclick = () => approveEvolutionChange(b.dataset.changeId, b); });
+        decideBox.querySelectorAll(".evo-reevaluate").forEach((b) => { b.onclick = () => reevaluateEvolutionChange(b.dataset.changeId, b); });
+      }
     }
+    if (progressBox) {
+      const list = [...progress, ...done];
+      if (!list.length) {
+        progressBox.innerHTML = '<div class="evo-empty">暂无进行中的改进。AI 发现重复问题后，这里会显示验证进度。</div>';
+      } else {
+        progressBox.innerHTML = list.map(renderEvoProgressCard).join("");
+        progressBox.querySelectorAll(".evo-reevaluate").forEach((b) => { b.onclick = () => reevaluateEvolutionChange(b.dataset.changeId, b); });
+      }
+    }
+    if (compatBox) compatBox.innerHTML = "";
+  }
 
-    box.innerHTML = shown.map((change) => {
-      const status = change.derived_status || change.status || "requested";
-      const layers = ((change.evaluation || {}).layers || []).map(renderEvoLayer).join("");
-      const release = change.plugin_id || shortRelease(change.candidate_release) || change.change_id;
-      const changeId = escapeHtml(change.change_id || "");
-      const action = change.can_approve
-        ? `<button class="evo-approve" data-change-id="${changeId}">批准激活</button>`
-        : change.can_reevaluate
-          ? `<button class="evo-reevaluate" data-change-id="${changeId}">重新评测</button>`
-          : "";
-      return `<article class="evo-change ${escapeHtml(status)}">
-          <div class="evo-change-title"><strong title="${escapeHtml(change.candidate_release || "")}">${escapeHtml(release || "change")}</strong><span>${changeId} · Ring ${escapeHtml(change.ring == null ? "-" : change.ring)}</span></div>
-          <span class="evo-status-tag">${escapeHtml(change.status_label || status)}</span>
-        </div>
-        <div class="evo-change-reason">${escapeHtml(cleanEvolutionReason(change.reason || "未记录原因"))}</div>
+  function evoCardShell(change, inner) {
+    const status = change.derived_status || change.status || "requested";
+    return `<article class="evo-change ${escapeHtml(status)}">${inner}</article>`;
+  }
+
+  function renderEvoDecideCard(change) {
+    const changeId = escapeHtml(change.change_id || "");
+    const title = escapeHtml(change.human_title || change.reason_plain || cleanEvolutionReason(change.reason || "环境改进"));
+    const reason = escapeHtml(change.reason_plain || cleanEvolutionReason(change.reason || "未记录原因"));
+    const risk = escapeHtml(change.risk_label || evoRingExplain(change.ring));
+    const revers = escapeHtml(change.reversibility || "批准后生成新版本，旧版本保留，可一键回退");
+    const verify = escapeHtml(change.verification_summary || "验证已通过");
+    const layers = ((change.evaluation || {}).layers || []).map(renderEvoLayer).join("");
+    const statusTag = escapeHtml(change.status_label || change.derived_status || "");
+    const ringTxt = change.ring == null ? "-" : String(change.ring);
+    const action = change.can_approve
+      ? `<button class="evo-approve evo-approve-big" data-change-id="${changeId}">批准并激活</button>`
+      : `<button class="evo-reevaluate" data-change-id="${changeId}">重新评测</button>`;
+    return evoCardShell(change, `
+        <div class="evo-decide-q">是否让环境记住这个改进？</div>
+        <div class="evo-change-head"><div class="evo-change-title"><strong title="${changeId}">${title}</strong><span>${changeId} · Ring ${escapeHtml(ringTxt)}</span></div><span class="evo-status-tag">${statusTag}</span></div>
+        <div class="evo-change-reason">原因：${reason}</div>
         <div class="evo-layers">${layers || renderPendingLayers()}</div>
-        <div class="evo-change-foot"><span class="evo-change-next" title="${escapeHtml(change.next_action || "")}">${escapeHtml(change.next_action || "等待下一步")}</span>${action}</div>
-      </article>`;
-    }).join("");
+        <div class="evo-facts"><span title="五道验证门的总体结论">✓ ${verify}</span><span title="这次变更的影响范围">◈ ${risk}</span><span title="批准后会发生什么，能否撤销">↩ ${revers}</span></div>
+        <div class="evo-change-foot"><span class="evo-change-next">${escapeHtml(change.next_action || "批准后生成新版本")}</span>${action}</div>
+        <details class="evo-tech"><summary>查看技术详情</summary><pre>${escapeHtml(JSON.stringify({ change_id: change.change_id, candidate_release: change.candidate_release, plugin_id: change.plugin_id, ring: change.ring, base_revision: change.base_revision }, null, 2))}</pre></details>
+      `);
+  }
 
-    box.querySelectorAll(".evo-approve").forEach((button) => {
-      button.onclick = () => approveEvolutionChange(button.dataset.changeId, button);
-    });
-    box.querySelectorAll(".evo-reevaluate").forEach((button) => {
-      button.onclick = () => reevaluateEvolutionChange(button.dataset.changeId, button);
-    });
-
+  function renderEvoProgressCard(change) {
+    const changeId = escapeHtml(change.change_id || "");
+    const title = escapeHtml(change.human_title || change.reason_plain || shortRelease(change.candidate_release) || change.change_id || "改进");
+    const statusTag = escapeHtml(change.status_label || change.derived_status || "");
+    const layers = ((change.evaluation || {}).layers || []).map(renderEvoLayer).join("");
+    const verify = escapeHtml(change.verification_summary || "");
+    const stage = evoStageOf(change);
+    const action = change.can_reevaluate ? `<button class="evo-reevaluate" data-change-id="${changeId}">重新评测</button>` : "";
+    return evoCardShell(change, `
+        <div class="evo-change-head"><div class="evo-change-title"><strong>${title}</strong><span>${changeId}</span></div><span class="evo-status-tag">${statusTag}</span></div>
+        ${evoPipelineHtml(stage)}
+        <div class="evo-layers">${layers || renderPendingLayers()}</div>
+        <div class="evo-change-foot"><span class="evo-change-next">${verify || escapeHtml(change.next_action || "验证中")}</span>${action}</div>
+      `);
   }
 
   function renderEvoLayer(layer) {
     const status = layer.status || "pending";
-    const marks = { passed: "PASS", failed: "FAIL", observing: "LIVE", pending: "WAIT", skipped: "N/A" };
+    const marks = { passed: "通过", failed: "未过", observing: "观察中", pending: "待运行", skipped: "跳过" };
+    const marksShort = { passed: "PASS", failed: "FAIL", observing: "LIVE", pending: "WAIT", skipped: "N/A" };
     let detail = "";
-    if (layer.samples != null) detail = `${layer.samples} samples`;
-    else if (layer.replayed != null) detail = `${layer.replayed} replay`;
-    else detail = layer.label || layer.key || "gate";
-    return `<div class="evo-layer ${escapeHtml(status)}" title="${escapeHtml(layer.reason || layer.label || "")}"><b>${marks[status] || "WAIT"}</b><span>${escapeHtml(detail)}</span></div>`;
+    if (layer.samples != null) detail = `${layer.samples} 次试用`;
+    else if (layer.replayed != null) detail = `${layer.replayed} 次回放`;
+    else detail = layer.label || layer.key || "验证";
+    const tip = `${evoLayerExplain(layer.key)}${layer.reason ? "：" + layer.reason : ""}${layer.samples != null ? "（" + layer.samples + " 次真实使用）" : ""}${layer.replayed != null ? "（回放 " + layer.replayed + " 条）" : ""}`;
+    return `<div class="evo-layer ${escapeHtml(status)}" title="${escapeHtml(tip)}"><b>${marksShort[status] || "WAIT"}</b><span>${escapeHtml(detail)}</span><em class="evo-layer-cn">${escapeHtml(marks[status] || "待运行")}</em></div>`;
   }
 
   function renderPendingLayers() {
@@ -4264,12 +4347,13 @@ case "goal_round": break;
     const box = $("evo-signals");
     if (!box) return;
     if (!signals.length) {
-      box.innerHTML = '<div class="evo-empty">信号队列为空。Worker 的重复失败、规则命中和显式 need 会进入这里。</div>';
+      box.innerHTML = '<div class="evo-empty">暂无待看问题。AI 在任务中注意到重复失败时，这里会先冒出来，攒够证据才变成上面的改进提议。</div>';
       return;
     }
+    const urgencyCn = (u) => u === "high" ? "紧急" : u === "low" ? "一般" : "待看";
     box.innerHTML = signals.slice(0, 5).map((signal) => `<div class="evo-signal">
-      <div class="evo-signal-head"><strong>${escapeHtml(signal.capability || "未命名能力")}</strong><span>${escapeHtml(signal.urgency || "normal")}</span></div>
-      <p>${escapeHtml(signal.evidence || "等待 Adapter 诊断")}</p>
+      <div class="evo-signal-head"><strong>AI 注意到：${escapeHtml(signal.capability || "某个能力不稳定")}</strong><span>${escapeHtml(urgencyCn(signal.urgency))}</span></div>
+      <p>${escapeHtml(signal.evidence || "正在诊断原因，稍后会给出改进提议")}</p>
     </div>`).join("");
   }
 
@@ -4277,7 +4361,7 @@ case "goal_round": break;
     const box = $("evo-releases");
     if (!box) return;
     if (!releases.length) {
-      box.innerHTML = '<div class="evo-empty">当前 revision 没有激活的 Release。</div>';
+      box.innerHTML = '<div class="evo-empty">当前版本还没有生效的能力。批准上面的改进后，这里会出现真实使用效果（用了几次、成功率）。</div>';
       return;
     }
     box.innerHTML = releases.map((release) => {
@@ -4295,7 +4379,11 @@ case "goal_round": break;
 
   async function approveEvolutionChange(changeId, button) {
     if (!changeId) return;
-    confirmDialog(`批准 ${changeId} 激活？验证通过的候选将生成新 revision。`, async () => {
+    const card = button ? button.closest(".evo-change") : null;
+    const title = card ? (card.querySelector(".evo-change-title strong") || {}).textContent || changeId : changeId;
+    const facts = card ? Array.from(card.querySelectorAll(".evo-facts span")).map((el) => "• " + el.textContent).join("\n") : "";
+    const msg = `让环境记住这个改进吗？\n\n【${title}】(${changeId})\n${facts}\n\n批准后会生成新版本并立即生效，旧版本保留，可一键回退。不批准则维持现状，什么都不变。`;
+    confirmDialog(msg, async () => {
       button.disabled = true;
       button.textContent = "激活中";
       try {
@@ -4306,7 +4394,7 @@ case "goal_round": break;
         button.disabled = false;
         button.textContent = "重试批准";
       }
-    }, { confirmLabel: "批准激活", confirmClass: "btn-allow" });
+    }, { confirmLabel: "批准并激活", cancelLabel: "再想想", confirmClass: "btn-allow" });
   }
 
   async function reevaluateEvolutionChange(changeId, button) {
@@ -4357,7 +4445,7 @@ case "goal_round": break;
     const box = $("evo-feed");
     if (!box) return;
     if (!events.length) {
-      box.innerHTML = '<div class="evo-empty">项目 EventStore 尚无进化事件。</div>';
+      box.innerHTML = '<div class="evo-empty">暂无历史。每次提议、验证、批准、回退都会记在这里，可审计、可追溯。</div>';
       return;
     }
     box.innerHTML = "";
@@ -4553,7 +4641,28 @@ case "goal_round": break;
     steps: [],
     stepCounter: 0,
     refreshTimer: null,
+    stepsUnread: 0,
+    filesUnread: 0,
+    evoUnread: 0,
   };
+
+  // 未读徽标：系统有更新时亮点，不抢焦点；用户点开对应 tab 才清除（H3 用户掌控 + 注意力瓶颈）。
+  function updateMCBadges() {
+    const map = { steps: MC.stepsUnread, files: MC.filesUnread, evolution: MC.evoUnread };
+    Object.entries(map).forEach(([tab, n]) => {
+      const el = document.getElementById("mc-badge-" + tab);
+      if (!el) return;
+      if (n > 0) { el.textContent = n > 99 ? "99+" : String(n); el.classList.remove("hidden"); }
+      else { el.textContent = ""; el.classList.add("hidden"); }
+    });
+  }
+  function bumpMCBadge(tab) {
+    if (MC.tab === tab) return;
+    if (tab === "steps") MC.stepsUnread++;
+    else if (tab === "files") MC.filesUnread++;
+    else if (tab === "evolution") MC.evoUnread++;
+    updateMCBadges();
+  }
 
   function initMissionControl() {
     const panel = $("mission-control");
@@ -4578,6 +4687,22 @@ case "goal_round": break;
     $("mc-run-test").addEventListener("click", () => mcRunTest());
     $("mc-commit").addEventListener("click", () => mcCommit());
 
+    // 恢复面板状态（含 sticky tab：用户上次停留在哪个 tab，下次还停在那）
+    try {
+      const savedTab = localStorage.getItem("newbee-mc-tab");
+      if (savedTab && document.getElementById("mc-" + savedTab)) {
+        MC.tab = savedTab;
+        document.querySelectorAll(".mc-tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === savedTab));
+        document.querySelectorAll(".mc-pane").forEach((p) => p.classList.add("hidden"));
+        document.getElementById("mc-" + savedTab).classList.remove("hidden");
+      }
+    } catch (e) {}
+    updateMCBadges();
+    const howBtn = document.getElementById("evo-how");
+    if (howBtn) howBtn.addEventListener("click", () => {
+      const g = document.getElementById("evo-guide");
+      if (g) g.classList.toggle("hidden");
+    });
     // 恢复面板状态
     try {
       const saved = localStorage.getItem("newbee-mc-open");
@@ -4606,9 +4731,16 @@ case "goal_round": break;
 
   function switchMCTab(tab) {
     MC.tab = tab;
+    // sticky tab：记住用户显式选择，刷新/重进不丢失；进入即清该 tab 徽标。
+    try { localStorage.setItem("newbee-mc-tab", tab); } catch (e) {}
+    if (tab === "steps") MC.stepsUnread = 0;
+    if (tab === "files") MC.filesUnread = 0;
+    if (tab === "evolution") MC.evoUnread = 0;
+    updateMCBadges();
     document.querySelectorAll(".mc-tab").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
     document.querySelectorAll(".mc-pane").forEach((p) => p.classList.add("hidden"));
-    $("mc-" + tab).classList.remove("hidden");
+    const pane = $("mc-" + tab);
+    if (pane) pane.classList.remove("hidden");
     if ((tab === "collaboration" || tab === "tasks") && state.activeGroupId) markCollabSeen(state.activeGroupId);
     if (tab === "diff") refreshMCDiff();
     if (tab === "overview") refreshMCOverview();
@@ -4687,6 +4819,7 @@ case "goal_round": break;
     // 只保留最近 200 步
     if (MC.steps.length > 200) MC.steps = MC.steps.slice(-200);
     renderMCSteps();
+    if (MC.open && MC.tab !== "steps") bumpMCBadge("steps");
   }
 
   function mcToolResult(ok, durationMs) {
@@ -4700,17 +4833,21 @@ case "goal_round": break;
       }
     }
     renderMCSteps();
-    // 有文件操作时刷新文件列表（防抖）
+    if (MC.open && MC.tab !== "steps") bumpMCBadge("steps");
+    // 有文件操作时刷新文件列表（防抖）；不在文件 tab 时只亮徽标，不抢焦点。
     if (MC.open && MC.tab === "files") {
       clearTimeout(MC.refreshTimer);
       MC.refreshTimer = setTimeout(() => refreshMCFiles(), 800);
+    } else if (MC.open) {
+      bumpMCBadge("files");
     }
   }
   function mcOnFileChange(path) {
-    // 文件变更事件 → 防抖刷新文件列表
+    // 文件变更事件 → 防抖刷新文件列表（静默，不切换 tab）
     if (MC.open) {
       clearTimeout(MC.refreshTimer);
       MC.refreshTimer = setTimeout(() => refreshMCFiles(), 600);
+      if (MC.tab !== "files") bumpMCBadge("files");
     }
   }
 

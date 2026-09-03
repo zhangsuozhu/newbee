@@ -1450,6 +1450,7 @@ defmodule Newbee.Web.Api do
      %{
        autonomy: autonomy,
        autonomy_label: autonomy_label(autonomy),
+       autonomy_explain: autonomy_explain(autonomy),
        coordinator: json_safe(coord_state),
        changes: json_safe(changes),
        pending_signals: json_safe(pending_signals),
@@ -2365,6 +2366,11 @@ defmodule Newbee.Web.Api do
 
     derived = if stale, do: "stale_base", else: derived_change_status(change.status, autonomy, passed)
 
+    plugin_id = evaluation["plugin_id"] || evaluation[:plugin_id]
+    ring = evaluation["ring"] || evaluation[:ring]
+    layers = evaluation_layers(evaluation["layers"] || evaluation[:layers] || %{})
+    reason_plain = plain_evolution_reason(change.reason)
+
     %{
       "change_id" => change.change_id,
       "status" => to_string(change.status),
@@ -2375,23 +2381,84 @@ defmodule Newbee.Web.Api do
       "can_reevaluate" => derived == "stale_base",
       "next_action" => change_next_action(derived),
       "reason" => change.reason,
+      "reason_plain" => reason_plain,
+      "human_title" => human_change_title(change.change_id, plugin_id, reason_plain),
+      "risk_label" => ring_risk_label(ring),
+      "reversibility" => reversibility_label(derived),
+      "verification_summary" => verification_summary(layers),
       "author" => to_string(change.author_agent),
       "base_revision" => change.base_revision,
       "candidate_release" => change.candidate_revision,
       "release_id" => evaluation["release_id"] || evaluation[:release_id] || change.candidate_revision,
-      "plugin_id" => evaluation["plugin_id"] || evaluation[:plugin_id],
-      "ring" => evaluation["ring"] || evaluation[:ring],
+      "plugin_id" => plugin_id,
+      "ring" => ring,
       "evidence" => change.evidence,
       "evaluation" => %{
         "passed" => passed,
         "evaluated_at" => evaluation["evaluated_at"] || evaluation[:evaluated_at],
         "failed_layers" => evaluation["failed_layers"] || evaluation[:failed_layers] || [],
-        "layers" => evaluation_layers(evaluation["layers"] || evaluation[:layers] || %{})
+        "layers" => layers
       },
       "created_at" => change.created_at,
       "updated_at" => change.updated_at,
       "deadline" => change.deadline
     }
+  end
+
+  # ── 进化 UX 人话层（H2：说用户的语言，不暴露内部黑话）──
+  # human_title 是决策卡的主标题：reason 为主，ID 降为副标题，避免 hash 乱码感。
+  defp human_change_title(change_id, plugin_id, reason_plain) do
+    cond do
+      reason_plain not in [nil, "", "未记录原因"] ->
+        reason_plain |> String.slice(0, 80)
+
+      is_binary(plugin_id) and plugin_id != "" ->
+        "改进 #{plugin_id |> String.split(".") |> List.last()}"
+
+      true ->
+        "环境改进 #{change_id}"
+    end
+  end
+
+  defp plain_evolution_reason(nil), do: "未记录原因"
+  defp plain_evolution_reason(reason) when is_binary(reason) do
+    cleaned =
+      reason
+      |> String.replace(~r/^adapter:\s*/i, "")
+      |> String.trim()
+
+    if cleaned == "", do: "未记录原因", else: cleaned
+  end
+  defp plain_evolution_reason(_), do: "未记录原因"
+
+  defp ring_risk_label(nil), do: "影响范围未知 · 默认按最谨慎处理"
+  defp ring_risk_label(ring) when ring in [3, "3"], do: "影响小 · 单个工具/流程改进（Ring 3，最稳）"
+  defp ring_risk_label(ring) when ring in [2, "2"], do: "影响中 · 规则/提示词改进（Ring 2，需回放验证）"
+  defp ring_risk_label(ring) when ring in [1, "1"], do: "影响大 · 底层能力变更（Ring 1，需最严验证）"
+  defp ring_risk_label(ring) when ring in [0, "0"], do: "不允许自动激活 · Host 层（Ring 0）"
+  defp ring_risk_label(ring), do: "影响范围 Ring #{ring}"
+
+  defp reversibility_label("awaiting_approval"), do: "批准后生成新版本，旧版本保留，可一键回退"
+  defp reversibility_label("suggestion_ready"), do: "仅记录建议，不改变正在运行的环境"
+  defp reversibility_label("stale_base"), do: "需在新基线上重新验证后才会生效，不直接改变环境"
+  defp reversibility_label(status) when status in ["active", "promoted"], do: "已生效，退化时可回退到已知良好版本"
+  defp reversibility_label(status) when status in ["rejected", "rolled_back"], do: "未改变正在运行的环境"
+  defp reversibility_label(_), do: "生效前需要经过验证与批准，旧版本保留"
+
+  defp verification_summary(layers) do
+    layers = if is_list(layers), do: layers, else: []
+    if layers == [] do
+      "暂无验证结果"
+    else
+      counts = Enum.frequencies_by(layers, & &1["status"])
+      passed = Map.get(counts, "passed", 0)
+      observing = Map.get(counts, "observing", 0)
+      failed = Map.get(counts, "failed", 0)
+      pending = Map.get(counts, "pending", 0)
+      skipped = Map.get(counts, "skipped", 0)
+      total = length(layers)
+      "#{total} 项验证中 #{passed} 通过" <> if(observing > 0, do: " · #{observing} 观察中", else: "") <> if(failed > 0, do: " · #{failed} 未通过", else: "") <> if(pending > 0, do: " · #{pending} 待运行", else: "") <> if(skipped > 0, do: " · #{skipped} 跳过", else: "")
+    end
   end
 
   defp evaluation_layers(layers) do
@@ -2539,6 +2606,16 @@ defmodule Newbee.Web.Api do
   defp autonomy_label(:manual), do: "人工门控 · 验证后批准"
   defp autonomy_label(:autonomous), do: "自主 · 过门后自动激活"
   defp autonomy_label(:emergency_stop), do: "紧急停止 · 仅允许回退"
+
+  defp autonomy_explain(level) do
+    case level do
+      :observe -> "只看不改：AI 只给出改进建议，不会改变正在运行的环境，不需要你批准也不会生效。"
+      :manual -> "每一次生效都要你批准：验证通过后停在门控处，等你点批准才会生成新版本。"
+      :autonomous -> "验证通过可自动生效，但高风险变更仍会停下来等你批准；你随时可以回退。"
+      :emergency_stop -> "已暂停一切改进，只允许回退到已知良好版本。先恢复稳定再谈进化。"
+      _ -> "当前自治档位未知，按最谨慎的人工门控处理。"
+    end
+  end
 
   defp truthy?(value), do: value in [true, "true", 1, "1"]
 
