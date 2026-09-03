@@ -1,4 +1,3 @@
-<<<data origin="file:/home/alanx/data/git/newbee/bin/appimage/build.sh" hash="609ca3ba16360e98" trust="untrusted" bytes="7833">>
 #!/usr/bin/env bash
 # newbee AppImage 构建工具
 # 用法:
@@ -185,5 +184,3 @@ echo ""
 echo "✅ 完成: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"
 echo "   版本: newbee v$NEWBEE_VERSION | OTP $OTP_VERSION | Elixir $ELIXIR_VERSION"
 echo "   用法: $OUTPUT  （首次运行自动初始化，之后秒启）"
-
-<<<end 609ca3ba16360e98>>>
