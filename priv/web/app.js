@@ -5637,25 +5637,23 @@ case "goal_round": break;
     initLogin();
     updateLogoutBtn();
     await redeemQuickAccess();
-    let needAuth = false;
+
     try {
-      const host = await rpc("host.describe", {});
-      needAuth = !!host.auth_required;
-      if (needAuth && state.token) {
-        hideLogin();
-        await bootApp();
+      const auth = await rpc("auth.status", {});
+
+      if (auth.auth_required && !auth.authenticated) {
+        if (state.token) setToken(null);
+        showLogin();
         return;
       }
-    } catch (e) {
-      if (String(e.message).includes("未登录")) { needAuth = true; }
-    }
-    if (needAuth) {
-      showLogin();
-    } else {
+
       hideLogin();
       await bootApp();
+    } catch (e) {
+      showLogin();
+      loginError(`无法确认登录状态: ${e.message}`);
     }
-  })().catch((e) => line("error", `启动失败: ${e.message}`));
+  })();
   // ── 手机扫码免登录进入（Quick Access）──
   // 电脑端已登录 → 生成一次性邀请码 → 二维码 URL 带 ?qk=CODE；
   // 手机扫码打开后本函数把码换成正式 token，免登录直接进入。

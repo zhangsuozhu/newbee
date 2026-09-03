@@ -93,8 +93,19 @@ defmodule Newbee.Web.Api do
 
   # ── 认证域（远程暴露时强制；本地回环免认证）──
 
-  defp dispatch_rpc("auth.status", _p) do
-    {:ok, %{password_set: Newbee.Web.Auth.password_set?()}}
+  defp dispatch_rpc("auth.status", p) do
+    authenticated =
+      case Map.get(p, "__token__") do
+        token when is_binary(token) -> Newbee.Web.Auth.check_token(token) == :ok
+        _ -> false
+      end
+
+    {:ok,
+     %{
+       auth_required: Newbee.Web.Auth.auth_required?(Newbee.Web.Router.bind_ip()),
+       authenticated: authenticated,
+       password_set: Newbee.Web.Auth.password_set?()
+     }}
   end
 
   defp dispatch_rpc("auth.captcha", _p) do
@@ -678,8 +689,7 @@ defmodule Newbee.Web.Api do
     with {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id),
          :ok <- require_group_coordinator(group_id, sid) do
       # 运行中保护：组内任一会话 busy 或有进行中任务，均拒绝删除；返回具体阻塞原因供前端展示
-      busy_member =
-        Enum.find(group["members"] || [], fn m -> Newbee.Web.Session.peek_busy(m["session_id"]) end)
+      busy_member = Enum.find(group["members"] || [], fn m -> Newbee.Web.Session.peek_busy(m["session_id"]) end)
 
       active_tasks =
         Enum.filter(group["tasks"] || [], fn task ->
@@ -2353,8 +2363,7 @@ defmodule Newbee.Web.Api do
       not Newbee.Environment.Change.terminal?(change) and change.candidate_revision != nil and
         change.base_revision != active_revision
 
-    derived =
-      if stale, do: "stale_base", else: derived_change_status(change.status, autonomy, passed)
+    derived = if stale, do: "stale_base", else: derived_change_status(change.status, autonomy, passed)
 
     %{
       "change_id" => change.change_id,

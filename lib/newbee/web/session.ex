@@ -463,6 +463,7 @@ defmodule Newbee.Web.Session do
   defp start_kernel(sid, client, owner) do
     sid_opt = sid
     cwd = Newbee.Session.cwd(sid)
+
     {evaluator, owned?} =
       Newbee.Environment.Boot.session_evaluator(session_id: sid_opt, cwd: cwd, link: true)
 
@@ -493,6 +494,11 @@ defmodule Newbee.Web.Session do
            render: render
          ) do
       {:ok, kernel} ->
+        # evaluator 由临时 boot worker 通过 start_link 创建。kernel 已成功注册
+        # monitor_owner 后解除这条启动链接，否则 boot worker 收到 ACK 正常退出时，
+        # trapping exits 的 GenServer 会把其 proc_lib 父进程退出视为自身正常停止。
+        # 后续生命周期由 kernel owner monitor 接管；启动失败路径仍由原链接清理。
+        if owned?, do: Process.unlink(evaluator)
         kernel
 
       {:error, reason} ->
@@ -804,14 +810,17 @@ defmodule Newbee.Web.Session do
   # kernel 侧由 turn_finished / boot 完成后异步同步，保证下一轮立即生效。
   def handle_call({:set_effort, effort}, _from, st) do
     effort = normalize_effort(effort)
+
     base_client =
       st.client ||
         case client_for_session(st.sid) do
           {:ok, c} -> c
           _ -> %Newbee.LLM.Client{}
         end
+
     client = %{base_client | reasoning_effort: effort}
     :ok = Newbee.Session.set_effort(st.sid, effort)
+
     if st.busy or st.booting do
       broadcast(st.sid, :effort_changed, %{effort: effort, applied: false, deferred: true})
       {:reply, {:ok, %{applied: false, deferred: true}}, %{st | client: client}}
@@ -825,6 +834,7 @@ defmodule Newbee.Web.Session do
           end
         end)
       end
+
       broadcast(st.sid, :effort_changed, %{effort: effort, applied: true})
       {:reply, {:ok, %{applied: true}}, %{st | client: client}}
     end
@@ -856,8 +866,10 @@ defmodule Newbee.Web.Session do
         :exit, _ -> :ok
       end
     end
+
     st
   end
+
   defp sync_kernel_effort(st), do: st
 
   @impl true
@@ -959,6 +971,7 @@ defmodule Newbee.Web.Session do
     save_stats(st)
     broadcast_turn_end(st.sid, result)
     st = %{st | busy: false} |> sync_kernel_effort()
+
     # 队列驱动：循环出队直到真正开启 turn（/ 命令不开 turn，单条出队会卡住后续排队输入）
     {:noreply, dispatch_pending(st)}
   end
@@ -1106,7 +1119,14 @@ defmodule Newbee.Web.Session do
     # 阻塞 session.state 5s 轮询（日志里 exited in GenServer.call :state 5000）。
     if st.kernel && Process.alive?(st.kernel) do
       old = st.kernel
-      Task.start(fn -> try do GenServer.stop(old, :normal, 5_000) catch _, _ -> :ok end end)
+
+      Task.start(fn ->
+        try do
+          GenServer.stop(old, :normal, 5_000)
+        catch
+          _, _ -> :ok
+        end
+      end)
     end
 
     sid = st.sid
@@ -1118,6 +1138,7 @@ defmodule Newbee.Web.Session do
       sess = Newbee.Session.open(sid)
       File.write!(sess.transcript, "")
       art = Path.join([Newbee.GlobalStore.root(), "session-artifacts", sid])
+
       for name <- ["bindings.json", "bindings.etf", "system-prompt.md"] do
         File.rm(Path.join(art, name))
       end
@@ -1142,7 +1163,6 @@ defmodule Newbee.Web.Session do
         boot_ref: ref
     }
   end
-
 
   # kernel 为 nil = 会话初始化时配置无效。给出可操作提示，不启动必死的 Task。
   defp do_submit(%{kernel: nil} = st, _text) do
@@ -1261,7 +1281,13 @@ defmodule Newbee.Web.Session do
       case result do
         {:done, summary, next_steps} when is_map(next_steps) ->
           {:done,
-           %{summary: summary, next_steps: next_steps, question: next_steps["question"], kind: next_steps["kind"], options: next_steps["options"]}}
+           %{
+             summary: summary,
+             next_steps: next_steps,
+             question: next_steps["question"],
+             kind: next_steps["kind"],
+             options: next_steps["options"]
+           }}
 
         {:done, summary} ->
           {:done, %{summary: summary}}

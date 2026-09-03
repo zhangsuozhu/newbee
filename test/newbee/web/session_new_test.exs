@@ -55,12 +55,33 @@ defmodule Newbee.Web.SessionNewTest do
     on_exit(fn ->
       Newbee.Bus.unsubscribe()
       if old_config, do: System.put_env("NEWBEE_MODEL_JSON", old_config), else: System.delete_env("NEWBEE_MODEL_JSON")
-      if Process.alive?(kernel), do: (try do GenServer.stop(kernel) catch _, _ -> :ok end)
-      if Process.alive?(ev), do: (try do GenServer.stop(ev) catch _, _ -> :ok end)
+
+      if Process.alive?(kernel),
+        do:
+          (try do
+             GenServer.stop(kernel)
+           catch
+             _, _ -> :ok
+           end)
+
+      if Process.alive?(ev),
+        do:
+          (try do
+             GenServer.stop(ev)
+           catch
+             _, _ -> :ok
+           end)
+
       # 清理重启产生的 kernel（若已落地）
       receive do
         {:kernel_restarted, {:ok, new_kernel}} ->
-          if Process.alive?(new_kernel), do: (try do GenServer.stop(new_kernel) catch _, _ -> :ok end)
+          if Process.alive?(new_kernel),
+            do:
+              (try do
+                 GenServer.stop(new_kernel)
+               catch
+                 _, _ -> :ok
+               end)
       after
         0 -> :ok
       end
@@ -88,10 +109,70 @@ defmodule Newbee.Web.SessionNewTest do
     receive do
       {:kernel_restarted, {:ok, new_kernel}} ->
         if Process.alive?(new_kernel), do: GenServer.stop(new_kernel)
-      {:kernel_restarted, {:error, _}} -> :ok
+
+      {:kernel_restarted, {:error, _}} ->
+        :ok
     after
       4000 -> :ok
     end
+  end
+
+  @tag :node
+  @tag timeout: 120_000
+  test "异步 boot worker 退出后会话 evaluator 仍存活" do
+    root = Path.join(System.tmp_dir!(), "newbee-session-evaluator-#{System.unique_integer([:positive])}")
+    config_path = Path.join(root, "model.json")
+    sid = "evaluator_owner_#{System.unique_integer([:positive])}"
+    File.mkdir_p!(root)
+
+    File.write!(
+      config_path,
+      Jason.encode!(%{
+        "providers" => %{
+          "stub" => %{
+            "baseUrl" => "https://example.test/v1",
+            "apiKey" => "test",
+            "models" => ["dummy"]
+          }
+        },
+        "roles" => %{"default" => %{"provider" => "stub", "model" => "dummy"}}
+      })
+    )
+
+    old_config = System.get_env("NEWBEE_MODEL_JSON")
+    System.put_env("NEWBEE_MODEL_JSON", config_path)
+
+    on_exit(fn ->
+      Newbee.Web.Session.destroy(sid)
+      if old_config, do: System.put_env("NEWBEE_MODEL_JSON", old_config), else: System.delete_env("NEWBEE_MODEL_JSON")
+      File.rm_rf!(root)
+    end)
+
+    assert {:ok, session, ^sid} = Newbee.Web.Session.ensure(sid, File.cwd!())
+
+    state =
+      Enum.reduce_while(1..600, nil, fn _, _ ->
+        state = :sys.get_state(session)
+
+        if is_pid(state.kernel) and not state.booting do
+          {:halt, state}
+        else
+          Process.sleep(100)
+          {:cont, nil}
+        end
+      end)
+
+    assert state != nil
+    assert {:ok, {evaluator, _scope}} = Newbee.SessionEvaluators.lookup(state.kernel)
+
+    # boot worker 收到 ACK 后已经退出；旧实现会在这里连带正常停止 evaluator。
+    Process.sleep(200)
+    assert Process.alive?(evaluator)
+    assert :ok = Newbee.DEE.Evaluator.set_cwd(evaluator, File.cwd!())
+
+    result = Newbee.DEE.Evaluator.eval(evaluator, "File.cwd!()")
+    assert result.status == :ok
+    assert result.cwd == File.cwd!()
   end
 
   test "handle_call :state is non-blocking snapshot" do
