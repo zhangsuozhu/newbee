@@ -1397,6 +1397,60 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("evolution.reevaluate", _p),
     do: {:error, "invalid_change", "缺少 changeId"}
 
+  defp dispatch_rpc("evolution.explain", %{"changeId" => change_id} = params)
+       when is_binary(change_id) do
+    case Process.whereis(Newbee.Environment.Coordinator) do
+      nil ->
+        {:error, "coordinator_down", "环境 Coordinator 未运行"}
+
+      _pid ->
+        force = truthy?(Map.get(params, "force"))
+
+        try do
+          changes = Newbee.Environment.Coordinator.changes(Newbee.Environment.Coordinator)
+
+          case Enum.find(changes, &(&1.change_id == change_id)) do
+            nil ->
+              {:error, "unknown_change", "找不到该改进"}
+
+            change ->
+              brief = change.human_brief
+
+              if is_map(brief) and brief["fallback"] == false and not force do
+                {:ok, %{brief: brief, change_id: change_id, cached: true}}
+              else
+                eval = change.evaluation_result || %{}
+
+                fresh =
+                  Newbee.Environment.HumanBrief.generate(%{
+                    reason: change.reason,
+                    evidence: change.evidence,
+                    plugin_id: eval["plugin_id"] || eval[:plugin_id],
+                    kind: eval["kind"] || eval[:kind],
+                    ring: eval["ring"] || eval[:ring]
+                  })
+
+                :ok =
+                  Newbee.Environment.Coordinator.update_brief(
+                    Newbee.Environment.Coordinator,
+                    change_id,
+                    fresh
+                  )
+
+                {:ok, %{brief: fresh, change_id: change_id, cached: false}}
+              end
+          end
+        rescue
+          e -> {:error, "explain_failed", inspect(e)}
+        catch
+          :exit, reason -> {:error, "explain_failed", inspect(reason)}
+        end
+    end
+  end
+
+  defp dispatch_rpc("evolution.explain", _p),
+    do: {:error, "invalid_change", "缺少 changeId"}
+
   defp dispatch_rpc("evolution.trigger", _p) do
     case Newbee.Host.on_main?() do
       true ->
@@ -2386,6 +2440,15 @@ defmodule Newbee.Web.Api do
       "risk_label" => ring_risk_label(ring),
       "reversibility" => reversibility_label(derived),
       "verification_summary" => verification_summary(layers),
+      "brief" =>
+        change.human_brief ||
+          Newbee.Environment.HumanBrief.template_brief(%{
+            reason: change.reason,
+            evidence: change.evidence,
+            plugin_id: plugin_id,
+            ring: ring,
+            eval_summary: verification_summary(layers)
+          }),
       "author" => to_string(change.author_agent),
       "base_revision" => change.base_revision,
       "candidate_release" => change.candidate_revision,

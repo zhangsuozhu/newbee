@@ -232,6 +232,7 @@ defmodule Newbee.Environment.Coordinator do
           deadline: attrs[:deadline] || default_deadline()
         })
       )
+      |> attach_template_brief(%{})
 
     case check_expected_version(change, state) do
       :ok ->
@@ -243,6 +244,19 @@ defmodule Newbee.Environment.Coordinator do
         {:reply, err, state}
     end
   end
+
+  def handle_call({:update_brief, change_id, brief}, _from, state) do
+    case Map.fetch(state.changes, change_id) do
+      {:ok, change} ->
+        state = put_change(state, %{change | human_brief: brief})
+        append_event(state, :change_brief_ready, %{"change_id" => change_id})
+        {:reply, :ok, state}
+
+      :error ->
+        {:reply, {:error, :change_not_found}, state}
+    end
+  end
+
 
   # ── candidate_ready（去重 + 异步评测）──
 
@@ -266,11 +280,19 @@ defmodule Newbee.Environment.Coordinator do
 
         case PluginManager.materialize(release) do
           {:ok, _dir} ->
-            change = %{
-              Change.transition(change, :building)
-              | candidate_revision: release.release_id
-            }
+            change =
+              %{
+                Change.transition(change, :building)
+                | candidate_revision: release.release_id
+              }
+              |> attach_template_brief(%{
+                plugin_id: release.plugin_id,
+                kind: release.kind,
+                usage: Map.get(release, :usage),
+                ring: Autonomy.ring_of(release.kind)
+              })
 
+            async_brief_upgrade(self(), change)
             state = put_change(state, change)
 
             append_event(state, :change_building, %{
@@ -1138,7 +1160,65 @@ defmodule Newbee.Environment.Coordinator do
     :persistent_term.get({__MODULE__, :active_prompts}, [])
   end
 
+  @doc "写入/刷新人话卡（evolution.explain 流程用；模板与 LLM 结果都可存）。"
+  def update_brief(server \\ __MODULE__, change_id, brief) do
+    GenServer.call(server, {:update_brief, change_id, brief}, 60_000)
+  end
+
+  @impl true
+  def handle_cast({:brief_ready, change_id, brief}, state) do
+    case Map.fetch(state.changes, change_id) do
+      {:ok, change} ->
+        current = change.human_brief
+
+        change =
+          if is_map(current) and current["fallback"] == false do
+            change
+          else
+            %{change | human_brief: brief}
+          end
+
+        state = put_change(state, change)
+        append_event(state, :change_brief_ready, %{"change_id" => change_id})
+        {:noreply, state}
+
+      :error ->
+        {:noreply, state}
+    end
+  end
+
+  # 人话卡：提案时同步挂模板（纯函数零等待），LLM 升级走异步 cast
+
+  defp attach_template_brief(change, extra) do
+    attrs = Map.merge(brief_attrs(change), extra)
+    %{change | human_brief: Newbee.Environment.HumanBrief.template_brief(attrs)}
+  end
+
+  defp brief_attrs(change) do
+    eval = change.evaluation_result || %{}
+
+    %{
+      reason: change.reason,
+      evidence: change.evidence,
+      plugin_id: eval["plugin_id"] || eval[:plugin_id],
+      kind: eval["kind"] || eval[:kind],
+      ring: eval["ring"] || eval[:ring]
+    }
+  end
+
+  defp async_brief_upgrade(server, change) do
+    attrs = brief_attrs(change)
+
+    Task.start(fn ->
+      brief = Newbee.Environment.HumanBrief.generate(attrs)
+      GenServer.cast(server, {:brief_ready, change.change_id, brief})
+    end)
+
+    :ok
+  end
+
   # ── helpers ──
+
 
   defp check_expected_version(%Change{expected_version: nil}, _state), do: :ok
 

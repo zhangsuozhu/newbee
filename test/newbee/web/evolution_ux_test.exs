@@ -54,8 +54,12 @@ defmodule Newbee.Web.EvolutionUxTest do
     assert html =~ "当前生效版本"
     refute html =~ "ACTIVE ENVIRONMENT"
     js = File.read!(Path.join([File.cwd!(), "priv", "web", "app.js"]))
-    assert js =~ "是否让环境记住这个改进"
-    assert js =~ "批准并激活"
+    assert js =~ "换一种说法"
+    assert js =~ "验证细节"
+    assert js =~ "evo-story"
+    assert js =~ "explainBrief"
+    assert js =~ "evolution.explain"
+    assert js =~ "批准，用上这个改进"
     assert js =~ "再想想"
     assert js =~ "evoRingExplain"
   end

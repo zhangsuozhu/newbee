@@ -77,7 +77,7 @@ defmodule Newbee.Web.Socket do
   # 系统级进化事件下行（与具体 session 无关；前端进化面板消费）
   @evo_topics ~w(evolution_published evolution_rejected release_observation
                   change_requested change_building change_evaluated change_canary
-                  change_approved change_activated change_rejected change_rolled_back
+                  change_approved change_activated change_rejected change_rolled_back change_brief_ready
                   revision_advanced revision_degraded revision_healthy
                   snapshot_created snapshot_restored
                   generation_switched generation_switch_failed)a

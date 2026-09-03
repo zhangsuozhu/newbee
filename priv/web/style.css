@@ -2758,3 +2758,12 @@ svg.ico {
 .mc-badge { display: inline-block; min-width: 16px; height: 16px; line-height: 16px; margin-left: 4px; padding: 0 4px; border-radius: 8px; background: var(--nb-warn, #ff9800); color: #fff; font-size: 10px; font-weight: 700; text-align: center; vertical-align: 1px; }
 .mc-badge.hidden { display: none; }
 .hidden { display: none !important; }
+
+/* ── 讲人话卡（opt_a）：叙事五段 + 验证折叠 ── */
+.evo-story { display: flex; gap: 8px; padding: 5px 9px; font-size: 11px; line-height: 1.5; }
+.evo-story b { flex: none; width: 2.2em; color: var(--nb-warn); font-weight: 700; }
+.evo-story span { color: var(--nb-label-2); word-break: break-word; }
+.evo-explain { flex: none; align-self: flex-start; border: 1px dashed var(--nb-border); border-radius: 4px; background: none; color: var(--nb-label-caption); font-size: 10px; padding: 2px 6px; cursor: pointer; }
+.evo-explain:hover { color: var(--nb-label-1); border-color: var(--nb-label-caption); }
+.evo-explain:disabled { opacity: .6; cursor: wait; }
+.evo-layers-detail { margin: 6px 9px 8px; border: 1px solid var(--nb-border); border-radius: 6px; }

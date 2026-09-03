@@ -4265,6 +4265,7 @@ case "goal_round": break;
       } else {
         decideBox.innerHTML = [...decide, ...reeval].map(renderEvoDecideCard).join("");
         decideBox.querySelectorAll(".evo-approve").forEach((b) => { b.onclick = () => approveEvolutionChange(b.dataset.changeId, b); });
+        decideBox.querySelectorAll(".evo-explain").forEach((b) => { b.onclick = () => explainBrief(b.dataset.changeId, b); });
         decideBox.querySelectorAll(".evo-reevaluate").forEach((b) => { b.onclick = () => reevaluateEvolutionChange(b.dataset.changeId, b); });
       }
     }
@@ -4287,25 +4288,33 @@ case "goal_round": break;
 
   function renderEvoDecideCard(change) {
     const changeId = escapeHtml(change.change_id || "");
-    const title = escapeHtml(change.human_title || change.reason_plain || cleanEvolutionReason(change.reason || "环境改进"));
-    const reason = escapeHtml(change.reason_plain || cleanEvolutionReason(change.reason || "未记录原因"));
-    const risk = escapeHtml(change.risk_label || evoRingExplain(change.ring));
-    const revers = escapeHtml(change.reversibility || "批准后生成新版本，旧版本保留，可一键回退");
-    const verify = escapeHtml(change.verification_summary || "验证已通过");
-    const layers = ((change.evaluation || {}).layers || []).map(renderEvoLayer).join("");
+    const brief = (change.brief && typeof change.brief === "object") ? change.brief : null;
     const statusTag = escapeHtml(change.status_label || change.derived_status || "");
-    const ringTxt = change.ring == null ? "-" : String(change.ring);
     const action = change.can_approve
-      ? `<button class="evo-approve evo-approve-big" data-change-id="${changeId}">批准并激活</button>`
+      ? `<button class="evo-approve evo-approve-big" data-change-id="${changeId}">批准，用上这个改进</button>`
       : `<button class="evo-reevaluate" data-change-id="${changeId}">重新评测</button>`;
+    if (!brief) {
+      const t = escapeHtml(change.human_title || "环境改进");
+      return evoCardShell(change, `
+        <div class="evo-change-head"><div class="evo-change-title"><strong>${t}</strong><span>${changeId}</span></div><span class="evo-status-tag">${statusTag}</span></div>
+        <div class="evo-change-foot"><span class="evo-change-next">${escapeHtml(change.next_action || "")}</span>${action}</div>`);
+    }
+    const sec = (label, text) => `<div class="evo-story"><b>${label}</b><span>${escapeHtml(text || "暂无")}</span></div>`;
+    const again = brief.fallback
+      ? `<button class="evo-explain" data-change-id="${changeId}" title="让 AI 换一种说法重新讲一遍">换一种说法</button>`
+      : "";
+    const layers = ((change.evaluation || {}).layers || []).map(renderEvoLayer).join("");
+    const verify = escapeHtml(change.verification_summary || "");
     return evoCardShell(change, `
-        <div class="evo-decide-q">是否让环境记住这个改进？</div>
-        <div class="evo-change-head"><div class="evo-change-title"><strong title="${changeId}">${title}</strong><span>${changeId} · Ring ${escapeHtml(ringTxt)}</span></div><span class="evo-status-tag">${statusTag}</span></div>
-        <div class="evo-change-reason">原因：${reason}</div>
-        <div class="evo-layers">${layers || renderPendingLayers()}</div>
-        <div class="evo-facts"><span title="五道验证门的总体结论">✓ ${verify}</span><span title="这次变更的影响范围">◈ ${risk}</span><span title="批准后会发生什么，能否撤销">↩ ${revers}</span></div>
-        <div class="evo-change-foot"><span class="evo-change-next">${escapeHtml(change.next_action || "批准后生成新版本")}</span>${action}</div>
-        <details class="evo-tech"><summary>查看技术详情</summary><pre>${escapeHtml(JSON.stringify({ change_id: change.change_id, candidate_release: change.candidate_release, plugin_id: change.plugin_id, ring: change.ring, base_revision: change.base_revision }, null, 2))}</pre></details>
+        <div class="evo-change-head"><div class="evo-change-title"><strong>${escapeHtml(brief.title || "环境改进")}</strong><span>${statusTag}</span></div>${again}</div>
+        ${sec("发现", brief.found)}
+        ${sec("改法", brief.change_to)}
+        ${sec("依据", brief.why)}
+        ${sec("风险", brief.risk_undo)}
+        ${sec("决定", brief.ask)}
+        <details class="evo-tech"><summary>验证细节（${verify}）</summary><div class="evo-layers evo-layers-detail">${layers || renderPendingLayers()}</div></details>
+        <div class="evo-change-foot"><span class="evo-change-next">${escapeHtml(change.next_action || "")}</span>${action}</div>
+        <details class="evo-tech"><summary>技术详情</summary><pre>${escapeHtml(JSON.stringify({ change_id: change.change_id, candidate_release: change.candidate_release, plugin_id: change.plugin_id, ring: change.ring, base_revision: change.base_revision }, null, 2))}</pre></details>
       `);
   }
 
@@ -4330,10 +4339,10 @@ case "goal_round": break;
     const marks = { passed: "通过", failed: "未过", observing: "观察中", pending: "待运行", skipped: "跳过" };
     const marksShort = { passed: "PASS", failed: "FAIL", observing: "LIVE", pending: "WAIT", skipped: "N/A" };
     let detail = "";
-    if (layer.samples != null) detail = `${layer.samples} 次试用`;
-    else if (layer.replayed != null) detail = `${layer.replayed} 次回放`;
+    if (layer.samples != null && layer.samples !== "") detail = `${layer.samples} 次试用`;
+    else if (layer.replayed != null && layer.replayed !== "") detail = `${layer.replayed} 次回放`;
     else detail = layer.label || layer.key || "验证";
-    const tip = `${evoLayerExplain(layer.key)}${layer.reason ? "：" + layer.reason : ""}${layer.samples != null ? "（" + layer.samples + " 次真实使用）" : ""}${layer.replayed != null ? "（回放 " + layer.replayed + " 条）" : ""}`;
+    const tip = `${evoLayerExplain(layer.key)}${layer.reason ? "：" + layer.reason : ""}${(layer.samples != null && layer.samples !== "") ? "（" + layer.samples + " 次真实使用）" : ""}${(layer.replayed != null && layer.replayed !== "") ? "（回放 " + layer.replayed + " 条）" : ""}`;
     return `<div class="evo-layer ${escapeHtml(status)}" title="${escapeHtml(tip)}"><b>${marksShort[status] || "WAIT"}</b><span>${escapeHtml(detail)}</span><em class="evo-layer-cn">${escapeHtml(marks[status] || "待运行")}</em></div>`;
   }
 
@@ -4377,11 +4386,26 @@ case "goal_round": break;
     }).join("");
   }
 
+  async function explainBrief(changeId, button) {
+    if (!changeId || !button) return;
+    const orig = button.textContent;
+    button.disabled = true;
+    button.textContent = "正在组织语言…";
+    try {
+      await rpc("evolution.explain", { changeId });
+      await refreshEvolution();
+    } catch (e) {
+      line("error", "生成说明失败: " + e.message);
+      button.disabled = false;
+      button.textContent = orig;
+    }
+  }
+
   async function approveEvolutionChange(changeId, button) {
     if (!changeId) return;
     const card = button ? button.closest(".evo-change") : null;
     const title = card ? (card.querySelector(".evo-change-title strong") || {}).textContent || changeId : changeId;
-    const facts = card ? Array.from(card.querySelectorAll(".evo-facts span")).map((el) => "• " + el.textContent).join("\n") : "";
+    const facts = card ? Array.from(card.querySelectorAll(".evo-story span, .evo-facts span")).map((el) => "• " + el.textContent).join("\n") : "";
     const msg = `让环境记住这个改进吗？\n\n【${title}】(${changeId})\n${facts}\n\n批准后会生成新版本并立即生效，旧版本保留，可一键回退。不批准则维持现状，什么都不变。`;
     confirmDialog(msg, async () => {
       button.disabled = true;
@@ -4394,7 +4418,7 @@ case "goal_round": break;
         button.disabled = false;
         button.textContent = "重试批准";
       }
-    }, { confirmLabel: "批准并激活", cancelLabel: "再想想", confirmClass: "btn-allow" });
+    }, { confirmLabel: "批准，用上这个改进", cancelLabel: "再想想", confirmClass: "btn-allow" });
   }
 
   async function reevaluateEvolutionChange(changeId, button) {
