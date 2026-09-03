@@ -58,7 +58,12 @@ defmodule Newbee.Environment.Boot do
       node_label: Keyword.get(opts, :node_label, Keyword.get(opts, :session_id))
     ]
 
-    case Newbee.DEE.Evaluator.start(evaluator_opts) do
+    start =
+      if Keyword.get(opts, :link, false),
+        do: &Newbee.DEE.Evaluator.start_link/1,
+        else: &Newbee.DEE.Evaluator.start/1
+
+    case start.(evaluator_opts) do
       {:ok, ev} ->
         ev
 
@@ -69,7 +74,8 @@ defmodule Newbee.Environment.Boot do
 
         case Keyword.get(opts, :session_id) do
           sid when is_binary(sid) ->
-            {:ok, ev} = Newbee.DEE.Evaluator.start(mode: :local, cwd: Keyword.get(opts, :cwd), node_label: sid)
+            local_opts = [mode: :local, cwd: Keyword.get(opts, :cwd), node_label: sid]
+            {:ok, ev} = start.(local_opts)
             ev
 
           _ ->

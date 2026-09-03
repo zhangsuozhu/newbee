@@ -15,6 +15,10 @@ defmodule Newbee.HostTest do
     end)
   end
 
+  test "call/4 preserves call/3 semantics while accepting an explicit RPC timeout" do
+    assert Host.call(Enum, :sum, [[1, 2, 3]], 1_000) == 6
+  end
+
   test "on_main? 为主 VM 时 true" do
     assert Host.on_main?()
     assert Host.main_node() == Node.self()

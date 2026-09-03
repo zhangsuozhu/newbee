@@ -137,6 +137,81 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     GenServer.stop(restored)
   end
 
+  test "重放旧版 delegated 事件时补齐累计派生字段", %{
+    server: server,
+    pid: pid,
+    path: path
+  } do
+    GenServer.stop(pid)
+    now = DateTime.utc_now() |> DateTime.to_iso8601()
+    group_id = "legacy-replay-group"
+
+    old_group = %{
+      "group_id" => group_id,
+      "title" => "legacy",
+      "goal" => "legacy",
+      "status" => "running",
+      "coordinator_session_id" => "parent",
+      "project_root" => File.cwd!(),
+      "members" => [
+        %{
+          "session_id" => "parent",
+          "role" => "coordinator",
+          "parent_session_id" => nil,
+          "joined_at" => now
+        }
+      ],
+      "messages" => [],
+      "tasks" => [],
+      "next_seq" => 0,
+      "created_at" => now,
+      "updated_at" => now
+    }
+
+    member = %{
+      "session_id" => "legacy-child",
+      "role" => "worker",
+      "parent_session_id" => "parent",
+      "joined_at" => now
+    }
+
+    task = %{
+      "task_id" => "legacy-task",
+      "group_id" => group_id,
+      "title" => "old delegated task",
+      "description" => "old delegated task",
+      "acceptance" => [],
+      "created_by_session_id" => "parent",
+      "assigned_session_id" => "legacy-child",
+      "status" => "assigned",
+      "created_at" => now,
+      "updated_at" => now
+    }
+
+    {:ok, store} = Newbee.EventStore.start_link(path: path, durability: :event)
+
+    {:ok, _} =
+      Newbee.EventStore.append(store, :collab_group_created, %{
+        "command_id" => nil,
+        "payload" => %{"group" => old_group}
+      })
+
+    {:ok, _} =
+      Newbee.EventStore.append(store, :collab_delegated, %{
+        "group_id" => group_id,
+        "command_id" => "legacy-delegate",
+        "payload" => %{"member" => member, "task" => task}
+      })
+
+    GenServer.stop(store)
+    {:ok, restored} = Coordinator.start_link(name: server, path: path, durability: :event)
+    assert {:ok, recovered} = Coordinator.get(group_id, server)
+    assert recovered["total_spawned"] == 2
+    assert recovered["revision"] == 2
+    assert Enum.any?(recovered["members"], &(&1["session_id"] == "legacy-child"))
+    GenServer.stop(restored)
+  end
+
   test "移出成员保护任务和父子关系，并在重启后保持结果", %{
     server: server,
     pid: pid,

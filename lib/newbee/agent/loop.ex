@@ -8,6 +8,7 @@ defmodule Newbee.Agent.Loop do
   defstruct messages: [],
             client: nil,
             evaluator: nil,
+            evaluator_owned: false,
             render: nil,
             client_fun: nil,
             usage: %{},
@@ -182,7 +183,9 @@ defmodule Newbee.Agent.Loop do
         _ -> nil
       end
 
-    if Keyword.get(opts, :evaluator_owned, false) and is_pid(evaluator) do
+    evaluator_owned = Keyword.get(opts, :evaluator_owned, false)
+
+    if evaluator_owned and is_pid(evaluator) do
       Newbee.DEE.Evaluator.monitor_owner(evaluator, self())
     end
 
@@ -274,6 +277,7 @@ defmodule Newbee.Agent.Loop do
        messages: [%{"role" => "system", "content" => prompt}] ++ prior_messages ++ recovery,
        client: client,
        evaluator: evaluator,
+       evaluator_owned: evaluator_owned,
        owner: owner_ref,
        render: render,
        client_fun: client_fun,
@@ -579,6 +583,21 @@ defmodule Newbee.Agent.Loop do
       emit(state, {:goal_cancelled, :crash})
       {:noreply, %{state | goal: nil}}
   end
+
+  @impl true
+  def terminate(_reason, %{evaluator_owned: true, evaluator: evaluator}) when is_pid(evaluator) do
+    if Process.alive?(evaluator) do
+      try do
+        GenServer.stop(evaluator, :normal, 10_000)
+      catch
+        _, _ -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   # ── 自主目标（/goal）：turn 出口统一处理 ──
 
@@ -2273,15 +2292,63 @@ defp final_check(%{progress: nil} = state), do: {:done, state}
   defp initial_system_prompt(nil, root), do: system_prompt(root)
 
   defp initial_system_prompt(session, root) do
+    profile = Newbee.Session.collaboration_profile(session.id)
+
     case Newbee.Session.system_prompt(session) do
       prompt when is_binary(prompt) ->
-        if prompt_for_root?(prompt, root),
+        if prompt_for_root?(prompt, root) and prompt_for_profile?(prompt, profile),
           do: prompt,
-          else: Newbee.Session.save_system_prompt(session, system_prompt(root))
+          else: Newbee.Session.save_system_prompt(session, system_prompt_for_session(session, root))
 
       _ ->
-        Newbee.Session.save_system_prompt(session, system_prompt(root))
+        Newbee.Session.save_system_prompt(session, system_prompt_for_session(session, root))
     end
+  end
+
+  defp system_prompt_for_session(nil, root), do: system_prompt(root)
+
+  defp system_prompt_for_session(session, root) do
+    base = system_prompt(root)
+
+    case Newbee.Session.collaboration_profile(session.id) do
+      %{"instructions" => instructions} = profile when is_binary(instructions) ->
+        base <>
+          "\n\n## 受信协作身份 [NEWBEE_COLLAB_PROFILE_V1]\n" <>
+          "profile_sha256=#{collaboration_profile_digest(profile)}\n" <>
+          "persona=#{profile["name"] || profile["role"]} role=#{profile["role"]}\n" <>
+          "group_id=#{profile["group_id"] || "unknown"} parent_session_id=#{profile["parent_session_id"] || "root"}\n" <>
+          instructions
+
+      _ ->
+        base
+    end
+  end
+
+  defp prompt_for_profile?(prompt, nil),
+    do: not String.contains?(prompt, "[NEWBEE_COLLAB_PROFILE_V1]")
+
+  defp prompt_for_profile?(prompt, profile) do
+    String.contains?(prompt, "profile_sha256=#{collaboration_profile_digest(profile)}")
+  end
+
+  defp collaboration_profile_digest(profile) do
+    profile
+    |> Map.take([
+      "name",
+      "role",
+      "provider",
+      "model",
+      "reasoning_effort",
+      "instructions",
+      "group_id",
+      "parent_session_id",
+      "fork_turns"
+    ])
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {key, value} -> [key, value] end)
+    |> Jason.encode!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 
   defp prompt_for_root?(prompt, root) do
@@ -2320,7 +2387,7 @@ defp final_check(%{progress: nil} = state), do: {:done, state}
   end
 
   defp rebuild_root_state(state, root) do
-    prompt = system_prompt(root)
+    prompt = system_prompt_for_session(state.session, root)
     :ok = persist_root(state.session, root, prompt)
     {:ok, %{state | root: root, messages: replace_system_prompt(state.messages, prompt)}}
   rescue

@@ -777,4 +777,30 @@ defmodule Newbee.Session do
     ])
     |> IO.iodata_to_binary()
   end
+
+  @doc "保存受信的协作 persona 配置；只接受 Persona 已校验的运行时字段。"
+  def set_collaboration_profile(id, profile) when is_binary(id) and is_map(profile) do
+    safe =
+      Map.take(profile, [
+        "name",
+        "role",
+        "provider",
+        "model",
+        "reasoning_effort",
+        "instructions",
+        "group_id",
+        "parent_session_id",
+        "fork_turns"
+      ])
+
+    update_metadata(id, &Map.put(&1, "collaboration_profile", safe))
+  end
+
+  @doc "读取会话的受信协作 persona 配置；普通会话返回 nil。"
+  def collaboration_profile(id) when is_binary(id) do
+    case metadata(id)["collaboration_profile"] do
+      profile when is_map(profile) -> profile
+      _ -> nil
+    end
+  end
 end

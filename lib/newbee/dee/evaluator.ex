@@ -106,7 +106,9 @@ defmodule Newbee.DEE.Evaluator do
   @impl true
   def init(opts) do
     mode = Keyword.get(opts, :mode, :node)
-    if mode == :node, do: Process.flag(:trap_exit, true)
+
+    # 初始化阶段保留 start_link 的父子取消语义；primary 就绪后才接管 peer EXIT。
+    # 否则 bootstrap owner 的 :shutdown 会被排队并被通用 EXIT 分支忽略。
 
     # 会话工作目录是 evaluator 的稳定根；每个 cell 开始前由 EvalWorker 重新恢复。
     cwd_opt = Keyword.get(opts, :cwd) |> normalize_cwd()
@@ -136,6 +138,8 @@ defmodule Newbee.DEE.Evaluator do
               %{base_state | boot_error: reason, standby_boot: standby_boot}
           end
       end
+
+    if state.mode == :node, do: Process.flag(:trap_exit, true)
 
     # 异步补 standby（不阻塞 init）
     if state.mode == :node, do: send(self(), :ensure_standby)
@@ -420,7 +424,13 @@ defmodule Newbee.DEE.Evaluator do
       # elixir 启动时 io:setopts(standard_io, [binary]) 会得到 {error, :enotsup}
       # 导致 elixir application 启动失败（实际事故：在 DEE 里跑 mix test /
       # 嵌套起 evaluator 全部 unavailable）。
-      case :peer.start_link(%{name: name, args: pa_args, wait_boot: @peer_boot_timeout, detached: false, connection: {{127, 0, 0, 1}, 0}}) do
+      case :peer.start_link(%{
+             name: name,
+             args: pa_args,
+             wait_boot: @peer_boot_timeout,
+             detached: false,
+             connection: {{127, 0, 0, 1}, 0}
+           }) do
         {:ok, peer, node} ->
           Newbee.DebugLog.log(:boot, "peer up node=#{node}")
 

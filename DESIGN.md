@@ -467,6 +467,20 @@ module_rejected / evaluation_failed
 rolled_back        coordinator → 双方     {revision, plugin_id, release_id, reason}
 ```
 
+#### 7.2.1 会话 Hive v2（已实现）
+
+模型可见入口是 `Newbee.Tools.Hive`，持久事实仍只有 `Newbee.Collaboration.Coordinator`，不得再建第二套 group/board。`open/delegate/board/board_put/board_claim/report/verify/wait/send/inbox/roster/interrupt/close/personas` 的真实签名以 PluginContract 为准。
+
+- Board 写操作带 `expected_revision + command_id`，Coordinator 单写者提供 CAS 线性化点；依赖是显式 DAG，write scope 重叠只作诊断，不声称文件互斥。
+- 执行者只能提交 `submitted`，不能改验收契约或写 `succeeded`；legacy task API 拒绝 v2 task。Lead 在主节点运行结构化验收，调用方不能传入 attestation。
+- command 验收只允许 Lead 创建，且会执行项目代码，不是 sandbox；输出只保存有界捕获摘要。Board revision 不冻结文件系统。
+- capability 绑定公开 Hive 工具调用的真实 session；生命周期控制限 Lead/直接父。该机制不是任意 BEAM/RPC 代码的进程沙箱。
+- 派生深度、累计派生数、任务数、验收/argv/JSON 载荷和 fork 上下文均有硬上限；`wait` 是 revision 边沿等待，不轮询。
+- Persona 只支持 runtime 真正消费的 provider/model/reasoning_effort/instructions；严格 JSON，启动前验证 client，system prompt 用 profile digest 失效缓存。
+- Context fork 只复制完整 user/final-assistant 轮次，排除 system/tool/tool_calls；上限 64 轮、128 KiB。异步 child boot 受 Session 生命周期管理，失败补偿须回收 workspace/session/evaluator。
+
+论证、外部数据和未证明事项见 [`docs/collab-v2-analysis.md`](docs/collab-v2-analysis.md)。
+
 ### 7.3 通知语义
 
 发布不是写日志。Coordinator 必须：①更新 active revision；②广播 `module_ready`；③通知进 worker 下一次投影；④worker 执行中则排队，不打断运行中的 turn；⑤附版本、契约、用法与评测摘要。
