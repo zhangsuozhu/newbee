@@ -128,6 +128,17 @@
       <div class="collab-activity-head"><span>动态</span><button id="mc-collab-activity-more" class="btn-ghost" title="展开或收起全部动态">展开全部</button></div>
       <div id="mc-collab-activity" class="collab-activity-list"></div>
       <div id="mc-collab-list" class="collab-message-list"></div>
+      <div class="collab-composer">
+        <select id="mc-collab-recipient" title="消息接收者"></select>
+        <select id="mc-collab-delivery" title="投递方式：仅通知不唤醒模型；排队处理会传给对方 AI；立即处理在对方空闲时马上开始">
+          <option value="notify">仅通知</option>
+          <option value="queue">排队处理</option>
+          <option value="wake">立即处理</option>
+        </select>
+        <textarea id="mc-collab-input" rows="2" placeholder="给协作会话发消息…"></textarea>
+        <button id="mc-collab-send" class="btn-primary">发送</button>
+      </div>
+    </div>
     <div id="mc-tasks" class="mc-pane hidden">
       <div class="mc-pane-head">
         <span id="mc-task-title">工作项</span>
@@ -141,7 +152,6 @@
         <button data-task-filter="review" title="有待审查变更的">待审查</button>
       </div>
       <div id="mc-task-list" class="collab-task-list"></div>
-    </div>
     </div>
 
     <div id="mc-files" class="mc-pane">
@@ -227,11 +237,11 @@
 
   </aside>
 </div>
-<div id="group-modal" class="modal hidden">
+<div id="group-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="组成工作组">
   <div class="modal-box">
     <div class="modal-title">组成工作组</div>
     <div class="group-modal-fields">
-<div id="group-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="组成工作组">
+      <label>名称<input id="group-name-input" type="text" placeholder="例如：认证重构" maxlength="80" /></label>
       <label>共同目标<textarea id="group-goal-input" rows="3" placeholder="这些会话共同完成什么？" maxlength="2000"></textarea></label>
       <div id="group-member-chips" class="group-member-chips"></div>
     </div>
@@ -476,7 +486,7 @@
   <button data-act="delete" class="danger"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> 删除</button>
 </div>
 
-<div id="login-overlay" class="login-overlay hidden">
+<div id="login-overlay" class="login-overlay">
   <div class="login-box" id="login-box">
     <div class="login-brand">
       <svg class="ico" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8.5 5v8L12 21l-8.5-5V8L12 3z"/><path d="M8.5 10.5h7M8.5 13.5h7"/></svg>
@@ -533,7 +543,7 @@
 <script src="/vendor/highlight.min.js"></script>
 <script src="/vendor/languages/elixir.min.js"></script>
 <script src="/vendor/qrcodegen.js"></script>
-<script src="/app.js?v=1788338147"></script>
+<script src="/app.js?v=1788432612"></script>
 <!-- 手机扫码免登录弹窗 -->
 <div id="qa-overlay" class="qa-overlay hidden">
   <div class="qa-box">

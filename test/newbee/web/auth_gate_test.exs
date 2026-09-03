@@ -65,6 +65,17 @@ defmodule Newbee.Web.AuthGateTest do
 
       conn2 = post_rpc("auth.status", %{})
       assert conn2.status == 200
+      body2 = Jason.decode!(conn2.resp_body)
+
+      assert body2["result"]["ok"] == %{
+               "auth_required" => true,
+               "authenticated" => false,
+               "password_set" => true
+             }
+
+      {:ok, tok} = Auth.issue_token()
+      authenticated = post_rpc("auth.status", %{}, tok) |> Map.fetch!(:resp_body) |> Jason.decode!()
+      assert authenticated["result"]["ok"]["authenticated"] == true
     end
 
     test "auth.login 全流程（验证码 → token → 访问）" do
@@ -96,6 +107,11 @@ defmodule Newbee.Web.AuthGateTest do
     test "免认证直接放行" do
       conn = post_rpc("session.list", %{"limit" => 1})
       assert conn.status == 200
+
+      status = post_rpc("auth.status", %{})
+      body = Jason.decode!(status.resp_body)
+      assert body["result"]["ok"]["auth_required"] == false
+      assert body["result"]["ok"]["authenticated"] == false
     end
   end
 
