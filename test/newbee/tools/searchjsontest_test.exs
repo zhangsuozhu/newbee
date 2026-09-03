@@ -22,9 +22,10 @@ defmodule Newbee.Tools.SearchJsonTest do
     data = %{"data" => %{"items" => [%{"name" => "a"}, %{"name" => "b"}]}}
     assert Json.get!(data, "data.items[1].name") == "b"
     assert {:ok, "a"} = Json.get(data, "data.items[0].name")
-    # 缺失路径：末段为 nil（JSON 合法值）；更深路径缺失则 :error
-    assert {:ok, nil} = Json.get(data, "data.nope")
+    # 缺段一律:error（旧实现靠BadMap崩出:error，深浅不一）；显式null才{:ok,nil}
+    assert :error = Json.get(data, "data.nope")
     assert :error = Json.get(data, "data.nope.deep")
+    assert {:ok, nil} = Json.get(%{"a" => nil}, "a")
   end
 
   test "Json 编解码" do

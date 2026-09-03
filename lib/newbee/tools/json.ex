@@ -40,29 +40,74 @@ defmodule Newbee.Tools.Json do
     _ -> {:error, :encode_failed}
   end
 
-  @doc "按路径从 JSON 取值：Json.get!(resp, \"data.items[0].name\")。"
+  @doc "按路径从 JSON 取值：Json.get!(resp, \"data.items[0].name\")。缺段返回nil。"
   def get!(value, path) when is_binary(path) do
     path
     |> String.split(".", trim: true)
     |> Enum.reduce(value, fn seg, acc ->
       case Regex.run(~r/^(.+?)\[(\d+)\]$/, seg) do
         [_, key, idx] ->
-          case Map.get(acc, key) do
-            list when is_list(list) -> Enum.at(list, String.to_integer(idx))
+          case acc do
+            %{^key => list} when is_list(list) -> Enum.at(list, String.to_integer(idx))
             _ -> nil
           end
 
         _ ->
-          Map.get(acc, seg)
+          case acc do
+            %{} -> Map.get(acc, seg)
+            _ -> nil
+          end
       end
     end)
   end
 
-  @doc "按路径取值（不抛错）。返回 {:ok, v} | :error。"
-  def get(value, path) do
-    {:ok, get!(value, path)}
+  @doc "按路径取值（不抛错）。缺段返回:error，显式null返回{:ok, nil}。返回 {:ok, v} | :error。"
+  def get(value, path) when is_binary(path) do
+    case fetch_path(value, path) do
+      {:ok, _} = ok -> ok
+      :error -> :error
+    end
   rescue
     _ -> :error
+  end
+
+  defp fetch_path(value, path) do
+    segs = String.split(path, ".", trim: true)
+    do_fetch(value, segs)
+  end
+
+  defp do_fetch(acc, []), do: {:ok, acc}
+
+  defp do_fetch(acc, [seg | rest]) do
+    case Regex.run(~r/^(.+?)\[(\d+)\]$/, seg) do
+      [_, key, idx_str] ->
+        idx = String.to_integer(idx_str)
+
+        case acc do
+          %{^key => list} when is_list(list) ->
+            if idx < length(list) do
+              do_fetch(Enum.at(list, idx), rest)
+            else
+              :error
+            end
+
+          _ ->
+            :error
+        end
+
+      _ ->
+        case acc do
+          %{} = m ->
+            if Map.has_key?(m, seg) do
+              do_fetch(Map.get(m, seg), rest)
+            else
+              :error
+            end
+
+          _ ->
+            :error
+        end
+    end
   end
 
   defp line_col_from_pos(data, pos) do
