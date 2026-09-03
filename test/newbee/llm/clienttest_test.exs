@@ -262,20 +262,28 @@ defmodule Newbee.LLM.ClientTest do
   end
 
   describe "responses_mode" do
-    test "default mode from api field" do
+    test "API 字段决定端点，续写必须显式启用" do
       client = Client.new(api: "openai-responses")
+      assert client.responses_mode == :responses
+      assert client.responses_continuation == false
+
+      client = Client.new(api: "openai-responses", responses_continuation: true)
       assert client.responses_mode == :responses
       assert client.responses_continuation == true
 
-      client = Client.new(api: "openai-completions")
+      client = Client.new(api: "responses", responses_continuation: true)
+      assert client.responses_mode == :responses
+      assert client.responses_continuation == true
+
+      client = Client.new(api: "openai-completions", responses_continuation: true)
       assert client.responses_mode == :chat
       assert client.responses_continuation == false
     end
 
-    test "explicit mode overrides api default" do
+    test "explicit mode overrides api default without implicitly enabling continuation" do
       client = Client.new(api: "openai-completions", responses_mode: :responses)
       assert client.responses_mode == :responses
-      assert client.responses_continuation == true
+      assert client.responses_continuation == false
     end
 
     test "auto mode falls back to chat when probe fails" do

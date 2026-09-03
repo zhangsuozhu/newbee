@@ -2586,7 +2586,7 @@ svg.ico {
 .cwd-label:hover { background: var(--nb-bg-elev); }
 
 /* 弹窗盒子：比选择模型略宽，桌面端固定高度内滚动 */
-.mcfg-box { width: 720px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; }
+.mcfg-box { width: 960px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column; }
 .mcfg-title { display: flex; align-items: center; gap: 10px; margin-bottom: 0; padding-bottom: 12px; border-bottom: 1px solid var(--nb-border); }
 .mcfg-title > span:first-child { font-weight: 600; }
 .mcfg-path { flex: 1; font-size: 11px; color: var(--nb-label-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2628,9 +2628,14 @@ svg.ico {
 .mcfg-keyrow input { flex: 1; }
 .mcfg-count { color: var(--nb-label-3); font-weight: 400; }
 
-/* 模型标签 */
-.mcfg-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.mcfg-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; background: var(--nb-bg-elev); border: 1px solid var(--nb-border); border-radius: 6px; padding: 3px 4px 3px 9px; color: var(--nb-label-1); }
+/* 单模型配置表 */
+.mcfg-model-head, .mcfg-model-row { display: grid; grid-template-columns: minmax(150px, 1.6fr) minmax(125px, 1fr) 100px 92px 30px; gap: 6px; align-items: center; }
+.mcfg-model-head { padding: 0 5px 5px; color: var(--nb-label-3); font-size: 10px; }
+.mcfg-models { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.mcfg-model-row { padding: 7px; border: 1px solid var(--nb-border); border-radius: 6px; background: var(--nb-bg-elev); }
+.mcfg-model-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--nb-label-1); }
+.mcfg-model-row input, .mcfg-model-row select { width: 100%; min-width: 0; box-sizing: border-box; background: var(--nb-bg); border: 1px solid var(--nb-border); border-radius: 6px; padding: 5px 7px; color: var(--nb-label-1); font-size: 11px; outline: none; }
+.mcfg-model-row input:focus, .mcfg-model-row select:focus { border-color: var(--nb-accent); }
 .mcfg-x { border: none; background: none; color: var(--nb-label-3); cursor: pointer; font-size: 12px; padding: 0 3px; border-radius: 4px; }
 .mcfg-x:hover { color: var(--nb-red); }
 .mcfg-madd { display: flex; gap: 6px; }
@@ -2648,11 +2653,11 @@ svg.ico {
 .mcfg-kvrow input:focus { border-color: var(--nb-accent); }
 .mcfg-kvrow .mcfg-x { border: 1px solid var(--nb-border); border-radius: 6px; padding: 0 8px; }
 
-/* 角色绑定 chips */
-.mcfg-roles { display: flex; flex-wrap: wrap; gap: 6px; }
-.mcfg-role { font-family: var(--nb-mono); font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--nb-border); background: var(--nb-bg); color: var(--nb-label-3); cursor: pointer; transition: all var(--nb-dur); }
-.mcfg-role:hover { border-color: var(--nb-accent); color: var(--nb-label-1); }
-.mcfg-role.on { border-color: var(--nb-accent); color: var(--nb-label-1); background: rgba(108,140,255,.14); }
+/* 角色到具体模型的绑定 */
+.mcfg-roles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+.mcfg-role-row { display: grid !important; grid-template-columns: 72px minmax(0, 1fr); gap: 6px; align-items: center; margin: 0 !important; }
+.mcfg-role-row span { color: var(--nb-label-2); font-size: 11px; }
+.mcfg-role-row select { min-width: 0; padding: 5px 7px; font-size: 11px; }
 
 /* 复选行 */
 .mcfg-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--nb-label-2); cursor: pointer; margin-top: 8px; }
@@ -2674,4 +2679,12 @@ svg.ico {
   .mcfg-pitem { flex: none; border-left: none; border-bottom: 2px solid transparent; white-space: nowrap; }
   .mcfg-pitem.current { border-bottom-color: var(--nb-accent); }
   .mcfg-row { grid-template-columns: 1fr; }
+  .mcfg-model-head { display: none; }
+  .mcfg-model-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px; }
+  .mcfg-model-id { grid-column: 1 / 3; }
+  .mcfg-model-row .model-api { grid-column: 1; }
+  .mcfg-model-row .model-ctx { grid-column: 2; }
+  .mcfg-model-row .model-cont { grid-column: 1 / 3; }
+  .mcfg-model-row > .mcfg-x { grid-column: 3; grid-row: 1; }
+  .mcfg-roles { grid-template-columns: 1fr; }
 }

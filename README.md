@@ -152,21 +152,26 @@ cat > ~/.newbee/model.json <<'EOF'
   "providers": {
     "openrouter": {
       "baseUrl": "https://openrouter.ai/api/v1",
+      "api": "openai-completions",
       "apiKey": "${OPENROUTER_API_KEY}",
-      "models": []
+      "models": ["chat-model", "response-model"],
+      "modelApis": {"response-model": "openai-responses"},
+      "contextWindows": {"response-model": 200000},
+      "responsesContinuation": false,
+      "modelResponsesContinuations": {"response-model": true}
     }
   },
   "roles": {
-    "default":  { "provider": "openrouter", "model": "deepseek/deepseek-v4-flash-0731" },
-    "worker":   { "provider": "openrouter", "model": "deepseek/deepseek-v4-flash-0731" },
-    "adapter":  { "provider": "openrouter", "model": "deepseek/deepseek-v4-flash-0731" }
+    "default":  { "provider": "openrouter", "model": "response-model" },
+    "worker":   { "provider": "openrouter", "model": "chat-model" },
+    "adapter":  { "provider": "openrouter", "model": "chat-model" }
   }
 }
 EOF
-# 支持标准 Responses API `previous_response_id` 的 provider 可配置：
-# `"api": "openai-responses", "responsesContinuation": true`。该选项会发送
-# `store: true` 以允许跨进程续接；兼容网关未实现或不接受服务端存储时保持 false。
-# 失效的 response id 会自动回退完整请求。
+# `api` 是厂家默认协议，可选 openai-completions / openai-responses / auto；
+# `modelApis` 为单模型覆盖。不要使用 `responses` 作为新配置值（旧配置会兼容迁移）。
+# `responsesContinuation` 只控制 Responses API 的 previous_response_id + store:true，
+# 不会切换 API；不支持服务端存储的网关请保持 false。失效 response id 会自动回退完整请求。
 export OPENROUTER_API_KEY=sk-or-v1-...
 
 # 启动

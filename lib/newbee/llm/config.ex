@@ -49,7 +49,7 @@ defmodule Newbee.LLM.Config do
         provider_context_override(provider, model) || role_cfg["contextWindow"] ||
           provider["contextWindow"],
       vision: Map.get(role_cfg, "vision", Map.get(provider, "vision", true)),
-      responses_continuation: Map.get(provider, "responsesContinuation", false),
+      responses_continuation: model_responses_continuation(provider, model),
       # 会话级缓存路由键：显式 opts > 角色配置 cacheKey；nil 时由 Loop 补齐。
       cache_key: Keyword.get(opts, :cache_key) || role_cfg["cacheKey"],
       # GPT-5.6 显式缓存是 opt-in；没有 promptCacheOptions 时不改变请求体。
@@ -78,6 +78,19 @@ defmodule Newbee.LLM.Config do
   end
 
   defp prompt_cache_options_map?(_), do: false
+
+  defp model_responses_continuation(provider, model) do
+    case provider["modelResponsesContinuations"] do
+      overrides when is_map(overrides) ->
+        case Map.fetch(overrides, model) do
+          {:ok, value} -> value in [true, "true"]
+          :error -> Map.get(provider, "responsesContinuation", false) in [true, "true"]
+        end
+
+      _ ->
+        Map.get(provider, "responsesContinuation", false) in [true, "true"]
+    end
+  end
 
   @doc "读取某 provider 下单模型的上下文窗口覆盖值；未设置返回 nil。"
   def context_window_override(provider_name, model)
@@ -198,6 +211,7 @@ defmodule Newbee.LLM.Config do
         :ok
     end
   end
+
   @doc """
   WebUI 模型配置页：新增/更新一个 provider，并可选地更新角色绑定。
 
@@ -206,12 +220,14 @@ defmodule Newbee.LLM.Config do
     * `attrs` — 字符串键 map，可含：
         - "newName"   — 重命名后的键名（缺省 = name）
         - "baseUrl"   — API 根地址（必填）
-        - "api"       — 协议（openai-completions / responses / anthropic / gemini）
+        - "api"       — 默认协议（openai-completions / openai-responses / auto）
         - "apiKey"    — 密钥或 ${ENV} 引用
         - "models"    — 模型 id 列表（list of string）
+        - "modelApis" — 单模型协议覆盖表
         - "contextWindow"    — provider 级默认上下文窗口（正整数或 nil 清除）
         - "contextWindows"   — 单模型覆盖表 %{"model" => n}（空 map 清除）
-        - "responsesContinuation" — boolean（false 清除）
+        - "responsesContinuation" — provider 级 Responses 续写默认值
+        - "modelResponsesContinuations" — 单模型续写覆盖表
         - "extras"    — %{"k" => v} 额外字段，原样写入（保留键外的任意字段）
         - "roles"     — %{"role" => model_id} 绑定；model_id 为 nil/"" 解绑
   返回 :ok | {:error, reason}。校验失败时不落盘。
@@ -225,12 +241,19 @@ defmodule Newbee.LLM.Config do
     existing = (load()["providers"] || %{})[name]
 
     cond do
-      new_name == "" -> {:error, :bad_provider_name}
-      base_url == "" -> {:error, :bad_base_url}
+      new_name == "" ->
+        {:error, :bad_provider_name}
+
+      base_url == "" ->
+        {:error, :bad_base_url}
+
       # 新建（无 existing）且未提供 key → 拒绝；更新且 apiKey=nil → 保留原值
-      is_nil(existing) and (is_nil(api_key) or to_string(api_key) |> String.trim() == "" or String.contains?(to_string(api_key), "•")) ->
+      is_nil(existing) and
+          (is_nil(api_key) or to_string(api_key) |> String.trim() == "" or String.contains?(to_string(api_key), "•")) ->
         {:error, :bad_api_key}
-      true -> do_upsert_provider(name, new_name, attrs)
+
+      true ->
+        do_upsert_provider(name, new_name, attrs)
     end
   end
 
@@ -249,15 +272,26 @@ defmodule Newbee.LLM.Config do
       provider =
         existing
         # 清掉受管字段，由 attrs 重建（保留未受管的额外字段在 extras 里）
-        |> Map.drop(["baseUrl", "api", "apiKey", "models", "contextWindows", "contextWindow", "responsesContinuation"])
+        |> Map.drop([
+          "baseUrl",
+          "api",
+          "apiKey",
+          "models",
+          "modelApis",
+          "contextWindows",
+          "contextWindow",
+          "responsesContinuation",
+          "modelResponsesContinuations"
+        ])
         |> Map.put("baseUrl", attrs["baseUrl"] |> to_string() |> String.trim())
-        |> Map.put("api", attrs |> Map.get("api", "openai-completions") |> to_string())
+        |> Map.put("api", sanitize_api(attrs["api"]))
         |> Map.put("models", sanitize_models(attrs["models"]))
         |> put_api_key(attrs["apiKey"], existing)
+        |> maybe_put_model_apis(attrs["modelApis"])
         |> maybe_put_ctxw(attrs["contextWindow"])
-
         |> maybe_put_ctxws(attrs["contextWindows"])
         |> maybe_put_resp_cont(attrs["responsesContinuation"])
+        |> maybe_put_model_resp_cont(attrs["modelResponsesContinuations"])
         |> Map.merge(sanitize_extras(attrs["extras"]))
 
       providers =
@@ -279,26 +313,46 @@ defmodule Newbee.LLM.Config do
 
   defp sanitize_models(_), do: []
 
+  defp sanitize_api(api) when api in ["openai-responses", "auto"], do: api
+  defp sanitize_api(api) when api in ["responses", "response"], do: "openai-responses"
+  defp sanitize_api(_), do: "openai-completions"
+
+  defp maybe_put_model_apis(provider, map) when is_map(map) do
+    clean =
+      map
+      |> Enum.map(fn {model, api} -> {to_string(model), sanitize_api(api)} end)
+      |> Enum.reject(fn {model, _api} -> model == "" end)
+      |> Map.new()
+
+    if map_size(clean) > 0, do: Map.put(provider, "modelApis", clean), else: provider
+  end
+
+  defp maybe_put_model_apis(provider, _), do: provider
 
   # apiKey 处理：nil/空串 → 保留 existing 原值；否则用新值（去除首尾空白）
   defp put_api_key(provider, nil, existing), do: Map.put(provider, "apiKey", existing["apiKey"] || "")
+
   defp put_api_key(provider, new, existing) when is_binary(new) do
     v = String.trim(new)
+
     if v == "" or String.contains?(v, "•") do
       Map.put(provider, "apiKey", existing["apiKey"] || "")
     else
       Map.put(provider, "apiKey", v)
     end
   end
+
   defp put_api_key(provider, _new, existing), do: Map.put(provider, "apiKey", existing["apiKey"] || "")
 
   defp maybe_put_ctxw(p, n) when is_integer(n) and n > 0, do: Map.put(p, "contextWindow", n)
+
   defp maybe_put_ctxw(p, s) when is_binary(s) do
     case Integer.parse(String.trim(s)) do
       {n, ""} when n > 0 -> Map.put(p, "contextWindow", n)
       _ -> p
     end
   end
+
   defp maybe_put_ctxw(p, _), do: p
 
   defp maybe_put_ctxws(p, map) when is_map(map) and map_size(map) > 0 do
@@ -307,27 +361,53 @@ defmodule Newbee.LLM.Config do
       |> Enum.map(fn {k, v} -> {to_string(k), to_pos_int(v)} end)
       |> Enum.filter(fn {k, v} -> k != "" and is_integer(v) end)
       |> Map.new()
+
     if map_size(clean) > 0, do: Map.put(p, "contextWindows", clean), else: p
   end
+
   defp maybe_put_ctxws(p, _), do: p
 
   defp to_pos_int(n) when is_integer(n) and n > 0, do: n
+
   defp to_pos_int(s) when is_binary(s) do
     case Integer.parse(String.trim(s)) do
       {n, ""} when n > 0 -> n
       _ -> nil
     end
   end
+
   defp to_pos_int(_), do: nil
 
   defp maybe_put_resp_cont(p, true), do: Map.put(p, "responsesContinuation", true)
   defp maybe_put_resp_cont(p, "true"), do: Map.put(p, "responsesContinuation", true)
   defp maybe_put_resp_cont(p, _), do: p
 
+  defp maybe_put_model_resp_cont(provider, map) when is_map(map) do
+    clean =
+      map
+      |> Enum.reduce(%{}, fn
+        {model, value}, acc when value in [true, false, "true", "false"] ->
+          Map.put(acc, to_string(model), value in [true, "true"])
+
+        _, acc ->
+          acc
+      end)
+      |> Map.delete("")
+
+    if map_size(clean) > 0,
+      do: Map.put(provider, "modelResponsesContinuations", clean),
+      else: provider
+  end
+
+  defp maybe_put_model_resp_cont(provider, _), do: provider
+
   defp sanitize_extras(map) when is_map(map) do
-    reserved = ~w(newName baseUrl api apiKey models contextWindow contextWindows responsesContinuation roles extras)
+    reserved =
+      ~w(newName baseUrl api apiKey models modelApis contextWindow contextWindows responsesContinuation modelResponsesContinuations roles extras)
+
     Map.drop(map, reserved)
   end
+
   defp sanitize_extras(_), do: %{}
 
   # roles 更新：
@@ -395,6 +475,7 @@ defmodule Newbee.LLM.Config do
       roles =
         if removed_default? and map_size(providers) > 0 do
           {fallback_name, fallback_p} = Enum.at(providers, 0)
+
           fallback_model =
             case fallback_p["models"] do
               [m | _] when is_binary(m) -> m
@@ -420,10 +501,8 @@ defmodule Newbee.LLM.Config do
 
   def delete_provider(_), do: {:error, :bad_request}
 
-
   @doc "当前生效的配置文件路径（找不到时返回将要创建的 ~/.newbee/model.json 路径）。"
   def config_path, do: config_target()
-
 
   # 当前生效的配置文件路径（找不到则创建 ~/.newbee/model.json）
   defp config_target do
