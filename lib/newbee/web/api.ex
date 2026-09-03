@@ -1255,9 +1255,10 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("llm.setContextWindow", _p),
     do: {:error, "bad_request", "缺少 provider / model 参数"}
+
   # 模型配置页：新增/更新 provider（含角色绑定）。保存后立即热推在线会话刷新 client。
-  # attrs: %{name, newName?, baseUrl, api, apiKey, models, contextWindow?, contextWindows?,
-  #         responsesContinuation?, extras?, roles?}
+  # attrs: %{name, newName?, baseUrl, api, apiKey, models, modelApis?, contextWindow?,
+  #         contextWindows?, responsesContinuation?, modelResponsesContinuations?, extras?, roles?}
   defp dispatch_rpc("llm.saveProvider", %{"provider" => name} = p) do
     attrs = %{
       "newName" => p["newName"],
@@ -1265,9 +1266,11 @@ defmodule Newbee.Web.Api do
       "api" => p["api"],
       "apiKey" => p["apiKey"],
       "models" => p["models"] || [],
+      "modelApis" => p["modelApis"],
       "contextWindow" => p["contextWindow"],
       "contextWindows" => p["contextWindows"],
       "responsesContinuation" => p["responsesContinuation"],
+      "modelResponsesContinuations" => p["modelResponsesContinuations"],
       "extras" => p["extras"],
       "roles" => p["roles"]
     }
@@ -1278,11 +1281,20 @@ defmodule Newbee.Web.Api do
         hot_reload_provider(final_name)
         {:ok, %{provider: final_name, saved: true}}
 
-      {:error, :bad_provider_name} -> {:error, "bad_provider_name", "厂家名称不能为空"}
-      {:error, :bad_base_url} -> {:error, "bad_base_url", "Base URL 不能为空"}
-      {:error, :bad_api_key} -> {:error, "bad_api_key", "API Key 不能为空"}
-      {:error, {:provider_exists, n}} -> {:error, "provider_exists", "厂家名称已存在：#{n}"}
-      {:error, other} -> {:error, "save_failed", inspect(other)}
+      {:error, :bad_provider_name} ->
+        {:error, "bad_provider_name", "厂家名称不能为空"}
+
+      {:error, :bad_base_url} ->
+        {:error, "bad_base_url", "Base URL 不能为空"}
+
+      {:error, :bad_api_key} ->
+        {:error, "bad_api_key", "API Key 不能为空"}
+
+      {:error, {:provider_exists, n}} ->
+        {:error, "provider_exists", "厂家名称已存在：#{n}"}
+
+      {:error, other} ->
+        {:error, "save_failed", inspect(other)}
     end
   end
 
@@ -1296,7 +1308,8 @@ defmodule Newbee.Web.Api do
         hot_reload_provider(name)
         {:ok, %{provider: name, deleted: true}}
 
-      {:error, {:unknown_provider, n}} -> {:error, "unknown_provider", n}
+      {:error, {:unknown_provider, n}} ->
+        {:error, "unknown_provider", n}
     end
   end
 
@@ -1320,8 +1333,6 @@ defmodule Newbee.Web.Api do
     }
     |> then(&{:ok, &1})
   end
-
-
 
   defp dispatch_rpc("evolution.feed", p) do
     n = min(max(p["n"] || 100, 1), 300)
@@ -2527,13 +2538,16 @@ defmodule Newbee.Web.Api do
   # apiKey 掩码：保留前后各 4 字符便于识别，中间打码；${...} 引用原样保留
   defp mask_api_key(nil), do: ""
   defp mask_api_key("${" <> _ = v), do: v
+
   defp mask_api_key(v) when is_binary(v) do
     len = String.length(v)
+
     cond do
       len <= 8 -> String.duplicate("•", len)
       true -> String.slice(v, 0, 4) <> String.duplicate("•", min(len - 8, 24)) <> String.slice(v, -4, 4)
     end
   end
+
   defp mask_api_key(_), do: ""
 
   # inline 拉取时的 apiKey 解析：掩码（含 •）则回退到已落盘的真实密钥
@@ -2541,7 +2555,9 @@ defmodule Newbee.Web.Api do
     trimmed = String.trim(api_key)
 
     cond do
-      trimmed == "" -> ""
+      trimmed == "" ->
+        ""
+
       String.contains?(trimmed, "•") ->
         case Newbee.LLM.Config.load()["providers"][name] do
           %{"apiKey" => real} when is_binary(real) -> real

@@ -259,6 +259,48 @@ defmodule Newbee.LLM.ConfigTest do
       assert cfg["roles"]["default"] == %{"provider" => "zhipu", "model" => "glm-5.3-flash"}
     end
 
+    test "同一 provider 持久化并应用逐模型 API、窗口和续写覆盖" do
+      assert :ok =
+               Newbee.LLM.Config.upsert_provider("openrouter", %{
+                 "baseUrl" => "https://openrouter.ai/api/v1",
+                 "api" => "responses",
+                 "apiKey" => nil,
+                 "models" => ["chat-model", "response-model", "auto-model"],
+                 "modelApis" => %{
+                   "chat-model" => "openai-completions",
+                   "response-model" => "openai-responses",
+                   "auto-model" => "auto"
+                 },
+                 "contextWindow" => 64_000,
+                 "contextWindows" => %{"response-model" => 200_000},
+                 "responsesContinuation" => true,
+                 "modelResponsesContinuations" => %{
+                   "chat-model" => false,
+                   "response-model" => false
+                 }
+               })
+
+      provider = Newbee.LLM.Config.load()["providers"]["openrouter"]
+      assert provider["api"] == "openai-responses"
+      assert provider["modelApis"]["auto-model"] == "auto"
+      assert provider["contextWindows"] == %{"response-model" => 200_000}
+
+      assert provider["modelResponsesContinuations"] == %{
+               "chat-model" => false,
+               "response-model" => false
+             }
+
+      chat = Newbee.LLM.Config.client_for("default", model: "chat-model")
+      assert chat.responses_mode == :chat
+      assert chat.context_window == 64_000
+      refute chat.responses_continuation
+
+      response = Newbee.LLM.Config.client_for("default", model: "response-model")
+      assert response.responses_mode == :responses
+      assert response.context_window == 200_000
+      refute response.responses_continuation
+    end
+
     test "更新时 apiKey 传 nil 保留原值" do
       assert :ok =
                Newbee.LLM.Config.upsert_provider("openrouter", %{
@@ -291,7 +333,12 @@ defmodule Newbee.LLM.ConfigTest do
       Newbee.LLM.Config.upsert_provider("x", %{"baseUrl" => "u", "apiKey" => "k", "models" => []})
 
       assert {:error, {:provider_exists, "x"}} =
-               Newbee.LLM.Config.upsert_provider("openrouter", %{"newName" => "x", "baseUrl" => "u", "apiKey" => nil, "models" => []})
+               Newbee.LLM.Config.upsert_provider("openrouter", %{
+                 "newName" => "x",
+                 "baseUrl" => "u",
+                 "apiKey" => nil,
+                 "models" => []
+               })
     end
 
     test "缺少必填字段拒绝" do
@@ -313,4 +360,3 @@ defmodule Newbee.LLM.ConfigTest do
     end
   end
 end
-

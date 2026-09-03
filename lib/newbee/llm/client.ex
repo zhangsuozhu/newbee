@@ -53,11 +53,19 @@ defmodule Newbee.LLM.Client do
   @doc "获取模型上下文窗口；显式配置优先，否则查询 provider 元数据，失败回退 256K。"
   def new(opts \\ []) do
     api = Keyword.get(opts, :api, "openai-completions")
-    mode = Keyword.get(opts, :responses_mode, default_responses_mode(api))
+
+    mode =
+      opts
+      |> Keyword.get(:responses_mode, default_responses_mode(api))
+      |> normalize_responses_mode()
+
     base_url = Keyword.get(opts, :base_url, @default_base_url)
 
-    # :auto 模式：探测 endpoint 是否支持 Responses API
-    {mode, continuation} = resolve_auto_mode(mode, base_url, Keyword.get(opts, :model, @default_model))
+    # :auto 模式只决定端点；续写仍由显式配置控制。
+    {mode, continuation_supported?} =
+      resolve_auto_mode(mode, base_url, Keyword.get(opts, :model, @default_model))
+
+    continuation = continuation_supported? and Keyword.get(opts, :responses_continuation, false)
 
     %__MODULE__{
       model: Keyword.get(opts, :model, @default_model),
@@ -70,7 +78,7 @@ defmodule Newbee.LLM.Client do
       context_window: Keyword.get(opts, :context_window),
       interrupt_scope: Keyword.get(opts, :interrupt_scope),
       cache_key: Keyword.get_lazy(opts, :cache_key, fn -> derive_cache_key() end),
-      responses_mode: normalize_responses_mode(mode),
+      responses_mode: mode,
       responses_continuation: continuation,
       responses_checkpoint: Keyword.get(opts, :responses_checkpoint),
       prompt_cache_options: normalize_prompt_cache_options(Keyword.get(opts, :prompt_cache_options)),
@@ -93,12 +101,13 @@ defmodule Newbee.LLM.Client do
     }
   end
 
+  defp default_responses_mode("responses"), do: :responses
   defp default_responses_mode("openai-responses"), do: :responses
   defp default_responses_mode("auto"), do: :auto
   defp default_responses_mode(_), do: :chat
 
-  # :auto 模式：探测 endpoint 是否支持 Responses API
-  # 返回 {mode, continuation_enabled?}
+  # :auto 模式：探测 endpoint 是否支持 Responses API。
+  # 返回 {实际模式, 是否支持 Responses 续写}。
   defp resolve_auto_mode(:auto, base_url, model) do
     key = {base_url, model}
     cache = :persistent_term.get(@responses_capability_key, %{})

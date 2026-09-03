@@ -332,15 +332,13 @@
               <input type="text" id="mcfg-name" spellcheck="false" placeholder="openrouter" />
             </div>
             <div class="mcfg-field">
-              <label>API 协议</label>
+              <label>默认 API 协议</label>
               <select id="mcfg-api">
                 <option value="openai-completions">openai-completions</option>
-                <option value="responses">responses</option>
-                <!-- 暂不开放，保留后期扩展
-                <option value="anthropic">anthropic</option>
-                <option value="gemini">gemini</option>
-                -->
+                <option value="openai-responses">openai-responses</option>
+                <option value="auto">auto（自动探测）</option>
               </select>
+              <div class="mcfg-hint">模型未单独设置时继承此值</div>
             </div>
           </div>
 
@@ -359,12 +357,15 @@
           </div>
 
           <div class="mcfg-field">
-            <label>可用模型 <span class="mcfg-count" id="mcfg-mcount"></span></label>
-            <div class="mcfg-tags" id="mcfg-mtags"></div>
+            <label>模型配置 <span class="mcfg-count" id="mcfg-mcount"></span></label>
+            <div class="mcfg-model-head" aria-hidden="true">
+              <span>模型 ID</span><span>API 协议</span><span>上下文</span><span>续写</span><span></span>
+            </div>
+            <div class="mcfg-models" id="mcfg-models"></div>
             <div class="mcfg-madd">
               <input type="text" id="mcfg-minput" spellcheck="false" placeholder="输入模型 ID，回车添加" />
               <button class="btn-ghost" id="mcfg-madd">添加</button>
-              <button class="btn-ghost" id="mcfg-mfetch" title="从 baseUrl 的 /models 拉取">拉取</button>
+              <button class="btn-ghost" id="mcfg-mfetch" title="从 Base URL 的 /models 拉取">拉取</button>
             </div>
           </div>
 
@@ -376,24 +377,20 @@
             <div class="mcfg-row">
               <div class="mcfg-field">
                 <label>默认上下文窗口</label>
-                <input type="number" id="mcfg-ctxw" min="0" placeholder="128000" />
+                <input type="number" id="mcfg-ctxw" min="1" placeholder="128000" />
+                <div class="mcfg-hint">模型留空时继承；全部留空时自动探测</div>
               </div>
               <div class="mcfg-field">
-                <label>Responses 续写</label>
-                <label class="mcfg-check"><input type="checkbox" id="mcfg-respcont" /> 启用</label>
+                <label>默认 Responses 续写</label>
+                <label class="mcfg-check"><input type="checkbox" id="mcfg-respcont" /> 使用 previous_response_id</label>
+                <div class="mcfg-hint">只对实际走 Responses 的模型生效</div>
               </div>
-            </div>
-
-            <div class="mcfg-field">
-              <label>单模型上下文窗口覆盖</label>
-              <div id="mcfg-ctxrows"></div>
-              <button class="btn-ghost mcfg-mini" id="mcfg-ctxadd">＋ 添加覆盖</button>
             </div>
 
             <div class="mcfg-field">
               <label>角色绑定</label>
               <div class="mcfg-roles" id="mcfg-roles"></div>
-              <div class="mcfg-hint">勾选后该角色使用当前厂家的所选模型；default 为聊天默认</div>
+              <div class="mcfg-hint">为角色选择当前厂家中的具体模型；default 为聊天默认</div>
             </div>
 
             <div class="mcfg-field">

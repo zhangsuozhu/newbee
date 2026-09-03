@@ -3400,42 +3400,83 @@ case "goal_round": break;
     mcfgState("");
   }
 
+  function mcfgCanonicalApi(api) {
+    if (api === "responses") return "openai-responses";
+    if (api === "chat") return "openai-completions";
+    return ["openai-completions", "openai-responses", "auto"].includes(api) ? api : "openai-completions";
+  }
+
   function mcfgFlush() {
     const p = MCFG.providers[MCFG.current];
     const empty = $("mcfg-empty"), form = $("mcfg-form");
     if (!p) { empty.style.display = "flex"; form.style.display = "none"; return; }
     empty.style.display = "none"; form.style.display = "block";
     $("mcfg-name").value = MCFG.current;
-    $("mcfg-api").value = p.api || "openai-completions";
+    $("mcfg-api").value = mcfgCanonicalApi(p.api);
     $("mcfg-baseurl").value = p.baseUrl || "";
     $("mcfg-apikey").value = p.apiKey || "";
     MCFG.origKey = p.apiKey || "";
     $("mcfg-ctxw").value = p.contextWindow || "";
     $("mcfg-respcont").checked = !!p.responsesContinuation;
-    mcfgRenderTags();
-    mcfgRenderCtxRows();
+    mcfgRenderModels();
     mcfgRenderRoles();
     mcfgRenderExtras();
     $("mcfg-adv").style.display = "none";
     $("mcfg-adv-toggle").querySelector(".mcfg-chev").textContent = "▶";
   }
 
-  function mcfgRenderTags() {
+  function mcfgRenderModels() {
     const p = MCFG.providers[MCFG.current];
-    const box = $("mcfg-mtags");
-    box.innerHTML = "";
+    const box = $("mcfg-models");
     const models = p.models || [];
+    box.innerHTML = "";
     $("mcfg-mcount").textContent = models.length ? "(" + models.length + ")" : "";
-    for (const m of models) {
-      const t = document.createElement("span");
-      t.className = "mcfg-tag mono";
-      t.innerHTML = mcfgEsc(m) + '<button class="mcfg-x" title="移除">✕</button>';
-      t.querySelector(".mcfg-x").onclick = () => {
-        p.models = models.filter((x) => x !== m);
-        mcfgRenderTags(); mcfgRenderRoles(); mcfgMark();
-      };
-      box.appendChild(t);
+    for (const model of models) box.appendChild(mcfgModelRow(model, p));
+  }
+
+  function mcfgModelRow(model, p) {
+    const row = document.createElement("div");
+    row.className = "mcfg-model-row";
+    row.dataset.model = model;
+    row.innerHTML =
+      '<div class="mcfg-model-id mono" title="' + mcfgEsc(model) + '">' + mcfgEsc(model) + '</div>' +
+      '<select class="model-api" title="此模型使用的 API 协议">' +
+        '<option value="">继承默认</option><option value="openai-completions">completions</option>' +
+        '<option value="openai-responses">responses</option><option value="auto">auto</option></select>' +
+      '<input type="number" class="model-ctx" min="1" placeholder="继承" title="上下文窗口 tokens；留空继承" />' +
+      '<select class="model-cont" title="Responses 续写；其他协议下不生效">' +
+        '<option value="">继承</option><option value="true">开启</option><option value="false">关闭</option></select>' +
+      '<button class="mcfg-x" title="移除模型">✕</button>';
+
+    const api = p.modelApis && p.modelApis[model];
+    row.querySelector(".model-api").value = api ? mcfgCanonicalApi(api) : "";
+    row.querySelector(".model-ctx").value = (p.contextWindows && p.contextWindows[model]) || "";
+    if (p.modelResponsesContinuations && Object.prototype.hasOwnProperty.call(p.modelResponsesContinuations, model)) {
+      row.querySelector(".model-cont").value = String(!!p.modelResponsesContinuations[model]);
     }
+    row.querySelector(".mcfg-x").onclick = () => {
+      const remaining = (p.models || []).filter((x) => x !== model);
+      const defaultRole = MCFG.roles.default;
+      if (defaultRole && defaultRole.provider === MCFG.current && defaultRole.model === model && !remaining.length) {
+        line("warn", "不能移除 default 角色正在使用的最后一个模型");
+        return;
+      }
+      p.models = remaining;
+      for (const [role, binding] of Object.entries(MCFG.roles)) {
+        if (binding.provider === MCFG.current && binding.model === model) {
+          if (role === "default") MCFG.roles[role] = {provider: MCFG.current, model: remaining[0]};
+          else delete MCFG.roles[role];
+        }
+      }
+      for (const key of ["modelApis", "contextWindows", "modelResponsesContinuations"]) {
+        if (p[key]) delete p[key][model];
+      }
+      mcfgRenderModels(); mcfgRenderRoles(); mcfgMark();
+    };
+    row.querySelectorAll("input, select").forEach((input) => {
+      input.addEventListener(input.tagName === "SELECT" ? "change" : "input", mcfgMark);
+    });
+    return row;
   }
 
   function mcfgAddModel() {
@@ -3447,7 +3488,7 @@ case "goal_round": break;
     if (p.models.includes(id)) { line("warn", "模型已存在: " + id); return; }
     p.models.push(id);
     input.value = "";
-    mcfgRenderTags(); mcfgRenderRoles(); mcfgMark();
+    mcfgRenderModels(); mcfgRenderRoles(); mcfgMark();
   }
 
   async function mcfgFetchModels() {
@@ -3463,7 +3504,7 @@ case "goal_round": break;
       if (!p.models) p.models = [];
       let added = 0;
       for (const m of (r.models || [])) if (!p.models.includes(m)) { p.models.push(m); added++; }
-      mcfgRenderTags(); mcfgRenderRoles(); mcfgMark();
+      mcfgRenderModels(); mcfgRenderRoles(); mcfgMark();
       line("notice", "已拉取 " + (r.models || []).length + " 个模型（新增 " + added + "）");
     } catch (e) {
       line("error", "拉取失败: " + e.message);
@@ -3472,59 +3513,47 @@ case "goal_round": break;
     }
   }
 
-  function mcfgRenderCtxRows() {
-    const p = MCFG.providers[MCFG.current];
-    const wrap = $("mcfg-ctxrows");
-    wrap.innerHTML = "";
-    for (const [m, n] of Object.entries(p.contextWindows || {})) wrap.appendChild(mcfgCtxRow(m, n));
-  }
-  function mcfgCtxRow(m, n) {
-    const row = document.createElement("div");
-    row.className = "mcfg-kvrow";
-    row.innerHTML =
-      '<input type="text" class="cw-m mono" value="' + mcfgEsc(m) + '" placeholder="模型 ID" spellcheck="false" />' +
-      '<input type="number" class="cw-n" value="' + (n || "") + '" min="0" placeholder="tokens" />' +
-      '<button class="mcfg-x" title="删除">✕</button>';
-    row.querySelector(".mcfg-x").onclick = () => { row.remove(); mcfgMark(); };
-    row.querySelectorAll("input").forEach((i) => (i.oninput = () => mcfgMark()));
-    return row;
-  }
-
   function mcfgRenderRoles() {
     const p = MCFG.providers[MCFG.current];
     const box = $("mcfg-roles");
     box.innerHTML = "";
     const models = p.models || [];
     for (const role of MCFG.ROLES) {
-      const r = MCFG.roles[role];
-      const bound = r && r.provider === MCFG.current;
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "mcfg-role" + (bound ? " on" : "");
-      chip.textContent = role;
-      chip.title = bound ? ("已绑定 " + r.model + "，点击解绑") : "点击绑定到当前厂家";
-      chip.onclick = () => mcfgToggleRole(role, models);
-      box.appendChild(chip);
+      const current = MCFG.roles[role];
+      const row = document.createElement("label");
+      row.className = "mcfg-role-row";
+      row.innerHTML = '<span class="mono">' + mcfgEsc(role) + '</span><select><option value="">不绑定到此厂家</option></select>';
+      const select = row.querySelector("select");
+      for (const model of models) {
+        const option = document.createElement("option");
+        option.value = model; option.textContent = model; select.appendChild(option);
+      }
+      if (current && current.provider === MCFG.current) select.value = current.model;
+      select.onchange = () => {
+        if (select.value) {
+          MCFG.roles[role] = {provider: MCFG.current, model: select.value};
+        } else {
+          const latest = MCFG.roles[role];
+          if (latest && latest.provider === MCFG.current) {
+            if (role === "default") {
+              line("warn", "default 是聊天默认角色，请先绑定其他模型");
+              select.value = latest.model;
+              return;
+            }
+            delete MCFG.roles[role];
+          }
+        }
+        mcfgMark();
+      };
+      box.appendChild(row);
     }
-  }
-  function mcfgToggleRole(role, models) {
-    const r = MCFG.roles[role];
-    const bound = r && r.provider === MCFG.current;
-    if (bound) {
-      if (role === "default") { line("warn", "default 是聊天默认角色，请先绑定其他模型"); return; }
-      delete MCFG.roles[role];
-    } else {
-      if (!models.length) { line("warn", "请先添加至少一个模型"); return; }
-      MCFG.roles[role] = { provider: MCFG.current, model: models[0] };
-    }
-    mcfgRenderRoles(); mcfgMark();
   }
 
   function mcfgRenderExtras() {
     const p = MCFG.providers[MCFG.current];
     const wrap = $("mcfg-exrows");
     wrap.innerHTML = "";
-    const reserved = new Set(["baseUrl", "api", "apiKey", "models", "contextWindows", "contextWindow", "responsesContinuation"]);
+    const reserved = new Set(["baseUrl", "api", "apiKey", "models", "modelApis", "contextWindows", "contextWindow", "responsesContinuation", "modelResponsesContinuations"]);
     for (const [k, v] of Object.entries(p)) {
       if (reserved.has(k)) continue;
       wrap.appendChild(mcfgExRow(k, typeof v === "object" ? JSON.stringify(v) : String(v)));
@@ -3567,15 +3596,20 @@ case "goal_round": break;
     if (!apiKey) { line("error", "API Key 不能为空（可填 ${ENV_VAR}）"); return null; }
     if (apiKey === MCFG.origKey) apiKey = null;
 
-    const ctxw = {};
-    $("mcfg-ctxrows").querySelectorAll(".mcfg-kvrow").forEach((row) => {
-      const m = row.querySelector(".cw-m").value.trim();
-      const n = parseInt(row.querySelector(".cw-n").value, 10);
-      if (m && n > 0) ctxw[m] = n;
+    const models = [], modelApis = {}, ctxw = {}, modelRespCont = {};
+    $("mcfg-models").querySelectorAll(".mcfg-model-row").forEach((row) => {
+      const model = row.dataset.model;
+      models.push(model);
+      const api = row.querySelector(".model-api").value;
+      const contextWindow = parseInt(row.querySelector(".model-ctx").value, 10);
+      const continuation = row.querySelector(".model-cont").value;
+      if (api) modelApis[model] = api;
+      if (contextWindow > 0) ctxw[model] = contextWindow;
+      if (continuation !== "") modelRespCont[model] = continuation === "true";
     });
 
     const extras = {};
-    const reserved = new Set(["baseUrl", "api", "apiKey", "models", "contextWindows", "contextWindow", "responsesContinuation"]);
+    const reserved = new Set(["baseUrl", "api", "apiKey", "models", "modelApis", "contextWindows", "contextWindow", "responsesContinuation", "modelResponsesContinuations"]);
     $("mcfg-exrows").querySelectorAll(".mcfg-kvrow").forEach((row) => {
       const k = row.querySelector(".ex-k").value.trim();
       const raw = row.querySelector(".ex-v").value.trim();
@@ -3593,12 +3627,14 @@ case "goal_round": break;
       provider: MCFG.current,
       newName: name,
       baseUrl: baseUrl,
-      api: $("mcfg-api").value,
+      api: mcfgCanonicalApi($("mcfg-api").value),
       apiKey: apiKey,
-      models: p.models || [],
+      models: models,
+      modelApis: modelApis,
       contextWindow: parseInt($("mcfg-ctxw").value, 10) || null,
       contextWindows: ctxw,
       responsesContinuation: $("mcfg-respcont").checked,
+      modelResponsesContinuations: modelRespCont,
       extras: extras,
       roles: roles,
     };
@@ -3672,7 +3708,6 @@ case "goal_round": break;
   $("mcfg-madd").onclick = mcfgAddModel;
   $("mcfg-mfetch").onclick = mcfgFetchModels;
   $("mcfg-adv-toggle").onclick = mcfgToggleAdv;
-  $("mcfg-ctxadd").onclick = () => { $("mcfg-ctxrows").appendChild(mcfgCtxRow("", "")); mcfgMark(); };
   $("mcfg-exadd").onclick = () => { $("mcfg-exrows").appendChild(mcfgExRow("", "")); mcfgMark(); };
   $("mcfg-minput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); mcfgAddModel(); } });
   $("mcfg-eye").onclick = () => {
