@@ -2538,7 +2538,7 @@ defmodule Newbee.Agent.Loop do
           "profile_sha256=#{collaboration_profile_digest(profile)}\n" <>
           "persona=#{profile["name"] || profile["role"]} role=#{profile["role"]}\n" <>
           "group_id=#{profile["group_id"] || "unknown"} parent_session_id=#{profile["parent_session_id"] || "root"}\n" <>
-          instructions
+          instructions <> "\n" <> Newbee.Environment.Projection.collaboration_prompt()
 
       _ ->
         base
