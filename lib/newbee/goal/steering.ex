@@ -1,6 +1,6 @@
 defmodule Newbee.Goal.Steering do
   @moduledoc """
-  Goal steering 注入模板，借鉴 Codex 的三模板设计并融入 JSpace 摘要。
+  Goal steering templates: three Codex-style injections plus a JSpace ledger excerpt.
   """
 
   def continuation(goal) do
@@ -40,7 +40,7 @@ defmodule Newbee.Goal.Steering do
   end
 
   def verification_gate_message do
-    "[JSpace Verification Gate] Ledger 存在但 verified 为空。"
+    "[JSpace Verification Gate] Ledger exists but verified is empty."
   end
 
   defp escape(text) do
@@ -52,7 +52,7 @@ defmodule Newbee.Goal.Steering do
     case Newbee.Tools.JSpace.read(session_id) do
       nil -> ""
       body when byte_size(body) > 800 -> "Ledger 摘要:\n" <> String.slice(body, 0, 800) <> "\n...\n"
-      body -> "Ledger:\n" <> body <> "\n"
+      body when byte_size(body) > 800 -> "Ledger excerpt:\n" <> String.slice(body, 0, 800) <> "\n...\n"
     end
   rescue
     _ -> ""

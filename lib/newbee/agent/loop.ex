@@ -852,7 +852,7 @@ defmodule Newbee.Agent.Loop do
         push_msg(state, %{
           "role" => "tool",
           "tool_call_id" => "verification_gate",
-          "content" => "[verification_gate] done 被拦截：请先在 JSpace 落账 verified/open 再完成。"
+          "content" => "[verification_gate] done blocked: record verified/open in JSpace first."
         })
 
       state =
@@ -971,7 +971,8 @@ defmodule Newbee.Agent.Loop do
       has_open = String.contains?(body, "? ") or String.contains?(body, "Open:")
 
       verified_empty =
-        String.contains?(body, "Verified:  (无)") or
+        String.contains?(body, "Verified:  (none)") or
+          String.contains?(body, "Verified:  (\u65e0)") or
           (String.contains?(body, "Verified:  (") and not String.contains?(body, "✓"))
 
       # Block if there are open items and no verified progress
@@ -1576,10 +1577,10 @@ defmodule Newbee.Agent.Loop do
 
   # J-Space 恢复协议（长间隔/压缩/会话边界后）：重读 ledger + 前提 + invariants
   defp jspace_recovery_reminder do
-    "[J-Space 恢复] 长间隔/压缩后：重读 ledger、前提、invariants，声明 pass 与 next。\n" <>
-      "  Newbee.Tools.JSpace.resume()            # 前提 + invariants + 全 ledger\n" <>
-      "  Newbee.Tools.JSpace.seam()              # 每个 seam 重读\n" <>
-      "  Newbee.Tools.JSpace.note(next: \"...\")   # Next 不许空"
+    "[J-Space recovery] After a long gap/compaction: re-read the ledger, premises, and invariants; declare pass and next.\n" <>
+      "  Newbee.Tools.JSpace.resume()            # premises + invariants + full ledger\n" <>
+      "  Newbee.Tools.JSpace.seam()              # re-read at every seam\n" <>
+      "  Newbee.Tools.JSpace.note(next: \"...\")   # Next must never be empty"
   end
 
   # 记忆抽取管线（§6.4.3 简化版）：任务完成时把 {任务, 总结} 追加到 lessons 记忆
