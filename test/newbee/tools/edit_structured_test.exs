@@ -181,7 +181,7 @@ defmodule Newbee.Tools.EditStructuredTest do
     w!(path, "a\nb\n")
     s = Edit.show(path)
 
-    assert_raise Edit.ParseError, ~r/歧义|不一致/, fn ->
+    assert_raise Edit.ParseError, ~r/ambiguous/, fn ->
       Edit.patch(%{path: path, tag: s.tag, op: :replace, from: 1, to: 1, content: "A", text: "B"})
     end
   end
@@ -189,11 +189,11 @@ defmodule Newbee.Tools.EditStructuredTest do
   test "无效 range 不再静默退化为全文", %{path: path} do
     w!(path, "a\nb\n")
 
-    assert_raise Edit.ParseError, ~r/无法识别的 range/, fn ->
+    assert_raise Edit.ParseError, ~r/unrecognized range/, fn ->
       Edit.show(path, %{nonsense: true})
     end
 
-    assert_raise Edit.ParseError, ~r/无法识别的 range/, fn ->
+    assert_raise Edit.ParseError, ~r/unrecognized range/, fn ->
       Edit.show(path, "banana")
     end
   end

@@ -95,7 +95,7 @@ defmodule Newbee.Environment.ToolContract do
     """
     defmodule #{module_name} do
       @behaviour Newbee.Environment.PluginContract
-      @moduledoc "One-line purpose.\n\n## 可跑示例\n    #{module_name}.run(input)"
+      @moduledoc "One-line purpose.\n\n## Runnable example\n    #{module_name}.run(input)"
 
       def id, do: #{inspect(plugin_id)}
       def version, do: "1.0.0"
@@ -304,9 +304,13 @@ defmodule Newbee.Environment.ToolContract do
   end
 
   defp example_section(doc) do
-    case String.split(doc, "## 可跑示例", parts: 2) do
+    case String.split(doc, "## Runnable example", parts: 2) do
       [_, tail] -> String.split(tail, "## ", parts: 2) |> hd()
-      _ -> ""
+      _ ->
+        case String.split(doc, "## 可跑示例", parts: 2) do
+          [_, tail] -> String.split(tail, "## ", parts: 2) |> hd()
+          _ -> ""
+        end
     end
   end
 

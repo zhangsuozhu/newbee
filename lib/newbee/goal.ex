@@ -64,7 +64,7 @@ defmodule Newbee.Goal do
     {:goal_limit, round - 1}
   end
   defp do_run(kernel, text, max_rounds, round, error_retryed?) do
-    input = if round == 1, do: text, else: "（自主模式第 #{round} 轮：目标未达成，请继续工作。达成后调用 done。）"
+    input = if round == 1, do: text, else: "(Autonomous round #{round}: goal unmet, keep working. Call done when achieved.)"
     case Newbee.Agent.Loop.submit(kernel, input) do
       {:done, summary} -> {:done, summary}
       {:ask, q} -> {:ask, q}

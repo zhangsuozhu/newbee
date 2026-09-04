@@ -1,21 +1,20 @@
 defmodule Newbee.Tools.Introspect do
   @moduledoc """
-  Elixir 模块内省工具：查询真实导出、moduledoc 和 BEAM 信息。
-  模型用它了解已加载模块的 API，不必读源码。
+  Elixir module introspection: real exports, moduledoc, and BEAM info.
+  Use it to learn a loaded module's API without reading source.
 
-  ## 函数清单
-  - `exports(module :: module()) :: [{atom(), arity()}]` — 模块公开函数签名列表（过滤 `__info__/module_info`）。
-  - `moduledoc(module :: module()) :: String.t() | nil` — 模块 `@moduledoc` 首段（经 `Code.fetch_docs`）。
-  - `beam_info(module :: module()) :: %{module: module(), exports: [...], attributes: map()}` — beam chunk 摘要，经 `:beam_lib.chunks` 取 `:attributes`。
+  ## Functions
+  - `exports(module :: module()) :: [{atom(), arity()}]` — public function list (`__info__/module_info` filtered out).
+  - `moduledoc(module :: module()) :: String.t() | nil` — the module's `@moduledoc` opener (via `Code.fetch_docs`).
+  - `beam_info(module :: module()) :: %{module: module(), exports: [...], attributes: map()}` — BEAM chunk digest, `:attributes` via `:beam_lib.chunks`.
 
-  ## 可跑示例
+  ## Runnable example
       Newbee.Tools.Introspect.exports(Newbee.Tools.Fs)
       Newbee.Tools.Introspect.moduledoc(Newbee.Tools.Run)
       Newbee.Tools.Introspect.beam_info(Newbee.Diff)
-
   """
 
-  @doc "模块公开函数签名列表：[{name, arity}]。"
+  @doc "Public function list of a module: [{name, arity}]."
   def exports(module) do
     if Code.ensure_loaded?(module) do
       module.__info__(:functions) |> Enum.reject(fn {n, _} -> n in [:__info__, :module_info] end)
@@ -24,7 +23,7 @@ defmodule Newbee.Tools.Introspect do
     end
   end
 
-  @doc "模块 @moduledoc（首段）。"
+  @doc "A module's @moduledoc (opener)."
   def moduledoc(module) do
     case Code.fetch_docs(module) do
       {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) ->
@@ -37,7 +36,7 @@ defmodule Newbee.Tools.Introspect do
     _ -> nil
   end
 
-  @doc "beam chunk 摘要：%{module, exports, attributes}（Abstract Code 里提取的 attributes 子集）。"
+  @doc "BEAM chunk digest: %{module, exports, attributes} (attributes subset pulled from Abstract Code)."
   def beam_info(module) do
     case :code.which(module) do
       path when is_list(path) or is_binary(path) ->

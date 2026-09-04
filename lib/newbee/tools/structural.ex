@@ -49,27 +49,26 @@ defmodule Newbee.Tools.Structural do
   defp normalize_arity(other), do: other
 
   @moduledoc """
-  Elixir 结构编辑：按模块/函数定位 AST 插入替换。
-  与快照行号文本轨（`Tools.Edit`）互补：本模块用 Sourceror
-  解析出的行列元数据做结构化插入/替换，落盘后统一 `Code.format_string!`。
+  Structural Elixir edits by module/function at the AST level.
+  Complements the snapshot-line text track (`Tools.Edit`): this module inserts/replaces using row/col metadata parsed by Sourceror,
+  then normalizes with `Code.format_string!` on write.
 
-  ## 函数清单
-  - `list_functions(path :: String.t(), module :: module()) :: {:ok, [String.t()]} | {:error, :module_not_found}` — 列 `defmodule` 内 `def/defp` 签名，如 `["def hello/1", "defp helper/0"]`。
-  - `insert_function(path, module, def_code :: String.t()) :: {:ok, :inserted} | {:error, %{reason: :syntax_error, hint: String.t()}} | {:error, :module_not_found}` — 在模块最后一个 `end` 前插入函数源码，自动缩进 2 空格。语法错误的 def_code 返回 `{:error, %{reason: :syntax_error, hint: ...}}` 而非静默成功。
-  - `replace_function(path, module, name :: atom(), arity :: integer(), new_code :: String.t()) :: {:ok, :replaced} | {:error, :function_not_found | :module_not_found}` — 按 `name/arity` 定位整段定义换新，按原列缩进。
-  - `format(path :: String.t()) :: {:ok, :formatted} | {:error, reason}` — `Code.format_string!` 格式化后回写。
+  ## Functions
+  - `list_functions(path :: String.t(), module :: module()) :: {:ok, [String.t()]} | {:error, :module_not_found}` — list `def/defp` signatures inside `defmodule`, e.g. `["def hello/1", "defp helper/0"]`.
+  - `insert_function(path, module, def_code :: String.t()) :: {:ok, :inserted} | {:error, %{reason: :syntax_error, hint: String.t()}} | {:error, :module_not_found}` — insert function source before the module's last `end`, auto-indented 2 spaces. Bad-syntax def_code returns `{:error, %{reason: :syntax_error, hint: ...}}` instead of silently succeeding.
+  - `replace_function(path, module, name :: atom(), arity :: integer(), new_code :: String.t()) :: {:ok, :replaced} | {:error, :function_not_found | :module_not_found}` — swap a whole `name/arity` definition, keeping original column indent.
+  - `format(path :: String.t()) :: {:ok, :formatted} | {:error, reason}` — rewrite with `Code.format_string!`.
 
-  ## 可跑示例
+  ## Runnable example
       {:ok, sigs} = Newbee.Tools.Structural.list_functions("lib/my.ex", My.Module)
         {:ok, sigs} = Newbee.Tools.Structural.list_functions("lib/my.ex", "My.Module")
         {:ok, sigs} = Newbee.Tools.Structural.list_functions(%{path: "lib/my.ex", module: My.Module})
       {:ok, :inserted} = Newbee.Tools.Structural.insert_function("lib/my.ex", My.Module, "def hello(name), do: \"hi\"")
       {:ok, :replaced} = Newbee.Tools.Structural.replace_function("lib/my.ex", My.Module, :hello, 1, "def hello(name), do: String.upcase(name)")
       {:ok, :formatted} = Newbee.Tools.Structural.format("lib/my.ex")
-
   """
 
-  @doc "在模块末尾（最后一个 end 之前）插入函数源码。"
+  @doc "Insert function source at the end of a module (before the last end)."
   def insert_function(path, module, def_code) do
     path = normalize_path(path)
     module = normalize_module(module)
@@ -102,7 +101,7 @@ defmodule Newbee.Tools.Structural do
     end
   end
 
-  @doc "替换模块中 name/arity 函数（整段定义换新）。"
+  @doc "Replace a module's name/arity function (whole definition swapped)."
   def replace_function(path, module, name, arity, new_code) do
     path = normalize_path(path)
     module = normalize_module(module)
@@ -135,7 +134,7 @@ defmodule Newbee.Tools.Structural do
     end
   end
 
-  @doc "列出模块的函数签名。"
+  @doc "List a module's function signatures."
 
   def list_functions(path, module) do
     path = normalize_path(path)
@@ -171,7 +170,7 @@ defmodule Newbee.Tools.Structural do
     end
   end
 
-  @doc "格式化文件（Code.format_string!）。"
+  @doc "Format a file (Code.format_string!)."
   def format(path) do
     path = normalize_path(path)
 
@@ -282,7 +281,7 @@ defmodule Newbee.Tools.Structural do
   defp validate_syntax(code) do
     case Code.string_to_quoted(code) do
       {:ok, _} -> :ok
-      {:error, {_line, error, _token}} -> {:error, %{reason: :syntax_error, hint: "def_code 语法错误: " <> inspect(error)}}
+      {:error, {_line, error, _token}} -> {:error, %{reason: :syntax_error, hint: "def_code syntax error: " <> inspect(error)}}
     end
   end
 

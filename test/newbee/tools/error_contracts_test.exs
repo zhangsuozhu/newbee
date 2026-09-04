@@ -38,11 +38,11 @@ defmodule Newbee.Tools.ErrorContractsTest do
   test "Fs 非 bang 操作返回 out_of_bounds，bang 操作仍抛异常" do
     outside = Path.join(System.tmp_dir!(), "newbee_contract_#{System.unique_integer([:positive])}")
     assert {:error, %{reason: :out_of_bounds, hint: hint}} = Fs.guard_path(outside)
-    assert hint =~ "工程树外"
+    assert hint =~ "Out-of-tree"
     assert {:error, %{reason: :out_of_bounds}} = Fs.write(outside, "x")
     assert {:error, %{reason: :out_of_bounds}} = Fs.rm(outside)
     assert {:error, %{reason: :out_of_bounds}} = Fs.rm_rf(outside)
-    assert_raise ArgumentError, ~r/工程树外/, fn -> Fs.write!(outside, "x") end
+    assert_raise ArgumentError, ~r/Out-of-tree/, fn -> Fs.write!(outside, "x") end
   end
 
   test "Run.sh 同时提供 exit 与 exit_code 并保留执行环境" do

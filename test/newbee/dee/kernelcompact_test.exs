@@ -220,7 +220,7 @@ defmodule Newbee.Agent.LoopCompactTest do
         5_000 -> flunk("no capture")
       end
 
-    recall = Enum.find(seen, &(&1["role"] == "system" and String.contains?(&1["content"] || "", "[档案召回]")))
+    recall = Enum.find(seen, &(&1["role"] == "system" and String.contains?(&1["content"] || "", "[Archive recall]")))
     assert recall
     assert recall["content"] =~ "history://"
     GenServer.stop(k2)

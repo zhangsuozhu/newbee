@@ -21,16 +21,16 @@ defmodule Newbee.Tools.FsTest do
         "newbee_guard_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.txt"
       )
 
-    assert_raise ArgumentError, ~r/工程树外/, fn ->
+    assert_raise ArgumentError, ~r/Out-of-tree/, fn ->
       Fs.write!(outside, "x")
     end
 
-    assert_raise ArgumentError, ~r/工程树外/, fn ->
+    assert_raise ArgumentError, ~r/Out-of-tree/, fn ->
       Fs.append!(outside, "x")
     end
 
     assert {:error, %{reason: :out_of_bounds, hint: hint}} = Fs.rm(outside)
-    assert hint =~ "工程树外"
+    assert hint =~ "Out-of-tree"
     assert {:error, %{reason: :out_of_bounds}} = Fs.rm_rf(outside)
   end
 end

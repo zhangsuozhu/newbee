@@ -1,16 +1,16 @@
 defmodule Newbee.Tools.JSpace do
   @moduledoc """
-  Persistent task ledger for long multi-step work: goal/core/verified/next survive compaction.
+  Persistent task ledger: goal/core/verified/next survive compaction.
   Use for loop-level tasks; skip for simple one-shots.
 
   ## Functions
-  - `note(fields, session \\ nil) :: String.t()` — update the ledger; `fields` takes `goal/core/next/verified/open/checkpoint`.
-  - `read(session \\ nil) :: String.t() | nil` — raw ledger text; `nil` when absent.
-  - `seam(session \\ nil) :: String.t()` — re-read the ledger at subtask seams; open-ledger hint when absent.
-  - `ship(path, checks \\ [], session \\ nil) :: String.t()` — register a delivery path with checks.
-  - `resume(session \\ nil) :: String.t()` — recovery protocol plus full ledger.
-  - `clear(session \\ nil) :: :ok` — delete the ledger.
-  - `exists?(session \\ nil) :: boolean()` — whether a ledger exists.
+  - `note(fields, session \\\\ nil) :: String.t()` — update the ledger; `fields` takes `goal/core/next/verified/open/checkpoint`.
+  - `read(session \\\\ nil) :: String.t() | nil` — raw ledger text; `nil` when absent.
+  - `seam(session \\\\ nil) :: String.t()` — re-read the ledger at subtask seams; open-ledger hint when absent.
+  - `ship(path, checks \\\\ [], session \\\\ nil) :: String.t()` — register a delivery path with checks.
+  - `resume(session \\\\ nil) :: String.t()` — recovery protocol plus full ledger.
+  - `clear(session \\\\ nil) :: :ok` — delete the ledger.
+  - `exists?(session \\\\ nil) :: boolean()` — whether a ledger exists.
 
   ## Runnable example
       ledger = Newbee.Tools.JSpace.note([goal: "Unify tool docs", next: "Check real signatures"])

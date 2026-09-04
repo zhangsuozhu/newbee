@@ -381,7 +381,7 @@ defmodule Newbee.Agent.Loop do
           reason: "启动自主目标模式",
           timing: "current_turn"
         })
-        |> push_msg(%{"role" => "user", "content" => "（自主目标模式启动）目标：#{text}\n请开始自主工作，直到达成目标。"})
+        |> push_msg(%{"role" => "user", "content" => "(Autonomous goal mode started) Goal: #{text}\nWork on your own until it is done."})
 
       try do
         Newbee.Goal.persist(%Newbee.Goal.State{
@@ -753,7 +753,7 @@ defmodule Newbee.Agent.Loop do
           state =
             inject_prompt(
               state,
-              %{"role" => "system", "content" => "[Goal Blocked] 模型连续3轮提示阻塞，已将目标置为 blocked。请等待用户介入或 /goal resume。"},
+              %{"role" => "system", "content" => "[Goal Blocked] You flagged blocked 3 rounds running; the goal is now blocked. Wait for the user or /goal resume."},
               %{
                 source: "goal_blocked",
                 reason: "三击阻塞审计",
@@ -775,8 +775,8 @@ defmodule Newbee.Agent.Loop do
             # Reflection injection (Reflexion) when stuck: idle>=3 or repeat>=2 or error loop
             reflect_reason =
               cond do
-                idle >= 3 -> "连续3轮无工具进展"
-                repeat_count >= 2 -> "重复工具调用 (#{tool_sig})"
+                idle >= 3 -> "no tool progress for 3 rounds"
+                repeat_count >= 2 -> "repeated tool call (#{tool_sig})"
                 true -> nil
               end
 
@@ -986,20 +986,20 @@ defmodule Newbee.Agent.Loop do
 
   defp goal_system_prompt(text) do
     """
-    [自主目标模式] 你被赋予一个明确的完成目标，需要自主、持续地工作直到达成。
+    [Autonomous goal mode] You have a clear completion goal; work on your own until it is done.
 
-    目标：#{text}
+    Goal: #{text}
 
-    工作纪律：
-    - 持续工作：一轮结束后若目标未达成，系统会自动开启下一轮，无需等待用户。
-    - 每轮要有实质进展：运行代码、跑测试、修改文件、验证结果。
-    - 达成目标后：调用 done 工具，附上完成总结（做了什么、如何验证）。
-    - 未达成前不要调用 done，也不要仅用文字结束回合。
-    - 确实需要用户决策时用 ask；能自主解决的就自主解决。
-    - 预算与反思：留意 token 预算与 JSpace ledger；停滞时先反思再换策略；阻塞需连续3轮确认才可标记 blocked。
+    Discipline:
+    - Keep going: when a round ends with the goal unmet, the system starts the next one automatically. No need to wait for the user.
+    - Each round must show real progress: run code, run tests, edit files, verify results.
+    - When done: call the done tool with a summary (what you did, how you verified it).
+    - Do not call done early, and do not end a round with words alone.
+    - Use ask only for genuine user decisions; solve the rest yourself.
+    - Budget and reflection: watch the token budget and the JSpace ledger; on stall, reflect before switching strategy; mark blocked only after 3 consecutive stuck rounds.
+    - Budget and reflection: watch the token budget and the JSpace ledger; on stall, reflect before switching strategy; mark blocked only after 3 consecutive stuck rounds.
     """
   end
-
   # helpers delegating to Steering for backward compat
   defp parse_token_budget(nil), do: nil
   defp parse_token_budget(n) when is_integer(n) and n > 0, do: n
@@ -1050,7 +1050,7 @@ defmodule Newbee.Agent.Loop do
               state,
               %{
                 "role" => "system",
-                "content" => "[Loop 第 #{loop.rounds} 轮] 继续推进：#{loop.task}（#{loop.rounds}/#{loop.iterations}）"
+                "content" => "[Loop round #{loop.rounds}] Keep pushing: #{loop.task} (#{loop.rounds}/#{loop.iterations})"
               },
               %{
                 source: "loop_continue",
@@ -1111,8 +1111,8 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp recall_hint(hits) do
-    "[档案召回] 你这条输入与已压缩的早期对话相关。需要细节时拉取：" <>
-      "Newbee.read(\"history://s/<段id>\") 看该段摘要，Newbee.read(\"history://q/关键词\") 检索全文。\n" <>
+    "[Archive recall] This input relates to compacted earlier dialogue. Pull details when needed: " <>
+      "Newbee.read(\"history://s/<seg-id>\") for that segment's digest, Newbee.read(\"history://q/<keyword>\") for full-text search.\n" <>
       Enum.map_join(hits, "\n", &"  #{&1}")
   end
 
@@ -1187,7 +1187,7 @@ defmodule Newbee.Agent.Loop do
                       # 规则命中热度（§8.5 profiling 输入）
                       Newbee.Environment.UsageTracker.observe_rules(hits)
                       injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
-                      reminder = %{"role" => "system", "content" => "[沉睡规则注入] " <> injections}
+                      reminder = %{"role" => "system", "content" => "[Sleeping-rule hit] " <> injections}
 
                       state =
                         inject_prompt(state, reminder, %{
@@ -1343,7 +1343,7 @@ defmodule Newbee.Agent.Loop do
                   # 能力声明校验（物理拒绝）→ Capability Policy（行为策略）
                   case Newbee.Environment.CapabilityGate.check(code) do
                     {:deny, reason} ->
-                      rendered = "✗ error\n⛔ 能力门拒绝：#{inspect(reason)}（插件不在 active 图或未声明该能力，§3.2）"
+                      rendered = "✗ error\n⛔ Capability gate denied: #{inspect(reason)} (plugin not in the active graph or capability undeclared)"
                       emit(state, {:tool_error, rendered})
                       Newbee.Bus.emit(:audit, {:audit, :capability_denied, reason})
 
@@ -1363,12 +1363,12 @@ defmodule Newbee.Agent.Loop do
                   tool_msg = %{
                     "role" => "tool",
                     "tool_call_id" => call.id,
-                    "content" => "⛔ 未执行——命中环境规则，请先按以下提醒修正再重试:\n" <> injections
+                    "content" => "⛔ Not run — environment rules tripped; fix per the reminders below, then retry:\n" <> injections
                   }
 
                   reminder = %{
                     "role" => "system",
-                    "content" => "[沉睡规则注入] 你刚才的代码命中了以下环境规则:\n" <> injections
+                    "content" => "[Sleeping-rule hit] Your code tripped these environment rules:\n" <> injections
                   }
 
                   state =
@@ -2552,7 +2552,7 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp prompt_for_root?(prompt, root) do
-    String.contains?(prompt, "\n当前工程根目录: #{root}\n")
+    String.contains?(prompt, "\nCurrent project root: #{root}\n")
   end
 
   defp transition_root(state, root) do

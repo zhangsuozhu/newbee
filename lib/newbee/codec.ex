@@ -10,13 +10,13 @@ defmodule Newbee.Codec do
       function: %{
         name: "run_elixir",
         description:
-          "在持久 Elixir 环境执行代码；绑定跨调用保留，可调用 Newbee.Tools.*。" <>
-            "大结果留在 binding 或文件。生成含插值/heredoc 的源码先用 Edit.source_literal/1。",
+          "Run code in the persistent Elixir environment; bindings survive across calls, Newbee.Tools.* callable." <>
+            "Keep large results in bindings or files. For generated source with interpolation/heredocs, build it via Edit.source_literal/1 first.",
         parameters: %{
           type: "object",
           properties: %{
-            code: %{type: "string", description: "要执行的 Elixir 代码"},
-            title: %{type: "string", description: "简短操作标题"}
+            code: %{type: "string", description: "Elixir code to run"},
+            title: %{type: "string", description: "Short action title"}
           },
           required: ["code"]
         }
@@ -26,7 +26,7 @@ defmodule Newbee.Codec do
       type: "function",
       function: %{
         name: "done",
-        description: "完成总结；可附下一步",
+        description: "Completion summary; may attach next steps",
         parameters: %{
           type: "object",
           properties: %{
@@ -43,13 +43,13 @@ defmodule Newbee.Codec do
       type: "function",
       function: %{
         name: "ask",
-        description: "需要用户决定或澄清时暂停。kind: text=文本、single=单选、multi=多选、buttons=按钮；选择项放 options。",
+        description: "Pause for a user decision or clarification. kind: text, single, multi, buttons; put choices in options.",
         parameters: %{
           type: "object",
           properties: %{
-            question: %{type: "string", description: "向用户提出的问题"},
-            kind: %{type: "string", enum: ["text", "single", "multi", "buttons"], description: "交互形态；默认 text"},
-            options: %{type: "array", description: "选择项 [{label, value}]", items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}}
+            question: %{type: "string", description: "Question for the user"},
+            kind: %{type: "string", enum: ["text", "single", "multi", "buttons"], description: "Interaction shape; default text"},
+            options: %{type: "array", description: "Choices [{label, value}]", items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}}
           },
           required: ["question"]
         }

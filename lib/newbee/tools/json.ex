@@ -1,23 +1,22 @@
 defmodule Newbee.Tools.Json do
   @moduledoc """
-  JSON 工具：解码、编码和按 `a.b[0]` 路径取值。
-  路径语法：`a.b[0].c`（点分 + 数组下标），模型常用它从 API 响应抠字段。
+  JSON tool: decode, encode, and read at `a.b[0]` paths.
+  Path syntax: `a.b[0].c` (dots + array indexes) — the usual way to pluck fields from API responses.
 
-  ## 函数清单
-  - `decode(text :: String.t()) :: {:ok, value} | {:error, %{reason: :decode_failed, line:, column:, position:}}` — 解析 JSON 字符串（基于 `Jason.decode`），非法 JSON 返回带行/列号的错误 map。
-  - `encode(value, pretty \\\\ false) :: String.t() | {:error, :encode_failed}` — 编码为 JSON，`pretty: true` 时美化。
-  - `get(value, path :: String.t()) :: {:ok, v} | :error` — 按路径取值（不抛错）。
-  - `get!(value, path :: String.t()) :: v | nil` — 按路径取值，段含 `[idx]` 时取数组元素。
+  ## Functions
+  - `decode(text :: String.t()) :: {:ok, value} | {:error, %{reason: :decode_failed, line:, column:, position:}}` — parse a JSON document (on `Jason.decode`); bad JSON returns an error map with line/column.
+  - `encode(value, pretty \\\\ false) :: String.t() | {:error, :encode_failed}` — encode to JSON, prettified when `pretty: true`.
+  - `get(value, path :: String.t()) :: {:ok, v} | :error` — read at a path (never raises).
+  - `get!(value, path :: String.t()) :: v | nil` — read at a path, `[idx]` segments index into arrays.
 
-  ## 可跑示例
+  ## Runnable example
       {:ok, m} = Newbee.Tools.Json.decode(~s({"a": {"b": [1,2]}}))
       Newbee.Tools.Json.get(m, "a.b[0]")         # => {:ok, 1}
       Newbee.Tools.Json.get!(m, "a.b[1]")        # => 2
       Newbee.Tools.Json.encode(%{a: 1}, true)
-
   """
 
-  @doc "解析 JSON。成功返回 {:ok, value}；非法 JSON 返回带 line/column/position 的结构化错误。"
+  @doc "Parse JSON. {:ok, value} on success; structured error with line/column/position on bad JSON."
   def decode(text) when is_binary(text) do
     case Jason.decode(text) do
       {:ok, _} = ok ->
@@ -33,14 +32,14 @@ defmodule Newbee.Tools.Json do
     end
   end
 
-  @doc "编码为 JSON 字符串（美化可选）。"
+  @doc "Encode to a JSON document (optionally prettified)."
   def encode(value, pretty \\ false) do
     if pretty, do: Jason.encode!(value, pretty: true), else: Jason.encode!(value)
   rescue
     _ -> {:error, :encode_failed}
   end
 
-  @doc "按路径从 JSON 取值：Json.get!(resp, \"data.items[0].name\")。缺段返回nil。"
+  @doc "Read at a path: Json.get!(resp, \"data.items[0].name\"). Missing segment returns nil."
   def get!(value, path) when is_binary(path) do
     path
     |> String.split(".", trim: true)
@@ -61,7 +60,7 @@ defmodule Newbee.Tools.Json do
     end)
   end
 
-  @doc "按路径取值（不抛错）。缺段返回:error，显式null返回{:ok, nil}。返回 {:ok, v} | :error。"
+  @doc "Read at a path (never raises). Missing segment returns :error, explicit null returns {:ok, nil}. Returns {:ok, v} | :error."
   def get(value, path) when is_binary(path) do
     case fetch_path(value, path) do
       {:ok, _} = ok -> ok

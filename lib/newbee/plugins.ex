@@ -112,7 +112,7 @@ defmodule Newbee.Plugins do
     end)
     |> case do
       "" -> ""
-      body -> "\n## 能力索引（每项一行；按需 Newbee.read(\"tool://模块名\") 取全文）\n" <> body <> "\n"
+      body -> "\n## Capability index (one line each; pull full text via Newbee.read(\"tool://<module>\") as needed)\n" <> body <> "\n"
     end
   end
 

@@ -1,20 +1,19 @@
 defmodule Newbee.Plugins.Provider.OpenRouter do
   @moduledoc """
-  OpenRouter 请求计划器：验证参数生成 Host 可执行的请求 map；不持 key。
+  OpenRouter planner: validated Host-executable request maps; holds no keys.
 
-  ## 函数清单
-  - `plan(model, messages, opts \\\\ []) :: {:ok, map()} | {:error, reason}` — `opts` 支持 `base_url:`、`tools:`、`stream:`、`receive_timeout:`。
+  ## Functions
+  - `plan(model, messages, opts \\\\ []) :: {:ok, map()} | {:error, reason}` — `opts` takes `base_url:`, `tools:`, `stream:`, `receive_timeout:`.
 
-  ## 可跑示例
+  ## Runnable example
       {:ok, plan} = Newbee.Plugins.Provider.OpenRouter.plan("openai/gpt-4o-mini", [%{role: "user", content: "hi"}])
       {:ok, plan} = Newbee.Plugins.Provider.OpenRouter.plan("anthropic/claude-3", messages, tools: tools, stream: false)
 
-  返回计划交给 `Newbee.Host.Shell.execute_request_plan/1` 执行；凭证只通过 `credential_env` 由 Host 注入。
+  Hand the returned plan to `Newbee.Host.Shell.execute_request_plan/1`; credentials enter only via `credential_env`, injected by the Host.
   """
 
   @default_base_url "https://openrouter.ai/api/v1"
-
-  @doc "验证模型、消息与选项后生成 OpenRouter chat/completions 请求计划。"
+  @doc "Validate model, messages, and options, then build an OpenRouter chat/completions request plan."
   @spec plan(String.t(), [map()], keyword()) :: {:ok, map()} | {:error, term()}
   def plan(model, messages, opts \\ [])
 

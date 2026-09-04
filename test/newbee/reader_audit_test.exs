@@ -41,7 +41,7 @@ defmodule Newbee.ReaderAuditTest do
     path = Path.join(System.tmp_dir!(), "newbee-conflict-bad-#{:erlang.unique_integer([:positive])}.txt")
     File.write!(path, "head\n<<<<<<< ours-no-separator\ntail\n")
     assert {:ok, body} = Newbee.read("conflict://" <> path)
-    assert body =~ "无冲突块"
+    assert body =~ "has no conflict hunks"
     File.rm!(path)
   end
 

@@ -32,7 +32,7 @@ defmodule Newbee.Collaboration.Delegator do
     end
   end
 
-  def delegate(_, _, _, _), do: {:error, "bad_request", "派生参数无效"}
+  def delegate(_, _, _, _), do: {:error, "bad_request", "invalid spawn args"}
 
   defp create_session_and_delegate(
          group_id,
@@ -132,7 +132,7 @@ defmodule Newbee.Collaboration.Delegator do
 
   defp ensure_new_session(session_id) do
     if session_id in Newbee.Session.list() or match?({:ok, _}, Newbee.Web.Session.lookup(session_id)),
-      do: {:error, "session_exists", "会话已经存在"},
+      do: {:error, "session_exists", "session already exists"},
       else: :ok
   end
 
@@ -152,11 +152,11 @@ defmodule Newbee.Collaboration.Delegator do
   defp parent_can_delegate(group, parent_session_id) do
     if Enum.any?(group["members"] || [], &(&1["session_id"] == parent_session_id)),
       do: :ok,
-      else: {:error, "not_member", "当前会话不属于该工作组"}
+      else: {:error, "not_member", "current session is not in that work group"}
   end
 
   defp project_root(group, parent_session_id) do
     root = group["project_root"] || Newbee.Session.cwd(parent_session_id) || File.cwd!()
-    if File.dir?(root), do: {:ok, root}, else: {:error, "project_root_missing", "项目目录不存在"}
+    if File.dir?(root), do: {:ok, root}, else: {:error, "project_root_missing", "project directory is missing"}
   end
 end

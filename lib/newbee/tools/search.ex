@@ -1,26 +1,25 @@
 defmodule Newbee.Tools.Search do
   @moduledoc """
-  源码/文本搜索工具：正则 grep 内容或按文件名查找。
-  跳过 `_build/deps/.git/node_modules/cover`。返回紧凑命中列表。
+  Source/text search: regex-grep contents or find by filename.
+  Skips `_build/deps/.git/node_modules/cover`. Returns compact hit lists.
 
-  ## 函数清单
-  - `grep(pattern, dir \\\\ ".", opts \\\\ [])` — 递归内容搜索，`pattern` 为正则字符串。
-    返回 `[{path, line_no, line}]`（默认最多 100 条，`opts[:max]` 可调）。非法正则返回 `{:error, %{reason: :invalid_regex, hint: ...}}`。单文件先 `File.read`，>5MB 或含 `<<0>>` 的二进制跳过。
-  - `find(name, dir \\\\ ".")` — 按文件名片段查找，返回 `[path]`。
+  ## Functions
+  - `grep(pattern, dir \\\\ ".", opts \\\\ [])` — recursive content search, `pattern` is a regex.
+    Returns `[{path, line_no, line}]` (default cap 100, tunable via `opts[:max]`). Bad regex returns `{:error, %{reason: :invalid_regex, hint: ...}}`. Single files go through `File.read`; files over 5MB or holding `<<0>>` bytes are skipped.
+  - `find(name, dir \\\\ ".")` — find by filename fragment; returns `[path]`.
 
-  内部 `list_files/1` 优先用 `git ls-files -co --exclude-standard`（秒级白名单），失败回退 `Path.wildcard`.
+  `list_files/1` prefers `git ls-files -co --exclude-standard` (fast whitelist), falling back to `Path.wildcard`.
 
-  ## 可跑示例
+  ## Runnable example
       Newbee.Tools.Search.grep("def show", "lib")
       Newbee.Tools.Search.grep("TODO", ".", max: 20)
       Newbee.Tools.Search.find("fs.ex")
       Newbee.Tools.Search.find("edit", "lib/newbee/tools")
-
   """
 
   @skip ~r{/(_build|deps|\.git|node_modules|cover)/}
 
-  @doc "递归内容搜索。成功返回命中列表；非法正则返回 {:error, %{reason: :invalid_regex, hint: _}}。"
+  @doc "Recursive content search. Returns hits on success; {:error, %{reason: :invalid_regex, hint: _}} on a bad regex."
   def grep(pattern, dir \\ ".", opts \\ []) when is_binary(pattern) do
     max = Keyword.get(opts, :max, 100)
 
@@ -40,7 +39,7 @@ defmodule Newbee.Tools.Search do
         |> Enum.take(max)
 
       {:error, reason} ->
-        {:error, %{reason: :invalid_regex, hint: "正则编译失败: " <> inspect(reason)}}
+        {:error, %{reason: :invalid_regex, hint: "regex compile failed: " <> inspect(reason)}}
     end
   end
 
@@ -76,7 +75,7 @@ defmodule Newbee.Tools.Search do
     _, _ -> []
   end
 
-  @doc "按文件名片段查找。返回路径列表。"
+  @doc "Find by filename fragment. Returns a path list."
   def find(name, dir \\ ".") do
     list_files(dir) |> Enum.filter(&String.contains?(Path.basename(&1), name))
   end
