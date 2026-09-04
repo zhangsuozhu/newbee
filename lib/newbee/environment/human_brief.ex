@@ -26,11 +26,13 @@ defmodule Newbee.Environment.HumanBrief do
     ring = gv(attrs, "ring")
     eval_summary = gv(attrs, "eval_summary")
     kind_cn = kind_cn(kind)
-    purpose = short_purpose(usage)
+    reason = readable_reason(gv(attrs, "reason"))
+    purpose = short_purpose(usage) || short_purpose(reason)
+    deopt = deopt_info(evidence, gv(attrs, "reason"))
     %{
-      "title" => "让环境记住" <> kind_cn <> purpose_suffix(purpose),
-      "found" => found_sentence(evidence),
-      "change_to" => change_sentence(kind_cn, usage),
+      "title" => deopt_title(deopt, kind_cn, purpose),
+      "found" => deopt_found(deopt, evidence) || found_sentence(evidence),
+      "change_to" => change_sentence(kind_cn, usage, reason),
       "why" => why_sentence(eval_summary),
       "risk_undo" => risk_sentence(ring),
       "ask" => "如果你认可这个改进，点击批准；拿不准就先放着，环境维持现状。",
@@ -150,6 +152,60 @@ defmodule Newbee.Environment.HumanBrief do
   defp purpose_suffix(nil), do: ""
   defp purpose_suffix(p), do: "：" <> p
 
+  # 原因原文：去 adapter 前缀；裸 ID 则视为无内容（防复读）。
+  defp readable_reason(nil), do: nil
+  defp readable_reason(s) when is_binary(s) do
+    t = s |> String.replace(~r/^adapter:\s*/i, "") |> String.trim()
+    cond do
+      t == "" -> nil
+      raw_id?(t) -> nil
+      true -> t
+    end
+  end
+  defp readable_reason(_), do: nil
+
+  # 降级证据：evidence 里的 deopt 条目优先，否则从原因文本解析。
+  defp deopt_info(evidence, raw_reason) when is_list(evidence) do
+    from_ev =
+      Enum.find_value(evidence, fn
+        e when is_map(e) ->
+          rid = Map.get(e, :deopt) || Map.get(e, "deopt") || Map.get(e, :quality_deopt) || Map.get(e, "quality_deopt")
+          if rid, do: {to_string(rid), e}, else: nil
+        _ -> nil
+      end)
+
+    case from_ev do
+      {rid, e} ->
+        target = Map.get(e, :target_form) || Map.get(e, "target_form") || Map.get(e, :target) || Map.get(e, "target")
+        rsn = Map.get(e, :reason) || Map.get(e, "reason")
+        {rid, target && to_string(target), rsn && to_string(rsn)}
+      nil ->
+        case raw_reason do
+          s when is_binary(s) ->
+            case Regex.run(~r/deopt\s+(\S+)\s+→\s+(\S+):\s*(.+)/u, s) do
+              [_, rid, target, rsn] -> {rid, target, String.trim(rsn)}
+              _ -> nil
+            end
+          _ -> nil
+        end
+    end
+  end
+  defp deopt_info(_, _), do: nil
+
+  defp short_rid(rid) when is_binary(rid), do: rid |> String.split("@") |> List.first() |> String.slice(0, 32)
+  defp short_rid(rid), do: to_string(rid)
+
+  defp deopt_title(nil, kind_cn, purpose), do: "让环境记住" <> kind_cn <> purpose_suffix(purpose)
+  defp deopt_title({rid, _t, _r}, _kind_cn, _purpose), do: "把退化的 " <> short_rid(rid) <> " 降回稳定形态"
+
+  defp deopt_found(nil, _evidence), do: nil
+  defp deopt_found({rid, target, rsn}, _evidence) do
+    base = "AI 在质量巡检中发现【" <> short_rid(rid) <> "】退化"
+    base = if is_binary(rsn) and rsn != "", do: base <> "：" <> String.slice(rsn, 0, 100), else: base
+    if is_binary(target) and target != "", do: base <> "，准备降级到" <> target <> "形态。", else: base <> "。"
+  end
+
+
   defp found_sentence(evidence) when is_list(evidence) and length(evidence) > 0 do
     first = List.first(evidence)
     cap = (is_map(first) && (Map.get(first, :capability) || Map.get(first, "capability"))) || nil
@@ -162,15 +218,16 @@ defmodule Newbee.Environment.HumanBrief do
   end
   defp found_sentence(_), do: "AI 在日常任务中注意到一个可以固化的做法。"
 
-  defp change_sentence(kind_cn, usage) when is_binary(usage) and usage != "" do
-    t = String.trim(usage)
-    if Regex.match?(~r/\p{Han}/u, t) do
-      String.slice(t, 0, 120)
-    else
-      "把这次的做法固化成" <> kind_cn <> "，下次同类任务自动用上。"
+  defp change_sentence(kind_cn, usage, reason) do
+    han = fn s -> is_binary(s) and s != "" and Regex.match?(~r/\p{Han}/u, s) end
+    cond do
+      han.(usage) -> String.slice(String.trim(usage), 0, 120)
+      han.(reason) -> String.slice(String.trim(reason), 0, 120)
+      is_binary(usage) and usage != "" -> String.slice(String.trim(usage), 0, 120)
+      is_binary(reason) and reason != "" -> String.slice(String.trim(reason), 0, 120)
+      true -> "把这次的做法固化成" <> kind_cn <> "，下次同类任务自动用上。"
     end
   end
-  defp change_sentence(kind_cn, _), do: "把这次的做法固化成" <> kind_cn <> "，下次同类任务自动用上。"
 
   defp why_sentence(nil), do: "先经过 5 道验证（格式/复测/回放/试用/长期），通过了才需要你批准。"
   defp why_sentence(""), do: "先经过 5 道验证（格式/复测/回放/试用/长期），通过了才需要你批准。"
