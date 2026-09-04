@@ -254,7 +254,8 @@ const flow = $("flow");
     currentReasoning: null,
     currentTool: null,
     timing: { llmMs: 0, toolMs: 0, llmStart: null, toolStart: null,
-              ftSum: 0, ftCount: 0, ftRecorded: false, outTok: 0 },
+              ftSum: 0, ftCount: 0, ftRecorded: false, outTok: 0,
+              cacheTok: 0, promptTok: 0 },
     attachments: [],
     uploading: 0,
     stickBottom: true,
@@ -289,6 +290,15 @@ const flow = $("flow");
     if (!state.sid) return;
     try { localStorage.setItem(statsKey(state.sid), JSON.stringify(state.timing)); } catch (e) {}
   }
+  function resetTimingToZero() {
+    // 新会话/同 sid 清空后统计归零，并同步清掉持久化档（防旧值经刷新/切会话复活）
+    state.timing = { llmMs: 0, toolMs: 0, llmStart: null, toolStart: null,
+                     ftSum: 0, ftCount: 0, ftRecorded: false, outTok: 0,
+                     cacheTok: 0, promptTok: 0 };
+    if (state.sid) {
+      try { localStorage.removeItem(statsKey(state.sid)); } catch (e) {}
+    }
+  }
   function loadTiming(sid) {
     try {
       const raw = localStorage.getItem(statsKey(sid));
@@ -297,8 +307,10 @@ const flow = $("flow");
       if (saved && typeof saved === "object") {
         state.timing = { llmMs: 0, toolMs: 0, llmStart: null, toolStart: null,
                          ftSum: 0, ftCount: 0, ftRecorded: false, outTok: 0, ...saved };
-        // 活动计时器跨刷新无意义，置空
+        // 活动计时器跨刷新无意义，置空；旧档可能缺新字段，显式兜底
         state.timing.llmStart = null; state.timing.toolStart = null;
+        state.timing.cacheTok = saved.cacheTok || 0;
+        state.timing.promptTok = saved.promptTok || 0;
       }
     } catch (e) {}
   }
@@ -389,12 +401,16 @@ const flow = $("flow");
   }
 
   // 耗时统计（对齐 TUI）：LLM 段 / 工具段 / 首 token / 速率
+  // 口径：tok/s = 会话累计输出 token ÷ 累计 LLM 段耗时（含排队与 prefill 的首 token
+  // 等待，不含工具段）——是"会话平均吞吐"而非当前回复的瞬时生成速度；长回复流式
+  // 途中分子只按已完成的请求累加，显示值会阶段性偏低，属预期口径而非 bug。
   function trackTiming(kind, p) {
     const t = state.timing, now = Date.now();
     switch (kind) {
       case "text":
       case "reasoning":
         if (t.llmStart === null) t.llmStart = now;
+        // 首 token：从请求发起（发送方/上一工具段置位）到首个流式 delta
         if (t.llmStart !== null && !t.ftRecorded) { t.ftSum += now - t.llmStart; t.ftCount++; t.ftRecorded = true; }
         break;
       case "tool_start":
@@ -409,6 +425,13 @@ const flow = $("flow");
       case "usage":
         const u = p.usage || {};
         t.outTok += u.completion_tokens || 0;
+        // 会话累计缓存分子/分母（供"缓存均值"显示；字段名兼容见 renderStats）
+        const cacheRead = u.cache_read_tokens != null ? u.cache_read_tokens
+          : (u.cached_tokens != null ? u.cached_tokens
+          : (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens != null
+            ? u.prompt_tokens_details.cached_tokens : 0));
+        t.cacheTok += cacheRead || 0;
+        t.promptTok += u.prompt_tokens || 0;
         break;
       case "turn_end":
       case "done": case "ask": case "error": case "interrupted":
@@ -504,6 +527,7 @@ const flow = $("flow");
         state.queue = [];
         state.queueCurrent = null;
         renderQueue();
+        resetTimingToZero();
         if (p.text) line("notice", p.text);
         break;
       }
@@ -521,6 +545,7 @@ const flow = $("flow");
           hidePermission();
           clearAttachments();
           setBusy(false);
+          resetTimingToZero();
           line("notice", p.text || "已开启新会话");
         } else if (newSid && newSid !== state.sid && !state.creatingSession) {
           try { localStorage.removeItem("newbee.draft." + state.sid); } catch (e) {}
@@ -2481,6 +2506,7 @@ case "goal_round": break;
     state.busy = false;
     state.hasPrompted = false;
     state.titleDirty = false;
+    resetTimingToZero();
     resetStreamState();
     flow.innerHTML = "";
     renderWelcome();
@@ -3237,6 +3263,8 @@ case "goal_round": break;
       applyPromptTitle(text, attachments);
     }
     state.busy = true; setBusy(true);
+    // TTFT 锚点：从请求发起计时（排队项不置位，避免排队等待计入首 token）
+    if (!wasBusy) { state.timing.llmStart = Date.now(); state.timing.ftRecorded = false; }
     resetTurnUsage();
     try {
       if (attachments.length > 0) {
@@ -4233,9 +4261,11 @@ case "goal_round": break;
     if (llmMs > 0 || toolMs > 0) left.push(`<span title="模型生成累计耗时 · 工具执行累计耗时">LLM ${fmtDur(llmMs)} · 工具 ${fmtDur(toolMs)}</span>`);
     const spd = [];
     if (tm.ftCount > 0) spd.push(`<span title="平均首 token 耗时（多次请求平均）">首 token ${fmtDur(tm.ftSum / tm.ftCount)}</span>`);
-    if (llmMs > 0 && tm.outTok > 0) spd.push(`<span title="输出 token 数 ÷ LLM 耗时">${(tm.outTok / (llmMs / 1000)).toFixed(1)} tok/s</span>`);
+    if (llmMs > 0 && tm.outTok > 0) spd.push(`<span title="会话平均吞吐：累计输出 token ÷ 累计 LLM 段耗时（含排队与 prefill 的首 token 等待，不含工具段；非当前回复的瞬时速度）">${(tm.outTok / (llmMs / 1000)).toFixed(1)} tok/s</span>`);
     if (spd.length) left.push(spd.join(" · "));
-    if (cacheHit !== null) left.push(`<span title="缓存命中率 = 命中缓存的 token ÷ 总输入 token（会话累计）">缓存 ${cacheHit.toFixed(1).replace(/\.0$/, "")}%</span>`);
+    const avgCacheHit = tm.promptTok > 0 ? Math.min(100, tm.cacheTok * 100 / tm.promptTok) : null;
+    if (avgCacheHit !== null) left.push(`<span title="本会话平均缓存命中率 = Σ命中缓存 token ÷ Σ输入 token（按每次请求加权累计；命中 token 读得更快、单价更低）">缓存均值 ${avgCacheHit.toFixed(1).replace(/\.0$/, "")}%</span>`);
+    if (cacheHit !== null) left.push(`<span title="最近一次请求的缓存命中率（会话平均见"缓存均值"）">缓存 ${cacheHit.toFixed(1).replace(/\.0$/, "")}%</span>`);
     else if (cacheMissing) left.push(`<span title="供应商未回报缓存统计（该模型/网关未命中时不返回缓存字段）">缓存 未统计</span>`);
     if (promptTok > 0 || outTok > 0) left.push(`<span title="累计输入 token（prompt_tokens）· 累计输出 token（completion_tokens）">输入 ${fmtTok(promptTok)} · 输出 ${fmtTok(outTok)}</span>`);
     $("stats-left").innerHTML = left.join(" | ");
