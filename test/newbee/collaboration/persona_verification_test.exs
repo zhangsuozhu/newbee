@@ -54,7 +54,7 @@ defmodule Newbee.Collaboration.PersonaAndVerificationTest do
     )
 
     assert {:error, "bad_persona", message} = Persona.resolve("invalid")
-    assert message =~ "未知字段"
+    assert message =~ "unknown fields"
     refute "invalid" in Persona.list()
     assert "fast-review" in Persona.list()
     assert {:error, "bad_persona", _} = Persona.resolve("../outside")

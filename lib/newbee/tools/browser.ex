@@ -2,12 +2,13 @@ defmodule Newbee.Tools.Browser do
   @behaviour Newbee.Environment.PluginContract
 
   @moduledoc """
-  浏览器自动化：隔离 Playwright + 可选 X11 可见窗口。
+  Browser automation: isolated Playwright + optional X11 visible window.
 
-  默认后端是隔离浏览器；只有用户明确传 `backend: \"screen\"` 时才会聚焦和操作现有桌面窗口。
-  动作在一次有序计划中执行，避免每个点击都重新启动浏览器。输出文件限制在工程目录、`~/.newbee` 或 `/tmp`。
+  The default backend is an isolated browser; the existing desktop window is focused and driven only when the user
+  explicitly passes `backend: \"screen\"`. Actions run inside one ordered plan so the browser isn't relaunched per click.
+  Output files stay in the project dir, `~/.newbee`, or `/tmp`.
 
-  ## 可跑示例
+  ## Runnable example
       {:ok, result} = Newbee.Tools.Browser.run(%{
         url: \"https://example.com\",
         actions: [
@@ -28,13 +29,19 @@ defmodule Newbee.Tools.Browser do
   `title`、`url`、`snapshot`、`text/html/value/attribute/count/visible/enabled/bounds`、`links`、
   `select_text`、`drag_and_drop`、`bring_to_front`、`screenshot`、`pdf`、
   `new_tab/switch_tab/close_tab/tabs`、`cookies/set_cookie/clear_cookies`、`storage`、
-  `headers`、`permissions`、`download`、`upload`、`browser_version` 和 `close`。
-  定位支持 CSS、XPath、id、text、role、label、placeholder、alt、title、test_id 以及 iframe。
-  隔离后端需要 Python Playwright 和对应浏览器；缺少 Chromium 时运行 `playwright install chromium`。
+  ## Playwright actions
+  `goto/navigate`, `reload`, `back`, `forward`, `click`, `fill`, `type`, `press`, `select`,
+  `check/uncheck`, `hover`, `focus`, `scroll`, `wait`, `evaluate`, `set_content`, `set_viewport`,
+  `title`, `url`, `snapshot`, `text/html/value/attribute/count/visible/enabled/bounds`, `links`,
+  `select_text`, `drag_and_drop`, `bring_to_front`, `screenshot`, `pdf`,
+  `new_tab/switch_tab/close_tab/tabs`, `cookies/set_cookie/clear_cookies`, `storage`,
+  `headers`, `permissions`, `download`, `upload`, `browser_version` and `close`.
+  Locators span CSS, XPath, id, text, role, label, placeholder, alt, title, test_id, and iframes.
+  The isolated backend needs Python Playwright plus matching browsers; when Chromium is missing, run `playwright install chromium`.
 
-  ## Screen 动作
-  `list_windows`、`focus`、`navigate`、坐标 `click`/`double_click`、`scroll`、`press`、ASCII `type`、`wait` 和 `screenshot`。
-  screen 后端直接影响桌面，只在用户已授权控制当前可见浏览器时使用。
+  ## Screen actions
+  `list_windows`, `focus`, `navigate`, coordinate `click`/`double_click`, `scroll`, `press`, ASCII `type`, `wait` and `screenshot`.
+  The screen backend drives the real desktop — use only when the user has authorized control of the currently visible browser.
 
   """
 
@@ -56,9 +63,9 @@ defmodule Newbee.Tools.Browser do
   def describe do
     %{
       kind: :tool,
-      summary: "操作隔离或可见浏览器，支持页面交互、DOM 查询、下载、PDF 和截图",
-      when_to_use: "需要真实浏览器渲染、页面交互、登录态、下载、PDF、截图或明确授权的可见 Chrome 控制时",
-      avoid_when: "只需要公开 HTTP 内容时用 Newbee.read/1 或 Newbee.Tools.Http；不要未经授权使用 screen 后端",
+      summary: "Drive an isolated or visible browser: page interaction, DOM queries, downloads, PDFs, screenshots",
+      when_to_use: "When you need a real browser render, page interaction, login state, downloads, PDFs, screenshots, or explicitly authorized visible-Chrome control",
+      avoid_when: "For plain public HTTP content use Newbee.read/1 or Newbee.Tools.Http; never use the screen backend unauthorized",
       capabilities: [:browser, :net, :fs, :shell],
       effects: [:process, :external, :fs],
       state_policy: :stateless,
@@ -68,7 +75,7 @@ defmodule Newbee.Tools.Browser do
           name: :run,
           arity: 1,
           returns: "{:ok, result} | {:error, %{reason: atom(), hint: String.t(), ...}}",
-          errors: "请求、运行时、超时、定位和页面错误均作为可恢复值返回"
+          errors: "Request, runtime, timeout, locator, and page errors all return as recoverable values"
         }
       ],
       examples: [
@@ -78,7 +85,7 @@ defmodule Newbee.Tools.Browser do
     }
   end
 
-  @doc "执行一个有序浏览器动作计划。输入可为 URL 字符串，或包含 `url`、`backend`、`actions`、`timeout`、`profile`、`viewport`、`storage_state` 和 `save_storage` 的 map。返回动作结果和生成文件路径。"
+  @doc "Run one ordered browser-action plan. Takes a URL or a map with `url`, `backend`, `actions`, `timeout`, `profile`, `viewport`, `storage_state`, and `save_storage`. Returns action results and produced file paths."
   def run(url) when is_binary(url), do: run(%{url: url})
 
   def run(request) when is_map(request) do

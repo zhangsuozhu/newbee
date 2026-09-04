@@ -401,8 +401,8 @@ defmodule Newbee.Agent.LoopTest do
     prompt = hd(state.messages)["content"]
     assert state.root == root_b
     assert Newbee.Session.cwd(sid) == root_b
-    assert prompt =~ "当前工程根目录: #{root_b}"
-    refute prompt =~ "当前工程根目录: #{root_a}\n"
+    assert prompt =~ "Current project root: #{root_b}"
+    refute prompt =~ "Current project root: #{root_a}\n"
     assert Newbee.Session.system_prompt(state.session) == prompt
     assert Evaluator.info(ev).cwd == root_b
     assert %{status: :ok, value: cwd_value, cwd: ^root_b} = Evaluator.eval(ev, "File.cwd!()")
@@ -468,7 +468,7 @@ defmodule Newbee.Agent.LoopTest do
     state = :sys.get_state(kernel)
     assert state.root == worktree
     assert Evaluator.info(ev).cwd == worktree
-    assert hd(state.messages)["content"] =~ "当前工程根目录: #{worktree}"
+    assert hd(state.messages)["content"] =~ "Current project root: #{worktree}"
     assert %{status: :ok, value: cwd_value, cwd: ^worktree} = Evaluator.eval(ev, "File.cwd!()")
     assert cwd_value == inspect(worktree)
   end

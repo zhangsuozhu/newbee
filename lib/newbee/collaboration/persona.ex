@@ -14,21 +14,21 @@ defmodule Newbee.Collaboration.Persona do
   @builtin %{
     "worker" => %{
       "role" => "worker",
-      "instructions" => "负责一个边界明确的子任务；先读取任务契约和依赖，过程报告事实，完成后提交可复核证据。"
+      "instructions" => "Own one sharply scoped subtask; read the task contract and dependencies first, report facts as you go, finish with checkable evidence."
     },
     "tester" => %{
       "role" => "tester",
       "reasoning_effort" => "medium",
-      "instructions" => "以独立验证者视角工作；优先复现、边界条件和回归测试，不把实现者的自述当作证据。"
+      "instructions" => "Work as an independent verifier; favor reproduction, edge cases, and regression tests — never take the implementer's word as evidence."
     },
     "reviewer" => %{
       "role" => "reviewer",
       "reasoning_effort" => "high",
-      "instructions" => "审查行为回归、安全风险和缺失测试；结论必须引用文件、命令输出或可复现步骤。"
+      "instructions" => "Review behavioral regressions, security risks, and missing tests; every conclusion must cite files, command output, or reproducible steps."
     },
     "observer" => %{
       "role" => "observer",
-      "instructions" => "只做调查和报告，不修改工作区。"
+      "instructions" => "Investigate and report only; don't touch the workspace."
     }
   }
 
@@ -58,14 +58,14 @@ defmodule Newbee.Collaboration.Persona do
       cond do
         File.regular?(path) -> load_user(path, name)
         profile = @builtin[name] -> {:ok, Map.put(profile, "name", name)}
-        true -> {:error, "unknown_persona", "未知 persona #{inspect(name)}；可用：#{Enum.join(list(), ", ")}"}
+        true -> {:error, "unknown_persona", "unknown persona #{inspect(name)}; available: #{Enum.join(list(), ", ")}"}
       end
     else
-      {:error, "bad_persona", "persona 名只支持小写字母、数字、下划线和连字符（最多 64 字符）"}
+        {:error, "bad_persona", "persona names take only lowercase letters, digits, underscores, and hyphens (64 chars max)"}
     end
   end
 
-  def resolve(_), do: {:error, "bad_persona", "persona 名必须是字符串"}
+  def resolve(_), do: {:error, "bad_persona", "persona name must be a text"}
 
   @doc "把已解析 persona 转为可持久化的会话配置。"
   def session_profile(persona) when is_map(persona) do
@@ -75,13 +75,13 @@ defmodule Newbee.Collaboration.Persona do
   defp load_user(path, name) do
     with {:ok, body} <- File.read(path),
          {:ok, map} <- Jason.decode(body),
-         true <- is_map(map) or {:error, "bad_persona", "#{path} 须是 JSON object"},
+         true <- is_map(map) or {:error, "bad_persona", "#{path} must be a JSON object"},
          :ok <- validate_keys(map, path),
          :ok <- validate_profile(map, path) do
       {:ok, map |> Map.put_new("role", "worker") |> Map.put("name", name)}
     else
       {:error, %Jason.DecodeError{} = error} ->
-        {:error, "bad_persona", "#{path} JSON 无效：#{Exception.message(error)}"}
+        {:error, "bad_persona", "#{path} has invalid JSON: #{Exception.message(error)}"}
 
       {:error, code, message} ->
         {:error, code, message}
@@ -96,7 +96,7 @@ defmodule Newbee.Collaboration.Persona do
 
     if unknown == [],
       do: :ok,
-      else: {:error, "bad_persona", "#{path} 含未知字段：#{Enum.join(Enum.sort(unknown), ", ")}"}
+      else: {:error, "bad_persona", "#{path} holds unknown fields: #{Enum.join(Enum.sort(unknown), ", ")}"}
   end
 
   defp validate_profile(map, path) do
@@ -106,19 +106,19 @@ defmodule Newbee.Collaboration.Persona do
 
     cond do
       role not in @roles ->
-        {:error, "bad_persona", "#{path} role 无效"}
+        {:error, "bad_persona", "#{path} has an invalid role"}
 
       not is_nil(effort) and effort not in @efforts ->
-        {:error, "bad_persona", "#{path} reasoning_effort 无效"}
+        {:error, "bad_persona", "#{path} has an invalid reasoning_effort"}
 
       not optional_string?(map["provider"]) or not optional_string?(map["model"]) ->
-        {:error, "bad_persona", "#{path} provider/model 必须是非空字符串"}
+        {:error, "bad_persona", "#{path} provider/model must be non-empty texts"}
 
       not is_binary(instructions) or String.trim(instructions) == "" ->
-        {:error, "bad_persona", "#{path} instructions 不能为空"}
+        {:error, "bad_persona", "#{path} instructions must not be empty"}
 
       byte_size(instructions) > 4_000 ->
-        {:error, "bad_persona", "#{path} instructions 超过 4000 字节"}
+        {:error, "bad_persona", "#{path} instructions exceed 4000 bytes"}
 
       true ->
         :ok

@@ -16,7 +16,7 @@ defmodule Newbee.Collaboration.Verification do
 
   @doc "严格归一化验收契约；空契约、未知 kind、错误类型和超限输入均拒绝。"
   def normalize_contract([]),
-    do: {:error, "acceptance_required", "Hive 任务必须提供至少一项结构化验收条件"}
+    do: {:error, "acceptance_required", "Hive tasks need at least one structured acceptance criterion"}
 
   def normalize_contract(criteria) when is_list(criteria) and length(criteria) <= @max_criteria do
     criteria
@@ -24,7 +24,7 @@ defmodule Newbee.Collaboration.Verification do
     |> Enum.reduce_while({:ok, []}, fn {criterion, index}, {:ok, acc} ->
       case normalize_criterion(criterion) do
         {:ok, normalized} -> {:cont, {:ok, [Map.put(normalized, "id", index + 1) | acc]}}
-        {:error, message} -> {:halt, {:error, "bad_acceptance", "验收项 #{index + 1}: #{message}"}}
+        {:error, message} -> {:halt, {:error, "bad_acceptance", "criterion #{index + 1}: #{message}"}}
       end
     end)
     |> case do
@@ -34,14 +34,14 @@ defmodule Newbee.Collaboration.Verification do
   end
 
   def normalize_contract(criteria) when is_list(criteria),
-    do: {:error, "acceptance_limit", "验收项不能超过 #{@max_criteria} 个"}
+    do: {:error, "acceptance_limit", "at most #{@max_criteria} acceptance criteria"}
 
   def normalize_contract(_),
-    do: {:error, "bad_acceptance", "验收契约必须是结构化数组"}
+    do: {:error, "bad_acceptance", "acceptance contract must be a structured array"}
 
   @doc "在给定工作根执行任务的结构化验收，返回带 contract_sha256 的 attestation。"
   def verify(task, root) when is_map(task) and is_binary(root) do
-    with true <- File.dir?(root) or {:error, "workspace_missing", "验收工作根不存在"},
+    with true <- File.dir?(root) or {:error, "workspace_missing", "acceptance work root is missing"},
          {:ok, criteria} <- normalize_contract(task["acceptance"]) do
       results = Enum.map(criteria, &run_criterion(&1, root))
 
@@ -53,12 +53,12 @@ defmodule Newbee.Collaboration.Verification do
          "results" => results
        }}
     else
-      false -> {:error, "workspace_missing", "验收工作根不存在"}
+      false -> {:error, "workspace_missing", "acceptance work root is missing"}
       {:error, _, _} = error -> error
     end
   end
 
-  def verify(_, _), do: {:error, "bad_request", "任务和工作根无效"}
+  def verify(_, _), do: {:error, "bad_request", "task and work root are invalid"}
 
   @doc "验收契约的稳定 SHA-256（Canonical JSON：map key 排序）。"
   def contract_sha256(criteria) when is_list(criteria) do
@@ -76,14 +76,14 @@ defmodule Newbee.Collaboration.Verification do
 
     cond do
       program not in @programs ->
-        {:error, "program 须为 #{Enum.join(@programs, ", ")}"}
+        {:error, "program must be one of #{Enum.join(@programs, ", ")}"}
 
       not is_list(args) or length(args) > @max_args or
           not Enum.all?(args, &(is_binary(&1) and byte_size(&1) <= @max_arg_bytes and not String.contains?(&1, <<0>>))) ->
-        {:error, "args 须为至多 #{@max_args} 个、单项至多 #{@max_arg_bytes} 字节的字符串数组"}
+        {:error, "args must be an array of texts, at most #{@max_args} items, each at most #{@max_arg_bytes} bytes"}
 
       not is_integer(timeout) or timeout < 1_000 or timeout > @max_timeout_ms ->
-        {:error, "timeout_ms 须在 1000..#{@max_timeout_ms}"}
+        {:error, "timeout_ms must sit in 1000..#{@max_timeout_ms}"}
 
       true ->
         {:ok, %{"kind" => "command", "program" => program, "args" => args, "timeout_ms" => timeout}}
@@ -101,12 +101,12 @@ defmodule Newbee.Collaboration.Verification do
          true <- is_binary(sha) and Regex.match?(~r/\A[0-9a-fA-F]{64}\z/, sha) do
       {:ok, %{"kind" => "file_sha256", "path" => path, "sha256" => String.downcase(sha)}}
     else
-      false -> {:error, "sha256 须为 64 位十六进制"}
+      false -> {:error, "sha256 must be 64 lowercase hex chars"}
       {:error, _} = error -> error
     end
   end
 
-  defp normalize_criterion(_), do: {:error, "kind 只支持 command/file_exists/file_sha256"}
+  defp normalize_criterion(_), do: {:error, "kind supports only command/file_exists/file_sha256"}
 
   defp run_criterion(%{"kind" => "command"} = criterion, root) do
     argv = [criterion["program"] | criterion["args"]]
@@ -154,10 +154,10 @@ defmodule Newbee.Collaboration.Verification do
     if path != "" and byte_size(path) <= @max_path_bytes and Path.type(path) == :relative and
          (candidate == "/workspace" or String.starts_with?(candidate, "/workspace/")),
        do: :ok,
-       else: {:error, "path 须是工作根内的相对路径"}
+       else: {:error, "path must be a relative path inside the work root"}
   end
 
-  defp relative_path(_), do: {:error, "path 须是字符串"}
+  defp relative_path(_), do: {:error, "path must be a text"}
 
   defp checked_path(root, path) do
     with :ok <- relative_path(path),

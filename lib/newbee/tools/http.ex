@@ -1,30 +1,29 @@
 defmodule Newbee.Tools.Http do
   @moduledoc """
-  HTTP POST/headers/status 工具；简单 GET 只取正文优先 `Newbee.read/1`。
-  URL 读取也可用统一寻址 `Newbee.read/1`（§3.2）。
+  HTTP POST/headers/status; plain-GET bodies via `Newbee.read/1`.
+  URLs also resolve through unified `Newbee.read/1`.
 
-  ## 函数清单
-  - `get(url, headers \\\\ []) :: {:ok, %{status: integer(), body: String.t()}} | {:error, reason}` — GET 请求。错误区分 `{:error, %{reason: :invalid_url}}`（URL 格式错误）vs `{:error, %{reason: :network_error}}`（网络错误）vs `{:error, %{reason: :request_failed}}`（其他错误）。
-  - `post(url, json, headers \\\\ []) :: {:ok, %{status, body}} | {:error, reason}` — POST，`json` 可为 `map`（自动 `Jason.encode!`）或 `String.t()`。
+  ## Functions
+  - `get(url, headers \\\\ []) :: {:ok, %{status: integer(), body: String.t()}} | {:error, reason}` — GET request. Errors split three ways: `{:error, %{reason: :invalid_url}}` (malformed URL) vs `{:error, %{reason: :network_error}}` (network down) vs `{:error, %{reason: :request_failed}}` (anything else).
+  - `post(url, json, headers \\\\ []) :: {:ok, %{status, body}} | {:error, reason}` — POST; `json` takes a `map` (auto `Jason.encode!`) or a `String.t()`.
 
-  内部经 `Req`，默认超时 30_000ms，响应体超 512KB 截断。
+  Runs on `Req`, 30_000ms default timeout, bodies cut at 512KB.
 
-  ## 可跑示例
+  ## Runnable example
       {:ok, %{status: 200, body: body}} = Newbee.Tools.Http.get("https://example.com")
       {:ok, %{status: 200}} = Newbee.Tools.Http.post("https://api.example.com/v1/chat", %{model: "gpt-4", messages: []})
       {:ok, html} = Newbee.read("https://example.com")
-
   """
 
   @default_timeout 30_000
   @max_body 512 * 1024
 
-  @doc "GET 请求。错误区分 `{:error, %{reason: :invalid_url}}`（URL 格式错误）vs `{:error, %{reason: :network_error}}`（网络错误）vs `{:error, %{reason: :request_failed}}`（其他错误）。返回 {:ok, %{status, body}} | {:error, reason}。"
+  @doc "GET request. Errors split three ways: `{:error, %{reason: :invalid_url}}` (malformed URL) vs `{:error, %{reason: :network_error}}` (network down) vs `{:error, %{reason: :request_failed}}` (anything else). Returns {:ok, %{status, body}} | {:error, reason}."
   def get(url, headers \\ []) do
     request(:get, url, nil, headers)
   end
 
-  @doc "POST 请求（json 可为 map/string）。"
+  @doc "POST request (json takes map/string)."
   def post(url, json, headers \\ []) do
     request(:post, url, json, headers)
   end
@@ -37,10 +36,10 @@ defmodule Newbee.Tools.Http do
     # 先校验 URL 格式
     case URI.parse(url) do
       %URI{scheme: scheme} when scheme not in ["http", "https"] ->
-        {:error, %{reason: :invalid_url, hint: "URL scheme 必须是 http 或 https: " <> url}}
+        {:error, %{reason: :invalid_url, hint: "URL scheme must be http or https: " <> url}}
 
       %URI{host: host} when host in [nil, ""] ->
-        {:error, %{reason: :invalid_url, hint: "URL 缺少 host: " <> url}}
+        {:error, %{reason: :invalid_url, hint: "URL has no host: " <> url}}
 
       _uri ->
         req =
@@ -65,13 +64,13 @@ defmodule Newbee.Tools.Http do
             {:ok, %{status: status, body: ""}}
 
           {:error, %Req.TransportError{reason: reason}} ->
-            {:error, %{reason: :network_error, hint: "网络错误: " <> inspect(reason)}}
+            {:error, %{reason: :network_error, hint: "network error: " <> inspect(reason)}}
 
           {:error, reason} ->
-            {:error, %{reason: :request_failed, hint: "请求失败: " <> inspect(reason)}}
+            {:error, %{reason: :request_failed, hint: "request failed: " <> inspect(reason)}}
         end
     end
   rescue
-    e -> {:error, %{reason: :request_failed, hint: "请求异常: " <> Exception.message(e)}}
+    e -> {:error, %{reason: :request_failed, hint: "request raised: " <> Exception.message(e)}}
   end
 end

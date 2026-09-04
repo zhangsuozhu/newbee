@@ -1,33 +1,33 @@
 defmodule Newbee.Tools.Hive do
   @moduledoc """
-  持久协作 API：revision CAS Board、DAG、事件等待和 Lead 验收。
+  Persistent collaboration: revision-CAS Board, DAG, event waits, Lead acceptance.
 
-  worker 只能提交 `submitted`，不能改任务契约；`succeeded` 仅由 Lead 在主节点运行
-  结构化验收后写入，调用方不能传 attestation。command 验收会执行项目代码、仅 Lead
-  可创建，不是 sandbox。`write_scope` 是冲突诊断，不是锁。Persona、fork 和派生/载荷
-  均有硬上限；capability 绑定正常工具调用身份，不隔离任意 BEAM/RPC 代码。
+  Workers may only submit `submitted`, never rewrite task contracts; `succeeded` is written solely by the Lead
+  after running structured acceptance on the host node — callers pass no attestation. Command acceptance executes
+  project code and only the Lead may create it; it is not a sandbox. `write_scope` diagnoses conflicts, it is not
+  a lock. Personas, forks, and spawn/payload sizes all have hard caps; capabilities bind normal tool-call identity,
+  they don't isolate arbitrary BEAM/RPC code.
 
-  ## 可跑示例
-      {:ok, g} = Newbee.Tools.Hive.open("认证重构")
-      {:ok, _} = Newbee.Tools.Hive.delegate(g["group_id"], "补测试", acceptance: checks)
+  ## Runnable example
+      {:ok, g} = Newbee.Tools.Hive.open("Auth refactor")
+      {:ok, _} = Newbee.Tools.Hive.delegate(g["group_id"], "Add tests", acceptance: checks)
       {:ok, b} = Newbee.Tools.Hive.board(g["group_id"])
       Newbee.Tools.Hive.board_put(gid, task)
       Newbee.Tools.Hive.board_claim(gid, tid, rev)
       Newbee.Tools.Hive.report(gid, tid, :submitted, expected_revision: rev, result: "done")
       Newbee.Tools.Hive.verify(gid, tid)
       Newbee.Tools.Hive.wait(gid, since_revision: rev)
-      Newbee.Tools.Hive.send(gid, sid, "复核")
+      Newbee.Tools.Hive.send(gid, sid, "Review")
       Newbee.Tools.Hive.inbox(gid)
       Newbee.Tools.Hive.roster(gid)
       Newbee.Tools.Hive.interrupt(gid, sid)
       Newbee.Tools.Hive.close(gid, sid)
       Newbee.Tools.Hive.personas()
   """
-
   @context_key {Newbee.Tools.Collaboration, :context}
   @report_statuses ~w(accepted running blocked submitted failed cancelled)
 
-  @doc "建立协作组；opts 支持 goal/project_root/max_depth/max_total。"
+  @doc "Open a collaboration group; opts take goal/project_root/max_depth/max_total."
   def open(title, opts \\ [])
 
   def open(title, opts) when is_binary(title) and is_list(opts) do
@@ -46,9 +46,9 @@ defmodule Newbee.Tools.Hive do
     end
   end
 
-  def open(_, _), do: {:error, "bad_request", "title 必须是字符串且 opts 必须是 keyword list"}
+  def open(_, _), do: {:error, "bad_request", "title must be a text and opts a keyword list"}
 
-  @doc "派生真实子会话；必须给结构化 acceptance。opts 支持 persona/fork_turns/depends_on/write_scope/isolate。"
+  @doc "Spawn a real subsession; structured acceptance required. Opts take persona/fork_turns/depends_on/write_scope/isolate."
   def delegate(group_id, title, opts \\ [])
 
   def delegate(group_id, title, opts)
@@ -79,18 +79,18 @@ defmodule Newbee.Tools.Hive do
     end
   end
 
-  def delegate(_, _, _), do: {:error, "bad_request", "group_id/title 必须是字符串且 opts 必须是 keyword list"}
+  def delegate(_, _, _), do: {:error, "bad_request", "group_id/title must be texts and opts a keyword list"}
 
-  @doc "读取当前成员可见的权威 Board（revision/tasks/write_scope_overlaps）。"
+  @doc "Read the authoritative Board visible to current members (revision/tasks/write_scope_overlaps)."
   def board(group_id) when is_binary(group_id) do
     with {:ok, identity} <- identity() do
       host_call(Newbee.Collaboration.Coordinator, :board, [group_id, identity.session_id])
     end
   end
 
-  def board(_), do: {:error, "bad_request", "group_id 必须是字符串"}
+  def board(_), do: {:error, "bad_request", "group_id must be a text"}
 
-  @doc "创建或更新任务；map 必须携带 expected_revision，更新时再带 task_id；执行者不能改任务契约。"
+  @doc "Create or update a task; maps must carry expected_revision, plus task_id on update; executors can't rewrite task contracts."
   def board_put(group_id, attrs) when is_binary(group_id) and is_map(attrs) do
     with {:ok, identity} <- identity() do
       attrs = put_identity(attrs, identity.session_id) |> put_command("hive-board")
@@ -105,9 +105,9 @@ defmodule Newbee.Tools.Hive do
     end
   end
 
-  def board_put(_, _), do: {:error, "bad_request", "group_id 必须是字符串且 attrs 必须是 map"}
+  def board_put(_, _), do: {:error, "bad_request", "group_id must be a text and attrs a map"}
 
-  @doc "用 Board revision 原子认领任务；依赖未完成时拒绝。"
+  @doc "Atomically claim a task at a Board revision; refused while dependencies are open."
   def board_claim(group_id, task_id, expected_revision)
       when is_binary(group_id) and is_binary(task_id) and is_integer(expected_revision) do
     with {:ok, identity} <- identity() do
@@ -123,9 +123,9 @@ defmodule Newbee.Tools.Hive do
     end
   end
 
-  def board_claim(_, _, _), do: {:error, "bad_request", "group_id/task_id 必须是字符串且 revision 必须是整数"}
+  def board_claim(_, _, _), do: {:error, "bad_request", "group_id/task_id must be texts and revision an integer"}
 
-  @doc "报告状态；worker 完成用 :submitted，不能直接 succeeded。opts 必须含 expected_revision。"
+  @doc "Report status; workers finish with :submitted, never succeeded directly. Opts must carry expected_revision."
   def report(group_id, task_id, status, opts \\ [])
 
   def report(group_id, task_id, status, opts)
@@ -148,9 +148,9 @@ defmodule Newbee.Tools.Hive do
     end
   end
 
-  def report(_, _, _, _), do: {:error, "bad_request", "Hive 状态无效"}
+  def report(_, _, _, _), do: {:error, "bad_request", "invalid Hive status"}
 
-  @doc "Lead 在受信主节点运行结构化验收；不接收调用方证明，执行后以 Board revision CAS 提交。"
+  @doc "The Lead runs structured acceptance on the trusted host node; caller attestations rejected, commits via Board revision CAS after execution."
   def verify(group_id, task_id) when is_binary(group_id) and is_binary(task_id) do
     with {:ok, identity} <- identity(),
          {:ok, board} <-
@@ -175,9 +175,9 @@ defmodule Newbee.Tools.Hive do
     end
   end
 
-  def verify(_, _), do: {:error, "bad_request", "group_id 和 task_id 必须是字符串"}
+  def verify(_, _), do: {:error, "bad_request", "group_id and task_id must be texts"}
 
-  @doc "等待 revision 边沿；不会轮询。opts: since_revision（必填）、timeout_ms。"
+  @doc "Wait on a revision edge; never polls. Opts: since_revision (required), timeout_ms."
   def wait(group_id, opts \\ [])
 
   def wait(group_id, opts) when is_binary(group_id) and is_list(opts) do
@@ -193,16 +193,16 @@ defmodule Newbee.Tools.Hive do
         timeout + 5_000
       )
     else
-      :error -> {:error, "bad_request", "wait 必须提供 since_revision"}
-      false -> {:error, "bad_request", "since_revision 必须是非负整数"}
+      :error -> {:error, "bad_request", "wait requires since_revision"}
+      false -> {:error, "bad_request", "since_revision must be a non-negative integer"}
       {:error, _, _} = error -> error
       other -> {:error, "wait_failed", inspect(other)}
     end
   end
 
-  def wait(_, _), do: {:error, "bad_request", "group_id 必须是字符串且 opts 必须是 keyword list"}
+  def wait(_, _), do: {:error, "bad_request", "group_id must be a text and opts a keyword list"}
 
-  @doc "发送可靠消息。wake:false 只落时间线；wake:true 才触发目标模型 turn。"
+  @doc "Send a reliable message. wake:false lands on the timeline only; wake:true triggers the target model's turn."
   def send(group_id, to_session_id, body, opts \\ [])
 
   def send(group_id, to_session_id, body, opts)
@@ -224,9 +224,9 @@ defmodule Newbee.Tools.Hive do
     end
   end
 
-  def send(_, _, _, _), do: {:error, "bad_request", "消息参数类型无效"}
+  def send(_, _, _, _), do: {:error, "bad_request", "invalid message arg types"}
 
-  @doc "读取发给当前会话或广播的消息；opts: since_seq。"
+  @doc "Read messages to the current session or broadcasts; opts: since_seq."
   def inbox(group_id, opts \\ [])
 
   def inbox(group_id, opts) when is_binary(group_id) and is_list(opts) do
@@ -239,23 +239,23 @@ defmodule Newbee.Tools.Hive do
     end
   end
 
-  def inbox(_, _), do: {:error, "bad_request", "group_id 必须是字符串且 opts 必须是 keyword list"}
+  def inbox(_, _), do: {:error, "bad_request", "group_id must be a text and opts a keyword list"}
 
-  @doc "读取组名册；非成员拒绝。"
+  @doc "Read the group roster; non-members refused."
   def roster(group_id) when is_binary(group_id) do
     with {:ok, identity} <- identity(),
          true <- host_call(Newbee.Collaboration.Coordinator, :member?, [group_id, identity.session_id]) do
       with {:ok, group} <- host_call(Newbee.Collaboration.Coordinator, :get, [group_id]),
            do: {:ok, group["members"]}
     else
-      false -> {:error, "not_member", "当前会话不属于该组"}
+      false -> {:error, "not_member", "current session is not in that group"}
       error -> error
     end
   end
 
-  def roster(_), do: {:error, "bad_request", "group_id 必须是字符串"}
+  def roster(_), do: {:error, "bad_request", "group_id must be a text"}
 
-  @doc "仅 Lead 或目标直接父会话可中断；保留任务和消息。"
+  @doc "Only the Lead or the target's direct parent session may interrupt; tasks and messages survive."
   def interrupt(group_id, target_session_id)
       when is_binary(group_id) and is_binary(target_session_id) do
     with {:ok, identity} <- identity(),
@@ -265,14 +265,14 @@ defmodule Newbee.Tools.Hive do
       :ok = Newbee.Web.Session.interrupt(pid)
       {:ok, %{"interrupted" => target_session_id}}
     else
-      {:error, :not_found} -> {:error, "not_found", "目标会话未运行"}
+      {:error, :not_found} -> {:error, "not_found", "target session not running"}
       error -> error
     end
   end
 
-  def interrupt(_, _), do: {:error, "bad_request", "group_id 和 target_session_id 必须是字符串"}
+  def interrupt(_, _), do: {:error, "bad_request", "group_id and target_session_id must be texts"}
 
-  @doc "Lead 显式移除已无活动任务/子代的成员，并销毁其会话进程。"
+  @doc "The Lead explicitly removes members with no live tasks/children and destroys their session processes."
   def close(group_id, target_session_id)
       when is_binary(group_id) and is_binary(target_session_id) do
     with {:ok, identity} <- identity(),
@@ -290,9 +290,9 @@ defmodule Newbee.Tools.Hive do
     end
   end
 
-  def close(_, _), do: {:error, "bad_request", "group_id 和 target_session_id 必须是字符串"}
+  def close(_, _), do: {:error, "bad_request", "group_id and target_session_id must be texts"}
 
-  @doc "列出严格校验后可解析的 persona 名。"
+  @doc "List strictly validated, resolvable persona names."
   def personas, do: Newbee.Collaboration.Persona.list()
 
   defp identity do
@@ -301,7 +301,7 @@ defmodule Newbee.Tools.Hive do
         host_call(Newbee.Collaboration.Capability, :resolve, [token])
 
       _ ->
-        {:error, "no_execution_context", "Hive 必须运行在 Agent.Loop 签发的 capability 上下文中"}
+        {:error, "no_execution_context", "Hive must run under a capability context issued by Agent.Loop"}
     end
   end
 
@@ -319,7 +319,7 @@ defmodule Newbee.Tools.Hive do
     command? = Enum.any?(acceptance, &(&1["kind"] == "command"))
 
     if command? and actor != group["coordinator_session_id"],
-      do: {:error, "command_acceptance_forbidden", "只有 Lead 可创建 command 验收项"},
+      do: {:error, "command_acceptance_forbidden", "only the Lead may create command acceptance items"},
       else: :ok
   end
 
@@ -327,10 +327,10 @@ defmodule Newbee.Tools.Hive do
     member = Enum.find(group["members"] || [], &(&1["session_id"] == target))
 
     cond do
-      is_nil(member) -> {:error, "not_member", "目标不属于该组"}
+      is_nil(member) -> {:error, "not_member", "target is not in that group"}
       actor == group["coordinator_session_id"] -> :ok
       actor == member["parent_session_id"] -> :ok
-      true -> {:error, "forbidden_role", "只有 Lead 或直接父会话可中断目标"}
+      true -> {:error, "forbidden_role", "only the Lead or a direct parent session may interrupt the target"}
     end
   end
 

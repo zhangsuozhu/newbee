@@ -32,19 +32,19 @@ defmodule Newbee.DEE.Rules do
       id: "ssh-quote-nesting",
       scope: :code,
       pattern: "ssh.*curl.*python.*f\"",
-      injection: "[Rule] ssh 嵌套引号易炸：外层用单引号包 ssh 命令，内层 curl|python 用双引号；f-string 内不要出现反斜杠，改用 format 或拼接。"
+      injection: "[Rule] Fragile nested ssh quoting: wrap the ssh command in single quotes, inner curl|python in double quotes; no backslashes inside f-strings — use format or concatenation."
     },
     %{
       id: "py-runtime-drift",
       scope: :code,
       pattern: "ModuleNotFoundError|No module named",
-      injection: "[Rule] 解释器版本漂移：多版本 Python 共存时用显式版本调用；留意 3.12+ 已移除的标准库，先判运行时版本再决定回退或兼容。"
+      injection: "[Rule] Interpreter drift: with multiple Pythons around, invoke an explicit version; 3.12+ dropped stdlib modules, so detect the runtime before falling back or shimming."
     },
     %{
       id: "api-type-dual-track",
       scope: :all,
       pattern: "boolean.*string|string.*boolean",
-      injection: "[Rule] API 类型双轨：同一字段在不同端点可能是 bool 与 string 双轨；前端用联合类型兼容，后端源头统一为 bool。"
+      injection: "[Rule] Dual-track API types: one field may ride bool on one endpoint and text on another; take a union client-side, unify to bool at the source."
     }
   ]
 

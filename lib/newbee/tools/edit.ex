@@ -1,34 +1,34 @@
 defmodule Newbee.Tools.Edit do
   @moduledoc """
-  文本补丁工具（docs/edit-design.md）：快照标签+行范围+最终内容。
+  Text patches (docs/edit-design.md): snapshot tag + line range + final content.
 
       [path#tag]
-      PUT N..M:      用 + 正文替换原快照 N..M 行（含端点）
-      PUT <N:        在第 N 行前插入
-      PUT >N:        在第 N 行后插入
-      CUT N..M       删除 N..M 行
+      PUT N..M:      replace snapshot lines N..M (inclusive) with + body
+      PUT <N:        insert before line N
+      PUT >N:        insert after line N
+      CUT N..M       delete lines N..M
 
-  行号全部指向原快照；stale/越界/未读/重叠/no-op 一律拒绝；
-  多节全部预检通过才落盘（逻辑原子）。
+  Line numbers always point at the original snapshot; stale/out-of-bounds/unseen/overlap/no-op edits are all rejected;
+  multi-section patches land on disk only after every section pre-checks (logically atomic).
 
-  生成含插值、sigil 或 heredoc 的 Elixir 源码时，先用 `source_literal/1` 包装目标文本。
+  When generating Elixir source with interpolation, sigils, or heredocs, wrap the target text with `source_literal/1` first.
 
-  ## 函数清单
-  - `show(path, range \\\\ :all) :: %{tag: String.t(), text: String.t(), lines: non_neg_integer()}` — 读取全文或 `{first, last}` 范围并记录快照；默认参数使 `show/1` 与 `show/2` 都可调用。
-  - `patch(patch_text) :: %{status: :applied, files: [map()], warnings: list()}` — 应用 `[path#tag]` 行号补丁；解析失败抛 `ParseError`，预检拒绝抛带 `category` 的 `RejectError`。
-  - `source_literal(text) :: String.t()` — 把任意文本包装成安全 Elixir 字符串表达式，避免二阶插值和 heredoc/sigil 分隔符冲突。
+  ## Functions
+  - `show(path, range \\\\ :all) :: %{tag: String.t(), text: String.t(), lines: non_neg_integer()}` — read the whole file or a `{first, last}` range and record a snapshot; defaults make both `show/1` and `show/2` callable.
+  - `patch(patch_text) :: %{status: :applied, files: [map()], warnings: list()}` — apply a `[path#tag]` line patch; parse failures raise `ParseError`, pre-check rejections raise `RejectError` with a `category`.
+  - `source_literal(text) :: String.t()` — wrap any text as a safe Elixir literal, dodging second-order interpolation and heredoc/sigil delimiter clashes.
 
-  ## 可跑示例
+  ## Runnable example
       snapshot = Newbee.Tools.Edit.show("README.md", {1, 20})
       snapshot = Newbee.Tools.Edit.show("README.md", [1, 20])
         snapshot = Newbee.Tools.Edit.show("README.md", 1..20)
         snapshot = Newbee.Tools.Edit.show("README.md", %{first: 1, last: 20})
         snapshot = Newbee.Tools.Edit.show(%{path: "README.md", range: {1, 20}})
-      # patch_text 的节头使用 snapshot.tag；PUT/CUT 行号来自 snapshot.text
+      # section headers use snapshot.tag; PUT/CUT line numbers come from snapshot.text
       result = Newbee.Tools.Edit.patch(patch_text)
         result = Newbee.Tools.Edit.patch(%{patch: patch_text})
       literal = Newbee.Tools.Edit.source_literal(source_code)
-    # 结构化入口：edits 列表 / 单操作简写 / 键名宽容
+    # structured entry: edit lists / single-op shorthand / tolerant keys
     result = Newbee.Tools.Edit.patch(%{
       path: "lib/demo.ex",
       tag: snapshot.tag,
@@ -38,9 +38,9 @@ defmodule Newbee.Tools.Edit do
         %{op: :delete, range: [30, 31]}
       ]
     })
-    # 单操作简写（op/from/to/text；path/file；tag/snapshot/ops/changes 均兼容）
+    # single-op shorthand (op/from/to/text; path/file; tag/snapshot/ops/changes all map)
     result = Newbee.Tools.Edit.patch(%{file: "lib/demo.ex", snapshot: snapshot.tag, op: "replace", from: 2, to: 2, text: "B"})
-    # Base64 宽松入口
+    # lenient Base64 entry
     base64 = Base.encode64(patch_text)
     result = Newbee.Tools.Edit.patch(%{base64: base64})
   """
@@ -49,7 +49,7 @@ defmodule Newbee.Tools.Edit do
 
   @source_delimiters [{"/", "/"}, {"|", "|"}, {"'", "'"}, {"\"", "\""}, {"(", ")"}, {"[", "]"}, {"{", "}"}, {"<", ">"}]
 
-  @doc "把任意文本包装成可直接拼入 run_elixir 的安全 Elixir 字符串表达式。"
+  @doc "Wrap any text as a safe Elixir literal for splicing straight into run_elixir."
   def source_literal(text) when is_binary(text) do
     case Enum.find(@source_delimiters, fn {open, close} ->
            not String.contains?(text, open) and not String.contains?(text, close)
@@ -72,16 +72,16 @@ defmodule Newbee.Tools.Edit do
   # ── 结构化输入归一 ──
 
   @doc """
-  结构化补丁入口。除文本 DSL 外，还接受：
-    %{path: p, tag: t, edits: [...]}       单文件、edits 列表
-    %{file: p, snapshot: t, ops: [...]}    键名宽容
-    %{path: p, tag: t, op: :replace, from: a, to: b, text: body}   单操作简写
-    %{path: p, tag: t, delete: [a, b]}     删除简写
-    %{path: p, tag: t, before: n, text: body}  前插简写
-    %{path: p, tag: t, after: n, text: body}   后插简写
-    [%{path: p1, ...}, %{path: p2, ...}]   多文件
-    %{files: [...]}                        多文件包
-  同一路径且 tag 相同时自动合并 edits；同一路径 tag 不同返回冲突。
+  Structured patch entry. Besides the text DSL, also takes:
+    %{path: p, tag: t, edits: [...]}       one file, edit list
+    %{file: p, snapshot: t, ops: [...]}    tolerant keys
+    %{path: p, tag: t, op: :replace, from: a, to: b, text: body}   single-op shorthand
+    %{path: p, tag: t, delete: [a, b]}     delete shorthand
+    %{path: p, tag: t, before: n, text: body}  insert-before shorthand
+    %{path: p, tag: t, after: n, text: body}   insert-after shorthand
+    [%{path: p1, ...}, %{path: p2, ...}]   multi-file
+    %{files: [...]}                        multi-file pack
+  Edits on the same path with the same tag auto-merge; same path with different tags is a conflict.
   """
 
   def patch(%{base64: b}) when is_binary(b), do: patch_base64_decoded(b)
@@ -192,10 +192,10 @@ defmodule Newbee.Tools.Edit do
 
     cond do
       is_nil(path) ->
-        raise ParseError, message: "结构化补丁缺少 path/file"
+        raise ParseError, message: "structured patch is missing path/file"
 
       is_nil(tag) ->
-        raise ParseError, message: "结构化补丁缺少 tag/snapshot"
+        raise ParseError, message: "structured patch is missing tag/snapshot"
 
       fetch_key(map, [:edits, :ops, :changes]) || fetch_key(map, ["edits", "ops", "changes"]) ->
         edits = fetch_key(map, [:edits, :ops, :changes]) || fetch_key(map, ["edits", "ops", "changes"])
@@ -245,7 +245,7 @@ defmodule Newbee.Tools.Edit do
         }
 
       true ->
-        raise ParseError, message: "无法识别的结构化编辑（需要 op/delete/before/after）"
+        raise ParseError, message: "unrecognized structured edit (needs op/delete/before/after)"
     end
   end
 
@@ -253,7 +253,7 @@ defmodule Newbee.Tools.Edit do
   defp normalize_op_name(op) when op in [:delete, :cut, :remove, "delete", "cut", "remove"], do: :delete
   defp normalize_op_name(op) when op in [:insert_before, :before, "insert_before", "before"], do: :insert_before
   defp normalize_op_name(op) when op in [:insert_after, :after, "insert_after", "after"], do: :insert_after
-  defp normalize_op_name(other), do: raise(ParseError, message: "未知操作: #{inspect(other)}")
+  defp normalize_op_name(other), do: raise(ParseError, message: "unknown op: #{inspect(other)}")
 
   defp normalize_edit_range(opts, fallback \\ nil) do
     range =
@@ -312,10 +312,10 @@ defmodule Newbee.Tools.Edit do
       uniq = vals |> Enum.map(fn {_k, v} -> v end) |> Enum.uniq()
 
       if length(vals) > 1 and length(uniq) > 1 do
-        names = vals |> Enum.map(fn {k, _v} -> inspect(k) end) |> Enum.join(" 和 ")
+        names = vals |> Enum.map(fn {k, _v} -> inspect(k) end) |> Enum.join(" and ")
 
         raise ParseError,
-          message: "#{names} 的值不一致，存在歧义，请只保留其中一个",
+          message: "#{names} disagree, ambiguous — keep only one",
           code: :ambiguous_parameter
       end
     end)
@@ -358,7 +358,7 @@ defmodule Newbee.Tools.Edit do
         {:insert_after, %{at: n, body: lines}}
 
       {op, _} ->
-        raise ParseError, message: "操作 #{op} 的 range 不合法: #{inspect(raw_range)}，插入必须单行"
+        raise ParseError, message: "op #{op} has a bad range: #{inspect(raw_range)}; inserts must be single-line"
     end
   end
 
@@ -366,10 +366,10 @@ defmodule Newbee.Tools.Edit do
   defp content_lines(""), do: nil
   defp content_lines(body), do: String.split(body, "\n")
 
-  defp require_body!(op, nil), do: raise(ParseError, message: "操作 #{inspect(op)} 缺少正文 text/content")
+  defp require_body!(op, nil), do: raise(ParseError, message: "op #{inspect(op)} is missing its text/content body")
   defp require_body!(_op, _body), do: :ok
 
-  @doc "读取文件并记录快照，返回 %{tag, text, lines, path}（path 可直接用于 patch %{snapshot: shown}）。range 宽容：:all | {a,b} | [a,b] | a..b | %{from: a, to: b} | \"a..b\" | a；无法识别的 range 抛 ParseError(code: :invalid_range)。"
+  @doc "Read a file and record a snapshot; returns %{tag, text, lines, path} (path feeds patch %{snapshot: shown} directly). Tolerant range: :all | {a,b} | [a,b] | a..b | %{from: a, to: b} | \"a..b\" | a; unknown ranges raise ParseError(code: :invalid_range)."
   def show(path, range \\ :all)
 
   def show(%{path: p} = opts, _range) when is_binary(p) do
@@ -429,7 +429,7 @@ defmodule Newbee.Tools.Edit do
 
       true ->
         raise ParseError,
-          message: "无法识别的 range 字符串: #{inspect(t)}（支持 a..b | a-b | a,b | a | all）",
+          message: "unrecognized range text: #{inspect(t)} (takes a..b | a-b | a,b | a | all)",
           code: :invalid_range
     end
   end
@@ -442,14 +442,14 @@ defmodule Newbee.Tools.Edit do
       {f, l}
     else
       raise ParseError,
-        message: "无法识别的 range 列表: #{inspect(other)}（需要 [a, b] 或 [a] 或 keyword first/last）",
+        message: "unrecognized range list: #{inspect(other)} (needs [a, b], [a], or first/last keywords)",
         code: :invalid_range
     end
   end
 
   defp normalize_show_range(other) do
     raise ParseError,
-      message: "无法识别的 range: #{inspect(other)}（支持 :all | {a,b} | [a,b] | a..b | %{from: a, to: b} | \"a..b\" | 整数）",
+      message: "unrecognized range: #{inspect(other)} (takes :all | {a,b} | [a,b] | a..b | %{from: a, to: b} | \"a..b\" | integer)",
       code: :invalid_range
   end
 
@@ -473,7 +473,7 @@ defmodule Newbee.Tools.Edit do
   defp parse(text) do
     {sections, cur} = Enum.reduce(String.split(text, "\n"), {[], nil}, &parse_line/2)
     sections = if cur, do: sections ++ [cur], else: sections
-    if sections == [], do: raise(ParseError, message: "空补丁")
+    if sections == [], do: raise(ParseError, message: "empty patch")
     sections
   end
 
@@ -481,7 +481,7 @@ defmodule Newbee.Tools.Edit do
     case String.trim(line) do
       "" -> {sections, nil}
       "[" <> _ = h -> {sections, parse_header(h)}
-      _ -> raise ParseError, message: "补丁必须以 [path#tag] 节头开始"
+      _ -> raise ParseError, message: "patch must start with a [path#tag] section"
     end
   end
 
@@ -501,14 +501,14 @@ defmodule Newbee.Tools.Edit do
         {sections ++ [cur], parse_header(String.trim(line))}
 
       true ->
-        raise ParseError, message: "无法识别的行（正文必须以 + 开头）: #{String.trim(line)}"
+        raise ParseError, message: "unrecognized line (body must start with +): #{String.trim(line)}"
     end
   end
 
   defp parse_header(h) do
     case Regex.run(~r/^\[(.+)#([0-9a-f]{12})\]\s*$/, h) do
       [_, path, tag] -> %{path: String.trim(path), tag: tag, ops: []}
-      _ -> raise ParseError, message: "节头格式错误: #{String.trim(h)}（应为 [path#12位tag]）"
+      _ -> raise ParseError, message: "bad section header: #{String.trim(h)} (want [path#12-char-tag])"
     end
   end
 
@@ -518,7 +518,7 @@ defmodule Newbee.Tools.Edit do
         %{cur | ops: Enum.reverse([{op, Map.update(m, :body, [content], &(&1 ++ [content]))} | rest])}
 
       _ ->
-        raise ParseError, message: "正文行必须紧跟带 : 的 PUT/插入头"
+        raise ParseError, message: "body lines must directly follow a PUT/insert header ending in :"
     end
   end
 
@@ -546,7 +546,7 @@ defmodule Newbee.Tools.Edit do
     case Regex.run(@range_re, s) do
       [_, a] -> {String.to_integer(a), String.to_integer(a)}
       [_, a, b] -> {String.to_integer(a), String.to_integer(b)}
-      nil -> raise ParseError, message: "范围格式错误: #{s}（应为 N 或 N..M）"
+      nil -> raise ParseError, message: "bad range: #{s} (want N or N..M)"
     end
   end
 
@@ -555,13 +555,13 @@ defmodule Newbee.Tools.Edit do
   defp plan_section(%{path: path, tag: tag, ops: ops}) do
     snap =
       SnapshotStore.fetch(path, tag) ||
-        raise RejectError, message: "未知快照标签 #{tag}（请先 show）", category: :unknown_snapshot
+        raise RejectError, message: "unknown snapshot tag #{tag} (show first)", category: :unknown_snapshot
 
     current = File.read!(path)
 
     if current != snap.text do
       raise RejectError,
-        message: "文件已变化（stale）：#{path} 与快照 #{tag} 不一致，未写入。请重新 show 后基于新标签提交",
+        message: "file changed under you (stale): #{path} no longer matches snapshot #{tag}; nothing written. Re-show and resubmit on the new tag",
         category: :stale_conflict
     end
 
@@ -599,7 +599,7 @@ defmodule Newbee.Tools.Edit do
         end
 
       if lo < 1 or lo > hi or hi > total do
-        raise RejectError, message: "行号越界: #{lo}..#{hi}（快照共 #{total} 行）", category: :out_of_bounds
+        raise RejectError, message: "line out of bounds: #{lo}..#{hi} (snapshot has #{total} lines)", category: :out_of_bounds
       end
     end)
   end
@@ -620,7 +620,7 @@ defmodule Newbee.Tools.Edit do
 
         if unseen != [] do
           raise RejectError,
-            message: "行未读取: #{Enum.take(unseen, 5) |> Enum.join(",")}（请先 show 对应范围）",
+            message: "lines not yet read: #{Enum.take(unseen, 5) |> Enum.join(",")} (show that range first)",
             category: :unseen_range
         end
       end)
@@ -634,7 +634,7 @@ defmodule Newbee.Tools.Edit do
     |> Enum.sort()
     |> Enum.reduce({nil, nil}, fn {a, b}, {pa, pb} ->
       if pa != nil and a <= pb do
-        raise RejectError, message: "范围重叠: #{pa}..#{pb} 与 #{a}..#{b}", category: :overlap
+        raise RejectError, message: "overlapping ranges: #{pa}..#{pb} vs #{a}..#{b}", category: :overlap
       end
 
       {a, b}
@@ -648,7 +648,7 @@ defmodule Newbee.Tools.Edit do
 
     if length(paths) != length(Enum.uniq(paths)) do
       raise RejectError,
-        message: "补丁不能重复修改同一路径；请合并为一个节",
+        message: "one patch may not touch the same path twice; merge into one section",
         category: :duplicate_path
     end
   end
@@ -694,12 +694,12 @@ defmodule Newbee.Tools.Edit do
            end) do
         {:error, failed_path, :concurrent_change} ->
           raise RejectError,
-            message: "文件在写入前已被并发修改：#{failed_path}，未写入。请重新 show 后重试",
+            message: "file concurrently modified before write: #{failed_path}; nothing written. Re-show and retry",
             category: :concurrent_change
 
         {:error, failed_path, reason} ->
           raise RejectError,
-            message: "无法原子替换 #{failed_path}: #{inspect(reason)}",
+            message: "cannot atomically replace #{failed_path}: #{inspect(reason)}",
             category: :edit_write_failed
 
         _moved ->
@@ -744,7 +744,7 @@ defmodule Newbee.Tools.Edit do
 
   defp check_no_op!(plan) do
     if plan.new_content == File.read!(plan.path) do
-      raise RejectError, message: "no-op：补丁结果与当前内容一致", category: :no_op
+      raise RejectError, message: "no-op: patched result matches current content", category: :no_op
     end
   end
 

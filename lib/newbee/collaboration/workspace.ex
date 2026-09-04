@@ -46,7 +46,7 @@ defmodule Newbee.Collaboration.Workspace do
     end
   end
 
-  def prepare(_, _, _), do: {:error, "bad_request", "工作区参数无效"}
+  def prepare(_, _, _), do: {:error, "bad_request", "invalid workspace args"}
 
   def review(task) when is_map(task) do
     with :ok <- terminal_task(task),
@@ -71,7 +71,7 @@ defmodule Newbee.Collaboration.Workspace do
     end
   end
 
-  def apply(_, _), do: {:error, "bad_request", "需要任务和审查版本"}
+  def apply(_, _), do: {:error, "bad_request", "need a task plus a reviewed revision"}
 
   def reject(task) when is_map(task) do
     with :ok <- terminal_task(task),
@@ -132,7 +132,7 @@ defmodule Newbee.Collaboration.Workspace do
     with :ok <- validate_workspace(workspace), do: {:ok, workspace}
   end
 
-  defp cleanup_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
+  defp cleanup_workspace(_), do: {:error, "workspace_invalid", "isolated workspace metadata is invalid"}
 
   defp task_workspace(%{"workspace" => workspace}) when is_map(workspace) do
     with :ok <- reviewable(workspace),
@@ -141,12 +141,12 @@ defmodule Newbee.Collaboration.Workspace do
     end
   end
 
-  defp task_workspace(_), do: {:error, "workspace_missing", "任务没有可审查的隔离工作区"}
+  defp task_workspace(_), do: {:error, "workspace_missing", "task has no reviewable isolated workspace"}
 
-  defp reviewable(%{"kind" => "shared"}), do: {:error, "not_reviewable", "该子代理使用共享目录，没有独立变更可审查"}
-  defp reviewable(%{"review_status" => "cleaned"}), do: {:error, "workspace_cleaned", "隔离工作区已清理"}
+  defp reviewable(%{"kind" => "shared"}), do: {:error, "not_reviewable", "that subagent shares a directory; no standalone diff to review"}
+  defp reviewable(%{"review_status" => "cleaned"}), do: {:error, "workspace_cleaned", "isolated workspace already cleaned"}
   defp reviewable(%{"kind" => kind}) when kind in ["filesystem_copy", "git_worktree"], do: :ok
-  defp reviewable(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
+  defp reviewable(_), do: {:error, "workspace_invalid", "isolated workspace metadata is invalid"}
 
   defp validate_workspace(%{"kind" => kind, "root" => root, "path" => path})
        when kind in ["filesystem_copy", "git_worktree"] and is_binary(root) and is_binary(path) do
@@ -156,17 +156,17 @@ defmodule Newbee.Collaboration.Workspace do
   defp validate_workspace(%{"kind" => "shared", "root" => root, "path" => path}) when is_binary(root) and root == path,
     do: :ok
 
-  defp validate_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
+  defp validate_workspace(_), do: {:error, "workspace_invalid", "isolated workspace metadata is invalid"}
 
   defp terminal_task(%{"status" => status}) when status in ["succeeded", "failed", "cancelled"], do: :ok
-  defp terminal_task(_), do: {:error, "task_not_terminal", "任务结束后才能审查变更"}
+  defp terminal_task(_), do: {:error, "task_not_terminal", "changes are reviewable only after the task ends"}
 
   defp require_review_state(workspace, expected) when is_binary(expected) do
-    if workspace["review_status"] == expected, do: :ok, else: {:error, "invalid_workspace_state", "当前工作区状态不允许此操作"}
+    if workspace["review_status"] == expected, do: :ok, else: {:error, "invalid_workspace_state", "workspace state forbids this op"}
   end
 
   defp require_review_state(workspace, allowed) when is_list(allowed) do
-    if workspace["review_status"] in allowed, do: :ok, else: {:error, "invalid_workspace_state", "当前工作区状态不允许清理"}
+    if workspace["review_status"] in allowed, do: :ok, else: {:error, "invalid_workspace_state", "workspace state forbids cleanup"}
   end
 
   defp build_patch(workspace) do
@@ -197,20 +197,20 @@ defmodule Newbee.Collaboration.Workspace do
       {:ok, binary} ->
         try do
           snapshot = :erlang.binary_to_term(binary, [:safe])
-          if is_map(snapshot), do: {:ok, snapshot}, else: {:error, "workspace_snapshot_invalid", "基线快照格式无效"}
+          if is_map(snapshot), do: {:ok, snapshot}, else: {:error, "workspace_snapshot_invalid", "baseline snapshot has a bad shape"}
         rescue
-          _ -> {:error, "workspace_snapshot_invalid", "基线快照格式无效"}
+          _ -> {:error, "workspace_snapshot_invalid", "baseline snapshot has a bad shape"}
         end
 
       {:error, :enoent} ->
-        {:error, "workspace_snapshot_missing", "工作区缺少基线快照"}
+        {:error, "workspace_snapshot_missing", "workspace lacks a baseline snapshot"}
 
       {:error, reason} ->
         {:error, "workspace_snapshot_failed", inspect(reason)}
     end
   end
 
-  defp snapshot_from_workspace(_), do: {:error, "workspace_snapshot_missing", "工作区缺少基线快照"}
+  defp snapshot_from_workspace(_), do: {:error, "workspace_snapshot_missing", "workspace lacks a baseline snapshot"}
 
   defp write_base_snapshot(path, snapshot) do
     sidecar = base_snapshot_path(path)
@@ -323,7 +323,7 @@ defmodule Newbee.Collaboration.Workspace do
 
       if allowed?,
         do: {:cont, :ok},
-        else: {:halt, {:error, "workspace_conflict", "父工作区已修改 " <> path}}
+        else: {:halt, {:error, "workspace_conflict", "parent workspace touched " <> path}}
     end)
   end
 
@@ -339,7 +339,7 @@ defmodule Newbee.Collaboration.Workspace do
     case File.rm(path) do
       :ok -> :ok
       {:error, :enoent} -> :ok
-      {:error, reason} -> {:error, "workspace_apply_failed", "无法删除 " <> rel <> ": " <> inspect(reason)}
+      {:error, reason} -> {:error, "workspace_apply_failed", "cannot delete " <> rel <> ": " <> inspect(reason)}
     end
   end
 
@@ -351,7 +351,7 @@ defmodule Newbee.Collaboration.Workspace do
          :ok <- File.cp(source, target) do
       :ok
     else
-      {:error, reason} -> {:error, "workspace_apply_failed", "无法应用 " <> rel <> ": " <> inspect(reason)}
+      {:error, reason} -> {:error, "workspace_apply_failed", "cannot apply " <> rel <> ": " <> inspect(reason)}
       other -> other
     end
   end

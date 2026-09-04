@@ -90,7 +90,7 @@ defmodule Newbee.Agent.LoopEventsTest do
     assert details.role == "system"
     assert details.timing == "current_turn_retry"
     assert details.trigger == "结果 AUDIT_TRIGGER"
-    assert details.content =~ "[沉睡规则注入]"
+    assert details.content =~ "[Sleeping-rule hit]"
     assert details.content =~ "请改写输出"
     assert [%{id: "test-prompt-audit", pattern: "AUDIT_TRIGGER"}] = details.rules
 

@@ -1,21 +1,21 @@
 defmodule Newbee.Tools.Git do
   @moduledoc """
-  Git 结构化操作工具；优先于手写 `Run.sh("git ...")`。
+  Structured Git operations; prefer over hand-written `Run.sh("git ...")`.
 
-  ## 函数清单
-  - `status(dir \\\\ ".")` — `git status --short`，返回 `{:ok, output} | {:error, {code, output}}`。
-  - `diff(dir \\\\ ".")` — `git diff --stat`。
-  - `diff_full(dir \\\\ ".")` — `git diff` 全量。
-  - `log(dir \\\\ ".", n \\\\ 10)` — `git log --oneline -n`。
-  - `add_all(dir \\\\ ".")` — `git add -A`。
-  - `commit(dir \\\\ ".", msg)` — `git -c user.email=newbee@local -c user.name=newbee commit -m msg`。
-  - `rollback(dir \\\\ ".")` — 回滚工作区到 `HEAD`（`checkout -- .` + `clean -fd lib/ test/`），宽松沙箱的撤销键（§8）。
-  - `worktree_add(path, ref \\\\ "HEAD")` — 为子代理开独立 worktree。
-  - `worktree_remove(path)` — 移除 worktree（`--force`）。
+  ## Functions
+  - `status(dir \\\\ ".")` — `git status --short`; `{:ok, output} | {:error, {code, output}}`.
+  - `diff(dir \\\\ ".")` — `git diff --stat`.
+  - `diff_full(dir \\\\ ".")` — full `git diff`.
+  - `log(dir \\\\ ".", n \\\\ 10)` — last n `git log --oneline`.
+  - `add_all(dir \\\\ ".")` — `git add -A`.
+  - `commit(dir \\\\ ".", msg)` — `git -c user.email=newbee@local -c user.name=newbee commit -m msg`.
+  - `rollback(dir \\\\ ".")` — roll the workspace back to `HEAD` (`checkout -- .` + `clean -fd lib/ test/`); the undo key of the lenient sandbox.
+  - `worktree_add(path, ref \\\\ "HEAD")` — open an isolated worktree for a subagent.
+  - `worktree_remove(path)` — remove a worktree (`--force`).
 
-  内部 `run/2` 统一经 `System.cmd("git", ["-C", dir | args])`，失败返回 `{:error, {code, output}}`。
+  `run/2` funnels everything through `System.cmd("git", ["-C", dir | args])`, failing as `{:error, {code, output}}`.
 
-  ## 可跑示例
+  ## Runnable example
       {:ok, out} = Newbee.Tools.Git.status()
       {:ok, stat} = Newbee.Tools.Git.diff()
       {:ok, full} = Newbee.Tools.Git.diff_full()
@@ -27,42 +27,42 @@ defmodule Newbee.Tools.Git do
       {:ok, _} = Newbee.Tools.Git.worktree_remove("/tmp/repo-wt")
       {:ok, _} = Newbee.Tools.Git.rollback("/tmp/disposable-repo")
 
-  `commit`、`rollback` 和 worktree 示例会改变仓库，只能用于明确选定的临时/隔离仓库；检查类函数可直接在当前工程调用。
+  `commit`, `rollback`, and the worktree examples mutate repos — use only on explicitly chosen temp/isolated repos; read-only fns are safe on the current project.
 
   """
 
-  @doc "返回 git status --short：{:ok, output} | {:error, {code, output}}。"
+  @doc "git status --short: {:ok, output} | {:error, {code, output}}."
   def status(dir \\ "."), do: run(dir, ["status", "--short"])
-  @doc "返回 git diff --stat。"
+  @doc "git diff --stat."
   def diff(dir \\ "."), do: run(dir, ["diff", "--stat"])
-  @doc "返回完整 git diff。"
+  @doc "Full git diff."
   def diff_full(dir \\ "."), do: run(dir, ["diff"])
-  @doc "返回最近 n 条 git log --oneline。"
+  @doc "Last n git log --oneline entries."
   def log(dir \\ ".", n \\ 10), do: run(dir, ["log", "--oneline", "-#{n}"])
 
-  @doc "执行 git add -A；会修改索引。"
+  @doc "Run git add -A; mutates the index."
   def add_all(dir \\ "."), do: run(dir, ["add", "-A"])
 
-  @doc "提交已暂存改动；commit(msg) 使用当前目录，commit(dir, msg) 使用指定仓库。"
+  @doc "Commit staged changes; commit(msg) uses the current dir, commit(dir, msg) targets a repo."
   def commit(dir \\ ".", msg),
     do: run(dir, ["-c", "user.email=newbee@local", "-c", "user.name=newbee", "commit", "-m", msg])
 
-  @doc "回滚工作区到 HEAD（宽松沙箱的撤销键，§8）。"
+  @doc "Roll the workspace back to HEAD (the lenient sandbox's undo key)."
   def rollback(dir \\ ".") do
     run(dir, ["checkout", "--", "."])
     run(dir, ["clean", "-fd", "lib/", "test/"])
   end
 
-  @doc "worktree 隔离：为子代理开独立工作树（默认在当前仓库根，ref 默认 HEAD）。"
+  @doc "Worktree isolation: open a detached worktree for a subagent (root defaults to the current repo, ref to HEAD)."
   def worktree_add(path, ref \\ "HEAD"), do: worktree_add(".", path, ref)
 
-  @doc "worktree_add/3：在指定根仓库 root 下开独立工作树。"
+  @doc "worktree_add/3: open a detached worktree under the root repo."
   def worktree_add(root, path, ref), do: run(root, ["worktree", "add", path, ref])
 
-  @doc "强制移除指定 Git worktree（默认当前仓库根）。"
+  @doc "Force-remove a Git worktree (root defaults to the current repo)."
   def worktree_remove(path), do: worktree_remove(".", path)
 
-  @doc "worktree_remove/2：在指定根仓库 root 下强制移除 worktree。"
+  @doc "worktree_remove/2: force-remove a worktree under the root repo."
   def worktree_remove(root, path), do: run(root, ["worktree", "remove", "--force", path])
 
   defp run(dir, args) do

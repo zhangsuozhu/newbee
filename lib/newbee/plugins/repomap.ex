@@ -1,28 +1,27 @@
 defmodule Newbee.Plugins.RepoMap do
   @moduledoc """
-  工程结构图：紧凑模块签名/文件树，定位后精读目标。
+  Project map: compact signatures / file tree — locate, then read targets.
 
-  按引用图重要性排序：统计模块间静态引用（含 alias 展开）；
-  被引用多的模块给全签名（Tier1），其余收进单行索引（Tier2），输出确定。
-  非 Elixir 工程退化为目录树。
+  Ranked by reference-graph importance: counts static inter-module references (alias-expanded);
+  heavily referenced modules get full signatures (Tier1), the rest collapse into one-line index entries (Tier2).
+  Deterministic output. Non-Elixir projects degrade to a directory tree.
 
-  ## 函数清单
-  - `build(root \\\\ ".", opts \\\\ []) :: String.t()` — 构建工程结构图（紧凑字符串）。非 Elixir 工程退化为目录树。
-    选项：`:tier1_max_bytes` —— Tier1 区字节预算（默认 14_000）。
-    选项：`:format` —— `:full`（默认，核心模块全签名加全部模块索引）；
-      `:slim` 基础档——每个模块一行（名字加一句话说明加路径），不列函数签名，
-      说明截 30 字符，供按需加载场景首次定位用。
+  ## Functions
+  - `build(root \\\\ ".", opts \\\\ []) :: String.t()` — build the project map (compact text). Non-Elixir projects degrade to a directory tree.
+    Options: `:tier1_max_bytes` — Tier1 byte budget (default 14_000).
+    Options: `:format` — `:full` (default: full signatures for core modules plus index of all modules);
+      `:slim` starter pack — one line per module (name + one-line summary + path), no function signatures,
+      summaries cut at 30 chars, for first-pass locating in on-demand loading.
 
-  增量缓存（§3.6）：以 mix.exs + lib 全部文件的 mtime 指纹为 key，
-  工程未变更时直接复用缓存，不重复 AST 解析。
+  Incremental cache: keyed on an mtime fingerprint of mix.exs + every file under lib;
+  unchanged projects reuse the cache, no repeat AST parsing.
 
-  ## 可跑示例
+  ## Runnable example
       Newbee.Plugins.RepoMap.build(".")
       Newbee.Plugins.RepoMap.build(".", tier1_max_bytes: 8_000)
       Newbee.Plugins.RepoMap.build(".", format: :slim)
 
   """
-
   # 无论多大预算，Top-8 必给全签名
   @tier1_min 8
   # Tier1 区默认字节预算（预算内贪心装填）
@@ -35,14 +34,13 @@ defmodule Newbee.Plugins.RepoMap do
   @cache_dir Path.join(System.user_home!(), ".newbee/cache")
 
   @doc """
-  构建工程结构图（紧凑字符串）。非 Elixir 工程退化为目录树。
+  Build the project map (compact text). Non-Elixir projects degrade to a directory tree.
 
-  选项：
-    - :tier1_max_bytes —— Tier1 区字节预算（默认 14_000），
-      小工程想强制双层展示可调小。
+  Options:
+    - :tier1_max_bytes — Tier1 byte budget (default 14_000); shrink to force two-tier display on small projects.
 
-  增量缓存（§3.6）：以 mix.exs + lib 全部文件的 mtime 指纹为 key，
-  工程未变更时直接复用缓存，不重复 AST 解析。缓存键含 format，两档互不串。
+  Incremental cache: keyed on an mtime fingerprint of mix.exs + every file under lib;
+  unchanged projects reuse the cache, no repeat AST parsing. Cache keys include format, so the two tiers never mix.
   """
   def build(dir \\ ".", opts \\ []) do
     key = "v2-" <> to_string(Keyword.get(opts, :format, :full)) <> "-" <> fingerprint(dir)
@@ -278,7 +276,7 @@ defmodule Newbee.Plugins.RepoMap do
 
         mods ->
           lines = Enum.map_join(mods, "\n", &render_index_line/1)
-          "\n其他模块:\n" <> lines
+          "\nOther modules:\n" <> lines
       end
 
     String.trim_trailing(part1 <> part2)

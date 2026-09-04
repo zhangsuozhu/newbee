@@ -38,7 +38,7 @@ defmodule Newbee.Agent.LoopGoalTest do
             fn messages, _o ->
               # 第 2 轮能看到第 1 轮后的自动继续消息
               assert Enum.any?(messages, fn m ->
-                       m["role"] == "system" and m["content"] =~ "自主模式第 1 轮"
+                       m["role"] == "system" and m["content"] =~ "autonomous round 1"
                      end)
 
               {:ok, text_msg("第二步：改代码"), %{}}
@@ -56,8 +56,8 @@ defmodule Newbee.Agent.LoopGoalTest do
     assert Loop.goal(kernel) == nil
 
     msgs = :sys.get_state(kernel).messages
-    assert Enum.any?(msgs, fn m -> m["role"] == "system" and m["content"] =~ "[自主目标模式]" end)
-    assert Enum.any?(msgs, fn m -> m["role"] == "user" and m["content"] =~ "自主目标模式启动" end)
+    assert Enum.any?(msgs, fn m -> m["role"] == "system" and m["content"] =~ "[Autonomous goal mode]" end)
+    assert Enum.any?(msgs, fn m -> m["role"] == "user" and m["content"] =~ "Autonomous goal mode started" end)
 
     GenServer.stop(kernel)
     GenServer.stop(ev)
@@ -208,7 +208,7 @@ defmodule Newbee.Agent.LoopGoalTest do
     assert_receive {:newbee_event, :goal_done, {:goal_done, "完"}}
 
     msgs = :sys.get_state(kernel).messages
-    assert Enum.any?(msgs, fn m -> m["role"] == "system" and m["content"] =~ "连续多轮没有调用工具" end)
+    assert Enum.any?(msgs, fn m -> m["role"] == "system" and m["content"] =~ "no tool calls for several rounds" end)
 
     GenServer.stop(kernel)
     GenServer.stop(ev)

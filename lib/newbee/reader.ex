@@ -1,32 +1,32 @@
 defmodule Newbee do
   @moduledoc """
-  统一寻址读取 (DESIGN §3.2)：`Newbee.read/1` 通吃文件、目录、URL 与内部 scheme。
-  只教模型一个接口。
+  Unified addressable read (DESIGN §3.2): `Newbee.read/1` handles files, directories, URLs, and internal schemes.
+  Teach the model exactly one interface.
 
-  scheme 一览:
-    - 裸路径        → 文件或目录
-    - `file://`     → 文件
-    - `tool://M`    → 模块文档（@moduledoc + 公开函数 @doc）
-    - `rules://[子串]` → 沉睡规则清单（空列全部，非空按id加pattern过滤；经Host回主节点）
-    - `memory://k`  → 全局记忆条目（空键列主题清单）
-    - `bindings://` → 求值器绑定摘要（经Host回主节点）
-    - `history://`  → 本会话压缩档案（索引 / `s/<段>` 摘要 / `s/<段>/raw` 原文 /
-                 `q/<关键词>` 全文检索 / `files` 文件清单）——被压缩的对话随时可拉回
-    - `events://`   → 事件日志（可选 ?n= 条数，钳制1..1000，默认200）
-    - `skill://n`   → 技能片段（~/.newbee/skills 或工程 .newbee/skills，点md后缀幂等，包trust信封）
-    - `agent://<id>/<path>` → 子代理结果按路径抠字段（缺段返回:path_not_found）
-    - `conflict://` → git 合并冲突清单；`conflict://<file>` 冲突块视图（坏块跳过不崩）
-    - `http(s)://`  → 网页（无凭证公开 GET，经 Newbee.Tools.Http；拦私网SSRF）
+  Scheme overview:
+    - bare path       → file or directory
+    - `file://`     → file
+    - `tool://M`    → module docs (@moduledoc + public @doc entries)
+    - `rules://[sub]` → sleeping-rule list (empty lists all, non-empty filters by id+pattern; routed to host)
+    - `memory://k`  → global memory entry (empty key lists topics)
+    - `bindings://` → evaluator binding digest (routed to host)
+    - `history://`  → this session's compacted archive (index / `s/<seg>` digest / `s/<seg>/raw` verbatim /
+                 `q/<keyword>` full-text search / `files` file list) — compacted dialogue stays retrievable
+    - `events://`   → event log (optional ?n= count, clamped 1..1000, default 200)
+    - `skill://n`   → skill snippet (~/.newbee/skills or project .newbee/skills, dot-md suffix idempotent, trust envelope)
+    - `agent://<id>/<path>` → subagent result field at path (missing segment returns :path_not_found)
+    - `conflict://` → git merge-conflict list; `conflict://<file>` conflict-hunk view (bad hunks skipped, never crashes)
+    - `http(s)://`  → web pages (credentialless public GET via Newbee.Tools.Http; private nets blocked against SSRF)
 
-  可发现性：`schemes/0` 返回机器可读清单，新协议必须登记加契约测试。
+  Discoverability: `schemes/0` returns a machine-readable list; new protocols must register plus carry contract tests.
+  """
+  @doc """
+  Unified read. Returns {:ok, content} | {:error, reason}.
 
-  @doc \"""
-  统一读取。返回 {:ok, content} | {:error, reason}。
-
-    - 目录 → 一层列表（目录名带 / 后缀）
-    - 文件 → 文本内容（≤512KB，超出截断并标注）
-    - URL → 网页文本
-    - 内部 scheme → 见 @moduledoc
+    - Directories → one-level listing (dir names take a / suffix)
+    - Files → text content (capped at 512KB, truncation marked)
+    - URLs → page text
+    - Internal schemes → see @moduledoc
   """
   def read(path) when is_binary(path) do
     cond do
@@ -125,18 +125,18 @@ defmodule Newbee do
   """
   def schemes do
     [
-      %{scheme: "bare", example: "mix.exs", reads: "文件或目录"},
-      %{scheme: "file://", example: "file://mix.exs", reads: "强制文件"},
-      %{scheme: "tool://", example: "tool://Newbee.Tools.Fs", reads: "模块文档与真实签名"},
-      %{scheme: "rules://", example: "rules://", reads: "沉睡规则清单，支持子串过滤"},
-      %{scheme: "memory://", example: "memory://topic", reads: "全局记忆，空键列主题"},
-      %{scheme: "bindings://", example: "bindings://", reads: "求值器绑定摘要"},
-      %{scheme: "history://", example: "history://", reads: "压缩档案索引段检索文件清单"},
-      %{scheme: "events://", example: "events://?n=50", reads: "事件日志，n钳制1..1000"},
-      %{scheme: "skill://", example: "skill://github_flow", reads: "技能片段，点md后缀幂等"},
-      %{scheme: "agent://", example: "agent://id/findings", reads: "子代理结构化结果"},
-      %{scheme: "conflict://", example: "conflict://", reads: "合并冲突清单块视图"},
-      %{scheme: "https://", example: "https://example.com", reads: "公开网页，拦私网"}
+      %{scheme: "bare", example: "mix.exs", reads: "file or directory"},
+      %{scheme: "file://", example: "file://mix.exs", reads: "force file"},
+      %{scheme: "tool://", example: "tool://Newbee.Tools.Fs", reads: "module docs with real signatures"},
+      %{scheme: "rules://", example: "rules://", reads: "sleeping-rule list, substring filter"},
+      %{scheme: "memory://", example: "memory://topic", reads: "global memory, empty key lists topics"},
+      %{scheme: "bindings://", example: "bindings://", reads: "evaluator binding digest"},
+      %{scheme: "history://", example: "history://", reads: "compacted archive index/segment search/file list"},
+      %{scheme: "events://", example: "events://?n=50", reads: "event log, n clamped 1..1000"},
+      %{scheme: "skill://", example: "skill://github_flow", reads: "skill snippet, dot-md suffix idempotent"},
+      %{scheme: "agent://", example: "agent://id/findings", reads: "subagent structured results"},
+      %{scheme: "conflict://", example: "conflict://", reads: "merge-conflict list/hunk views"},
+      %{scheme: "https://", example: "https://example.com", reads: "public pages, private nets blocked"},
     ]
   end
 
@@ -156,7 +156,7 @@ defmodule Newbee do
             {:ok, body} ->
               truncated =
                 binary_part(body, 0, 512 * 1024) <>
-                  "\n… [截断: #{byte_size(body)} bytes > 512KB，用 Fs 分段读取] …\n"
+                  "\n… [cut: #{byte_size(body)} bytes > 512KB, read in chunks via Fs] …\n"
 
               {:ok, Newbee.Trust.envelope(truncated, "file:" <> path) |> Newbee.Trust.render()}
 
@@ -232,13 +232,13 @@ defmodule Newbee do
         files = out |> String.split("\n", trim: true)
 
         if files == [] do
-          {:ok, "（当前无合并冲突）"}
+          {:ok, "(no merge conflicts right now)"}
         else
           {:ok, Enum.map_join(files, "\n", &"conflict://#{&1}")}
         end
 
       _ ->
-        {:ok, "（非 git 仓库或 git 不可用）"}
+        {:ok, "(not a git repo or git unavailable)"}
     end
   end
 
@@ -264,7 +264,7 @@ defmodule Newbee do
           end)
 
         if blocks == [] do
-          {:ok, "（" <> path <> " 无冲突块）"}
+          {:ok, "(" <> path <> " has no conflict hunks)"}
         else
           {:ok, Newbee.Trust.envelope(Enum.join(blocks, "\n"), "conflict:" <> path) |> Newbee.Trust.render()}
         end
@@ -287,11 +287,9 @@ defmodule Newbee do
 
     case rules do
       :unavailable ->
-        {:ok, "（规则服务未启动）"}
-
+        {:ok, "(rule service not started)"}
       [] ->
-        {:ok, "（无沉睡规则）"}
-
+        {:ok, "(no sleeping rules)"}
       list when is_list(list) ->
         filtered =
           if query == "" do
@@ -305,7 +303,7 @@ defmodule Newbee do
           end
 
         if filtered == [] do
-          {:ok, "（无命中规则：" <> query <> "；用rules看全部）"}
+          {:ok, "(no matching rules: " <> query <> "; read all via rules)"}
         else
           {:ok,
            Enum.map_join(filtered, "\n", fn r ->
@@ -314,14 +312,14 @@ defmodule Newbee do
         end
 
       _ ->
-        {:ok, "（规则服务未启动）"}
+        {:ok, "(rule service not started)"}
     end
   end
 
   defp read_memory("") do
     case Newbee.Memory.topics() do
-      [] -> {:ok, "（暂无记忆主题）"}
-      topics -> {:ok, "记忆主题（用memory加主题名拉取）：\n" <> Enum.map_join(topics, "\n", fn t -> "  - memory://" <> t end)}
+      [] -> {:ok, "(no memory topics yet)"}
+      topics -> {:ok, "Memory topics (read one via memory://<name>):\n" <> Enum.map_join(topics, "\n", fn t -> "  - memory://" <> t end)}
     end
   end
 
@@ -345,10 +343,10 @@ defmodule Newbee do
 
     cond do
       summary == :unavailable ->
-        {:ok, "（求值器未启动）"}
+        {:ok, "(evaluator not started)"}
 
       summary == [] ->
-        {:ok, "（空）"}
+        {:ok, "(empty)"}
 
       is_list(summary) ->
         {:ok,
@@ -357,7 +355,7 @@ defmodule Newbee do
          end)}
 
       true ->
-        {:ok, "（求值器未启动）"}
+        {:ok, "(evaluator not started)"}
     end
   end
 
@@ -506,7 +504,7 @@ defmodule Newbee do
           "  - `#{signature}` — " <> String.slice(first_paragraph(doc_text(doc)), 0, 500)
         end)
 
-      {:ok, "## #{module_name}\n" <> moduledoc <> "\n\n## 真实函数签名\n" <> funcs}
+      {:ok, "## #{module_name}\n" <> moduledoc <> "\n\n## Real function signatures\n" <> funcs}
     else
       {:error, :module_not_loaded}
     end
@@ -518,7 +516,7 @@ defmodule Newbee do
   # 避免同一 API 在模型上下文中出现两遍。源码和 ExDoc 仍保留完整清单。
   defp module_tool_doc(doc) do
     doc
-    |> String.replace(~r/\n\s*## 函数清单.*?(?=\n\s*## |\z)/s, "")
+    |> String.replace(~r/\n\s*## (函数清单|Functions).*?(?=\n\s*## |\z)/s, "")
     |> String.trim()
   end
 

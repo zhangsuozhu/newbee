@@ -18,10 +18,10 @@ defmodule Newbee.Tools.ToolDocumentationContractTest do
       refute section =~ stale
     end
 
-    assert section =~ "通用只读优先"
-    assert section =~ "简单 GET"
-    assert section =~ "有高层工具时优先高层工具"
-    assert section =~ "编译/测试用 `Run`"
+    assert section =~ "prefer `Newbee.read/1` for reads"
+    assert section =~ "plain-GET bodies via `Newbee.read/1`"
+    assert section =~ "prefer higher-level tools"
+    assert section =~ "compile/test via `Run`"
   end
 
   test "每个模型可见能力的公开函数都有 @doc 和可运行示例" do
@@ -75,8 +75,8 @@ defmodule Newbee.Tools.ToolDocumentationContractTest do
       assert byte_size(rendered) <= @tool_doc_budget,
              "#{module_name} 文档过大: #{byte_size(rendered)} bytes"
 
-      assert rendered =~ "## 真实函数签名"
-      refute rendered =~ "## 函数清单"
+      assert rendered =~ "## Real function signatures"
+      refute rendered =~ "## Functions"
     end
   end
 
@@ -91,9 +91,13 @@ defmodule Newbee.Tools.ToolDocumentationContractTest do
   end
 
   defp example_section(doc) do
-    case String.split(doc, "## 可跑示例", parts: 2) do
+    case String.split(doc, "## Runnable example", parts: 2) do
       [_, tail] -> String.split(tail, "## ", parts: 2) |> hd()
-      _ -> ""
+      _ ->
+        case String.split(doc, "## 可跑示例", parts: 2) do
+          [_, tail] -> String.split(tail, "## ", parts: 2) |> hd()
+          _ -> ""
+        end
     end
   end
 

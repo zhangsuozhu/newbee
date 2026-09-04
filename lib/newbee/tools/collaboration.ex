@@ -1,65 +1,63 @@
 defmodule Newbee.Tools.Collaboration do
   @moduledoc """
-  会话群协作(legacy)：拆任务并行。优先用 Hive。
+  Group collaboration (legacy): split parallel tasks. Prefer Hive.
 
-  ## 何时 delegate
+  ## When to delegate
 
-  任务可拆、可并行、子任务会污染主线上下文、需要不同角色视角时用。
-  单步小改、紧密集成的改动不要派生。
+  Delegate when a task splits, parallelizes, would pollute the mainline context, or needs a different role's eyes.
+  Don't spawn for single-step tweaks or tightly integrated edits.
 
-  delegate 返回 `%{session_id, group_id, task_id}`。子代理独立运行，
-  你不阻塞等它；跟进用 `tasks/1` 轮询或 `send_message/4` 点对点问。
-  子代理被要求完成前必须 `report/5`。
+  delegate returns `%{session_id, group_id, task_id}`. The subagent runs on its own;
+  you don't block on it — follow up by polling `tasks/1` or pinging point-to-point with `send_message/4`.
+  Subagents must `report/5` before finishing.
 
-  ## 租约
+  ## Leases
 
-  子代理拿到任务默认持有 5 分钟租约，长任务必须周期 `renew/4` 续期，
-  否则被回收。主线不替子代理续期。
+  A subagent holds its task on a 5-minute lease by default; long tasks must periodically `renew/4` or lose it.
+  The mainline never renews for them.
 
-  ## 消息寻址
+  ## Message addressing
 
-  `send_message(group_id, sid, body)` 点对点；`to: nil` 广播。
-  状态通报/求助用广播；追问/私密上下文用点对点。
+  `send_message(group_id, sid, body)` is point-to-point; `to: nil` broadcasts.
+  Broadcast status reports and help requests; point-to-point for follow-ups and private context.
 
-  ## 隔离
+  ## Isolation
 
-  `isolate: :auto` 默认给子代理一份独立的项目副本，完成前协调者
-  review + apply；非 Git 项目降级共享。不要轻易 `isolate: false`。
+  `isolate: :auto` gives each subagent its own project copy by default, reviewed + applied by the coordinator before finishing;
+  non-Git projects share instead. Don't reach for `isolate: false`.
 
-  ## 函数清单
+  ## Functions
 
-  - `delegate(title, opts \\\\ [])` — 派生子代理；opts: `name:/role:/description:/acceptance:/isolate:`
-  - `claim_task(group_id, task_id)` — 以当前会话身份领取任务并取得 lease
-  - `report(group_id, task_id, session_id, status, opts \\\\ [])` — 子代理调用
-  - `renew(group_id, task_id, session_id, seconds \\\\ 300)` — 子代理续期
-  - `tasks(group_id)` — 列出组内任务
-  - `send_message(group_id, session_id, body, opts \\\\ [])` — 发消息；opts: `to:/kind:/delivery:`
+  - `delegate(title, opts \\\\ [])` — spawn a subagent; opts: `name:/role:/description:/acceptance:/isolate:`
+  - `claim_task(group_id, task_id)` — claim a task under the current session and take its lease
+  - `report(group_id, task_id, session_id, status, opts \\\\ [])` — subagents call this
+  - `renew(group_id, task_id, session_id, seconds \\\\ 300)` — subagent lease renewal
+  - `tasks(group_id)` — list a group's tasks
+  - `send_message(group_id, session_id, body, opts \\\\ [])` — send a message; opts: `to:/kind:/delivery:`
 
 
-  ## 安全约束
+  ## Safety constraints
 
-  - 身份来自 Agent.Loop 签发的短时 capability token，不能冒充其它会话
-  - 无 token 调用一律拒绝 `{:error, "no_execution_context", _}`
-  - 每个会话只能看见自己所在的组
+  - Identity comes from a short-lived capability token issued by Agent.Loop; no impersonating other sessions
+  - Tokenless calls are all refused with `{:error, "no_execution_context", _}`
+  - Each session sees only its own groups
 
-  ## 可跑示例
-
-    Newbee.Tools.Collaboration.delegate("修复 token 过期路径", name: "认证修复", role: "worker")
-    Newbee.Tools.Collaboration.delegate("补充并发测试", name: "并发测试", role: "tester")
+  ## Runnable example
+    Newbee.Tools.Collaboration.delegate("Fix token expiry path", name: "auth fix", role: "worker")
+    Newbee.Tools.Collaboration.delegate("Add concurrency tests", name: "concurrency tests", role: "tester")
     {:ok, _task} = Newbee.Tools.Collaboration.claim_task("g1", "t1")
     Newbee.Tools.Collaboration.report("g1", "t1", "s1", :accepted)
 
     Newbee.Tools.Collaboration.report("g1", "t1", "s1", :running, progress: "50%")
     Newbee.Tools.Collaboration.renew("g1", "t1", "s1", 600)
     Newbee.Tools.Collaboration.tasks("g1")
-    Newbee.Tools.Collaboration.send_message("g1", "s1", "进展如何？", kind: "question")
-
+    Newbee.Tools.Collaboration.send_message("g1", "s1", "How is it going?", kind: "question")
   """
 
   @statuses [:accepted, :running, :blocked, :succeeded, :failed, :cancelled]
   @context_key {__MODULE__, :context}
 
-  @doc "从当前模型会话受控派生子代理；无工作组时自动建立。"
+  @doc "Spawn a controlled subagent from the current model session; builds a work group when none exists."
   def delegate(title, opts \\ []) when is_binary(title) do
     with {:ok, identity} <- collaboration_identity(),
          {:ok, group} <- ensure_group(identity.session_id, identity.project_root, title) do
@@ -90,7 +88,7 @@ defmodule Newbee.Tools.Collaboration do
         Newbee.Host.call(Newbee.Collaboration.Coordinator, :create_group, [
           %{
             "session_id" => parent_sid,
-            "title" => "模型协作：#{String.slice(title, 0, 48)}",
+            "title" => "Model collaboration: #{String.slice(title, 0, 48)}",
             "goal" => title,
             "project_root" => project_root,
             "command_id" => "model-group-#{System.unique_integer([:positive])}"
@@ -99,9 +97,9 @@ defmodule Newbee.Tools.Collaboration do
     end
   end
 
-  @doc "报告任务状态（accepted/running/blocked/succeeded/failed/cancelled），可带 progress/result。"
+  @doc "Report task status (accepted/running/blocked/succeeded/failed/cancelled); takes progress/result."
   def report(group_id, task_id, session_id, status, opts \\ []) do
-    with true <- status in @statuses or {:error, "bad_request", "未知任务状态"},
+    with true <- status in @statuses or {:error, "bad_request", "unknown task status"},
          {:ok, identity} <- collaboration_identity(),
          :ok <- same_identity(identity.session_id, session_id) do
       attrs = %{
@@ -116,7 +114,7 @@ defmodule Newbee.Tools.Collaboration do
     end
   end
 
-  @doc "以当前 capability 身份领取任务并取得 lease。"
+  @doc "Claim a task under the current capability and take its lease."
   def claim_task(group_id, task_id) when is_binary(group_id) and is_binary(task_id) do
     with {:ok, identity} <- collaboration_identity() do
       Newbee.Host.call(Newbee.Collaboration.Coordinator, :claim_task, [
@@ -127,9 +125,9 @@ defmodule Newbee.Tools.Collaboration do
     end
   end
 
-  def claim_task(_group_id, _task_id), do: {:error, "bad_request", "group_id 和 task_id 必须是字符串"}
+  def claim_task(_group_id, _task_id), do: {:error, "bad_request", "group_id and task_id must be strings"}
 
-  @doc "续期任务租约（秒），默认 300；必须先 claim_task/2。"
+  @doc "Renew a task lease (seconds), default 300; claim_task/2 first."
   def renew(group_id, task_id, session_id, seconds \\ 300) do
     with {:ok, identity} <- collaboration_identity(),
          :ok <- same_identity(identity.session_id, session_id) do
@@ -142,20 +140,20 @@ defmodule Newbee.Tools.Collaboration do
     end
   end
 
-  @doc "列出当前会话所属群的全部任务。"
+  @doc "List every task in the current session's group."
   def tasks(group_id) when is_binary(group_id) do
     with {:ok, identity} <- collaboration_identity(),
          true <-
            Newbee.Host.call(Newbee.Collaboration.Coordinator, :member?, [
              group_id,
              identity.session_id
-           ]) or {:error, "not_member", "当前会话不属于该工作组"} do
+           ]) or {:error, "not_member", "current session is not in that work group"} do
       Newbee.Host.call(Newbee.Collaboration.Coordinator, :tasks, [group_id])
     end
   end
 
   @doc """
-  向群成员发送消息。`:delivery` 可为 `:notify`、`:queue` 或 `:wake`。
+  Send a message to group members. `:delivery` takes `:notify`, `:queue`, or `:wake`.
   """
 
   def send_message(group_id, session_id, body, opts \\ []) do
@@ -181,10 +179,10 @@ defmodule Newbee.Tools.Collaboration do
         Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token])
 
       _ ->
-        {:error, "no_execution_context", "协作调用必须运行在 Agent.Loop 签发的 capability 上下文中"}
+        {:error, "no_execution_context", "collaboration calls must run under a capability context issued by Agent.Loop"}
     end
   end
 
   defp same_identity(session_id, session_id), do: :ok
-  defp same_identity(_, _), do: {:error, "identity_mismatch", "session_id 与当前模型会话不一致"}
+  defp same_identity(_, _), do: {:error, "identity_mismatch", "session_id does not match the current model session"}
 end

@@ -21,30 +21,32 @@ defmodule Newbee.Tools.Fs do
   defp normalize_content(c), do: to_string(c)
 
   @moduledoc """
-  文件系统写入/删除/目录工具；通用只读优先 `Newbee.read/1`。
+  Filesystem writes/deletes/listing; prefer `Newbee.read/1` for reads.
 
-  路径参数宽容：`binary` | `atom` | `%{path: p}` | `%{"path" => p}` | `[p]` 均归一为路径字符串；`write` 的内容也宽容 `binary` | `%{content: c}`。
+  Tolerant path args: `binary` | `atom` | `%{path: p}` | `%{"path" => p}` | `[p]` all normalize to a path value;
+  `write` content also takes `binary` | `%{content: c}`.
 
-  - 写操作**先进暂存区**（Newbee.Staging），用户 /approve 统一落盘——
-    宽松沙箱的"可回滚"承诺（§8）；
-  - 读操作直接返回内容，路径限制在当前工程树内（§8 工作目录隔离）。
+  - Writes land in Staging first (Newbee.Staging), flushed to disk on /approve — the rollback promise of the lenient sandbox;
+  - Reads return content directly; paths stay inside the project tree (workspace isolation).
 
-  ## 函数清单
-  - `read(path)` — 读文件，返回 `{:ok, content} | {:error, reason}`。
-  - `read!(path)` — 读文件，不存在抛 `File.Error`。
-  - `write(path, content)` — 暂存写，返回条目 `id`（integer）或 `:direct`；需 `/approve` 才落盘。
-  - `write!(path, content)` — 直接落盘（危险，绕过暂存），成功 `:ok`，并触发内联 diff 事件。
-  - `append!(path, content)` — 追加写，直接落盘，`:ok`。
-  - `rm(path)` — 删除文件，返回 `:ok | {:error, reason}`。
-  - `rm_rf(path)` — 递归删除（高危，记审计），返回 `{:ok, [deleted]} | {:error, reason}`。
-  - `exists?(path)` — 文件是否存在，`boolean`。
-  - `guard_path(path)` — 工作目录隔离校验，合法 `:ok`，非法返回 `{:error, %{reason: :out_of_bounds, hint: _}}`。
-  - `guard_path!(path)` — bang 版本；非法路径抛 `ArgumentError`。
-  - `ls(dir)` — 列目录一层，返回 `[entry]`（目录带 `/`）或 `{:error, reason}`。
-  - `tree(root \\\\ ".")` — 遍历工程树（跳过 `_build/deps/.git/node_modules/cover`），返回相对路径 `[String.t()]`。
-  - `size(path)` — 文件字节数，`non_neg_integer()`，不存在返回 `0`。
+  ## Functions
+  - `read(path)` — read a file; `{:ok, content} | {:error, reason}`.
+  - `read!(path)` — read a file; raises `File.Error` when missing.
+  - `write(path, content)` — staged write; returns entry `id` (integer) or `:direct`; needs `/approve` to hit disk.
+  - `write!(path, content)` — write through to disk (dangerous, skips staging); `:ok` on success, emits an inline diff event.
+  - `append!(path, content)` — append to a file, straight to disk; `:ok`.
+  - `rm(path)` — delete a file; `:ok | {:error, reason}`.
+  - `rm_rf(path)` — recursive delete (hazardous, audited); `{:ok, [deleted]} | {:error, reason}`.
+  - `exists?(path)` — whether the file exists.
+  - `guard_path(path)` — workspace isolation check; `:ok` when legal, else `{:error, %{reason: :out_of_bounds, hint: _}}`.
+  - `guard_path!(path)` — bang variant; raises `ArgumentError` on illegal paths.
+  - `ls(dir)` — list one directory level; `[entry]` (dirs end with `/`) or `{:error, reason}`.
+  - `tree(root)` — walk the project tree (skips `_build/deps/.git/node_modules/cover`); relative-path `[String.t()]`.
+  - `size(path)` — file size in bytes, `non_neg_integer()`; `0` when missing.
+  - `write_base64(path, base64)` — base64 write, no Elixir escaping involved.
+  - `write_content(path, content)` — smart write: `base64:`-prefixed content is decoded first.
 
-  ## 可跑示例
+  ## Runnable example
       {:ok, c} = Newbee.Tools.Fs.read("README.md")
         {:ok, c} = Newbee.Tools.Fs.read(%{path: "README.md"})
         {:ok, c} = Newbee.Tools.Fs.read(:"README.md")
@@ -63,30 +65,24 @@ defmodule Newbee.Tools.Fs do
       {:ok, _deleted} = Newbee.Tools.Fs.rm_rf("tmp/generated")
     :ok = Newbee.Tools.Fs.write_base64("tmp/out.txt", Base.encode64("hello"))
     :ok = Newbee.Tools.Fs.write_content("tmp/out2.txt", "base64:" <> Base.encode64(content))
-
-  ## 注意
-  - `write/2` 经 `Newbee.Host` 代理回主 VM 的 `Staging`；未启动时降级为 `:direct`。
-  - `write!/2` 直接落盘并经 `Host.emit` 发 `:file_diff`；`append!/2` 直接追加，当前不发 diff 事件。
-  - `guard_path/1` 返回结构化边界错误；`guard_path!/1` 限制写入 `File.cwd!()` 树或 `~/.newbee` 内，其余抛错；但 `File.write!` 仍可绕过，硬隔离由审计/快照兜底。
-
   """
 
-  @doc "读文件。返回 {:ok, content} | {:error, reason}。"
+  @doc "Read a file. Returns {:ok, content} | {:error, reason}."
   def read(path) do
     path = normalize_path(path)
     File.read(path)
   end
 
-  @doc "读文件（不存在抛错）。"
+  @doc "Read a file (raises when missing)."
   def read!(path) do
     path = normalize_path(path)
     File.read!(path)
   end
 
-  @doc "写文件：暂存待批。返回暂存条目 id。
+  @doc "Staged file write; returns the staging entry id.
 
-  注意：求值器节点上没有 Staging 进程——经 Newbee.Host 代理回主 VM（§3.4），
-  主 VM 无暂存区（app 未启动）时降级直接落盘。"
+  No Staging process runs on evaluator nodes — proxies back to the host VM via Newbee.Host;
+  falls back to a direct write when the host has no staging area (app not started)."
   def write(path, content) do
     path = normalize_path(path)
     content = normalize_content(content)
@@ -105,7 +101,7 @@ defmodule Newbee.Tools.Fs do
     end
   end
 
-  @doc "写文件（直接落盘，不暂存）。危险操作，模型慎用。落盘后发内联 diff 事件（§5.1）。"
+  @doc "Write a file straight to disk, no staging. Dangerous, use sparingly. Emits an inline diff event after writing."
   def write!(path, content) do
     path = normalize_path(path)
     content = normalize_content(content)
@@ -117,7 +113,7 @@ defmodule Newbee.Tools.Fs do
     :ok
   end
 
-  @doc "追加写（直接落盘——追加语义不适合暂存）。"
+  @doc "Append to a file (straight to disk — appends do not stage)."
   def append!(path, content) do
     path = normalize_path(path)
     content = normalize_content(content)
@@ -127,13 +123,13 @@ defmodule Newbee.Tools.Fs do
     :ok
   end
 
-  @doc "删除文件。返回 :ok | {:error, reason}。"
+  @doc "Delete a file. Returns :ok | {:error, reason}."
   def rm(path) do
     path = normalize_path(path)
     with :ok <- guard_path(path), do: File.rm(path)
   end
 
-  @doc "递归删除（高风险，记审计）。"
+  @doc "Recursive delete (high risk, audited)."
   def rm_rf(path) do
     path = normalize_path(path)
 
@@ -156,12 +152,11 @@ defmodule Newbee.Tools.Fs do
   end
 
   @doc """
-  工作目录隔离（§8）：写入类操作限制在当前工程树或 ~/.newbee 内，
-  非 bang 操作返回结构化错误；bang 操作仍抛 `ArgumentError`。
+  Workspace isolation: write ops stay inside the project tree or ~/.newbee;
+  non-bang calls return a structured error, bang calls still raise `ArgumentError`.
 
-  注意这是**软边界**：模型仍可在 run_elixir 里直接 File.write! 绕开——
-  它约束的是推荐 API，真正的硬隔离由宽松档位的审计/快照兜底（§8）。
-  长输出可写到工程内 `.newbee-tmp/` 或 `~/.newbee/`。
+  Soft boundary: raw File.write! inside run_elixir bypasses it — it constrains the recommended API;
+  hard isolation is audit/snapshot. Write long output under `.newbee-tmp/` or `~/.newbee/`.
   """
   def guard_path(path) do
     path = normalize_path(path)
@@ -180,12 +175,12 @@ defmodule Newbee.Tools.Fs do
       {:error,
        %{
          reason: :out_of_bounds,
-         hint: "拒绝写入工程树外路径: #{path}（长输出可写到工程内 .newbee-tmp/ 或 ~/.newbee/）"
+         hint: "Out-of-tree write refused: #{path} (write long output under .newbee-tmp/ or ~/.newbee/)"
        }}
     end
   end
 
-  @doc "工作目录隔离的 bang 版本；非法路径抛 ArgumentError。"
+  @doc "Bang variant of workspace isolation; raises ArgumentError on illegal paths."
   def guard_path!(path) do
     path = normalize_path(path)
 
@@ -195,13 +190,13 @@ defmodule Newbee.Tools.Fs do
     end
   end
 
-  @doc "文件是否存在。"
+  @doc "Whether a file exists."
   def exists?(path) do
     path = normalize_path(path)
     File.exists?(path)
   end
 
-  @doc "列出目录（一层）。"
+  @doc "List one directory level."
   def ls(dir) do
     dir = normalize_path(dir)
 
@@ -217,7 +212,7 @@ defmodule Newbee.Tools.Fs do
     end
   end
 
-  @doc "遍历工程树（跳过 _build/deps/.git）。返回相对路径列表。"
+  @doc "Walk the project tree (skips _build/deps/.git). Returns relative paths."
   def tree(root \\ ".") do
     root = normalize_path(root)
 
@@ -230,7 +225,7 @@ defmodule Newbee.Tools.Fs do
     |> Enum.map(&Path.relative_to(&1, root))
   end
 
-  @doc "文件大小（字节）。"
+  @doc "File size in bytes."
   def size(path) do
     path = normalize_path(path)
 
@@ -267,7 +262,7 @@ defmodule Newbee.Tools.Fs do
   @doc false
   def append!(%{"path" => p, "content" => c}), do: append!(p, c)
 
-  @doc "Base64 写入，完全绕过 Elixir 字符串转义。`content_base64` 为 Base64 编码后的内容，模型可直接传 `Base.encode64(content)`。"
+  @doc "Base64 write, fully dodging Elixir escaping. `content_base64` holds base64 content; pass `Base.encode64(content)` directly."
   def write_base64(path, base64) when is_binary(path) and is_binary(base64) do
     path = normalize_path(path)
 
@@ -288,7 +283,7 @@ defmodule Newbee.Tools.Fs do
   @doc false
   def write_base64(%{file: p, content_base64: b}) when is_binary(p) and is_binary(b), do: write_base64(p, b)
 
-  @doc "智能写入：若内容以 `base64:` 前缀开头则自动 Base64 解码，否则原样写入。兼容所有形态。"
+  @doc "Smart write: content starting with a `base64:` prefix is base64-decoded, otherwise written as-is. Takes all shapes."
   def write_content(path, content) when is_binary(path) and is_binary(content) do
     path = normalize_path(path)
 

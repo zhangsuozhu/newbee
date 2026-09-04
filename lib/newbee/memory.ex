@@ -153,7 +153,7 @@ defmodule Newbee.Memory do
 
   # 密钥形态：sk-<token> / Bearer <token> / <KEY>=<value> 长值 / GitHub PAT 系列（ghp_/gho_/ghu_/ghs_/ghr_）
   @secret ~r/(sk-[A-Za-z0-9_\-]{8,}|Bearer\s+[A-Za-z0-9_\-\.]{8,}|\b[A-Z_]{3,}_KEY\s*=\s*[^\s]{8,}|gh[opusr]_[A-Za-z0-9]{20,})/
-  @redacted "…[已脱敏]…"
+  @redacted "…[redacted]…"
 
   defp redact(content) do
     Regex.replace(@secret, content, @redacted)
