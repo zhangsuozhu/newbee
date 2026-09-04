@@ -21,6 +21,11 @@ defmodule Newbee.Web.Session do
             boot_worker: nil,
             boot_ref: nil,
             queue: :queue.new(),
+            # 等待队列 ID 化（方案A）：内存队列 + 自增 seq + 最近事件环，供刷新重建与单条取消。
+            queue_seq: 0,
+            queue_events: [],
+            # 正在执行的输入（ busy=true 时的当前项，供刷新展示“执行中”）。
+            current: nil,
             turns: 0,
             context_tokens: 0,
             context_window: nil,
@@ -153,8 +158,19 @@ defmodule Newbee.Web.Session do
 
   @doc "异步提交用户输入；事件经 Bus 下行，终态也以事件通知（不阻塞调用者）。"
   def prompt(pid, text), do: GenServer.cast(pid, {:prompt, text})
+  @doc "异步提交用户输入（带前端 queueId，用于排队追踪与单条取消）。"
+  def prompt(pid, text, queue_id) when is_binary(queue_id) do
+    GenServer.cast(pid, {:prompt, text, normalize_queue_id(queue_id)})
+  end
+  def prompt(pid, text, _queue_id), do: GenServer.cast(pid, {:prompt, text})
   @doc "异步提交多模态输入（多张 data URL 图片 + 文本）。"
   def prompt_images(pid, data_urls, text),
+    do: GenServer.cast(pid, {:prompt_images, data_urls, text})
+  @doc "异步提交多模态输入（带 queueId）。"
+  def prompt_images(pid, data_urls, text, queue_id) when is_binary(queue_id) do
+    GenServer.cast(pid, {:prompt_images, data_urls, text, normalize_queue_id(queue_id)})
+  end
+  def prompt_images(pid, data_urls, text, _queue_id),
     do: GenServer.cast(pid, {:prompt_images, data_urls, text})
 
   @doc "向会话队列投递协作任务（Coordinator 分派；忙时排队，空闲直接提交）。"
@@ -173,8 +189,16 @@ defmodule Newbee.Web.Session do
   @doc "向会话队列投递协作结果通知（任务进入终态时由 Coordinator 回收）。"
   def collaboration_result(pid, task), do: GenServer.cast(pid, {:collaboration_result, task})
 
-  @doc "非阻塞中断当前 turn。"
+  @doc "非阻塞中断当前 turn（并清空排队；清空数以 notice + queue_updated 广播）。"
   def interrupt(pid), do: GenServer.cast(pid, :interrupt)
+  @doc "列出当前等待队列（公开视图，供刷新重建与取消按钮用）。"
+  def queue_list(pid), do: GenServer.call(pid, :queue_list, 5_000)
+  @doc "取消单条排队项；不存在返回 {:error, :not_found}。"
+  def cancel_queued(pid, queue_id) when is_binary(queue_id) do
+    GenServer.call(pid, {:cancel_queued, queue_id}, 5_000)
+  end
+  @doc "仅清空等待队列（不中断当前 turn；与 interrupt 区分）。返回 {:ok, cleared}。"
+  def clear_queue(pid), do: GenServer.call(pid, :clear_queue, 5_000)
 
   @doc "会话底层 Agent.Loop kernel 的 pid（未启动或已死返回 nil）。"
   def kernel_pid(pid) do
@@ -217,6 +241,118 @@ defmodule Newbee.Web.Session do
     end
   end
 
+  # -- queue ID 化 helpers（方案A：内存 + seq + 最近事件，供刷新重建）
+  defp normalize_queue_id(id) when is_binary(id) do
+    t = String.trim(id)
+    cond do
+      t == "" -> new_queue_id()
+      String.length(t) > 64 -> String.slice(t, 0, 64)
+      Regex.match?(~r/^[A-Za-z0-9_\-\.]+$/, t) -> t
+      true -> new_queue_id()
+    end
+  end
+  defp normalize_queue_id(_), do: new_queue_id()
+  defp new_queue_id do
+    "q" <> Integer.to_string(:erlang.unique_integer([:monotonic, :positive]), 36) |> String.downcase()
+  end
+  defp now_iso do
+    DateTime.utc_now() |> DateTime.to_iso8601()
+  end
+  defp preview_text(text, max \\ 80)
+  defp preview_text(text, max) when is_binary(text) do
+    text |> String.replace(~r/\s+/, " ") |> String.trim() |> String.slice(0, max)
+  end
+  defp preview_text(_, _), do: ""
+  # 公开视图：仅 JSON 安全字段，前端 queue bar 与刷新重建用。
+  defp public_queue(queue) do
+    queue |> :queue.to_list() |> Enum.map(&public_queue_item/1)
+  end
+  defp public_queue_item(%{id: id, kind: kind} = item) do
+    base = %{id: id, kind: kind, preview: Map.get(item, :preview, ""), createdAt: Map.get(item, :created_at, ""), origin: Map.get(item, :origin, "user")}
+    base = case Map.get(item, :text) do nil -> base; t when is_binary(t) -> Map.put(base, :text, t); _ -> base end
+    base = case Map.get(item, :task_id) do nil -> base; tid -> Map.put(base, :taskId, tid) end
+    base = case Map.get(item, :message_id) do nil -> base; mid -> Map.put(base, :messageId, mid) end
+    case Map.get(item, :image_count) do nil -> base; n -> Map.put(base, :imageCount, n) end
+  end
+  defp public_queue_item({:text, t}) when is_binary(t) do
+    %{id: "legacy", kind: "text", preview: preview_text(t), createdAt: "", origin: "user", text: t}
+  end
+  defp public_queue_item({:images, urls, t}) do
+    %{id: "legacy", kind: "images", preview: preview_text(t), createdAt: "", origin: "user", text: t || "", imageCount: length(List.wrap(urls))}
+  end
+  defp public_queue_item({:collab_message, m}) when is_map(m) do
+    %{id: "legacy", kind: "collab_message", preview: preview_text(Map.get(m, "body", "")), createdAt: "", origin: "collab", messageId: Map.get(m, "message_id")}
+  end
+  defp public_queue_item(other) do
+    %{id: "legacy", kind: "unknown", preview: preview_text(inspect(other)), createdAt: "", origin: "user"}
+  end
+  defp public_current(nil), do: nil
+  defp public_current(%{id: id} = cur) do
+    %{id: id, kind: Map.get(cur, :kind, "text"), preview: Map.get(cur, :preview, ""), startedAt: Map.get(cur, :started_at, ""), origin: Map.get(cur, :origin, "user"), text: Map.get(cur, :text, "")}
+  end
+  defp push_queue_event(st, type, fields) when is_map(fields) do
+    seq = (Map.get(st, :queue_seq) || 0) + 1
+    ev = Map.merge(%{seq: seq, type: type, at: now_iso()}, fields)
+    events = [ev | (Map.get(st, :queue_events) || [])] |> Enum.take(20)
+    {%{st | queue_seq: seq, queue_events: events}, ev}
+  end
+  defp broadcast_queue(sid, st, event) do
+    payload = %{queued: :queue.len(st.queue), queue: public_queue(st.queue), seq: Map.get(st, :queue_seq, 0), event: event, current: public_current(Map.get(st, :current))}
+    broadcast(sid, :queue_updated, payload)
+  end
+  defp make_user_text_item(text, queue_id) do
+    id = normalize_queue_id(queue_id || new_queue_id())
+    t = text || ""
+    %{id: id, kind: "text", created_at: now_iso(), origin: "user", preview: preview_text(t), text: t}
+  end
+  defp make_user_images_item(urls, text, queue_id) do
+    id = normalize_queue_id(queue_id || new_queue_id())
+    t = text || ""
+    urls = List.wrap(urls)
+    prev = preview_text(t)
+    prev = if prev == "", do: "[图片 x" <> Integer.to_string(length(urls)) <> "]", else: prev <> " [图片 x" <> Integer.to_string(length(urls)) <> "]"
+    %{id: id, kind: "images", created_at: now_iso(), origin: "user", preview: prev, text: t, images: urls, image_count: length(urls)}
+  end
+  defp make_collab_task_item(task, prompt) do
+    tid = task["task_id"] || ""
+    title = task["title"] || tid
+    %{id: new_queue_id(), kind: "collab_task", created_at: now_iso(), origin: "collab", preview: preview_text(title <> " " <> prompt), text: prompt, prompt: prompt, task_id: tid}
+  end
+  defp make_collab_result_item(task, prompt) do
+    tid = task["task_id"] || ""
+    title = task["title"] || tid
+    %{id: new_queue_id(), kind: "collab_result", created_at: now_iso(), origin: "collab", preview: preview_text(title <> " " <> prompt), text: prompt, prompt: prompt, task_id: tid}
+  end
+  defp make_collab_message_item(message) do
+    mid = message["message_id"] || ""
+    body = message["body"] || ""
+    %{id: new_queue_id(), kind: "collab_message", created_at: now_iso(), origin: "collab", preview: preview_text(body), text: body, message: message, message_id: mid}
+  end
+  defp queue_ids(queue) do
+    queue |> :queue.to_list() |> Enum.flat_map(fn
+      %{id: id} -> [id]
+      _ -> []
+    end) |> MapSet.new()
+  end
+  defp enqueue_item(st, item) do
+    if MapSet.member?(queue_ids(st.queue), item.id) do
+      {st, item, false}
+    else
+      q = :queue.in(item, st.queue)
+      st1 = %{st | queue: q}
+      {st2, ev} = push_queue_event(st1, "enqueued", %{id: item.id, kind: item.kind, preview: item.preview})
+      broadcast_queue(st.sid, st2, ev)
+      {st2, item, true}
+    end
+  end
+  defp queue_without(queue, id) do
+    list = :queue.to_list(queue)
+    {found, rest} = Enum.split_with(list, fn
+      %{id: ^id} -> true
+      _ -> false
+    end)
+    {found, :queue.from_list(rest)}
+  end
   # ── GenServer ──
 
   @doc false
@@ -578,108 +714,117 @@ defmodule Newbee.Web.Session do
   @impl true
   def handle_cast({:collaboration_result, task}, st) do
     prompt = collaboration_result_prompt(task)
-
     if st.busy or st.booting do
-      queue = :queue.in({:text, prompt}, st.queue)
-
-      broadcast(st.sid, :collab_result_queued, %{
-        taskId: task["task_id"],
-        queued: :queue.len(queue)
-      })
-
-      {:noreply, %{st | queue: queue}}
+      item = make_collab_result_item(task, prompt)
+      {st2, _it, _fresh} = enqueue_item(st, item)
+      broadcast(st.sid, :collab_result_queued, %{taskId: task["task_id"], queued: :queue.len(st2.queue), queueId: item.id})
+      {:noreply, st2}
     else
       {:noreply, dispatch_input(st, prompt)}
     end
   end
-
   def handle_cast({:collaboration_task, task}, st) do
     prompt = collaboration_prompt(task)
-
     if st.busy or st.booting do
-      queue = :queue.in({:text, prompt}, st.queue)
-
-      broadcast(st.sid, :collab_task_queued, %{taskId: task["task_id"], queued: :queue.len(queue)})
-
-      {:noreply, %{st | queue: queue}}
+      item = make_collab_task_item(task, prompt)
+      {st2, _it, _fresh} = enqueue_item(st, item)
+      broadcast(st.sid, :collab_task_queued, %{taskId: task["task_id"], queued: :queue.len(st2.queue), queueId: item.id})
+      {:noreply, st2}
     else
       {:noreply, dispatch_input(st, prompt)}
     end
   end
-
   def handle_cast({:collaboration_message, message}, st) do
     prompt = collaboration_message_prompt(message)
-
     if st.busy or st.booting do
-      # 忙时排队即去重：同一 message_id 只保留一条排队帧，重复投递静默丢弃
-      dup? =
-        st.queue
-        |> :queue.to_list()
-        |> Enum.any?(fn
-          {:collab_message, %{"message_id" => mid}} -> mid == message["message_id"]
-          _ -> false
-        end)
-
+      mid = message["message_id"]
+      dup? = st.queue |> :queue.to_list() |> Enum.any?(fn
+        %{message_id: m} when is_binary(m) -> m == mid
+        {:collab_message, %{"message_id" => m}} -> m == mid
+        _ -> false
+      end)
       if dup? do
         {:noreply, st}
       else
-        queue = :queue.in({:collab_message, message}, st.queue)
-
-        broadcast(st.sid, :collab_message_queued, %{
-          messageId: message["message_id"],
-          queued: :queue.len(queue)
-        })
-
-        {:noreply, %{st | queue: queue}}
+        item = make_collab_message_item(message)
+        {st2, _it, _fresh} = enqueue_item(st, item)
+        broadcast(st.sid, :collab_message_queued, %{messageId: mid, queued: :queue.len(st2.queue), queueId: item.id})
+        {:noreply, st2}
       end
     else
       {:noreply, dispatch_input(st, prompt)}
     end
   end
 
+  def handle_cast({:prompt, text, queue_id}, %{busy: true} = st) when is_binary(queue_id) do
+    item = make_user_text_item(text, queue_id)
+    {st2, _it, fresh} = enqueue_item(st, item)
+    if fresh, do: broadcast(st.sid, :queued, %{queued: :queue.len(st2.queue), queueId: item.id})
+    {:noreply, st2}
+  end
   def handle_cast({:prompt, text}, %{busy: true} = st) do
-    queue = :queue.in({:text, text}, st.queue)
-    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
-    {:noreply, %{st | queue: queue}}
+    item = make_user_text_item(text, nil)
+    {st2, _it, fresh} = enqueue_item(st, item)
+    if fresh, do: broadcast(st.sid, :queued, %{queued: :queue.len(st2.queue), queueId: item.id})
+    {:noreply, st2}
   end
-
+  def handle_cast({:prompt_images, data_urls, text, queue_id}, %{busy: true} = st) when is_binary(queue_id) do
+    item = make_user_images_item(data_urls, text, queue_id)
+    {st2, _it, fresh} = enqueue_item(st, item)
+    if fresh, do: broadcast(st.sid, :queued, %{queued: :queue.len(st2.queue), queueId: item.id})
+    {:noreply, st2}
+  end
   def handle_cast({:prompt_images, data_urls, text}, %{busy: true} = st) do
-    queue = :queue.in({:images, data_urls, text}, st.queue)
-    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
-    {:noreply, %{st | queue: queue}}
+    item = make_user_images_item(data_urls, text, nil)
+    {st2, _it, fresh} = enqueue_item(st, item)
+    if fresh, do: broadcast(st.sid, :queued, %{queued: :queue.len(st2.queue), queueId: item.id})
+    {:noreply, st2}
   end
-
   # kernel 仍在后台 boot：先入队，boot 完成后按顺序提交（用户无需等待或重试）
+  def handle_cast({:prompt, text, queue_id}, %{booting: true} = st) when is_binary(queue_id) do
+    item = make_user_text_item(text, queue_id)
+    {st2, _it, fresh} = enqueue_item(st, item)
+    if fresh, do: broadcast(st.sid, :queued, %{queued: :queue.len(st2.queue), queueId: item.id})
+    {:noreply, st2}
+  end
   def handle_cast({:prompt, text}, %{booting: true} = st) do
-    queue = :queue.in({:text, text}, st.queue)
-    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
-    {:noreply, %{st | queue: queue}}
+    item = make_user_text_item(text, nil)
+    {st2, _it, fresh} = enqueue_item(st, item)
+    if fresh, do: broadcast(st.sid, :queued, %{queued: :queue.len(st2.queue), queueId: item.id})
+    {:noreply, st2}
   end
-
+  def handle_cast({:prompt_images, data_urls, text, queue_id}, %{booting: true} = st) when is_binary(queue_id) do
+    item = make_user_images_item(data_urls, text, queue_id)
+    {st2, _it, fresh} = enqueue_item(st, item)
+    if fresh, do: broadcast(st.sid, :queued, %{queued: :queue.len(st2.queue), queueId: item.id})
+    {:noreply, st2}
+  end
   def handle_cast({:prompt_images, data_urls, text}, %{booting: true} = st) do
-    queue = :queue.in({:images, data_urls, text}, st.queue)
-    broadcast(st.sid, :queued, %{queued: :queue.len(queue)})
-    {:noreply, %{st | queue: queue}}
+    item = make_user_images_item(data_urls, text, nil)
+    {st2, _it, fresh} = enqueue_item(st, item)
+    if fresh, do: broadcast(st.sid, :queued, %{queued: :queue.len(st2.queue), queueId: item.id})
+    {:noreply, st2}
   end
-
+  def handle_cast({:prompt_images, data_urls, text, queue_id}, st) when is_binary(queue_id) do
+    {:noreply, dispatch_images(st, data_urls, text, queue_id)}
+  end
   def handle_cast({:prompt_images, data_urls, text}, st) do
     {:noreply, dispatch_images(st, data_urls, text)}
   end
-
+  def handle_cast({:prompt, text, queue_id}, st) when is_binary(queue_id) do
+    {:noreply, dispatch_input(st, text, queue_id)}
+  end
   def handle_cast({:prompt, text}, st) do
     {:noreply, dispatch_input(st, text)}
   end
-
   def handle_cast(:interrupt, st) do
     if st.kernel && Process.alive?(st.kernel), do: Newbee.Agent.Loop.interrupt(st.kernel)
-
-    # 中断 = 停止当前 + 清空排队（用户按停止的意图是不再继续跑后续指令）；
-    # 清空数广播给前端提示。
     n = :queue.len(st.queue)
-    st = %{st | queue: :queue.new()}
+    st1 = %{st | queue: :queue.new(), current: nil}
+    {st2, ev} = push_queue_event(st1, "cleared", %{count: n, reason: "interrupt"})
+    broadcast_queue(st.sid, st2, ev)
     if n > 0, do: broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
-
-    {:noreply, st}
+    {:noreply, st2}
   end
 
   def handle_cast({:permission_reply, ok}, st) do
@@ -776,12 +921,10 @@ defmodule Newbee.Web.Session do
   end
 
   def handle_call(:state, _from, st) do
-    # 只读本地快照：turn 进行中 Loop 的 GenServer.call 会排队超时（state 不该被阻塞）
     usage = st.usage_snap
     steps = st.steps_snap
     goal = nil
     bindings = bindings_count(st)
-
     {:reply,
      %{
        sid: st.sid,
@@ -789,6 +932,10 @@ defmodule Newbee.Web.Session do
        booting: st.booting,
        kernel_ready: st.kernel != nil,
        queued: :queue.len(st.queue),
+       queue: public_queue(st.queue),
+       current: public_current(Map.get(st, :current)),
+       queue_seq: Map.get(st, :queue_seq, 0),
+       queue_events: Enum.take(Map.get(st, :queue_events, []), 5),
        provider: provider_of(st),
        model: st.client && st.client.model,
        effort: st.client && st.client.reasoning_effort,
@@ -804,6 +951,30 @@ defmodule Newbee.Web.Session do
        turns: st.turns,
        cwd: Newbee.Session.cwd(st.sid)
      }, st}
+  end
+  def handle_call(:queue_list, _from, st) do
+    {:reply, %{queued: :queue.len(st.queue), queue: public_queue(st.queue), seq: Map.get(st, :queue_seq, 0), current: public_current(Map.get(st, :current))}, st}
+  end
+  def handle_call({:cancel_queued, queue_id}, _from, st) do
+    {found, rest} = queue_without(st.queue, queue_id)
+    case found do
+      [item] ->
+        st1 = %{st | queue: rest}
+        {st2, ev} = push_queue_event(st1, "cancelled", %{id: queue_id, kind: Map.get(item, :kind, "text"), preview: Map.get(item, :preview, "")})
+        broadcast_queue(st.sid, st2, ev)
+        broadcast(st.sid, :queue_cancelled, %{id: queue_id, queued: :queue.len(rest), preview: Map.get(item, :preview, "")})
+        {:reply, {:ok, %{cancelled: queue_id, queued: :queue.len(rest), queue: public_queue(rest)}}, st2}
+      [] ->
+        {:reply, {:error, :not_found}, st}
+    end
+  end
+  def handle_call(:clear_queue, _from, st) do
+    n = :queue.len(st.queue)
+    st1 = %{st | queue: :queue.new()}
+    {st2, ev} = push_queue_event(st1, "cleared", %{count: n, reason: "clear_queue"})
+    broadcast_queue(st.sid, st2, ev)
+    if n > 0, do: broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
+    {:reply, {:ok, %{cleared: n, queued: 0, queue: []}}, st2}
   end
 
   # 热更新思考强度：busy/booting 时不阻塞调用方——先持久化 + 更新会话 client，立即回复；
@@ -940,7 +1111,6 @@ defmodule Newbee.Web.Session do
         boot_client = st.boot_client
         st = acknowledge_kernel_boot(st)
         st = %{st | kernel: kernel, booting: false, boot_client: nil}
-
         if boot_client && st.client && st.client != boot_client do
           try do
             Newbee.Agent.Loop.switch_model(kernel, st.client)
@@ -948,9 +1118,7 @@ defmodule Newbee.Web.Session do
             _, _ -> :ok
           end
         end
-
         {:noreply, dispatch_pending(st)}
-
       {:error, reason} ->
         if Process.alive?(kernel), do: GenServer.stop(kernel, :normal, 5_000)
         st = acknowledge_kernel_boot(st)
@@ -970,9 +1138,7 @@ defmodule Newbee.Web.Session do
     st = %{st | turns: st.turns + 1}
     save_stats(st)
     broadcast_turn_end(st.sid, result)
-    st = %{st | busy: false} |> sync_kernel_effort()
-
-    # 队列驱动：循环出队直到真正开启 turn（/ 命令不开 turn，单条出队会卡住后续排队输入）
+    st = %{st | busy: false, current: nil} |> sync_kernel_effort()
     {:noreply, dispatch_pending(st)}
   end
 
@@ -1034,33 +1200,57 @@ defmodule Newbee.Web.Session do
   # boot 期间到达的输入排队于此；kernel 就绪后按到达顺序提交。
   defp dispatch_pending(%{queue: q} = st) do
     case :queue.out(q) do
-      {{:value, {:text, t}}, q} ->
-        st = %{st | queue: q} |> dispatch_input(t)
-
-        # 命令类输入（/status 等）不会开启 turn：继续排后续；真正提交 LLM 后 busy=true 停下
-        if st.busy, do: st, else: dispatch_pending(st)
-
-      {{:value, {:collab_message, m}}, q} ->
-        st = %{st | queue: q} |> dispatch_input(collaboration_message_prompt(m))
-        if st.busy, do: st, else: dispatch_pending(st)
-
-      {{:value, {:images, urls, t}}, q} ->
-        st = %{st | queue: q} |> dispatch_images(urls, t)
-        if st.busy, do: st, else: dispatch_pending(st)
-
-      {{:value, other}, q} ->
-        st = %{st | queue: q} |> do_submit(other)
-        if st.busy, do: st, else: dispatch_pending(st)
-
+      {{:value, %{id: id, kind: kind} = item}, rest} ->
+        st1 = %{st | queue: rest}
+        st2 =
+          case kind do
+            "text" -> dispatch_input(st1, Map.get(item, :text, Map.get(item, :prompt, "")), id)
+            "collab_task" -> dispatch_input(st1, Map.get(item, :prompt, Map.get(item, :text, "")), id)
+            "collab_result" -> dispatch_input(st1, Map.get(item, :prompt, Map.get(item, :text, "")), id)
+            "collab_message" -> dispatch_input(st1, collaboration_message_prompt(Map.get(item, :message, %{})), id)
+            "images" -> dispatch_images(st1, Map.get(item, :images, []), Map.get(item, :text, ""), id)
+            _ -> dispatch_input(st1, Map.get(item, :text, ""), id)
+          end
+        if st2.busy do
+          {st_ev, ev} = push_queue_event(st2, "started", %{id: id, kind: kind})
+          broadcast_queue(st.sid, st_ev, ev)
+          st_ev
+        else
+          {st_ev, ev} = push_queue_event(st2, "dequeued", %{id: id, kind: kind})
+          broadcast_queue(st.sid, st_ev, ev)
+          dispatch_pending(st_ev)
+        end
+      {{:value, {:text, t}}, q2} ->
+        st2 = %{st | queue: q2} |> dispatch_input(t)
+        if st2.busy do
+          {st_ev, ev} = push_queue_event(st2, "started", %{id: "legacy", kind: "text"})
+          broadcast_queue(st.sid, st_ev, ev)
+          st_ev
+        else
+          dispatch_pending(st2)
+        end
+      {{:value, {:collab_message, m}}, q2} ->
+        st2 = %{st | queue: q2} |> dispatch_input(collaboration_message_prompt(m))
+        if st2.busy, do: st2, else: dispatch_pending(st2)
+      {{:value, {:images, urls, t}}, q2} ->
+        st2 = %{st | queue: q2} |> dispatch_images(urls, t)
+        if st2.busy, do: st2, else: dispatch_pending(st2)
+      {{:value, other}, q2} ->
+        st2 = %{st | queue: q2} |> do_submit(other)
+        if st2.busy, do: st2, else: dispatch_pending(st2)
       {:empty, _} ->
         st
     end
   end
-
   defp fail_pending(%{queue: q} = st) do
     count = :queue.len(q)
-    if count > 0, do: broadcast(st.sid, :error, %{message: "⚠ 会话内核启动失败，已丢弃 #{count} 条排队输入"})
-    %{st | queue: :queue.new()}
+    st1 = %{st | queue: :queue.new(), current: nil}
+    {st2, ev} = push_queue_event(st1, "discarded", %{count: count, reason: "boot_failed"})
+    if count > 0 do
+      broadcast(st.sid, :error, %{message: "会话内核启动失败，已丢弃 " <> Integer.to_string(count) <> " 条排队输入"})
+      broadcast_queue(st.sid, st2, ev)
+    end
+    st2
   end
 
   # submit 在独立 task 里同步跑整个 turn；终态回投本进程以驱动队列。
@@ -1068,26 +1258,21 @@ defmodule Newbee.Web.Session do
   # 输入分派：/ 命令走 Newbee.Commands（say 输出作为 notice 事件下行），
   # 其余走 do_submit 提交给 LLM。/new /resume 等需要换 kernel 的命令在
   # 此直接处理。
-  defp dispatch_input(st, text) do
+  defp dispatch_input(st, text), do: dispatch_input(st, text, nil)
+  defp dispatch_input(st, text, queue_id) do
     say = fn line -> broadcast(st.sid, :notice, %{text: line}) end
     ctx = %{kernel: st.kernel, say: say}
-
     case Newbee.Commands.handle(text, ctx) do
       {:submit, t} ->
-        do_submit(st, t)
-
+        do_submit(st, t, queue_id)
       :new ->
         restart_kernel(st)
-
       :handled ->
         st
-
       :ok ->
         st
-
       {:shell, cmd} ->
         run_shell_notice(st, cmd)
-
       other ->
         say.("该命令在 WebUI 暂不支持: " <> inspect(other))
         st
@@ -1115,11 +1300,9 @@ defmodule Newbee.Web.Session do
   end
 
   defp restart_kernel(st) do
-    # /new：异步重启，避免在 GenServer 回调里同步 GenServer.stop + start_kernel(1~3s)
-    # 阻塞 session.state 5s 轮询（日志里 exited in GenServer.call :state 5000）。
+    n = :queue.len(st.queue)
     if st.kernel && Process.alive?(st.kernel) do
       old = st.kernel
-
       Task.start(fn ->
         try do
           GenServer.stop(old, :normal, 5_000)
@@ -1128,40 +1311,26 @@ defmodule Newbee.Web.Session do
         end
       end)
     end
-
     sid = st.sid
     client = st.client
     parent = self()
-
-    # 清空当前会话 transcript / bindings，得到全新对话；保留 sid 不变，事件路由仍对齐
     try do
       sess = Newbee.Session.open(sid)
       File.write!(sess.transcript, "")
       art = Path.join([Newbee.GlobalStore.root(), "session-artifacts", sid])
-
       for name <- ["bindings.json", "bindings.etf", "system-prompt.md"] do
         File.rm(Path.join(art, name))
       end
     rescue
       _ -> :ok
     end
-
-    # 立即让前端清空视图，后台再起新 kernel（复用 boot 异步语义）
     broadcast(sid, :session_cleared, %{text: "已开启新会话"})
     broadcast(sid, :session_renewed, %{sessionId: sid, text: "已开启新会话"})
-
     {worker, ref} = spawn_kernel_boot(:kernel_restarted, sid, client, parent)
-
-    %{
-      st
-      | kernel: nil,
-        booting: true,
-        busy: false,
-        queue: :queue.new(),
-        boot_client: client,
-        boot_worker: worker,
-        boot_ref: ref
-    }
+    base = %{st | kernel: nil, booting: true, busy: false, queue: :queue.new(), current: nil, boot_client: client, boot_worker: worker, boot_ref: ref}
+    {final, ev} = push_queue_event(base, "cleared", %{count: n, reason: "new_session"})
+    broadcast_queue(sid, final, ev)
+    final
   end
 
   # kernel 为 nil = 会话初始化时配置无效。给出可操作提示，不启动必死的 Task。
@@ -1169,11 +1338,16 @@ defmodule Newbee.Web.Session do
     broadcast(st.sid, :error, %{message: no_kernel_hint()})
     st
   end
-
-  defp do_submit(st, text) do
+  defp do_submit(st, text), do: do_submit(st, text, nil)
+  defp do_submit(%{kernel: nil} = st, _text, _qid) do
+    broadcast(st.sid, :error, %{message: no_kernel_hint()})
+    st
+  end
+  defp do_submit(st, text, queue_id) do
     parent = self()
     kernel = st.kernel
-
+    qid = if is_binary(queue_id), do: normalize_queue_id(queue_id), else: new_queue_id()
+    cur = %{id: qid, kind: "text", preview: preview_text(text), text: text || "", started_at: now_iso(), origin: "user"}
     Task.start(fn ->
       result =
         try do
@@ -1181,28 +1355,29 @@ defmodule Newbee.Web.Session do
         rescue
           e -> {:error, Exception.message(e)}
         catch
-          :exit, r -> {:error, "exit: #{inspect(r)}"}
+          :exit, r -> {:error, "exit: " <> inspect(r)}
         end
-
       send(parent, {:turn_finished, result})
     end)
-
-    %{st | busy: true}
+    %{st | busy: true, current: cur}
+  end
+  defp dispatch_images(st, data_urls, text), do: dispatch_images(st, data_urls, text, nil)
+  defp dispatch_images(st, data_urls, text, queue_id) do
+    do_submit_images(st, data_urls, text, queue_id)
   end
 
-  defp dispatch_images(st, data_urls, text) do
-    do_submit_images(st, data_urls, text)
-  end
-
-  defp do_submit_images(%{kernel: nil} = st, _data_urls, _text) do
+  defp do_submit_images(%{kernel: nil} = st, _data_urls, _text, _qid) do
     broadcast(st.sid, :error, %{message: no_kernel_hint()})
     st
   end
-
-  defp do_submit_images(st, data_urls, text) do
+  defp do_submit_images(st, data_urls, text, queue_id) do
     parent = self()
     kernel = st.kernel
-
+    qid = if is_binary(queue_id), do: normalize_queue_id(queue_id), else: new_queue_id()
+    urls = List.wrap(data_urls)
+    base_prev = preview_text(text || "")
+    prev = if base_prev == "", do: "[图片 x" <> Integer.to_string(length(urls)) <> "]", else: base_prev <> " [图片 x" <> Integer.to_string(length(urls)) <> "]"
+    cur = %{id: qid, kind: "images", preview: prev, text: text || "", started_at: now_iso(), origin: "user"}
     Task.start(fn ->
       result =
         try do
@@ -1212,11 +1387,9 @@ defmodule Newbee.Web.Session do
         catch
           :exit, r -> {:error, "exit: " <> inspect(r)}
         end
-
       send(parent, {:turn_finished, result})
     end)
-
-    %{st | busy: true}
+    %{st | busy: true, current: cur}
   end
 
   defp set_kernel_cwd(%{kernel: nil, sid: sid}, cwd), do: Newbee.Session.set_cwd(sid, cwd)

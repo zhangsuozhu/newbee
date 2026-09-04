@@ -2767,3 +2767,15 @@ svg.ico {
 .evo-explain:hover { color: var(--nb-label-1); border-color: var(--nb-label-caption); }
 .evo-explain:disabled { opacity: .6; cursor: wait; }
 .evo-layers-detail { margin: 6px 9px 8px; border: 1px solid var(--nb-border); border-radius: 6px; }
+/* 等待队列条（方案A）：刷新可重建 + 单条取消 */
+.queue-bar { margin: 0 0 8px; border: 1px solid var(--nb-border); border-radius: 8px; background: var(--nb-bg-elev, rgba(128,128,128,.08)); padding: 6px 8px; font-size: 12px; }
+.queue-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+#queue-count { font-weight: 600; }
+.queue-current { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--nb-label-2); }
+#queue-clear { margin-left: auto; }
+.queue-list { display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; }
+.queue-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border: 1px solid var(--nb-border); border-radius: 6px; background: var(--nb-bg, transparent); }
+.queue-pos { flex: none; min-width: 2em; text-align: center; font-weight: 700; color: var(--nb-label-caption); }
+.queue-preview { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-kind { flex: none; font-size: 11px; color: var(--nb-label-caption); }
+.queue-cancel { flex: none; }

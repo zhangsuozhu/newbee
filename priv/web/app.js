@@ -247,17 +247,16 @@ const flow = $("flow");
     token: localStorage.getItem("newbee.token") || null,
     ws: null,
     busy: false,
-    creatingSession: false,  // 新建会话防重入：点击后立即切换 UI，后台完成 RPC
-    hasPrompted: false,      // 当前会话是否已有用户消息（用于首条消息自动标题）
-    titleDirty: false,       // 本轮结束后刷新侧栏标题（首条消息自动命名）
-    currentAssistant: null,   // 流式 assistant 行
-    currentReasoning: null,   // 流式 reasoning disclosure 元素
-    currentTool: null,        // 进行中的 tool 卡片
+    creatingSession: false,
+    hasPrompted: false,
+    titleDirty: false,
+    currentAssistant: null,
+    currentReasoning: null,
+    currentTool: null,
     timing: { llmMs: 0, toolMs: 0, llmStart: null, toolStart: null,
               ftSum: 0, ftCount: 0, ftRecorded: false, outTok: 0 },
-    attachments: [],   // [{id, name, type, size, isImage, dataUrl}]
+    attachments: [],
     uploading: 0,
-
     stickBottom: true,
     turnUsage: null,
     turnUsageDetails: [],
@@ -279,6 +278,9 @@ const flow = $("flow");
     fileAttribution: {},
     groupBySession: {},
     selectedSessions: new Set(),
+    queue: [],
+    queueSeq: 0,
+    queueCurrent: null,
   };
 
   // ── 会话统计持久化（按 sessionId 存 localStorage，刷新/重连后保留）──
@@ -499,6 +501,9 @@ const flow = $("flow");
         hidePermission();
         clearAttachments();
         setBusy(false);
+        state.queue = [];
+        state.queueCurrent = null;
+        renderQueue();
         if (p.text) line("notice", p.text);
         break;
       }
@@ -550,7 +555,28 @@ const flow = $("flow");
         break;
       case "prompt_injection": promptInjection(p); break;
 case "advisor_note": line("notice", `◉ advisor: ${p.text}`); break;
-case "queued": line("notice", `⏳ 已排队（第 ${p.queued || 1} 位），当前任务完成后自动执行`); break;
+case "queued": line("notice", `已排队（第 ${p.queued || 1} 位），当前任务完成后自动执行`); break;
+case "collab_task_queued": line("notice", `协作任务已排队（${p.queued || 1} 位）`); break;
+case "collab_result_queued": line("notice", `协作结果已排队（${p.queued || 1} 位）`); break;
+case "collab_message_queued": line("notice", `协作消息已排队（${p.queued || 1} 位）`); break;
+case "queue_updated": {
+  state.queue = Array.isArray(p.queue) ? p.queue : [];
+  if (typeof p.seq === "number") state.queueSeq = p.seq;
+  state.queueCurrent = p.current || null;
+  renderQueue();
+  const ev = p.event || {};
+  if (ev.type === "cancelled") line("notice", `已取消排队：${ev.preview || ev.id || ""}`);
+  else if (ev.type === "cleared") line("notice", `已清空 ${ev.count || 0} 条排队`);
+  else if (ev.type === "discarded") line("notice", `排队已丢弃 ${ev.count || 0} 条（内核启动失败）`);
+  break;
+}
+case "queue_cancelled": {
+  const id = p.id;
+  if (id) state.queue = (state.queue || []).filter((it) => it && it.id !== id);
+  renderQueue();
+  line("notice", `已取消排队：${p.preview || id || ""}`);
+  break;
+}
 case "notice": line("notice", p.text); break;
 case "shell_result": shellResult(p); break;
 case "file_diff": fileDiff(p); break;
@@ -2393,6 +2419,20 @@ case "goal_round": break;
     state.cwd = sessionState.cwd || null;
       // 同步会话忙碌状态：切到正在跑任务的会话时，UI 立即反映（中断/排队按钮、busy 圆点）
     setBusy(sessionState.busy === true);
+    // 等待队列重建（方案A）：刷新后按 state.queue/current 恢复排队条与执行中提示。
+    state.queue = Array.isArray(sessionState.queue) ? sessionState.queue : [];
+    state.queueSeq = sessionState.queue_seq || sessionState.queueSeq || sessionState.seq || 0;
+    state.queueCurrent = sessionState.current || null;
+    renderQueue();
+    if (state.queueCurrent && state.queueCurrent.preview) line("notice", "正在执行：" + state.queueCurrent.preview);
+    if (state.queue.length > 0) line("notice", "已恢复等待队列 " + state.queue.length + " 条，可单条取消");
+    const recent = Array.isArray(sessionState.queue_events) ? sessionState.queue_events : (Array.isArray(sessionState.queueEvents) ? sessionState.queueEvents : []);
+    recent.slice(0, 3).forEach((ev) => {
+      if (!ev || !ev.type) return;
+      if (ev.type === "cancelled") line("notice", "最近已取消排队：" + (ev.preview || ev.id || ""));
+      else if (ev.type === "cleared") line("notice", "最近已清空排队 " + (ev.count || 0) + " 条");
+      else if (ev.type === "discarded") line("notice", "最近排队已丢弃 " + (ev.count || 0) + " 条（内核启动失败）");
+    });
     // 切回正在等待权限确认的会话时恢复确认条（permission_ask 事件在切走期间已错过）
     if (sessionState.awaiting_permission === true) showPermission("该会话正在等待权限确认（代码执行请求）");
     connect();
@@ -3086,11 +3126,84 @@ case "goal_round": break;
     }
   }
 
-  // ── 发送 ──
+  // 等待队列（方案A）：前端生成 queueId，后端按 id 追踪，刷新后按 session.state 重建。
+  function genQueueId() {
+    return "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+  function queueKindLabel(kind) {
+    if (kind === "images") return "图片";
+    if (kind === "collab_task") return "协作任务";
+    if (kind === "collab_result") return "协作结果";
+    if (kind === "collab_message") return "协作消息";
+    return "文本";
+  }
+  function renderQueue() {
+    const bar = $("queue-bar");
+    const list = $("queue-list");
+    const count = $("queue-count");
+    const cur = $("queue-current");
+    if (!bar || !list) return;
+    const q = Array.isArray(state.queue) ? state.queue : [];
+    if (q.length === 0 && !state.queueCurrent) { bar.classList.add("hidden"); return; }
+    bar.classList.remove("hidden");
+    if (count) count.textContent = q.length > 0 ? ("等待队列 " + q.length + " 条") : "等待队列空";
+    if (cur) cur.textContent = state.queueCurrent && state.queueCurrent.preview ? ("执行中: " + state.queueCurrent.preview) : "";
+    list.innerHTML = "";
+    q.forEach((item, idx) => {
+      const row = document.createElement("div");
+      row.className = "queue-item";
+      row.dataset.queueId = item.id || "";
+      const pos = document.createElement("span");
+      pos.className = "queue-pos";
+      pos.textContent = String(idx + 1);
+      const prev = document.createElement("span");
+      prev.className = "queue-preview";
+      prev.textContent = item.preview || item.text || "(空)";
+      prev.title = (item.text || item.preview || "");
+      const kind = document.createElement("span");
+      kind.className = "queue-kind";
+      kind.textContent = queueKindLabel(item.kind);
+      const btn = document.createElement("button");
+      btn.className = "btn-ghost queue-cancel";
+      btn.textContent = "取消";
+      btn.title = "取消这条排队";
+      btn.onclick = () => cancelQueueItem(item.id, prev.textContent);
+      row.append(pos, prev, kind, btn);
+      list.appendChild(row);
+    });
+  }
+  async function cancelQueueItem(queueId, preview) {
+    if (!queueId || !state.sid) return;
+    const sid = state.sid;
+    state.queue = (state.queue || []).filter((it) => it && it.id !== queueId);
+    renderQueue();
+    try {
+      if (state.ws && state.ws.readyState === 1) {
+        state.ws.send(JSON.stringify({ type: "cancelQueued", queueId }));
+      }
+      await rpc("session.cancelQueued", { sessionId: sid, queueId });
+    } catch (e) {
+      line("error", "取消排队失败: " + e.message);
+      try {
+        const st = await rpc("session.state", { sessionId: sid });
+        if (sid === state.sid) { state.queue = st.queue || []; state.queueSeq = st.queue_seq || st.seq || 0; state.queueCurrent = st.current || null; renderQueue(); }
+      } catch (_) {}
+    }
+  }
+  async function clearQueueOnly() {
+    if (!state.sid) return;
+    const sid = state.sid;
+    try {
+      if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: "clearQueue" }));
+      await rpc("session.clearQueue", { sessionId: sid });
+    } catch (e) {
+      line("error", "清空队列失败: " + e.message);
+    }
+  }
+  // 发送
   async function send() {
     state.eventCreatedAt = new Date().toISOString();
     const text = input.value.trim();
-    // /new 在 WebUI 等同 "+ 新会话"：本地走 newSession() 全新 sid + 清空视图，避免后端旧重启路径的历史串台
     if (text === "/new" || text.startsWith("/new ")) {
       input.value = "";
       autoGrow();
@@ -3103,8 +3216,13 @@ case "goal_round": break;
     const attachments = state.attachments.slice();
     if (state.uploading > 0) { line("notice", "请等待文件上传完成"); return; }
     if ((!text && attachments.length === 0) || !state.sid) return;
-    if (state.busy) {
-      line("notice", "⏳ 已加入队列：当前任务完成后自动执行");
+    const queueId = genQueueId();
+    const wasBusy = state.busy === true;
+    if (wasBusy) {
+      line("notice", "已加入队列：当前任务完成后自动执行");
+      const prev = text || (attachments.length > 0 ? ("[图片 x" + attachments.length + "]") : "");
+      state.queue = [...(state.queue || []), { id: queueId, kind: attachments.length > 0 ? "images" : "text", preview: prev.slice(0, 80), text: text, createdAt: state.eventCreatedAt, origin: "user" }];
+      renderQueue();
     } else if (text) {
       lastUserPrompt = text;
     }
@@ -3126,20 +3244,21 @@ case "goal_round": break;
           sessionId: state.sid,
           uploadIds: attachments.map(a => a.id),
           text,
+          queueId,
         });
       } else if (state.ws && state.ws.readyState === 1) {
-        state.ws.send(JSON.stringify({ type: "prompt", text }));
+        state.ws.send(JSON.stringify({ type: "prompt", text, queueId }));
       } else {
-        await rpc("session.prompt", { sessionId: state.sid, text });
+        await rpc("session.prompt", { sessionId: state.sid, text, queueId });
       }
       clearAttachments();
     } catch (e) {
       line("error", e.message);
+      state.queue = (state.queue || []).filter((it) => it && it.id !== queueId);
+      renderQueue();
       state.busy = false; setBusy(false);
     }
   }
-
-
   function interrupt() {
     if (state.ws && state.ws.readyState === 1) {
       state.ws.send(JSON.stringify({ type: "interrupt" }));
@@ -3652,6 +3771,7 @@ case "goal_round": break;
     if (hasImage) e.preventDefault();
   });
   $("interrupt").onclick = interrupt;
+  if ($("queue-clear")) $("queue-clear").onclick = clearQueueOnly;
   $("new-session").onclick = () => newSession(); // 直接绑函数会把 MouseEvent 当 cwd 参数传入
   $("perm-yes").onclick = () => permission(true);
   $("perm-no").onclick = () => permission(false);
