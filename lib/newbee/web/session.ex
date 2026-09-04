@@ -821,10 +821,15 @@ defmodule Newbee.Web.Session do
     if st.kernel && Process.alive?(st.kernel), do: Newbee.Agent.Loop.interrupt(st.kernel)
     n = :queue.len(st.queue)
     st1 = %{st | queue: :queue.new(), current: nil}
-    {st2, ev} = push_queue_event(st1, "cleared", %{count: n, reason: "interrupt"})
-    broadcast_queue(st.sid, st2, ev)
-    if n > 0, do: broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
-    {:noreply, st2}
+
+    if n == 0 do
+      {:noreply, st1}
+    else
+      {st2, ev} = push_queue_event(st1, "cleared", %{count: n, reason: "interrupt"})
+      broadcast_queue(st.sid, st2, ev)
+      broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
+      {:noreply, st2}
+    end
   end
 
   def handle_cast({:permission_reply, ok}, st) do
@@ -970,11 +975,16 @@ defmodule Newbee.Web.Session do
   end
   def handle_call(:clear_queue, _from, st) do
     n = :queue.len(st.queue)
-    st1 = %{st | queue: :queue.new()}
-    {st2, ev} = push_queue_event(st1, "cleared", %{count: n, reason: "clear_queue"})
-    broadcast_queue(st.sid, st2, ev)
-    if n > 0, do: broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
-    {:reply, {:ok, %{cleared: n, queued: 0, queue: []}}, st2}
+
+    if n == 0 do
+      {:reply, {:ok, %{cleared: 0, queued: 0, queue: []}}, st}
+    else
+      st1 = %{st | queue: :queue.new()}
+      {st2, ev} = push_queue_event(st1, "cleared", %{count: n, reason: "clear_queue"})
+      broadcast_queue(st.sid, st2, ev)
+      broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
+      {:reply, {:ok, %{cleared: n, queued: 0, queue: []}}, st2}
+    end
   end
 
   # 热更新思考强度：busy/booting 时不阻塞调用方——先持久化 + 更新会话 client，立即回复；
@@ -1328,9 +1338,14 @@ defmodule Newbee.Web.Session do
     broadcast(sid, :session_renewed, %{sessionId: sid, text: "已开启新会话"})
     {worker, ref} = spawn_kernel_boot(:kernel_restarted, sid, client, parent)
     base = %{st | kernel: nil, booting: true, busy: false, queue: :queue.new(), current: nil, boot_client: client, boot_worker: worker, boot_ref: ref}
-    {final, ev} = push_queue_event(base, "cleared", %{count: n, reason: "new_session"})
-    broadcast_queue(sid, final, ev)
-    final
+
+    if n == 0 do
+      base
+    else
+      {final, ev} = push_queue_event(base, "cleared", %{count: n, reason: "new_session"})
+      broadcast_queue(sid, final, ev)
+      final
+    end
   end
 
   # kernel 为 nil = 会话初始化时配置无效。给出可操作提示，不启动必死的 Task。
