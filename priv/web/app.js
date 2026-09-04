@@ -4668,6 +4668,11 @@ case "goal_round": break;
     stepsUnread: 0,
     filesUnread: 0,
     evoUnread: 0,
+    debugOn: false,
+    debugItems: [],
+    debugSince: 0,
+    debugTimer: 0,
+    debugSelected: 0,
   };
 
   // 未读徽标：系统有更新时亮点，不抢焦点；用户点开对应 tab 才清除（H3 用户掌控 + 注意力瓶颈）。
@@ -4710,6 +4715,10 @@ case "goal_round": break;
     $("mc-overview-refresh").addEventListener("click", () => refreshMCOverview());
     $("mc-run-test").addEventListener("click", () => mcRunTest());
     $("mc-commit").addEventListener("click", () => mcCommit());
+    $("mc-debug-toggle").addEventListener("click", () => toggleDebug());
+    $("mc-debug-refresh").addEventListener("click", () => refreshDebugList(true));
+    $("mc-debug-clear").addEventListener("click", () => clearDebug());
+    debugStatus();
 
     // 恢复面板状态（含 sticky tab：用户上次停留在哪个 tab，下次还停在那）
     try {
@@ -4745,10 +4754,12 @@ case "goal_round": break;
       if (MC.tab === "evolution") refreshEvolution();
       if (MC.tab === "overview") refreshMCOverview();
       if (MC.tab === "diff") refreshMCDiff();
+      if (MC.tab === "debug") refreshDebugList(true);
       if ((MC.tab === "collaboration" || MC.tab === "tasks") && state.activeGroupId) markCollabSeen(state.activeGroupId);
     } else {
       panel.classList.add("hidden");
       expandBtn.classList.remove("hidden");
+      stopDebugPolling();
     }
     try { localStorage.setItem("newbee-mc-open", open ? "1" : "0"); } catch (e) {}
   }
@@ -4769,7 +4780,203 @@ case "goal_round": break;
     if (tab === "diff") refreshMCDiff();
     if (tab === "overview") refreshMCOverview();
     if (tab === "evolution") refreshEvolution();
+    if (tab === "debug") { refreshDebugList(true); if (MC.debugOn) startDebugPolling(); }
+    else stopDebugPolling();
   }
+
+  // ── Debug Tab：大模型 HTTP 往返 ──
+  // 点开始：后端开始记录 + 前端每 1.5s 轮询；点停止：两边都停，省带宽与算力。
+  async function debugStatus() {
+    try {
+      const st = await rpc("debug.status", {});
+      MC.debugOn = !!(st && st.enabled);
+    } catch (e) {
+      MC.debugOn = false;
+    }
+    renderDebugStatus();
+    if (MC.debugOn && MC.tab === "debug") startDebugPolling();
+  }
+
+  function renderDebugStatus() {
+    const btn = $("mc-debug-toggle");
+    const tip = $("mc-debug-status");
+    if (btn) btn.textContent = MC.debugOn ? "停止" : "开始";
+    if (tip) {
+      tip.textContent = MC.debugOn
+        ? "记录中，每 1.5s 自动刷新；点停止可省带宽与算力"
+        : "未开始（点开始后实时记录，停止后零开销）";
+      tip.classList.toggle("on", MC.debugOn);
+    }
+  }
+
+  async function toggleDebug() {
+    const next = !MC.debugOn;
+    try {
+      const r = await rpc("debug.setEnabled", { enabled: next });
+      MC.debugOn = !!(r && r.enabled);
+    } catch (e) {
+      line("error", "切换 Debug 记录失败: " + e.message);
+      return;
+    }
+    renderDebugStatus();
+    if (MC.debugOn) {
+      MC.debugSince = 0;
+      MC.debugItems = [];
+      MC.debugSelected = 0;
+      refreshDebugList(true);
+      startDebugPolling();
+    } else {
+      stopDebugPolling();
+    }
+  }
+
+  function startDebugPolling() {
+    stopDebugPolling();
+    MC.debugTimer = setInterval(() => {
+      if (MC.tab === "debug" && MC.debugOn) refreshDebugList(false);
+    }, 1500);
+  }
+
+  function stopDebugPolling() {
+    if (MC.debugTimer) { clearInterval(MC.debugTimer); MC.debugTimer = 0; }
+  }
+
+  async function refreshDebugList(reset) {
+    if (reset) { MC.debugSince = 0; MC.debugItems = []; MC.debugSelected = 0; hideDebugDetail(); }
+    try {
+      const res = await rpc("debug.list", { limit: 30, since: MC.debugSince });
+      const items = (res && res.entries) || [];
+      if (items.length) {
+        MC.debugItems = MC.debugItems.concat(items);
+        const ids = MC.debugItems.map((x) => x.id);
+        MC.debugSince = Math.max.apply(null, ids);
+        if (MC.debugItems.length > 100) MC.debugItems = MC.debugItems.slice(-100);
+      }
+      renderDebugList();
+    } catch (e) {
+      if (MC.debugItems.length === 0) {
+        const list = $("mc-debug-list");
+        if (list) list.innerHTML = "<div style=\"color:var(--fg2);font-size:12px;padding:16px;text-align:center\">加载失败: " + escapeHtml(e.message) + "</div>";
+      }
+    }
+  }
+
+  function debugPhaseName(p) {
+    if (p === "inflight") return "进行中";
+    if (p === "done") return "完成";
+    if (p === "error") return "出错";
+    if (p === "interrupted") return "中断";
+    return p || "-";
+  }
+
+  function fmtBytes(n) {
+    if (!n && n !== 0) return "-";
+    if (n < 1024) return n + "B";
+    if (n < 1024 * 1024) return (Math.round(n / 102.4) / 10) + "KB";
+    return (Math.round(n / 104857.6) / 10) + "MB";
+  }
+
+  function fmtMs(ms) {
+    if (ms === null || ms === undefined) return "-";
+    if (ms < 1000) return ms + "ms";
+    return (Math.round(ms / 100) / 10) + "s";
+  }
+
+  function renderDebugList() {
+    const list = $("mc-debug-list");
+    if (!list) return;
+    if (!MC.debugOn && MC.debugItems.length === 0) {
+      list.innerHTML = "<div style=\"color:var(--fg2);font-size:12px;padding:16px;text-align:center\">未开始<br>点上面的开始按钮后，这里实时显示与大模型的 HTTP 交互</div>";
+      return;
+    }
+    if (MC.debugItems.length === 0) {
+      list.innerHTML = "<div style=\"color:var(--fg2);font-size:12px;padding:16px;text-align:center\">暂无记录<br>发一条消息后自动出现</div>";
+      return;
+    }
+    const rows = MC.debugItems.slice().reverse().map((it) => {
+      const t = it.started_at ? new Date(it.started_at).toLocaleString() : "";
+      const st = it.status !== null && it.status !== undefined ? it.status : "-";
+      const err = it.error ? "<div class=\"debug-item-err\">" + escapeHtml(it.error) + "</div>" : "";
+      return "<div class=\"debug-item" + (MC.debugSelected === it.id ? " active" : "") + "\" data-id=\"" + it.id + "\">"
+        + "<div class=\"debug-item-head\"><span class=\"debug-item-id\">#" + it.id + "</span>"
+        + "<span class=\"debug-item-phase " + escapeHtml(it.phase || "") + "\">" + escapeHtml(debugPhaseName(it.phase)) + "</span>"
+        + "<span class=\"debug-item-meta\">" + st + "</span>"
+        + "<span class=\"debug-item-meta\">" + escapeHtml(it.endpoint || "") + "</span></div>"
+        + "<div class=\"debug-item-meta\">" + escapeHtml(t) + " · " + escapeHtml(it.model || "") + " · "
+        + fmtMs(it.duration_ms) + " · 上行 " + fmtBytes(it.req_bytes) + " / 下行 " + fmtBytes(it.resp_bytes) + "</div>"
+        + err + "</div>";
+    });
+    list.innerHTML = rows.join("");
+    list.querySelectorAll(".debug-item").forEach((el) => {
+      el.addEventListener("click", () => showDebugDetail(parseInt(el.dataset.id, 10)));
+    });
+  }
+
+  async function showDebugDetail(id) {
+    MC.debugSelected = id;
+    renderDebugList();
+    const box = $("mc-debug-detail");
+    if (!box) return;
+    box.classList.remove("hidden");
+    box.innerHTML = "<div class=\"debug-kv\">加载 #" + id + " …</div>";
+    try {
+      const res = await rpc("debug.get", { id: id });
+      renderDebugDetail(res && res.entry);
+    } catch (e) {
+      box.innerHTML = "<div class=\"debug-kv\">加载失败: " + escapeHtml(e.message) + "</div>";
+    }
+  }
+
+  function debugHeadersHtml(hs) {
+    if (!hs || !hs.length) return "<div class=\"debug-kv\">（无）</div>";
+    return "<div class=\"debug-kv\">" + hs.map((h) => escapeHtml(h[0]) + ": " + escapeHtml(h[1])).join("<br>") + "</div>";
+  }
+
+  function renderDebugDetail(e) {
+    const box = $("mc-debug-detail");
+    if (!box || !e) return;
+    const t = e.started_at ? new Date(e.started_at).toLocaleString() : "";
+    let h = "<div><button id=\"mc-debug-back\" class=\"btn-ghost\">← 返回列表</button></div>";
+    h += "<h4>概要 #" + e.id + "</h4><div class=\"debug-kv\">"
+      + escapeHtml(t) + "<br>模型 " + escapeHtml(e.model || "-") + "<br>"
+      + escapeHtml(e.method || "POST") + " " + escapeHtml(e.url || e.endpoint || "") + "<br>"
+      + "状态 " + escapeHtml(debugPhaseName(e.phase)) + " · HTTP " + (e.resp_status !== null && e.resp_status !== undefined ? e.resp_status : "-")
+      + " · 耗时 " + fmtMs(e.duration_ms) + "<br>"
+      + "上行 " + fmtBytes(e.req_bytes) + (e.req_truncated ? "（已截断）" : "")
+      + " / 下行 " + fmtBytes(e.resp_bytes) + (e.resp_truncated ? "（已截断）" : "");
+    if (e.session_id) h += "<br>会话 " + escapeHtml(e.session_id);
+    if (e.error) h += "<br>错误 " + escapeHtml(e.error);
+    h += "</div>";
+    h += "<h4>请求头</h4>" + debugHeadersHtml(e.req_headers);
+    h += "<h4>请求体</h4><pre>" + escapeHtml(e.req_body || "") + "</pre>";
+    h += "<h4>回包头</h4>" + debugHeadersHtml(e.resp_headers);
+    h += "<h4>回包体</h4><pre>" + escapeHtml(e.resp_body || "") + "</pre>";
+    if (e.sse_raw) h += "<h4>SSE 原始流" + (e.sse_truncated ? "（已截断）" : "") + "</h4><pre>" + escapeHtml(e.sse_raw) + "</pre>";
+    box.innerHTML = h;
+    const back = $("mc-debug-back");
+    if (back) back.addEventListener("click", () => hideDebugDetail());
+    box.scrollIntoView({ block: "nearest" });
+  }
+
+  function hideDebugDetail() {
+    MC.debugSelected = 0;
+    const box = $("mc-debug-detail");
+    if (box) { box.classList.add("hidden"); box.innerHTML = ""; }
+  }
+
+  async function clearDebug() {
+    try {
+      await rpc("debug.clear", {});
+      MC.debugItems = [];
+      MC.debugSince = 0;
+      hideDebugDetail();
+      renderDebugList();
+    } catch (e) {
+      line("error", "清空 Debug 记录失败: " + e.message);
+    }
+  }
+
+
 
 
   // ── 文件变更追踪 ──

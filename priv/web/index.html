@@ -114,6 +114,7 @@
       <button class="mc-tab" data-tab="evolution" title="环境进化">⟁ 进化<span class="mc-badge hidden" id="mc-badge-evolution"></span></button>
       <button class="mc-tab" data-tab="collaboration" title="协作消息">协作</button>
       <button class="mc-tab" data-tab="tasks" title="工作项">工作项</button>
+      <button class="mc-tab" data-tab="debug" title="大模型 HTTP 调试">调试</button>
 
     </div>
     <div id="mc-collaboration" class="mc-pane hidden">
@@ -255,6 +256,21 @@
         <div class="evo-section-head"><span>⑤ 历史记录</span><span id="evo-events-size" class="evo-section-meta">-</span></div>
         <div id="evo-feed" class="evo-feed"></div>
       </section>
+
+    </div>
+    <div id="mc-debug" class="mc-pane hidden">
+      <div class="mc-pane-head">
+        <span>Debug · 模型 HTTP</span>
+        <div class="mc-actions">
+          <button id="mc-debug-toggle" class="mc-action-btn" title="开始或停止记录与刷新">开始</button>
+          <button id="mc-debug-refresh" class="icon-btn" title="刷新">↻</button>
+          <button id="mc-debug-clear" class="icon-btn" title="清空记录">✕</button>
+        </div>
+      </div>
+      <div id="mc-debug-status" class="debug-status">未开始（点开始后实时记录，停止后零开销）</div>
+      <div id="mc-debug-list" class="debug-list"></div>
+      <div id="mc-debug-detail" class="debug-detail hidden"></div>
+    </div>
 
   </aside>
 </div>

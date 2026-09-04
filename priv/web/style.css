@@ -856,6 +856,36 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 .mc-diff-content .diff-del { color: #f44336; }
 .mc-diff-content .diff-hunk { color: #9c27b0; }
 
+
+/* Debug Tab：大模型 HTTP 往返 */
+.debug-status { padding: 6px 8px; font-size: 11px; color: var(--fg2); }
+.debug-status.on { color: #4caf50; }
+.debug-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 0; }
+.debug-item {
+  padding: 6px 8px; border-radius: 6px; background: var(--bg);
+  border: 1px solid var(--border); cursor: pointer; font-size: 12px;
+}
+.debug-item:hover { border-color: var(--accent); }
+.debug-item.active { border-color: var(--accent); }
+.debug-item-head { display: flex; gap: 8px; align-items: center; }
+.debug-item-id { font-family: monospace; color: var(--accent); }
+.debug-item-meta { color: var(--fg2); font-size: 11px; font-family: monospace; }
+.debug-item-err { color: #f44336; font-size: 11px; }
+.debug-item-phase { font-size: 11px; }
+.debug-item-phase.inflight { color: var(--accent); }
+.debug-item-phase.done { color: #4caf50; }
+.debug-item-phase.error { color: #f44336; }
+.debug-item-phase.interrupted { color: #ff9800; }
+.debug-detail { padding: 6px 0; }
+.debug-detail pre {
+  font-family: monospace; font-size: 11px; line-height: 1.4;
+  white-space: pre-wrap; word-break: break-all;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; max-height: 320px; overflow-y: auto; margin: 4px 0;
+}
+.debug-detail h4 { font-size: 12px; margin: 8px 0 2px; }
+.debug-kv { font-size: 11px; color: var(--fg2); font-family: monospace; }
+
 /* 响应式：窄屏时覆盖整个右侧 */
 @media (max-width: 900px) {
   #mission-control { width: 100%; }
