@@ -72,4 +72,17 @@ defmodule Newbee.Environment.HumanBriefTest do
     brief = HumanBrief.generate(%{kind: :rule}, client_fun: fn _ -> {:ok, json} end)
     assert brief["fallback"] == true
   end
+
+  test "prefer: 瘦回退永不覆盖已有卡" do
+    alias Newbee.Environment.HumanBrief, as: HB
+    rich = HB.template_brief(%{kind: :rule, usage: "命中失败时提醒检查凭证", ring: 2})
+    thin = HB.template_brief(%{kind: nil, ring: nil})
+    llm = Map.merge(rich, %{"fallback" => false, "title" => "记住检查凭证"})
+    assert HB.prefer(nil, thin) == thin
+    assert HB.prefer(rich, thin) == rich
+    assert HB.prefer(rich, llm) == llm
+    assert HB.prefer(llm, thin) == llm
+    assert HB.prefer(rich, nil) == rich
+  end
+
 end
