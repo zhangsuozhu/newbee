@@ -301,21 +301,44 @@ defmodule Newbee.LLM.Responses do
   defp parse_with_id(body), do: {:error, {:bad_response, body}}
 
   defp perform(client, %{} = body, on_text, on_reasoning) do
-    if body[:stream] do
-      perform_stream(client, body, on_text, on_reasoning)
-    else
-      perform_json(client, body)
-    end
+    _dbg_id =
+      Newbee.LLM.HttpDebug.start_exchange(%{
+        session_id: Newbee.LLM.HttpDebug.session_id_from_cache_key(client.cache_key),
+        model: client.model,
+        base_url: client.base_url,
+        endpoint: "/responses",
+        method: "POST",
+        url: client.base_url <> "/responses",
+        api: "responses",
+        req_headers: [
+          {"authorization", "Bearer #{client.api_key}"},
+          {"content-type", "application/json"},
+          {"user-agent", "newbee"}
+        ],
+        req_body: body
+      })
+
+    result =
+      if body[:stream] do
+        perform_stream(client, body, on_text, on_reasoning)
+      else
+        perform_json(client, body)
+      end
+
+    Newbee.LLM.HttpDebug.finish_current(result)
+    result
   end
 
   defp perform_json(client, body) do
     req = build_req(client, body, false)
 
     case request_json_with_retry(req, @overload_retries) do
-      {:ok, %{status: 200, body: response_body}} ->
+      {:ok, %{status: 200, body: response_body} = resp} ->
+        Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
         {:ok, {:json, response_body}}
 
-      {:ok, %{status: status, body: response_body}} ->
+      {:ok, %{status: status, body: response_body} = resp} ->
+        Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
         {:error, {:http_error, status, response_body}}
 
       {:error, error} ->
@@ -361,6 +384,8 @@ defmodule Newbee.LLM.Responses do
         end
 
       {:ok, %{status: 200} = resp} ->
+        Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
+
         if event_stream?(resp) do
           consume_sse(resp, client, on_text, on_reasoning)
         else
@@ -372,6 +397,8 @@ defmodule Newbee.LLM.Responses do
         end
 
       {:ok, resp} ->
+        Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
+
         case resp.body do
           body when is_binary(body) and body != "" ->
             {:error, {:http_error, resp.status, body}}
@@ -431,6 +458,7 @@ defmodule Newbee.LLM.Responses do
         else
           case Req.parse_message(resp, message) do
             {:ok, [data: data]} ->
+              Newbee.LLM.HttpDebug.append_raw(IO.iodata_to_binary(data))
               {events, rest} = split_sse(buffer <> IO.iodata_to_binary(data))
               acc = Enum.reduce(events, acc, &apply_sse_event(&1, &2, on_text, on_reasoning))
               sse_loop(resp, client, on_text, on_reasoning, acc, rest, started_at)

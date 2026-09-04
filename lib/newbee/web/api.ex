@@ -1355,6 +1355,47 @@ defmodule Newbee.Web.Api do
     |> then(&{:ok, &1})
   end
 
+  # Debug Tab：大模型 HTTP 往返追踪。默认关闭，开启后 后端记录请求头体与回包头体，
+  # 前端轮询拉取；关闭即停记停拉，省带宽与算力。
+  defp dispatch_rpc("debug.status", _p) do
+    {:ok, Newbee.LLM.HttpDebug.status()}
+  end
+
+  defp dispatch_rpc("debug.setEnabled", p) do
+    flag = truthy?(Map.get(p, "enabled", false))
+    {:ok, %{enabled: Newbee.LLM.HttpDebug.set_enabled(flag)}}
+  end
+
+  defp dispatch_rpc("debug.list", p) do
+    limit =
+      case Map.get(p, "limit", 30) do
+        n when is_integer(n) -> n |> min(100) |> max(1)
+        _ -> 30
+      end
+
+    since =
+      case Map.get(p, "since", 0) do
+        n when is_integer(n) -> n
+        _ -> 0
+      end
+
+    {:ok, %{entries: Newbee.LLM.HttpDebug.list(limit, since)}}
+  end
+
+  defp dispatch_rpc("debug.get", %{"id" => id}) when is_integer(id) do
+    case Newbee.LLM.HttpDebug.get(id) do
+      nil -> {:error, "not_found", "找不到该条记录"}
+      entry -> {:ok, %{entry: entry}}
+    end
+  end
+
+  defp dispatch_rpc("debug.get", _p), do: {:error, "bad_request", "需要整数 id 字段"}
+
+  defp dispatch_rpc("debug.clear", _p) do
+    :ok = Newbee.LLM.HttpDebug.clear()
+    {:ok, %{cleared: true}}
+  end
+
   defp dispatch_rpc("evolution.feed", p) do
     n = min(max(p["n"] || 100, 1), 300)
     {:ok, %{events: project_evolution_events(n)}}

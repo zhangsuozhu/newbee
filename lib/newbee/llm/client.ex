@@ -314,6 +314,25 @@ defmodule Newbee.LLM.Client do
         do: Map.put(body, :reasoning_effort, effort),
         else: body
 
+    dbg_headers = [
+      {"authorization", "Bearer #{client.api_key}"},
+      {"content-type", "application/json"},
+      {"user-agent", "newbee"}
+    ]
+
+    _dbg_id =
+      Newbee.LLM.HttpDebug.start_exchange(%{
+        session_id: Newbee.LLM.HttpDebug.session_id_from_cache_key(client.cache_key),
+        model: client.model,
+        base_url: client.base_url,
+        endpoint: "/chat/completions",
+        method: "POST",
+        url: client.base_url <> "/chat/completions",
+        api: "chat",
+        req_headers: dbg_headers,
+        req_body: body
+      })
+
     # receive_timeout 是"相邻两块数据的间隔"。serverless 端点冷启动（唤醒实例）
     # 实测 ~38s 才出首 token，30s 必然误超时再重试（等待翻倍）；120s 覆盖冷启动。
     build_req = fn body ->
@@ -378,6 +397,7 @@ defmodule Newbee.LLM.Client do
           other
       end
 
+    Newbee.LLM.HttpDebug.finish_current(result)
     Newbee.DebugLog.log(:llm, "done in #{System.monotonic_time(:millisecond) - t0}ms result=#{elem(result, 0)}")
     result
   end
@@ -439,6 +459,23 @@ defmodule Newbee.LLM.Client do
 
     t0 = System.monotonic_time(:millisecond)
 
+    _dbg_id =
+      Newbee.LLM.HttpDebug.start_exchange(%{
+        session_id: Newbee.LLM.HttpDebug.session_id_from_cache_key(client.cache_key),
+        model: client.model,
+        base_url: client.base_url,
+        endpoint: "/chat/completions",
+        method: "POST",
+        url: client.base_url <> "/chat/completions",
+        api: "chat-complete",
+        req_headers: [
+          {"authorization", "Bearer #{client.api_key}"},
+          {"content-type", "application/json"},
+          {"user-agent", "newbee"}
+        ],
+        req_body: body
+      })
+
     req =
       [
         url: client.base_url <> "/chat/completions",
@@ -458,6 +495,8 @@ defmodule Newbee.LLM.Client do
     result =
       case complete_req(req, @overload_retries) do
         {:ok, %{status: 200} = resp} ->
+          Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
+
           case decode_body(resp.body) do
             {:ok, %{"choices" => [choice | _]} = body_map} ->
               content = get_in(choice, ["message", "content"]) || ""
@@ -473,11 +512,14 @@ defmodule Newbee.LLM.Client do
           end
 
         {:ok, %{status: status} = resp} when status in @overload_statuses ->
+          Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
           {:error, {:http_error, status, resp.body}}
 
         {:error, e} ->
           {:error, e}
       end
+
+    Newbee.LLM.HttpDebug.finish_current(result)
 
     Newbee.DebugLog.log(
       :llm,
@@ -592,6 +634,7 @@ defmodule Newbee.LLM.Client do
     case Req.request(req) do
       {:ok, %{status: status} = resp}
       when status in @overload_statuses and overload_left > 0 ->
+        Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
         _ = drain(resp)
 
         if interrupted?(client) do
@@ -607,9 +650,11 @@ defmodule Newbee.LLM.Client do
         end
 
       {:ok, %{status: 200} = resp} ->
+        Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
         consume_sse(resp, on_text, on_reasoning, client)
 
       {:ok, resp} ->
+        Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
         {:error, {:http_error, resp.status, drain(resp)}}
 
       {:error, e} ->
@@ -777,6 +822,7 @@ defmodule Newbee.LLM.Client do
         else
           case Req.parse_message(resp, message) do
             {:ok, [data: data]} ->
+              Newbee.LLM.HttpDebug.append_raw(data)
               {events, rest} = split_sse(buf <> data)
               acc = Enum.reduce(events, acc, &apply_event(&1, &2, on_text, on_reasoning))
               loop(resp, acc, on_text, on_reasoning, rest, t0, client)

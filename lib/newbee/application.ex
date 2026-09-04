@@ -17,6 +17,7 @@ defmodule Newbee.Application do
         Newbee.Environment.PluginSupervisor,
         Newbee.SessionEvaluators,
         Newbee.Web.Auth.SessionWriter,
+        Newbee.LLM.HttpDebug,
         {Registry, keys: :unique, name: Newbee.Web.SessionRegistry},
         {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Web.SessionSup},
         Newbee.Collaboration.Capability
@@ -55,7 +56,6 @@ defmodule Newbee.Application do
 
     result
   end
-
 
   defp ensure_builtin_tool_contracts! do
     case Newbee.Environment.ToolContract.validate_builtins() do
