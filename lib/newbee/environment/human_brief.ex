@@ -200,4 +200,16 @@ defmodule Newbee.Environment.HumanBrief do
   rescue
     _ -> nil
   end
+  # 合并人话卡：新结果只在更富时覆盖，瘦回退永不覆盖已有卡。
+  # 当前无卡收下任何结果；新结果是 LLM 成功版则覆盖；
+  # 当前已是 LLM 版则保留；双方都是模板保留当前。
+  def prefer(nil, incoming), do: incoming
+  def prefer(current, incoming) when is_map(current) and is_map(incoming) do
+    cond do
+      incoming["fallback"] == false -> incoming
+      current["fallback"] == false -> current
+      true -> current
+    end
+  end
+  def prefer(current, _incoming), do: current
 end

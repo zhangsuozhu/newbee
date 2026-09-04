@@ -292,7 +292,12 @@ defmodule Newbee.Environment.Coordinator do
                 ring: Autonomy.ring_of(release.kind)
               })
 
-            async_brief_upgrade(self(), change)
+            async_brief_upgrade(self(), change, %{
+              plugin_id: release.plugin_id,
+              kind: release.kind,
+              usage: Map.get(release, :usage),
+              ring: Autonomy.ring_of(release.kind)
+            })
             state = put_change(state, change)
 
             append_event(state, :change_building, %{
@@ -1169,18 +1174,15 @@ defmodule Newbee.Environment.Coordinator do
   def handle_cast({:brief_ready, change_id, brief}, state) do
     case Map.fetch(state.changes, change_id) do
       {:ok, change} ->
-        current = change.human_brief
+        merged = Newbee.Environment.HumanBrief.prefer(change.human_brief, brief)
 
-        change =
-          if is_map(current) and current["fallback"] == false do
-            change
-          else
-            %{change | human_brief: brief}
-          end
-
-        state = put_change(state, change)
-        append_event(state, :change_brief_ready, %{"change_id" => change_id})
-        {:noreply, state}
+        if merged == change.human_brief do
+          {:noreply, state}
+        else
+          state = put_change(state, %{change | human_brief: merged})
+          append_event(state, :change_brief_ready, %{"change_id" => change_id})
+          {:noreply, state}
+        end
 
       :error ->
         {:noreply, state}
@@ -1206,8 +1208,8 @@ defmodule Newbee.Environment.Coordinator do
     }
   end
 
-  defp async_brief_upgrade(server, change) do
-    attrs = brief_attrs(change)
+  defp async_brief_upgrade(server, change, extra) do
+    attrs = Map.merge(brief_attrs(change), extra)
 
     Task.start(fn ->
       brief = Newbee.Environment.HumanBrief.generate(attrs)

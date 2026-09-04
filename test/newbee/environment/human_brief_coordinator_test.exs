@@ -38,4 +38,35 @@ defmodule Newbee.Environment.HumanBriefCoordinatorTest do
     assert stored.human_brief["fallback"] == false
     assert {:error, :change_not_found} = Coordinator.update_brief(coordinator, "chg_missing", fresh)
   end
+
+  test "异步回退不覆盖富模板，LLM成功才覆盖", %{coordinator: coordinator} do
+    {:ok, change} =
+      Coordinator.propose_change(coordinator, %{
+        reason: "adapter: some-hot-path",
+        evidence: [%{proposal: "some-hot-path", type: "rule"}],
+        author_agent: :adapter
+      })
+
+    rich =
+      Newbee.Environment.HumanBrief.template_brief(%{
+        kind: :rule,
+        usage: "命中失败时提醒检查凭证",
+        ring: 2
+      })
+
+    assert :ok = Coordinator.update_brief(coordinator, change.change_id, rich)
+
+    thin = Newbee.Environment.HumanBrief.template_brief(%{kind: nil})
+    GenServer.cast(coordinator, {:brief_ready, change.change_id, thin})
+    Process.sleep(100)
+    [kept] = Enum.filter(Coordinator.changes(coordinator), &(&1.change_id == change.change_id))
+    assert kept.human_brief["change_to"] =~ "检查凭证"
+
+    llm = Map.merge(rich, %{"fallback" => false, "title" => "记住检查凭证这条提醒"})
+    GenServer.cast(coordinator, {:brief_ready, change.change_id, llm})
+    Process.sleep(100)
+    [upgraded] = Enum.filter(Coordinator.changes(coordinator), &(&1.change_id == change.change_id))
+    assert upgraded.human_brief["title"] == "记住检查凭证这条提醒"
+  end
+
 end
