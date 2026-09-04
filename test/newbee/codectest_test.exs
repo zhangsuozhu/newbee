@@ -33,4 +33,18 @@ defmodule Newbee.CodecTest do
     assert tool.function.description =~ "Edit.source_literal/1"
     assert tool.function.description =~ "heredoc"
   end
+  test "无名碎片丢掉，避免 unknown tool 回写 nil id" do
+    msg = %{"tool_calls" => [%{"id" => nil, "type" => "function", "function" => %{"name" => "", "arguments" => ""}}]}
+    assert Codec.extract_tool_calls(msg) == []
+  end
+
+  test "缺 function 与参数形态容错" do
+    assert Codec.extract_tool_calls(%{"tool_calls" => [%{"id" => "c1", "function" => nil}]}) == []
+    msg = %{"tool_calls" => [%{"id" => "c2", "type" => "function", "function" => %{"name" => "done", "arguments" => nil}}]}
+    [call] = Codec.extract_tool_calls(msg)
+    assert call.id == "c2"
+    assert call.name == "done"
+    assert call.args == %{}
+  end
+
 end

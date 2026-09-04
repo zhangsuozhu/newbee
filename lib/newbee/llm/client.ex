@@ -292,6 +292,7 @@ defmodule Newbee.LLM.Client do
   end
 
   defp stream_chat_request_chat(%__MODULE__{} = client, messages, on_text, on_reasoning) do
+    messages = sanitize_messages(messages)
     Newbee.DebugLog.log(:llm, "start model=#{client.model} messages=#{length(messages)}")
     t0 = System.monotonic_time(:millisecond)
 
@@ -304,6 +305,7 @@ defmodule Newbee.LLM.Client do
         stream_options: %{include_usage: true}
       }
       |> put_cache_field(client)
+
 
     effort = normalize_reasoning_effort(client.reasoning_effort)
 
@@ -410,7 +412,9 @@ defmodule Newbee.LLM.Client do
   返回 {:ok, content, %{usage, logprobs}} | {:error, term}。logprobs 缺失时为 nil。
   """
   def complete(%__MODULE__{} = client, messages, opts \\ []) do
+    messages = sanitize_messages(messages)
     Newbee.DebugLog.log(:llm, "complete start model=#{client.model} messages=#{length(messages)}")
+
 
     effort = normalize_reasoning_effort(client.reasoning_effort)
 
@@ -915,8 +919,7 @@ defmodule Newbee.LLM.Client do
   defp decode_body(m) when is_map(m), do: {:ok, m}
 
   defp apply_delta(acc, delta, on_text, on_reasoning) do
-    # 注意：OpenRouter 等在 reasoning 阶段常带 "content": ""——空串也是 binary，
-    # 不挡会让 TUI 每个思考块都翻转 stream_kind 开新行（"几个字一行"根因）
+    # 注意：OpenRouter 等在 reasoning 阶段常带 content 空串，不挡会让 TUI 每个思考块都翻转
     acc =
       case delta["content"] do
         text when is_binary(text) and text != "" ->
@@ -927,7 +930,7 @@ defmodule Newbee.LLM.Client do
           acc
       end
 
-    # DeepSeek 思考流：reasoning_content（delta 阶段与 content 分开发送）
+    # DeepSeek 思考流：reasoning_content 与 content 分开发送
     acc =
       case delta["reasoning_content"] || delta["reasoning"] do
         text when is_binary(text) and text != "" ->
@@ -940,15 +943,18 @@ defmodule Newbee.LLM.Client do
 
     Enum.reduce(delta["tool_calls"] || [], acc, fn tc, acc ->
       idx = tc["index"] || 0
+      idx = if is_integer(idx), do: idx, else: 0
       slot = Map.get(acc.tool_calls, idx, %{"id" => nil, "name" => "", "arguments" => ""})
       fun = tc["function"] || %{}
-
+      fun = if is_map(fun), do: fun, else: %{}
+      raw_id = tc["id"] || fun["id"] || tc["tool_call_id"]
+      new_id = normalize_tool_id(raw_id) || slot["id"]
+      name_frag = if is_binary(fun["name"]), do: fun["name"], else: ""
       slot = %{
-        "id" => tc["id"] || slot["id"],
-        "name" => slot["name"] <> (fun["name"] || ""),
-        "arguments" => slot["arguments"] <> (fun["arguments"] || "")
+        "id" => new_id,
+        "name" => slot["name"] <> name_frag,
+        "arguments" => slot["arguments"] <> tool_arg_fragment(fun["arguments"])
       }
-
       %{acc | tool_calls: Map.put(acc.tool_calls, idx, slot)}
     end)
   end
@@ -956,14 +962,175 @@ defmodule Newbee.LLM.Client do
   defp assemble_tool_calls(tool_calls) do
     tool_calls
     |> Enum.sort_by(fn {idx, _} -> idx end)
-    |> Enum.map(fn {_, slot} ->
-      %{
-        "id" => slot["id"],
-        "type" => "function",
-        "function" => %{"name" => slot["name"], "arguments" => slot["arguments"]}
-      }
+    |> Enum.reduce([], fn {idx, slot}, acc ->
+      name = slot["name"] || ""
+      if is_binary(name) and String.trim(name) != "" do
+        id =
+          case normalize_tool_id(slot["id"]) do
+            nil ->
+              synth = synth_tool_id()
+              Newbee.DebugLog.log(:sse, "sensenova without id idx=" <> Integer.to_string(idx))
+              synth
+            good -> good
+          end
+        args = slot["arguments"] || ""
+        args = if is_binary(args) and String.trim(args) != "", do: args, else: "{}"
+        [%{"id" => id, "type" => "function", "function" => %{"name" => name, "arguments" => args}} | acc]
+      else
+        Newbee.DebugLog.log(:sse, "dropped nameless idx=" <> Integer.to_string(idx))
+        acc
+      end
+    end)
+    |> Enum.reverse()
+  end
+
+
+  @doc "Sanitize chat messages before sending: ensure tool call ids exist."
+  def sanitize_messages(messages) when is_list(messages) do
+    messages
+    |> Enum.reject(&empty_sanitize_msg?/1)
+    |> Enum.reject(&illegal_sanitize_role?/1)
+    |> Enum.map(&normalize_history_tool_calls/1)
+    |> Enum.reject(&empty_sanitize_msg?/1)
+    |> fill_tool_placeholders()
+  end
+
+  def sanitize_messages(other), do: other
+
+  @doc false
+  def normalize_tool_calls(calls) when is_list(calls) do
+    calls
+    |> Enum.map(&normalize_single_tool_call/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  def normalize_tool_calls(_), do: []
+
+  defp normalize_single_tool_call(call) when is_map(call) do
+    fun = call["function"] || call[:function] || %{}
+    fun = if is_map(fun), do: fun, else: %{}
+    raw_name = fun["name"] || fun[:name]
+    if is_binary(raw_name) and String.trim(raw_name) != "" do
+      raw_id = call["id"] || call[:id]
+      id = normalize_tool_id(raw_id) || synth_tool_id()
+      raw_args = fun["arguments"] || fun[:arguments]
+      args =
+        cond do
+          is_binary(raw_args) and String.trim(raw_args) != "" -> raw_args
+          is_binary(raw_args) -> "{}"
+          is_map(raw_args) ->
+            case Jason.encode(raw_args) do
+              {:ok, s} -> s
+              _ -> "{}"
+            end
+          is_nil(raw_args) -> "{}"
+          true -> "{}"
+        end
+      %{"id" => id, "type" => "function", "function" => %{"name" => raw_name, "arguments" => args}}
+    else
+      nil
+    end
+  end
+
+  defp normalize_single_tool_call(_), do: nil
+
+  defp normalize_tool_id(nil), do: nil
+  defp normalize_tool_id(""), do: nil
+  defp normalize_tool_id(id) when is_binary(id) do
+    t = String.trim(id)
+    if t == "", do: nil, else: t
+  end
+  defp normalize_tool_id(id) when is_atom(id), do: id |> Atom.to_string() |> normalize_tool_id()
+  defp normalize_tool_id(id) when is_integer(id), do: Integer.to_string(id)
+  defp normalize_tool_id(_), do: nil
+
+  defp synth_tool_id do
+    "call_synth_" <> Integer.to_string(:erlang.unique_integer([:positive, :monotonic]))
+  end
+
+  defp tool_arg_fragment(nil), do: ""
+  defp tool_arg_fragment(s) when is_binary(s), do: s
+  defp tool_arg_fragment(m) when is_map(m) do
+    case Jason.encode(m) do
+      {:ok, s} -> s
+      _ -> ""
+    end
+  end
+  defp tool_arg_fragment(_), do: ""
+
+  defp empty_sanitize_msg?(msg) when is_map(msg) do
+    role = msg["role"] || msg[:role]
+    role_s = if is_atom(role), do: Atom.to_string(role), else: role
+    if role_s == "assistant" do
+      content = msg["content"] || msg[:content]
+      calls = msg["tool_calls"] || msg[:tool_calls] || []
+      if is_binary(content) do
+        String.trim(content) == "" and calls == []
+      else
+        calls == []
+      end
+    else
+      false
+    end
+  end
+  defp empty_sanitize_msg?(_), do: false
+
+  defp illegal_sanitize_role?(msg) when is_map(msg) do
+    role = msg["role"] || msg[:role]
+    role_s = if is_atom(role), do: Atom.to_string(role), else: role
+    has_tid = Map.has_key?(msg, "tool_call_id") or Map.has_key?(msg, :tool_call_id)
+    not has_tid and role_s not in ["system", "user", "assistant", "tool"]
+  end
+  defp illegal_sanitize_role?(_), do: false
+
+  defp normalize_history_tool_calls(msg) when is_map(msg) do
+    calls = msg["tool_calls"] || msg[:tool_calls]
+    cond do
+      is_list(calls) and calls != [] ->
+        case normalize_tool_calls(calls) do
+          [] -> msg |> Map.delete("tool_calls") |> Map.delete(:tool_calls)
+          good -> msg |> Map.put("tool_calls", good) |> Map.delete(:tool_calls)
+        end
+      true -> msg
+    end
+  end
+
+  defp sanitize_placeholders(ids) do
+    Enum.map(ids, fn id ->
+      %{"role" => "tool", "tool_call_id" => id, "content" => "（该工具调用因进程重启/中断未完成，结果已丢失）"}
     end)
   end
+
+  defp fill_tool_placeholders(messages) do
+    {chunks, pending} =
+      Enum.map_reduce(messages, [], fn msg, pending ->
+        role = msg["role"] || msg[:role]
+        role_s = if is_atom(role), do: Atom.to_string(role), else: role
+        calls = msg["tool_calls"] || msg[:tool_calls]
+        cond do
+          role_s == "assistant" and is_list(calls) and calls != [] ->
+            {sanitize_placeholders(pending) ++ [msg], Enum.map(calls, fn c -> c["id"] || c[:id] end)}
+          role_s == "tool" ->
+            raw = msg["tool_call_id"] || msg[:tool_call_id]
+            id = normalize_tool_id(raw)
+            cond do
+              is_nil(id) ->
+                case pending do
+                  [first | rest] -> {[Map.put(msg, "tool_call_id", first)], rest}
+                  [] -> {[], pending}
+                end
+              id in pending -> {[Map.put(msg, "tool_call_id", id)], pending -- [id]}
+              true -> {[], pending}
+            end
+          pending != [] ->
+            {sanitize_placeholders(pending) ++ [msg], []}
+          true ->
+            {[msg], []}
+        end
+      end)
+    Enum.concat(chunks) ++ sanitize_placeholders(pending)
+  end
+
 
   defp normalize_responses_mode(mode) when mode in [:auto, :responses, :chat], do: mode
   defp normalize_responses_mode("auto"), do: :auto
