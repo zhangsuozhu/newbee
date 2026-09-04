@@ -261,6 +261,11 @@ defmodule Newbee.Archive do
     end
   end
 
+  @doc "按显式会话 id 读档案（Reader capability 解析后调用，避免全局 current 串会话）。"
+  def read_history_id(sid, query) when is_binary(sid) do
+    read_history(Session.open(sid), query)
+  end
+
   def read_history(%Session{} = session, query) do
     cond do
       query in [nil, ""] -> {:ok, index_text(session)}
@@ -344,21 +349,39 @@ defmodule Newbee.Archive do
   defp render_raw_msg(m) do
     role = m["role"] || "?"
 
-    body =
+    tool_part =
       case m do
-        %{"tool_calls" => calls} when is_list(calls) ->
+        %{"tool_calls" => calls} when is_list(calls) and calls != [] ->
           Enum.map_join(calls, "\n", fn c ->
             args = get_in(c, ["function", "arguments"]) || ""
-            "  ⏺ #{get_in(c, ["function", "name"]) || "?"}: " <> String.slice(args, 0, 240)
+            fname = get_in(c, ["function", "name"]) || "?"
+            "  TT " <> fname <> ": " <> String.slice(args, 0, 240)
           end)
 
         _ ->
-          content = m["content"]
-          text = if is_binary(content), do: content, else: inspect(content, limit: 20)
-          String.slice(text, 0, @raw_msg_slice)
+          ""
       end
 
-    "[#{role}] " <> body
+    content = m["content"]
+
+    content_text =
+      cond do
+        is_binary(content) and content != "" -> String.slice(content, 0, @raw_msg_slice)
+        is_binary(content) -> ""
+        is_list(content) -> inspect(content, limit: 20)
+        is_nil(content) -> ""
+        true -> inspect(content, limit: 20)
+      end
+
+    body =
+      case {content_text, tool_part} do
+        {"", ""} -> "(空消息)"
+        {"", t} -> t
+        {c, ""} -> c
+        {c, t} -> c <> "\n" <> t
+      end
+
+    "[" <> role <> "] " <> body
   end
 
   defp search_text(%Session{} = session, term) do
@@ -404,10 +427,20 @@ defmodule Newbee.Archive do
     end)
   end
 
-  defp msg_search_text(%{"role" => r, "content" => c}) when is_binary(c), do: "#{r}: #{c}"
+  # assistant 常同时带 content + tool_calls：必须合并索引，否则工具参数里的
+  # 文件名/函数名永远搜不到（此前首子句直接吞掉 tool_calls）。
+  defp msg_search_text(%{"role" => r, "content" => c, "tool_calls" => calls})
+       when is_binary(c) and is_list(calls) do
+    r <> ": " <> c <> " " <> inspect(calls, limit: 8)
+  end
+
+  defp msg_search_text(%{"role" => r, "content" => c}) when is_binary(c), do: r <> ": " <> c
 
   defp msg_search_text(%{"role" => r, "tool_calls" => calls}) when is_list(calls),
-    do: "#{r}: #{inspect(calls, limit: 5)}"
+    do: r <> ": " <> inspect(calls, limit: 8)
+
+  defp msg_search_text(%{"role" => r, "content" => parts}) when is_list(parts),
+    do: r <> ": " <> inspect(parts, limit: 8)
 
   defp msg_search_text(m), do: inspect(m, limit: 10)
 
@@ -445,20 +478,19 @@ defmodule Newbee.Archive do
             []
         end
       end)
-      |> Enum.reduce([], fn {seg, i, text}, acc ->
+      |> Enum.reduce(%{}, fn {seg, _i, text}, acc ->
         down = String.downcase(text)
-        score = Enum.count(terms, &String.contains?(down, &1))
+        score = Enum.count(terms, fn t -> String.contains?(down, t) end)
 
         if score >= @recall_min_terms do
-          line = text |> String.replace("\n", " ⏎ ") |> String.slice(0, 200)
-          [{score, "[#{seg}##{i}] " <> line} | acc]
+          Map.update(acc, seg, 1, fn n -> n + 1 end)
         else
           acc
         end
       end)
-      |> Enum.sort_by(fn {score, _} -> -score end)
+      |> Enum.sort_by(fn {_seg, n} -> -n end)
       |> Enum.take(limit)
-      |> Enum.map(&elem(&1, 1))
+      |> Enum.map(fn {seg, n} -> "[" <> seg <> "] " <> to_string(n) <> " 处相关，读 history://s/" <> seg <> " 看段摘要" end)
     end
   rescue
     _ -> []

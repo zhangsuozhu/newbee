@@ -122,14 +122,27 @@ defmodule Newbee.RequestEnvelope do
   defp path_for(%Newbee.Session{dir: dir}), do: Path.join(dir, @file_name)
 
   defp valid?(env) do
-    is_binary(env["base_url"]) and is_binary(env["model"]) and
-      is_map(env["route"]) and is_list(env["tools"]) and is_list(env["messages"]) and
-      is_integer(env["message_count"]) and env["message_count"] == length(env["messages"])
+    base_ok =
+      is_binary(env["base_url"]) and is_binary(env["model"]) and
+        is_map(env["route"]) and is_list(env["tools"]) and is_list(env["messages"]) and
+        is_integer(env["message_count"]) and env["message_count"] == length(env["messages"]) and
+        is_binary(env["sha256"]) and is_binary(env["recorded_at"])
+
+    if base_ok do
+      try do
+        sha256(env["messages"], env["tools"], env["route"]) == env["sha256"]
+      rescue
+        _ -> false
+      end
+    else
+      false
+    end
   end
 
   defp sha256(messages, tools, route) do
-    :crypto.hash(:sha256, Jason.encode_to_iodata!(%{"messages" => messages, "tools" => tools, "route" => route}))
-    |> Base.encode16(case: :lower)
+    # canonical：键序与原子串键无关，JSON往返稳定，防篡改毒化digest
+    payload = canon_json(messages) <> "|" <> canon_json(tools) <> "|" <> canon_json(route)
+    :crypto.hash(:sha256, payload) |> Base.encode16(case: :lower)
   end
 
   defp iso_now, do: DateTime.utc_now() |> DateTime.to_iso8601()

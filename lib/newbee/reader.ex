@@ -51,9 +51,11 @@ defmodule Newbee do
       path == "bindings://" ->
         read_bindings()
 
-      # history:// 经 Host.call 回主节点执行：peer 求值节点上的模型代码同样可用
+      # history:// 经 Host.call 回主节点执行：peer 求值节点上的模型代码同样可用。
+      # 多会话下不能依赖全局 current：先从本进程 capability 解析会话（peer 侧），
+      # 再回主节点读该会话档案；无 capability 才回退全局 current（CLI/TUI 兼容）。
       path == "history://" or String.starts_with?(path, "history://") ->
-        Newbee.Host.call(Newbee.Archive, :read_history, [String.replace_prefix(path, "history://", "")])
+        read_history_scoped(String.replace_prefix(path, "history://", ""))
 
       String.starts_with?(path, "events://") ->
         read_events(String.replace_prefix(path, "events://", ""))
@@ -70,6 +72,50 @@ defmodule Newbee do
   end
 
   def read(_), do: {:error, :invalid_path}
+
+  # history:// 会话解析：capability（peer 求值上下文）优先，主节点 current 回退。
+  # Host.call 不透传进程字典，故必须在调用方（peer 或主）先取出 token 再显式传 sid。
+  defp read_history_scoped(query) do
+    case history_session_id() do
+      {:ok, sid} -> Newbee.Host.call(Newbee.Archive, :read_history_id, [sid, query])
+      :error -> Newbee.Host.call(Newbee.Archive, :read_history, [query])
+    end
+  end
+
+  defp history_session_id do
+    with :error <- collaboration_session_id(),
+         :error <- media_session_id() do
+      :error
+    else
+      {:ok, _} = ok -> ok
+    end
+  end
+
+  defp collaboration_session_id do
+    case Process.get({Newbee.Tools.Collaboration, :context}) do
+      %{capability: token} when is_binary(token) ->
+        case Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token]) do
+          {:ok, %{session_id: sid}} when is_binary(sid) -> {:ok, sid}
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp media_session_id do
+    case Process.get({Newbee.Tools.Media, :capability}) do
+      token when is_binary(token) ->
+        case Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token]) do
+          {:ok, %{session_id: sid}} when is_binary(sid) -> {:ok, sid}
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
 
   @doc """
   可发现的 scheme 注册表（审计新增）：统一寻址有哪些协议、分别读什么。

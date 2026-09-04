@@ -108,7 +108,6 @@ defmodule Newbee.Session do
     merged
   end
 
-
   @doc "当前活动会话 id（kernel 启动时登记；无会话返回 nil）。"
   def current_id, do: :persistent_term.get({__MODULE__, :current}, nil)
 
@@ -396,6 +395,12 @@ defmodule Newbee.Session do
     with :ok <- remove_file(transcript),
          :ok <- remove_dir(artifacts),
          :ok <- remove_from_index(id) do
+      try do
+        if current_id() == id, do: set_current(nil)
+      rescue
+        _ -> :ok
+      end
+
       :ok
     end
   end
