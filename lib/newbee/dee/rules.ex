@@ -53,31 +53,31 @@ defmodule Newbee.DEE.Rules do
       id: "jspace-outer",
       scope: :content,
       pattern: "(→|⇒|⇔|∃|∀|∈|∉|⊆|⊇|⊢|⊨|⟦|⟧|↦|≡|✓\\d{2}|\\[CP\\s\\d+\\])",
-      injection: "[J-Space] 稠密符号泄进了 outer register——内层简写要展开成白话再输出，或移到思考流/ledger。只有可展开的压缩才算容量。"
+      injection: "[J-Space] Dense symbols leaked into outer output — expand inner shorthand into plain words, or move it to thinking/ledger. Only expandable compression counts as capacity."
     },
     %{
       id: "jspace-marker",
       scope: :content,
       pattern: "(GRRR|GAAAH|PHEW|I'M DROWNING|DATA DATA|blocked\\?! WRONG|AAAAAAAA|STOP\\. FOCUS)",
-      injection: "[J-Space] marker 是内层状态信号，别在输出里表演。marker 必须成对：跟着 move（具体动作）+ settle（收尾一行），否则是 marker idling。"
+      injection: "[J-Space] Markers are inner state signals, not output theater. Each marker needs a move (concrete action) plus a settle (closing line); otherwise it is marker idling."
     },
     %{
       id: "jspace-hedge",
       scope: :content,
       pattern: "(可能.*也可能|it could be .* or .*|一方面.*另一方面|both .* and .* are possible|或许.*或许)",
-      injection: "[J-Space] 列可能性代替解决（hedge）——工作区不存混合物。能命名分离测试就是候选集（保留），否则选一个相信的并标 ?。"
+      injection: "[J-Space] Listing options instead of deciding (hedge) — the workspace holds no mixtures. Keep a candidate set only when you can name a separating test; otherwise pick one belief and mark it ?."
     },
     %{
       id: "jspace-checkpoint",
       scope: :content,
       pattern: "(检查点|checkpoint)",
-      injection: "[J-Space] 检查点必须落账：Newbee.Tools.JSpace.note(checkpoint: \"...\") 写编号记录，声明结论+验证覆盖了什么。没记录的检查点不是检查点。"
+      injection: "[J-Space] Checkpoints must hit the ledger: record via Newbee.Tools.JSpace.note(checkpoint: \"...\") with conclusion plus what verification covered. An unrecorded checkpoint is not a checkpoint."
     },
     %{
       id: "jspace-verified",
       scope: :content,
       pattern: "(verified|已验证)",
-      injection: "[J-Space] 声明 verified 时说明验证覆盖了什么（哪个编译/哪组测试），别只贴结论。"
+      injection: "[J-Space] When claiming verified, state the coverage (which build / which test set), not just the conclusion."
     }
   ]
 

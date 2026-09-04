@@ -1,22 +1,22 @@
 defmodule Newbee.Tools.JSpace do
   @moduledoc """
-  长任务台账：goal/core/verified/next 持久化，跨压缩恢复。
-  复杂多步任务使用；简单任务不要创建 ledger。
+  Persistent task ledger for long multi-step work: goal/core/verified/next survive compaction.
+  Use for loop-level tasks; skip for simple one-shots.
 
-  ## 函数清单
-  - `note(fields, session \\\\ nil) :: String.t()` — 更新台账；`fields` 是含 `goal/core/next/verified/open/checkpoint` 的关键字列表。
-  - `read(session \\\\ nil) :: String.t() | nil` — 读取 ledger 原文；不存在返回 `nil`。
-  - `seam(session \\\\ nil) :: String.t()` — 子任务边界重读 ledger；不存在返回开账提示。
-  - `ship(path, checks \\\\ [], session \\\\ nil) :: String.t()` — 登记交付路径和检查项。
-  - `resume(session \\\\ nil) :: String.t()` — 返回恢复协议与 ledger 原文。
-  - `clear(session \\\\ nil) :: :ok` — 删除指定 ledger。
-  - `exists?(session \\\\ nil) :: boolean()` — ledger 是否存在。
+  ## Functions
+  - `note(fields, session \\ nil) :: String.t()` — update the ledger; `fields` takes `goal/core/next/verified/open/checkpoint`.
+  - `read(session \\ nil) :: String.t() | nil` — raw ledger text; `nil` when absent.
+  - `seam(session \\ nil) :: String.t()` — re-read the ledger at subtask seams; open-ledger hint when absent.
+  - `ship(path, checks \\ [], session \\ nil) :: String.t()` — register a delivery path with checks.
+  - `resume(session \\ nil) :: String.t()` — recovery protocol plus full ledger.
+  - `clear(session \\ nil) :: :ok` — delete the ledger.
+  - `exists?(session \\ nil) :: boolean()` — whether a ledger exists.
 
-  ## 可跑示例
-      ledger = Newbee.Tools.JSpace.note([goal: "统一工具说明", next: "核对真实签名"])
+  ## Runnable example
+      ledger = Newbee.Tools.JSpace.note([goal: "Unify tool docs", next: "Check real signatures"])
       body = Newbee.Tools.JSpace.read()
       body = Newbee.Tools.JSpace.seam()
-      confirmation = Newbee.Tools.JSpace.ship("docs/tool-contracts.md", ["编译", "测试"])
+      confirmation = Newbee.Tools.JSpace.ship("docs/tool-contracts.md", ["compile", "test"])
       recovery = Newbee.Tools.JSpace.resume()
       true = Newbee.Tools.JSpace.exists?()
       :ok = Newbee.Tools.JSpace.clear()
@@ -61,10 +61,10 @@ defmodule Newbee.Tools.JSpace do
     end
   end
 
-  @doc "ledger 是否存在；session 省略时使用当前会话。"
+  @doc "Whether a ledger exists; defaults to the current session."
   def exists?(session \\ nil), do: File.regular?(ledger_path(session))
 
-  @doc "读取 ledger 原文；不存在返回 nil。session 省略时使用当前会话。"
+  @doc "Raw ledger text; nil when absent. Defaults to the current session."
   def read(session \\ nil) do
     case File.read(ledger_path(session)) do
       {:ok, body} -> body
@@ -73,14 +73,14 @@ defmodule Newbee.Tools.JSpace do
   end
 
   @doc """
-  更新台账。fields 为关键字列表：
-    goal: "..."      → 替换 Goal 行
-    core: "..."      → 替换 Core 行
-    next: "..."      → 替换 Next 行（不许空）
-    verified: "..."  → 追加编号 ✓NN（append-only，回滚有地址）
-    open: "..."      → 追加 ? 悬项（附"什么能定案"）
-    checkpoint: "..." → 追加 [CP NN] 检查点
-  返回新台账全文。
+  Update the ledger. `fields` is a keyword list:
+    goal: "..."       → replace the Goal line
+    core: "..."       → replace the Core line
+    next: "..."       → replace the Next line (never leave empty)
+    verified: "..."   → append numbered ✓NN (append-only; gives rollback an address)
+    open: "..."       → append a ? item (state what would settle it)
+    checkpoint: "..." → append a [CP NN] checkpoint
+  Returns the new ledger text.
   """
   def note(fields, session \\ nil) when is_list(fields) do
     body = read(session) || initial_ledger()
@@ -92,36 +92,36 @@ defmodule Newbee.Tools.JSpace do
     text
   end
 
-  @doc "seam 重读：返回 ledger 全文（模型在每个 seam 调用并据此续写）。"
+  @doc "Seam re-read: full ledger text (call at every seam, then continue from it)."
   def seam(session \\ nil) do
     case read(session) do
-      nil -> "（无 ledger——loop 档任务先开账: note(goal: \"...\", next: \"...\")）"
+      nil -> "(no ledger — open one for loop-level tasks: note(goal: \"...\", next: \"...\"))"
       body -> body
     end
   end
 
-  @doc "登记交付路径与检查项；返回确认文本。参数顺序是 path, checks, session。"
+  @doc "Register a delivery path with checks; returns confirmation. Args: path, checks, session."
   def ship(path, checks \\ [], session \\ nil) when is_list(checks) do
     body = read(session) || initial_ledger()
     list = Enum.map_join(checks, "\n", &"    - [ ] #{&1}")
     line = "- [ ] SHIP #{path}" <> if checks == [], do: "", else: "\n" <> list
-    text = body <> "\n## 交付检查\n" <> line <> "\n"
+    text = body <> "\n## Delivery checks\n" <> line <> "\n"
     File.mkdir_p!(root())
     File.write!(ledger_path(session), text)
-    "已登记交付检查: #{path}"
+    "Delivery checks recorded: #{path}"
   end
 
-  @doc "长间隔（压缩/会话边界）后恢复：前提 + invariants + 全 ledger。"
+  @doc "Recover after a long gap (compaction/session boundary): premises + invariants + full ledger."
   def resume(session \\ nil) do
-    "## J-Space 恢复协议\n" <>
-      "前提：你有内层工作区——稠密思考、可按需展开；自动化（语法/格式/惯例）不占它。\n" <>
-      "Invariants：①marker 无动作 ②监控从不报告 ③稠密行不可展开 ④confidence 全同 " <>
-      "⑤检查点未落账 ⑥verified 未声明覆盖 ⑦稠密符号泄进输出 ⑧未逐行读 goal 就宣告完成。\n\n" <>
+    "## J-Space recovery protocol\n" <>
+      "Premise: think in the inner workspace first; dense notes must stay expandable on demand; keep automation (syntax/format/convention) out of it.\n" <>
+      "Invariants (looks-busy-but-hollow — never these): marker without action; monitor that never reports; dense line you cannot expand; uniform confidence; " <>
+      "unrecorded checkpoint; verified claim without coverage; dense symbols leaking into output; done without re-reading the goal line by line.\n\n" <>
       "## Ledger\n" <>
-      (read(session) || "（无 ledger——开账: note(goal: \"...\", next: \"...\")）")
+      (read(session) || "(no ledger — open one: note(goal: \"...\", next: \"...\"))")
   end
 
-  @doc "清空 ledger（任务结束/换任务）。"
+  @doc "Clear the ledger (task done or task switch)."
   def clear(session \\ nil) do
     File.rm(ledger_path(session))
     :ok
@@ -130,7 +130,7 @@ defmodule Newbee.Tools.JSpace do
   # ── 内部 ──
 
   defp initial_ledger do
-    "Goal:      (未设定)\nCore:      (未设定)\nVerified:  (无)\nOpen:      (无)\nNext:      (未设定)\n"
+    "Goal:      (unset)\nCore:      (unset)\nVerified:  (none)\nOpen:      (none)\nNext:      (unset)\n"
   end
 
   defp count_marked(body, regex), do: length(Regex.scan(regex, body))
@@ -158,7 +158,7 @@ defmodule Newbee.Tools.JSpace do
     end
   end
 
-  # header 非 nil 时先把占位行（如 "Verified:  (无)"）清成裸 header
+  # When header is non-nil, first collapse the placeholder line (e.g. "Verified:  (none)") to a bare header
   defp append_numbered(lines, v, counters, key, tag, header) do
     lines = if header, do: replace_line(lines, header, header), else: lines
     n = Map.fetch!(counters, key) + 1

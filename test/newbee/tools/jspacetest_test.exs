@@ -32,7 +32,7 @@ defmodule Newbee.Tools.JSpaceTest do
     JSpace.note([verified: "测试全绿"], sid)
     text = JSpace.read(sid)
     assert text =~ "Verified:\n"
-    refute text =~ "Verified:  (无)"
+    refute text =~ "Verified:  (none)"
     assert text =~ "✓01 编译通过"
     assert text =~ "✓02 测试全绿"
   end
@@ -48,7 +48,7 @@ defmodule Newbee.Tools.JSpaceTest do
   end
 
   test "seam 无 ledger 时提示开账", %{sid: sid} do
-    assert JSpace.seam(sid) =~ "无 ledger"
+    assert JSpace.seam(sid) =~ "no ledger"
   end
 
   test "seam 返回 ledger", %{sid: sid} do
@@ -58,7 +58,7 @@ defmodule Newbee.Tools.JSpaceTest do
 
   test "ship 登记交付检查", %{sid: sid} do
     text = JSpace.ship("lib/foo.ex", ["编译", "测试"], sid)
-    assert text =~ "已登记交付检查: lib/foo.ex"
+    assert text =~ "Delivery checks recorded: lib/foo.ex"
     assert JSpace.read(sid) =~ "- [ ] SHIP lib/foo.ex"
     assert JSpace.read(sid) =~ "- [ ] 编译"
   end
@@ -66,7 +66,7 @@ defmodule Newbee.Tools.JSpaceTest do
   test "resume 含前提 + invariants + ledger", %{sid: sid} do
     JSpace.note([goal: "g"], sid)
     text = JSpace.resume(sid)
-    assert text =~ "J-Space 恢复协议"
+    assert text =~ "J-Space recovery protocol"
     assert text =~ "Invariants"
     assert text =~ "Goal:"
   end
