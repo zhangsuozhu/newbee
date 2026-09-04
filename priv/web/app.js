@@ -2006,8 +2006,8 @@ case "goal_round": break;
   function refreshSessionStatus() {
     const box = $("session-list");
     if (!box || box.children.length === 0) return;
-    rpc("session.list", {}).then((list) => {
-      const all = list.sessions || [];
+    rpc("session.status", {}).then((list) => {
+      const all = list.status || list.sessions || [];
       const byId = {};
       all.forEach((s) => { byId[s.id] = s; });
       box.querySelectorAll(".session-item").forEach((item) => {
