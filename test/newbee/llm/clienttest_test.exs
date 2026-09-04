@@ -318,4 +318,42 @@ defmodule Newbee.LLM.ClientTest do
       assert client1.responses_mode == client2.responses_mode
     end
   end
+  describe "sensenova tool_calls id 缺失根治" do
+    test "normalize 缺 id 补合成，无名丢掉" do
+      [one] = Client.normalize_tool_calls([%{"type" => "function", "function" => %{"name" => "run_elixir", "arguments" => "{}"}}])
+      assert is_binary(one["id"])
+      assert one["id"] != ""
+      assert one["function"]["name"] == "run_elixir"
+      assert Client.normalize_tool_calls([%{"id" => nil, "type" => "function", "function" => %{"name" => "", "arguments" => ""}}]) == []
+    end
+
+    test "sanitize 两侧 nil id 按位置配对，外发一定有 id" do
+      msgs = [
+        %{"role" => "user", "content" => "hi"},
+        %{"role" => "assistant", "content" => "", "tool_calls" => [%{"id" => nil, "type" => "function", "function" => %{"name" => "run_elixir", "arguments" => "{}"}}]},
+        %{"role" => "tool", "content" => "ok"}
+      ]
+      san = Client.sanitize_messages(msgs)
+      assistant = Enum.find(san, fn m -> m["role"] == "assistant" end)
+      tool = Enum.find(san, fn m -> m["role"] == "tool" end)
+      assert assistant != nil
+      assert tool != nil
+      aid = hd(assistant["tool_calls"])["id"]
+      assert is_binary(aid)
+      assert aid != ""
+      assert tool["tool_call_id"] == aid
+    end
+
+    test "sanitize 丢空与非法角色，悬空补占位" do
+      msgs = [%{"role" => "user", "content" => "hi"}, %{"role" => "assistant", "content" => "   "}]
+      assert Client.sanitize_messages(msgs) == [%{"role" => "user", "content" => "hi"}]
+      dangling = [
+        %{"role" => "user", "content" => "hi"},
+        %{"role" => "assistant", "content" => "", "tool_calls" => [%{"id" => "call_orphan", "type" => "function", "function" => %{"name" => "run_elixir", "arguments" => "{}"}}]}
+      ]
+      san = Client.sanitize_messages(dangling)
+      assert Enum.any?(san, fn m -> m["role"] == "tool" and m["tool_call_id"] == "call_orphan" end)
+    end
+  end
+
 end

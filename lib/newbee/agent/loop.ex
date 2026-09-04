@@ -1492,29 +1492,36 @@ defmodule Newbee.Agent.Loop do
   defp empty_assistant_msg?(_), do: false
   defp drop_empty_assistant_messages(messages), do: Enum.reject(messages, &empty_assistant_msg?/1)
 
-  # 崩溃/中断会在 transcript 留下悬空 tool_calls（DeepSeek 严格校验直接 400）。
+  # 崩溃/中断会在 transcript 留下悬空 tool_calls（严格校验直接 400）。
   # 载入时修补：缺响应的补占位 tool 消息，孤立 tool 消息丢弃；
   # 顺带丢弃空 assistant 消息（否则整段历史请求被上游 400 拒）。
+  # sensenova 形状不带 id：先归一化（缺 id 补合成、无名碎片丢掉），再做配对。
   defp repair_history(messages) do
     messages = Enum.reject(messages, &empty_assistant_msg?/1)
-    # transcript 会混入 UI 审计行：`role=usage`（token 用量）、`role=media`
-    # （图片上屏记录，见 push_msg/Media.append）。它们只供前端回放，写入时有
-    # 意不进 state.messages；恢复路径必须同等过滤，否则请求带非法角色，OpenAI
-    # 兼容上游整单拒绝（400 "Incorrect role information"，Console Go/GLM 实测）。
+    # transcript 会混入 UI 审计行：只供前端回放，恢复路径必须过滤，否则非法角色 400。
     messages =
       Enum.reject(messages, fn m ->
         not Map.has_key?(m, "tool_call_id") and
           m["role"] not in ["system", "user", "assistant", "tool"]
       end)
 
+    messages = Enum.map(messages, &normalize_history_ids/1)
+    messages = Enum.reject(messages, &empty_assistant_msg?/1)
+
     {chunks, pending} =
       Enum.map_reduce(messages, [], fn msg, pending ->
         case msg do
           %{"role" => "assistant", "tool_calls" => calls} when is_list(calls) and calls != [] ->
-            {tool_placeholders(pending) ++ [msg], Enum.map(calls, & &1["id"])}
+            {tool_placeholders(pending) ++ [msg], Enum.map(calls, fn c -> c["id"] end)}
 
-          %{"role" => "tool", "tool_call_id" => id} ->
+          %{"role" => "tool", "tool_call_id" => id} when is_binary(id) and id != "" ->
             if id in pending, do: {[msg], pending -- [id]}, else: {[], pending}
+
+          %{"role" => "tool"} ->
+            case pending do
+              [first | rest] -> {[Map.put(msg, "tool_call_id", first)], rest}
+              [] -> {[], pending}
+            end
 
           _ ->
             {tool_placeholders(pending) ++ [msg], []}
@@ -1524,12 +1531,26 @@ defmodule Newbee.Agent.Loop do
     Enum.concat(chunks) ++ tool_placeholders(pending)
   end
 
+  defp normalize_history_ids(msg) when is_map(msg) do
+    calls = msg["tool_calls"]
+    if msg["role"] == "assistant" and is_list(calls) and calls != [] do
+      case Newbee.LLM.Client.normalize_tool_calls(calls) do
+        [] -> Map.delete(msg, "tool_calls")
+        good -> Map.put(msg, "tool_calls", good)
+      end
+    else
+      msg
+    end
+  end
+
+  defp normalize_history_ids(msg), do: msg
+
+
   defp tool_placeholders(ids) do
     Enum.map(ids, fn id ->
       %{"role" => "tool", "tool_call_id" => id, "content" => "（该工具调用因进程重启/中断未完成，结果已丢失）"}
     end)
   end
-
   defp audit_dangerous(code) do
     hits = Enum.filter(@dangerous, &String.contains?(code, &1))
     reversibility = Newbee.Trust.reversibility(code)

@@ -59,24 +59,36 @@ defmodule Newbee.Codec do
 
   def tools, do: @tools
 
-  @doc "从 LLM 响应 message 中提取 tool_calls，统一为 %{id, name, args} 列表。"
+  @doc "从 LLM 响应提取 tool_calls，统一为 id name args 列表。无名碎片丢掉，避免 unknown tool 又写回 nil id。"
   def extract_tool_calls(%{"tool_calls" => calls}) when is_list(calls) do
-    Enum.map(calls, fn c ->
-      args =
-        case c["function"]["arguments"] do
-          s when is_binary(s) ->
-            case Jason.decode(s) do
-              {:ok, m} -> m
-              _ -> %{"code" => s}
-            end
-
-          m when is_map(m) ->
-            m
-        end
-
-      %{id: c["id"], name: c["function"]["name"], args: args}
-    end)
+    calls
+    |> Enum.map(&extract_single/1)
+    |> Enum.reject(&is_nil/1)
   end
 
   def extract_tool_calls(_), do: []
+
+  defp extract_single(c) when is_map(c) do
+    fun = c["function"] || c[:function] || %{}
+    fun = if is_map(fun), do: fun, else: %{}
+    name = fun["name"] || fun[:name]
+    if is_binary(name) and String.trim(name) != "" do
+      raw_args = fun["arguments"] || fun[:arguments]
+      args =
+        cond do
+          is_binary(raw_args) ->
+            case Jason.decode(raw_args) do
+              {:ok, m} when is_map(m) -> m
+              _ -> %{"code" => raw_args}
+            end
+          is_map(raw_args) -> raw_args
+          is_nil(raw_args) -> %{}
+          true -> %{"code" => inspect(raw_args)}
+        end
+      %{id: c["id"] || c[:id], name: name, args: args}
+    else
+      nil
+    end
+  end
+  defp extract_single(_), do: nil
 end

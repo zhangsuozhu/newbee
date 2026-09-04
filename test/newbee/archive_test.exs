@@ -363,7 +363,7 @@ defmodule Newbee.ArchiveTest do
 
     {:ok, _} = Archive.compact(s, retain: 4, client: digest_client2, envelope: env2)
     assert_received {:digest_request, second}
-    assert Enum.drop(second, -1) == env2_msgs
+    assert Enum.drop(second, -1) == Newbee.LLM.Client.sanitize_messages(env2_msgs)
   end
 
   test "无 base 时退回确定性抽取路径（兼容旧行为）", %{session: s} do
