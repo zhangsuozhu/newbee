@@ -31,8 +31,34 @@ defmodule Newbee.Tools.JSpace do
     Path.join(root(), "#{id}.md")
   end
 
+  # 与 history:// 同理：peer 求值上下文优先用 capability 解析，避免全局 current 串会话。
   defp current_session do
-    Newbee.Host.call(Newbee.Session, :current_id, [])
+    case collaboration_session_id() do
+      {:ok, sid} -> sid
+      :error -> Newbee.Host.call(Newbee.Session, :current_id, [])
+    end
+  end
+
+  defp collaboration_session_id do
+    case Process.get({Newbee.Tools.Collaboration, :context}) do
+      %{capability: token} when is_binary(token) ->
+        case Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token]) do
+          {:ok, %{session_id: sid}} when is_binary(sid) -> {:ok, sid}
+          _ -> :error
+        end
+
+      _ ->
+        case Process.get({Newbee.Tools.Media, :capability}) do
+          token when is_binary(token) ->
+            case Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token]) do
+              {:ok, %{session_id: sid}} when is_binary(sid) -> {:ok, sid}
+              _ -> :error
+            end
+
+          _ ->
+            :error
+        end
+    end
   end
 
   @doc "ledger 是否存在；session 省略时使用当前会话。"

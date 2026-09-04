@@ -293,19 +293,12 @@ defmodule Newbee.ArchiveTest do
   test "命中路径：摘要请求 == envelope 消息逐字回放 + 尾部指令", %{session: s} do
     feed(s, conv(6))
     env_msgs = [%{"role" => "system", "content" => "BASE-SYS"}] ++ List.flatten(conv(6))
-
-    env = %{
-      "version" => 1,
-      "base_url" => "http://localhost",
-      "model" => "test/digest-model",
-      "tools" => Newbee.Codec.tools(),
-      "messages" => env_msgs,
-      "message_count" => length(env_msgs),
-      "sha256" => "x"
-    }
+    digest_client = capture_client(self())
+    :ok = Newbee.RequestEnvelope.record(s, digest_client, env_msgs)
+    env = Newbee.RequestEnvelope.load(s)
 
     {:ok, %{segment: seg}} =
-      Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env)
+      Archive.compact(s, retain: 4, client: digest_client, envelope: env)
 
     assert_received {:digest_request, request}
     assert request == env_msgs ++ [List.last(request)]
@@ -349,17 +342,12 @@ defmodule Newbee.ArchiveTest do
   test "二次压缩回放含旧摘要的 envelope（旧摘要前缀）", %{session: s} do
     feed(s, conv(6))
 
-    env1 = %{
-      "version" => 1,
-      "base_url" => "http://localhost",
-      "model" => "test/digest-model",
-      "tools" => Newbee.Codec.tools(),
-      "messages" => [%{"role" => "system", "content" => "BASE"}] ++ List.flatten(conv(6)),
-      "message_count" => 19,
-      "sha256" => "x"
-    }
+    env1_msgs = [%{"role" => "system", "content" => "BASE"}] ++ List.flatten(conv(6))
+    digest_client1 = capture_client(self())
+    :ok = Newbee.RequestEnvelope.record(s, digest_client1, env1_msgs)
+    env1 = Newbee.RequestEnvelope.load(s)
 
-    {:ok, _} = Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env1)
+    {:ok, _} = Archive.compact(s, retain: 4, client: digest_client1, envelope: env1)
     assert_received {:digest_request, _first}
 
     feed(s, conv(4))
@@ -368,19 +356,14 @@ defmodule Newbee.ArchiveTest do
     assert summary_msg["role"] == "system"
     assert summary_msg["content"] =~ "回放摘要"
 
-    env2 = %{
-      "version" => 1,
-      "base_url" => "http://localhost",
-      "model" => "test/digest-model",
-      "tools" => Newbee.Codec.tools(),
-      "messages" => [%{"role" => "system", "content" => "BASE"}] ++ summary_view,
-      "message_count" => length(summary_view) + 1,
-      "sha256" => "x"
-    }
+    env2_msgs = [%{"role" => "system", "content" => "BASE"}] ++ summary_view
+    digest_client2 = capture_client(self())
+    :ok = Newbee.RequestEnvelope.record(s, digest_client2, env2_msgs)
+    env2 = Newbee.RequestEnvelope.load(s)
 
-    {:ok, _} = Archive.compact(s, retain: 4, client: capture_client(self()), envelope: env2)
+    {:ok, _} = Archive.compact(s, retain: 4, client: digest_client2, envelope: env2)
     assert_received {:digest_request, second}
-    assert Enum.drop(second, -1) == env2["messages"]
+    assert Enum.drop(second, -1) == env2_msgs
   end
 
   test "无 base 时退回确定性抽取路径（兼容旧行为）", %{session: s} do
@@ -419,4 +402,58 @@ defmodule Newbee.ArchiveTest do
 
   defp fake_client(text) when is_binary(text), do: fn _extract, _seg -> {:ok, text} end
   defp fake_client(other), do: fn _extract, _seg -> other end
+
+  test "检索覆盖 tool_calls 参数（assistant 空正文不丢索引）", %{session: s} do
+    Newbee.Session.append(s, %{"role" => "user", "content" => "start"})
+
+    Newbee.Session.append(s, %{
+      "role" => "assistant",
+      "content" => "",
+      "tool_calls" => [
+        %{
+          "id" => "c1",
+          "type" => "function",
+          "function" => %{"name" => "run_elixir", "arguments" => "special_tool_marker_987()"}
+        }
+      ]
+    })
+
+    Newbee.Session.append(s, %{"role" => "tool", "tool_call_id" => "c1", "content" => "ok"})
+    Newbee.Session.append(s, %{"role" => "user", "content" => "end"})
+    {:ok, %{segment: seg}} = Archive.compact(s, retain: 1)
+    {:ok, hits} = Archive.read_history(s, "q/special_tool_marker_987")
+    assert hits =~ seg
+  end
+
+  test "召回只返回段指针，不推原文载荷", %{session: s} do
+    secret = "secret_marker_abc_xyz"
+    Newbee.Session.append(s, %{"role" => "user", "content" => "parser crash " <> secret})
+    Newbee.Session.append(s, %{"role" => "assistant", "content" => "got"})
+    Newbee.Session.append(s, %{"role" => "tool", "content" => "result " <> secret})
+    Newbee.Session.append(s, %{"role" => "user", "content" => "tail one"})
+    Newbee.Session.append(s, %{"role" => "user", "content" => "tail two"})
+    {:ok, %{segment: seg}} = Archive.compact(s, retain: 1)
+    hits = Archive.recall(s, "parser " <> secret <> " crash")
+    assert length(hits) >= 1
+    assert Enum.all?(hits, fn h -> String.starts_with?(h, "[") end)
+    refute Enum.any?(hits, fn h -> String.contains?(h, secret) end)
+    assert Enum.any?(hits, fn h -> String.contains?(h, seg) end)
+  end
+
+  test "envelope 篡改后 load 拒绝（防毒化 digest）", %{session: s} do
+    client = Newbee.LLM.Client.new(model: "m", base_url: "http://localhost", api_key: "t")
+    :ok = Newbee.RequestEnvelope.record(s, client, [%{"role" => "user", "content" => "ORIGINAL"}])
+    path = Newbee.RequestEnvelope.path(s)
+    body = File.read!(path) |> Jason.decode!()
+    tampered = put_in(body, ["messages", Access.at(0), "content"], "TAMPERED")
+    File.write!(path, Jason.encode!(tampered))
+    assert Newbee.RequestEnvelope.load(s) == nil
+  end
+
+  test "delete 清除全局 current 残留", %{id: id} do
+    Newbee.Session.set_current(id)
+    assert Newbee.Session.current_id() == id
+    :ok = Newbee.Session.delete(id)
+    assert Newbee.Session.current_id() == nil
+  end
 end

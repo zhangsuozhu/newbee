@@ -289,10 +289,10 @@ defmodule Newbee.Agent.Loop do
        context_window: Keyword.get_lazy(opts, :context_window, fn -> Newbee.LLM.Client.context_window(client) end),
        compaction_threshold: Keyword.get(opts, :compaction_threshold, 0.8),
        compaction_retain: Keyword.get(opts, :compaction_retain, 0.16),
-        compaction_max_tokens: Keyword.get(opts, :compaction_max_tokens, 1_024),
-        compaction_output_reserve: Keyword.get(opts, :compaction_output_reserve),
-        auto_compact: Keyword.get(opts, :auto_compact, true),
-        root: root
+       compaction_max_tokens: Keyword.get(opts, :compaction_max_tokens, 1_024),
+       compaction_output_reserve: Keyword.get(opts, :compaction_output_reserve),
+       auto_compact: Keyword.get(opts, :auto_compact, true),
+       root: root
      }}
   end
 
@@ -338,6 +338,7 @@ defmodule Newbee.Agent.Loop do
 
   def handle_call({:set_goal, text, opts}, _from, state) do
     text = String.trim(text)
+
     if text == "" do
       {:reply, {:error, :empty_goal}, state}
     else
@@ -347,6 +348,7 @@ defmodule Newbee.Agent.Loop do
       session_id = state.session && state.session.id
 
       gstate = Newbee.Goal.new_state(text, max_rounds: max_rounds, token_budget: token_budget, session_id: session_id)
+
       goal = %{
         id: gstate.id,
         text: text,
@@ -382,8 +384,20 @@ defmodule Newbee.Agent.Loop do
         |> push_msg(%{"role" => "user", "content" => "（自主目标模式启动）目标：#{text}\n请开始自主工作，直到达成目标。"})
 
       try do
-        Newbee.Goal.persist(%Newbee.Goal.State{id: goal.id, text: text, status: :active, token_budget: token_budget, tokens_used: 0, rounds: 0, max_rounds: max_rounds, updated_at: goal.created_at, session_id: session_id})
-      rescue _ -> :ok end
+        Newbee.Goal.persist(%Newbee.Goal.State{
+          id: goal.id,
+          text: text,
+          status: :active,
+          token_budget: token_budget,
+          tokens_used: 0,
+          rounds: 0,
+          max_rounds: max_rounds,
+          updated_at: goal.created_at,
+          session_id: session_id
+        })
+      rescue
+        _ -> :ok
+      end
 
       emit(state, {:goal_start, text})
       send(self(), :goal_next)
@@ -396,19 +410,36 @@ defmodule Newbee.Agent.Loop do
       {:reply, {:error, :no_goal}, state}
     else
       text = String.trim(new_text)
+
       if text == "" do
         {:reply, {:error, :empty_goal}, state}
       else
         g = state.goal
         updated = %{g | text: text, objective: text, status: :active, idle: 0, blocked_streak: 0}
-        state = inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.objective_updated(updated)}, %{
-          source: "goal_objective_updated",
-          reason: "目标编辑",
-          timing: "next_request"
-        })
+
+        state =
+          inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.objective_updated(updated)}, %{
+            source: "goal_objective_updated",
+            reason: "目标编辑",
+            timing: "next_request"
+          })
+
         try do
-          Newbee.Goal.persist(%Newbee.Goal.State{id: g.id, text: text, status: :active, token_budget: g.token_budget, tokens_used: g.tokens_used, rounds: g.rounds, max_rounds: g.max_rounds, updated_at: System.system_time(:millisecond), session_id: g.session_id})
-        rescue _ -> :ok end
+          Newbee.Goal.persist(%Newbee.Goal.State{
+            id: g.id,
+            text: text,
+            status: :active,
+            token_budget: g.token_budget,
+            tokens_used: g.tokens_used,
+            rounds: g.rounds,
+            max_rounds: g.max_rounds,
+            updated_at: System.system_time(:millisecond),
+            session_id: g.session_id
+          })
+        rescue
+          _ -> :ok
+        end
+
         emit(state, {:goal_updated, text})
         {:reply, :ok, %{state | goal: updated}}
       end
@@ -420,15 +451,18 @@ defmodule Newbee.Agent.Loop do
       {:reply, {:error, :no_goal}, state}
     else
       allowed = [:active, :paused, :blocked, :budget_limited]
+
       if status not in allowed do
         {:reply, {:error, {:invalid_status, status}}, state}
       else
         g = %{state.goal | status: status}
         g = if status == :active, do: %{g | wall_start: System.monotonic_time(:millisecond)}, else: g
         emit(state, {:goal_status, status})
+
         if status == :active do
           send(self(), :goal_next)
         end
+
         {:reply, :ok, %{state | goal: g}}
       end
     end
@@ -448,19 +482,28 @@ defmodule Newbee.Agent.Loop do
   def handle_call(:clear_goal, _from, state) do
     if state.goal do
       emit(state, {:goal_cancelled, :user})
-      try do Newbee.Goal.clear_persist(state.goal.session_id) rescue _ -> :ok end
+
+      try do
+        Newbee.Goal.clear_persist(state.goal.session_id)
+      rescue
+        _ -> :ok
+      end
     end
+
     {:reply, :ok, %{state | goal: nil}}
   end
 
   def handle_call(:goal, _from, state), do: {:reply, state.goal, state}
+
   def handle_call({:loop, task, opts}, _from, state) do
     task = String.trim(task)
+
     if task == "" do
       {:reply, {:error, :empty_loop}, state}
     else
       iterations = Keyword.get(opts, :iterations, 5) |> parse_loop_iterations()
       token_budget = parse_token_budget(Keyword.get(opts, :token_budget) || Keyword.get(opts, :budget))
+
       loop_state = %{
         task: task,
         iterations: iterations,
@@ -469,18 +512,25 @@ defmodule Newbee.Agent.Loop do
         rounds: 0,
         msg_len: length(state.messages)
       }
-      state = inject_prompt(state, %{"role" => "system", "content" => "[Loop 模式] 任务：#{task}\n迭代上限 #{iterations}，预算 #{token_budget || "无"}。每轮要有实质进展，完成后调用 done。"}, %{
-        source: "loop_start",
-        reason: "启动紧凑循环",
-        timing: "current_turn"
-      })
+
+      state =
+        inject_prompt(
+          state,
+          %{
+            "role" => "system",
+            "content" => "[Loop 模式] 任务：#{task}\n迭代上限 #{iterations}，预算 #{token_budget || "无"}。每轮要有实质进展，完成后调用 done。"
+          },
+          %{
+            source: "loop_start",
+            reason: "启动紧凑循环",
+            timing: "current_turn"
+          }
+        )
+
       {reply, state} = loop_iterations(state, loop_state)
       {:reply, reply, state}
     end
   end
-
-
-
 
   def handle_call({:set_root, root}, _from, state) when is_binary(root) do
     case transition_root(state, root) do
@@ -575,6 +625,7 @@ defmodule Newbee.Agent.Loop do
       if state.goal && state.goal.status in [:paused, :blocked, :budget_limited] do
         Newbee.DebugLog.log(:goal, "goal_next skipped status=#{state.goal.status}")
       end
+
       {:noreply, state}
     end
   rescue
@@ -614,7 +665,13 @@ defmodule Newbee.Agent.Loop do
       # Accounting: tokens_used from usage, time_used
       tokens_delta = estimate_tokens(content, g.msg_len, state)
       time_delta = if g.wall_start, do: System.monotonic_time(:millisecond) - g.wall_start, else: 0
-      g = %{g | tokens_used: (g.tokens_used || 0) + tokens_delta, time_used_ms: (g.time_used_ms || 0) + time_delta, wall_start: System.monotonic_time(:millisecond)}
+
+      g = %{
+        g
+        | tokens_used: (g.tokens_used || 0) + tokens_delta,
+          time_used_ms: (g.time_used_ms || 0) + time_delta,
+          wall_start: System.monotonic_time(:millisecond)
+      }
 
       # Budget check: if exceeded, transition to budget_limited and inject budget_limit steering
       g =
@@ -629,12 +686,15 @@ defmodule Newbee.Agent.Loop do
       # If budget_limited, inject budget_limit and do not continue with new work (but still count round)
       if g.status == :budget_limited do
         emit(state, {:goal_budget_limited, g.tokens_used})
-        state = inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.budget_limit(g)}, %{
-          source: "goal_budget_limit",
-          reason: "token 预算触顶",
-          timing: "next_request",
-          tokens_used: g.tokens_used
-        })
+
+        state =
+          inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.budget_limit(g)}, %{
+            source: "goal_budget_limit",
+            reason: "token 预算触顶",
+            timing: "next_request",
+            tokens_used: g.tokens_used
+          })
+
         # Still auto-continue once for wrap-up, but will not loop forever
         if g.rounds + 1 >= g.max_rounds do
           emit(state, {:goal_limit, g.max_rounds})
@@ -653,6 +713,7 @@ defmodule Newbee.Agent.Loop do
 
         # Repeat detection: tool signature fingerprint
         tool_sig = extract_tool_sig(added)
+
         {repeat_count, last_sig} =
           if tool_sig && tool_sig == g.last_tool_sig do
             {g.repeat_count + 1, tool_sig}
@@ -673,16 +734,33 @@ defmodule Newbee.Agent.Loop do
           end
 
         rounds = g.rounds + 1
-        g2 = %{g | rounds: rounds, idle: idle, error_retries: 0, repeat_count: repeat_count, last_tool_sig: last_sig, blocked_streak: blocked_streak, status: g_status}
+
+        g2 = %{
+          g
+          | rounds: rounds,
+            idle: idle,
+            error_retries: 0,
+            repeat_count: repeat_count,
+            last_tool_sig: last_sig,
+            blocked_streak: blocked_streak,
+            status: g_status
+        }
 
         # If blocked threshold reached, emit and stop loop (requires user to resume)
         if g_status == :blocked do
           emit(state, {:goal_blocked, content})
-          state = inject_prompt(state, %{"role" => "system", "content" => "[Goal Blocked] 模型连续3轮提示阻塞，已将目标置为 blocked。请等待用户介入或 /goal resume。"}, %{
-            source: "goal_blocked",
-            reason: "三击阻塞审计",
-            timing: "next_request"
-          })
+
+          state =
+            inject_prompt(
+              state,
+              %{"role" => "system", "content" => "[Goal Blocked] 模型连续3轮提示阻塞，已将目标置为 blocked。请等待用户介入或 /goal resume。"},
+              %{
+                source: "goal_blocked",
+                reason: "三击阻塞审计",
+                timing: "next_request"
+              }
+            )
+
           state = %{state | goal: %{g2 | status: :blocked}}
           {{:text, content}, state}
         else
@@ -704,17 +782,22 @@ defmodule Newbee.Agent.Loop do
 
             state =
               if reflect_reason && g2.reflect_cooldown == 0 do
-                inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.reflection(g2, reflect_reason)}, %{
-                  source: "goal_reflection",
-                  reason: reflect_reason,
-                  timing: "next_request",
-                  round: rounds
-                })
+                inject_prompt(
+                  state,
+                  %{"role" => "system", "content" => Newbee.Goal.Steering.reflection(g2, reflect_reason)},
+                  %{
+                    source: "goal_reflection",
+                    reason: reflect_reason,
+                    timing: "next_request",
+                    round: rounds
+                  }
+                )
                 |> then(fn s -> %{s | goal: %{s.goal | reflect_cooldown: 3, idle: 0, repeat_count: 0}} end)
               else
                 # Decrement cooldown
                 cooldown = max(g2.reflect_cooldown - 1, 0)
                 base = %{state | goal: %{state.goal | reflect_cooldown: cooldown}}
+
                 if idle >= 3 && reflect_reason == nil do
                   # fallback idle reminder (should not happen if reflection already handled)
                   inject_prompt(base, %{"role" => "system", "content" => Newbee.Goal.Steering.idle_reminder(rounds)}, %{
@@ -748,26 +831,38 @@ defmodule Newbee.Agent.Loop do
 
   defp after_turn({:done, summary}, state) do
     g = state.goal
+
     # Verification gate: if JSpace ledger exists with open/verified gaps, block done and inject reminder (unless summary indicates force)
     if verification_gate_blocks?(state, summary) do
       emit(state, {:goal_verification_block, summary})
-      state = inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.verification_gate_message()}, %{
-        source: "goal_verification_gate",
-        reason: "JSpace verified 未落账",
-        timing: "current_turn_retry"
-      })
+
+      state =
+        inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.verification_gate_message()}, %{
+          source: "goal_verification_gate",
+          reason: "JSpace verified 未落账",
+          timing: "current_turn_retry"
+        })
+
       # Convert done to text continuation: model should fix ledger then call done again
       # We inject a synthetic tool-like reminder and continue loop
       g2 = %{g | rounds: g.rounds + 1, msg_len: length(state.messages)}
       state = %{state | goal: g2}
       # Push a tool-style message to transcript to record the block (so model sees it)
-      state = push_msg(state, %{"role" => "tool", "tool_call_id" => "verification_gate", "content" => "[verification_gate] done 被拦截：请先在 JSpace 落账 verified/open 再完成。"})
-      state = inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.continuation(state.goal)}, %{
-        source: "goal_continue_after_gate",
-        reason: "验证门拦截 done",
-        timing: "next_request"
-      })
-      |> then(fn s -> %{s | goal: %{s.goal | msg_len: length(s.messages)}} end)
+      state =
+        push_msg(state, %{
+          "role" => "tool",
+          "tool_call_id" => "verification_gate",
+          "content" => "[verification_gate] done 被拦截：请先在 JSpace 落账 verified/open 再完成。"
+        })
+
+      state =
+        inject_prompt(state, %{"role" => "system", "content" => Newbee.Goal.Steering.continuation(state.goal)}, %{
+          source: "goal_continue_after_gate",
+          reason: "验证门拦截 done",
+          timing: "next_request"
+        })
+        |> then(fn s -> %{s | goal: %{s.goal | msg_len: length(s.messages)}} end)
+
       send(self(), :goal_next)
       {{:text, summary}, state}
     else
@@ -776,7 +871,13 @@ defmodule Newbee.Agent.Loop do
       _g = %{g | tokens_used: (g.tokens_used || 0) + tokens_delta, status: :complete}
       emit(state, {:goal_done, summary})
       maybe_extract_lesson(state, summary)
-      try do Newbee.Goal.clear_persist(g.session_id) rescue _ -> :ok end
+
+      try do
+        Newbee.Goal.clear_persist(g.session_id)
+      rescue
+        _ -> :ok
+      end
+
       {{:done, summary}, %{state | goal: nil}}
     end
   end
@@ -839,6 +940,7 @@ defmodule Newbee.Agent.Loop do
         %{"total_tokens" => n} when is_integer(n) -> div(n, max(state.goal.rounds + 1, 1))
         _ -> 0
       end
+
     max(base + extra, 50)
   end
 
@@ -858,14 +960,20 @@ defmodule Newbee.Agent.Loop do
       String.contains?(content, "需要用户") or
       String.contains?(content, "无法继续")
   end
+
   defp blocked_text?(_), do: false
 
   defp verification_gate_blocks?(state, _summary) do
     session_id = state.goal && state.goal.session_id
+
     if session_id && Newbee.Tools.JSpace.exists?(session_id) do
       body = Newbee.Tools.JSpace.read(session_id) || ""
       has_open = String.contains?(body, "? ") or String.contains?(body, "Open:")
-      verified_empty = String.contains?(body, "Verified:  (无)") or String.contains?(body, "Verified:  (") and not String.contains?(body, "✓")
+
+      verified_empty =
+        String.contains?(body, "Verified:  (无)") or
+          (String.contains?(body, "Verified:  (") and not String.contains?(body, "✓"))
+
       # Block if there are open items and no verified progress
       has_open and verified_empty
     else
@@ -874,7 +982,6 @@ defmodule Newbee.Agent.Loop do
   rescue
     _ -> false
   end
-
 
   defp goal_system_prompt(text) do
     """
@@ -895,59 +1002,85 @@ defmodule Newbee.Agent.Loop do
   # helpers delegating to Steering for backward compat
   defp parse_token_budget(nil), do: nil
   defp parse_token_budget(n) when is_integer(n) and n > 0, do: n
+
   defp parse_token_budget(n) when is_binary(n) do
     case Integer.parse(String.trim(n)) do
       {i, ""} when i > 0 -> i
       _ -> nil
     end
   end
+
   defp parse_token_budget(_), do: nil
 
   defp parse_loop_iterations(nil), do: 5
   defp parse_loop_iterations(n) when is_integer(n) and n > 0 and n <= 20, do: n
+
   defp parse_loop_iterations(n) when is_binary(n) do
     case Integer.parse(String.trim(n)) do
       {i, ""} when i > 0 and i <= 20 -> i
       _ -> 5
     end
   end
+
   defp parse_loop_iterations(_), do: 5
 
   defp loop_iterations(state, %{rounds: r, iterations: max} = _loop) when r >= max do
     {{:loop_done, r}, state}
   end
+
   defp loop_iterations(state, loop) do
     {reply, state} = run_turn(state, 1)
     tokens = div(byte_size(inspect(reply)), 4) + 50
     loop = %{loop | rounds: loop.rounds + 1, tokens_used: loop.tokens_used + tokens}
-    state = case reply do
-      {:done, _} -> state
-      {:ask, _} -> state
-      {:text, _content} ->
-        if loop.token_budget && loop.tokens_used >= loop.token_budget do
+
+    state =
+      case reply do
+        {:done, _} ->
           state
-        else
-          inject_prompt(state, %{"role" => "system", "content" => "[Loop 第 #{loop.rounds} 轮] 继续推进：#{loop.task}（#{loop.rounds}/#{loop.iterations}）"}, %{
-            source: "loop_continue",
-            reason: "loop 未完成",
-            timing: "next_request"
-          })
-        end
-      _ -> state
-    end
+
+        {:ask, _} ->
+          state
+
+        {:text, _content} ->
+          if loop.token_budget && loop.tokens_used >= loop.token_budget do
+            state
+          else
+            inject_prompt(
+              state,
+              %{
+                "role" => "system",
+                "content" => "[Loop 第 #{loop.rounds} 轮] 继续推进：#{loop.task}（#{loop.rounds}/#{loop.iterations}）"
+              },
+              %{
+                source: "loop_continue",
+                reason: "loop 未完成",
+                timing: "next_request"
+              }
+            )
+          end
+
+        _ ->
+          state
+      end
+
     case reply do
-      {:done, summary} -> {{:done, summary}, state}
-      {:ask, q} -> {{:ask, q}, state}
+      {:done, summary} ->
+        {{:done, summary}, state}
+
+      {:ask, q} ->
+        {{:ask, q}, state}
+
       {:text, _} ->
         if loop.token_budget && loop.tokens_used >= loop.token_budget do
           {{:loop_budget, loop.tokens_used}, state}
         else
           loop_iterations(state, loop)
         end
-      other -> {other, state}
+
+      other ->
+        {other, state}
     end
   end
-
 
   # ── 档案召回（查询感知 rehydration，§6.6）──
 
@@ -992,93 +1125,106 @@ defmodule Newbee.Agent.Loop do
       emit(state, {:turn_long, step})
     end
 
-    state = maybe_auto_compact(state, step)
-    state = %{state | messages: repair_history(state.messages)}
-    Newbee.DebugLog.log(:turn, "step #{step} messages=#{length(state.messages)}")
-    on_text = fn delta -> emit(state, {:text, delta}) end
-    on_reasoning = fn delta -> emit(state, {:reasoning, delta}) end
+    {state, overflow} =
+      case maybe_auto_compact(state, step) do
+        {:ok, compacted} ->
+          {%{compacted | messages: repair_history(compacted.messages)}, nil}
 
-    # I1：记录本次路由请求的可缓存前缀快照（Archive 摘要路径消费）。
-    # 标准 LLM client + 会话才写；注入函数/无会话 no-op。
-    Newbee.RequestEnvelope.record(state.session, state.client, state.messages)
+        {:error, details, overflow_state} ->
+          emit(overflow_state, {:context_overflow, details})
+          Newbee.DebugLog.log(:compact, "context overflow, refuse provider call")
+          {overflow_state, details}
+      end
 
-    case call_client(state.client_fun, state.messages, on_text, on_reasoning) do
-      {:ok, msg, usage} ->
-        Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
-        emit(state, {:usage, Map.put(usage, "model", client_model(state.client))})
-        state = %{state | usage: merge_usage(state.usage, usage)}
-        # 用量持久化（UI 历史回放）：附加到 assistant 消息私有字段，
-        # 仅前端 history 消费；发模型的 messages 不含 _usage（见 request_messages）
-        msg = Map.put(msg, "_usage", usage)
+    if overflow != nil do
+      {{:error, {:context_overflow, overflow}}, state}
+    else
+      Newbee.DebugLog.log(:turn, "step #{step} messages=#{length(state.messages)}")
+      on_text = fn delta -> emit(state, {:text, delta}) end
+      on_reasoning = fn delta -> emit(state, {:reasoning, delta}) end
 
-        # 上游（DeepSeek/OpenRouter 系）拒绝 content 为空的 assistant 消息（400）：
-        # 模型偶发返回"空正文且无工具调用"（只吐思考流/空串），该消息一旦落进
-        # transcript，后续整个历史请求都会 400 卡死。空回复无信息量，不进历史
-        # （同时也保持原 msg 继续走下方空文本回合结束逻辑）。
-        state =
-          if empty_assistant_msg?(msg) do
-            Newbee.DebugLog.log(:turn, "step #{step} empty assistant response dropped")
-            state
-          else
-            push_msg(state, msg)
+      # I1：记录本次路由请求的可缓存前缀快照（Archive 摘要路径消费）。
+      # 标准 LLM client + 会话才写；注入函数/无会话 no-op。
+      Newbee.RequestEnvelope.record(state.session, state.client, state.messages)
+
+      case call_client(state.client_fun, state.messages, on_text, on_reasoning) do
+        {:ok, msg, usage} ->
+          Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
+          emit(state, {:usage, Map.put(usage, "model", client_model(state.client))})
+          state = %{state | usage: merge_usage(state.usage, usage)}
+          # 用量持久化（UI 历史回放）：附加到 assistant 消息私有字段，
+          # 仅前端 history 消费；发模型的 messages 不含 _usage（见 request_messages）
+          msg = Map.put(msg, "_usage", usage)
+
+          # 上游（DeepSeek/OpenRouter 系）拒绝 content 为空的 assistant 消息（400）：
+          # 模型偶发返回"空正文且无工具调用"（只吐思考流/空串），该消息一旦落进
+          # transcript，后续整个历史请求都会 400 卡死。空回复无信息量，不进历史
+          # （同时也保持原 msg 继续走下方空文本回合结束逻辑）。
+          state =
+            if empty_assistant_msg?(msg) do
+              Newbee.DebugLog.log(:turn, "step #{step} empty assistant response dropped")
+              state
+            else
+              push_msg(state, msg)
+            end
+
+          case Newbee.Codec.extract_tool_calls(msg) do
+            [] ->
+              # 降级通道 (§4.2)：模型偶发在正文输出 ```elixir 代码块时容错执行
+              case Newbee.Codec.FallbackParser.extract(msg["content"] || "") do
+                {[], _cleaned} ->
+                  Newbee.DebugLog.log(:turn, "step #{step} no tool calls, turn end")
+
+                  # 流监控（§4.5）：正文 + 思考流一并检查沉睡规则（scope 分流见 stream_rule_hits）
+                  case stream_rule_hits(msg) do
+                    [] ->
+                      {{:text, msg["content"]}, state}
+
+                    hits ->
+                      # 沉睡规则命中正文（§4.5 流监控）：注入提醒，模型下轮纠正
+                      emit(state, {:rule_hit, hits})
+                      # 规则命中热度（§8.5 profiling 输入）
+                      Newbee.Environment.UsageTracker.observe_rules(hits)
+                      injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
+                      reminder = %{"role" => "system", "content" => "[沉睡规则注入] " <> injections}
+
+                      state =
+                        inject_prompt(state, reminder, %{
+                          source: "sleeping_rule",
+                          reason: "模型可见正文或隐藏思考流命中沉睡规则",
+                          timing: "current_turn_retry",
+                          step: step,
+                          trigger: visible_rule_trigger(msg["content"] || "", hits),
+                          rules: rule_audit_details(hits)
+                        })
+
+                      run_turn(state, step + 1)
+                  end
+
+                {blocks, cleaned} ->
+                  Newbee.DebugLog.log(:turn, "step #{step} fallback: #{length(blocks)} elixir blocks")
+                  execute_fallback(blocks, cleaned, state, step)
+              end
+
+            calls ->
+              case execute_calls(calls, state) do
+                {:halt, reply, state} -> {reply, state}
+                {:cont, state} -> run_turn(state, step + 1)
+              end
           end
 
-        case Newbee.Codec.extract_tool_calls(msg) do
-          [] ->
-            # 降级通道 (§4.2)：模型偶发在正文输出 ```elixir 代码块时容错执行
-            case Newbee.Codec.FallbackParser.extract(msg["content"] || "") do
-              {[], _cleaned} ->
-                Newbee.DebugLog.log(:turn, "step #{step} no tool calls, turn end")
+        {:interrupted, content} ->
+          # Esc 中断：终止整个 turn（部分生成的 assistant 消息不入历史，
+          # 避免悬空 tool_calls 触发 DeepSeek 400）
+          Newbee.DebugLog.log(:turn, "step #{step} interrupted")
+          emit(state, {:interrupted, content})
+          {{:interrupted, content}, state}
 
-                # 流监控（§4.5）：正文 + 思考流一并检查沉睡规则（scope 分流见 stream_rule_hits）
-                case stream_rule_hits(msg) do
-                  [] ->
-                    {{:text, msg["content"]}, state}
-
-                  hits ->
-                    # 沉睡规则命中正文（§4.5 流监控）：注入提醒，模型下轮纠正
-                    emit(state, {:rule_hit, hits})
-                    # 规则命中热度（§8.5 profiling 输入）
-                    Newbee.Environment.UsageTracker.observe_rules(hits)
-                    injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
-                    reminder = %{"role" => "system", "content" => "[沉睡规则注入] " <> injections}
-
-                    state =
-                      inject_prompt(state, reminder, %{
-                        source: "sleeping_rule",
-                        reason: "模型可见正文或隐藏思考流命中沉睡规则",
-                        timing: "current_turn_retry",
-                        step: step,
-                        trigger: visible_rule_trigger(msg["content"] || "", hits),
-                        rules: rule_audit_details(hits)
-                      })
-
-                    run_turn(state, step + 1)
-                end
-
-              {blocks, cleaned} ->
-                Newbee.DebugLog.log(:turn, "step #{step} fallback: #{length(blocks)} elixir blocks")
-                execute_fallback(blocks, cleaned, state, step)
-            end
-
-          calls ->
-            case execute_calls(calls, state) do
-              {:halt, reply, state} -> {reply, state}
-              {:cont, state} -> run_turn(state, step + 1)
-            end
-        end
-
-      {:interrupted, content} ->
-        # Esc 中断：终止整个 turn（部分生成的 assistant 消息不入历史，
-        # 避免悬空 tool_calls 触发 DeepSeek 400）
-        Newbee.DebugLog.log(:turn, "step #{step} interrupted")
-        emit(state, {:interrupted, content})
-        {{:interrupted, content}, state}
-
-      {:error, e} ->
-        Newbee.DebugLog.log(:turn, "step #{step} llm error #{inspect(e)}")
-        emit(state, {:error, e})
-        {{:error, e}, state}
+        {:error, e} ->
+          Newbee.DebugLog.log(:turn, "step #{step} llm error #{inspect(e)}")
+          emit(state, {:error, e})
+          {{:error, e}, state}
+      end
     end
   end
 
@@ -1092,7 +1238,8 @@ defmodule Newbee.Agent.Loop do
           Newbee.Collaboration.Capability.revoke(token)
         end
 
-      _ -> Newbee.DEE.Evaluator.eval(st.evaluator, code)
+      _ ->
+        Newbee.DEE.Evaluator.eval(st.evaluator, code)
     end
   end
 
@@ -1583,7 +1730,12 @@ defmodule Newbee.Agent.Loop do
           end
 
         {:error, reason} ->
-          %{status: :error, error: "session workspace unavailable: #{state.root} (#{inspect(reason)})", output: "", warnings: ""}
+          %{
+            status: :error,
+            error: "session workspace unavailable: #{state.root} (#{inspect(reason)})",
+            output: "",
+            warnings: ""
+          }
       end
 
     {state, eval_result} = reconcile_eval_cwd(state, eval_result)
@@ -1815,26 +1967,48 @@ defmodule Newbee.Agent.Loop do
 
   # Automatic pressure check follows Codex: reserve output budget, trigger before the
   # request, and re-check after compaction so a summary cannot recreate the overflow.
-  defp maybe_auto_compact(%{auto_compact: false} = state, _step), do: state
+  defp maybe_auto_compact(%{auto_compact: false} = state, _step), do: {:ok, state}
 
   defp maybe_auto_compact(state, step) do
     budget = compaction_budget(state)
 
-    if budget.status != :ok and length(state.messages) > 2 do
-      retain = max(trunc(state.context_window * state.compaction_retain), 512)
-      compact_until_budget(state, retain, step, budget, 3)
-    else
-      state
+    cond do
+      budget.status == :ok ->
+        {:ok, state}
+
+      length(state.messages) <= 2 and budget.status != :hard_limit ->
+        {:ok, state}
+
+      length(state.messages) <= 2 ->
+        {:error, overflow_details(step, budget, budget, 0), state}
+
+      true ->
+        retain = max(trunc(state.context_window * state.compaction_retain), 512)
+        compact_until_budget(state, retain, step, budget, 3)
     end
   end
 
-  defp compact_until_budget(state, _retain, _step, _before, 0), do: state
+  defp compact_until_budget(state, _retain, step, before, 0) do
+    budget = compaction_budget(state)
+
+    if budget.status == :ok or budget.status == :soft_limit do
+      {:ok, state}
+    else
+      {:error, overflow_details(step, before, budget, 0), state}
+    end
+  end
 
   defp compact_until_budget(state, retain, step, before, attempts_left) do
     {next_state, count} = compact_state(state, retain)
 
     if count == 0 do
-      state
+      budget = compaction_budget(state)
+
+      if budget.status == :hard_limit do
+        {:error, overflow_details(step, before, budget, attempts_left), state}
+      else
+        {:ok, state}
+      end
     else
       after_budget = compaction_budget(next_state)
       reason = if step <= 1, do: :pre_request, else: :mid_turn
@@ -1853,12 +2027,33 @@ defmodule Newbee.Agent.Loop do
       emit(next_state, {:compaction_pressure, details})
       Newbee.DebugLog.log(:compact, compaction_log(details))
 
-      if after_budget.status != :ok and length(next_state.messages) > 2 do
-        compact_until_budget(next_state, max(div(retain, 2), 64), step, after_budget, attempts_left - 1)
-      else
-        next_state
+      cond do
+        after_budget.status == :ok or after_budget.status == :soft_limit ->
+          {:ok, next_state}
+
+        length(next_state.messages) <= 2 ->
+          {:error, overflow_details(step, before, after_budget, attempts_left - 1), next_state}
+
+        attempts_left - 1 <= 0 ->
+          {:error, overflow_details(step, before, after_budget, 0), next_state}
+
+        true ->
+          compact_until_budget(next_state, max(div(retain, 2), 64), step, after_budget, attempts_left - 1)
       end
     end
+  end
+
+  defp overflow_details(step, before, after_budget, attempts_left) do
+    %{
+      reason: if(step <= 1, do: :pre_request, else: :mid_turn),
+      phase: :before_request,
+      status_before: before.status,
+      status_after: after_budget.status,
+      pressure_before: before.request_tokens,
+      pressure_after: after_budget.request_tokens,
+      archived_messages: 0,
+      attempts_left: attempts_left
+    }
   end
 
   defp compaction_budget(state) do
@@ -1874,11 +2069,14 @@ defmodule Newbee.Agent.Loop do
   defp compaction_output_reserve(%{compaction_output_reserve: n}), do: n
 
   defp compaction_log(details) do
-    "automatic " <> Atom.to_string(details.reason) <> " pressure " <>
-      to_string(details.pressure_before) <> "->" <> to_string(details.pressure_after) <>
+    "automatic " <>
+      Atom.to_string(details.reason) <>
+      " pressure " <>
+      to_string(details.pressure_before) <>
+      "->" <>
+      to_string(details.pressure_after) <>
       " status=" <> Atom.to_string(details.status_after)
   end
-
 
   defp estimate_message_tokens(message) do
     div(byte_size(Jason.encode!(message)) + 2, 3) + 8
@@ -1936,9 +2134,11 @@ defmodule Newbee.Agent.Loop do
     end
   rescue
     e ->
-      # Archive 故障绝不伤会话：退回内存压扁（transcript 未动，仍可下次重试）
-      Newbee.DebugLog.log(:compact, "archive failed #{inspect(e)}; fallback to ephemeral squash")
-      compact_state(%{state | session: nil}, retain_target)
+      # Archive 故障绝不伤会话：内存压扁仅改内存视图，session 必须保留，下轮可重试。
+      # 此前 session: nil 会使后续 push_msg 不再落盘，等于永久丢持久化。
+      Newbee.DebugLog.log(:compact, "archive failed " <> inspect(e) <> "; fallback ephemeral, session kept")
+      {ephemeral, n} = compact_state(%{state | session: nil}, retain_target)
+      {%{ephemeral | session: state.session}, n}
   end
 
   defp split_for_retention(messages, count) when count <= 64 do
@@ -1964,77 +2164,76 @@ defmodule Newbee.Agent.Loop do
   # ── 终局验证（LLM-as-a-Verifier）──
 
   # done 前的终局检查：分数 ≥ 阈值直接 done；低分注入提醒让模型重新评估（仅一次）。
-# ── done 携带的下一步选项归一化 ──
-# 支持两种写法：扁平 next_question/next_kind/next_options 或嵌套 next_steps 对象；优先 next_steps
-defp normalize_next_steps(args) when is_map(args) do
-  nested = args["next_steps"] || args[:next_steps]
+  # ── done 携带的下一步选项归一化 ──
+  # 支持两种写法：扁平 next_question/next_kind/next_options 或嵌套 next_steps 对象；优先 next_steps
+  defp normalize_next_steps(args) when is_map(args) do
+    nested = args["next_steps"] || args[:next_steps]
 
-  base =
-    cond do
-      is_map(nested) and (nested["question"] || nested[:question] || nested["options"] || nested[:options]) ->
-        %{
-          "question" => nested["question"] || nested[:question] || nested["next_question"] || "下一步做什么？",
-          "kind" => normalize_next_kind(nested["kind"] || nested[:kind] || nested["next_kind"]),
-          "options" => normalize_next_options(nested["options"] || nested[:options] || nested["next_options"])
-        }
-
-      true ->
-        q = args["next_question"] || args[:next_question]
-        opts = args["next_options"] || args[:next_options]
-        kind = args["next_kind"] || args[:next_kind]
-
-        if (is_binary(q) && String.trim(q) != "") || (is_list(opts) && opts != []) do
+    base =
+      cond do
+        is_map(nested) and (nested["question"] || nested[:question] || nested["options"] || nested[:options]) ->
           %{
-            "question" => (is_binary(q) && String.trim(q) != "" && q) || "下一步做什么？",
-            "kind" => normalize_next_kind(kind),
-            "options" => normalize_next_options(opts)
+            "question" => nested["question"] || nested[:question] || nested["next_question"] || "下一步做什么？",
+            "kind" => normalize_next_kind(nested["kind"] || nested[:kind] || nested["next_kind"]),
+            "options" => normalize_next_options(nested["options"] || nested[:options] || nested["next_options"])
           }
-        else
-          nil
-        end
-    end
 
-  case base do
-    %{"options" => opts} = m when is_list(opts) and length(opts) > 0 ->
-      capped =
-        opts
-        |> Enum.take(8)
-        |> Enum.map(fn o ->
-          cond do
-            is_map(o) ->
-              l = to_string(o["label"] || o[:label] || o["value"] || o[:value] || "")
-              v = to_string(o["value"] || o[:value] || o["label"] || o[:label] || "")
-              %{"label" => String.slice(l, 0, 80), "value" => String.slice(v, 0, 80)}
+        true ->
+          q = args["next_question"] || args[:next_question]
+          opts = args["next_options"] || args[:next_options]
+          kind = args["next_kind"] || args[:next_kind]
 
-            is_binary(o) ->
-              s = String.slice(o, 0, 80)
-              %{"label" => s, "value" => s}
-
-            true ->
-              nil
+          if (is_binary(q) && String.trim(q) != "") || (is_list(opts) && opts != []) do
+            %{
+              "question" => (is_binary(q) && String.trim(q) != "" && q) || "下一步做什么？",
+              "kind" => normalize_next_kind(kind),
+              "options" => normalize_next_options(opts)
+            }
+          else
+            nil
           end
-        end)
-        |> Enum.reject(&is_nil/1)
-        |> Enum.filter(fn %{"label" => l} -> String.trim(l) != "" end)
+      end
 
-      if capped == [], do: nil, else: %{m | "options" => capped}
+    case base do
+      %{"options" => opts} = m when is_list(opts) and length(opts) > 0 ->
+        capped =
+          opts
+          |> Enum.take(8)
+          |> Enum.map(fn o ->
+            cond do
+              is_map(o) ->
+                l = to_string(o["label"] || o[:label] || o["value"] || o[:value] || "")
+                v = to_string(o["value"] || o[:value] || o["label"] || o[:label] || "")
+                %{"label" => String.slice(l, 0, 80), "value" => String.slice(v, 0, 80)}
 
-    _ ->
-      base
+              is_binary(o) ->
+                s = String.slice(o, 0, 80)
+                %{"label" => s, "value" => s}
+
+              true ->
+                nil
+            end
+          end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.filter(fn %{"label" => l} -> String.trim(l) != "" end)
+
+        if capped == [], do: nil, else: %{m | "options" => capped}
+
+      _ ->
+        base
+    end
   end
-end
 
-defp normalize_next_steps(_), do: nil
+  defp normalize_next_steps(_), do: nil
 
-defp normalize_next_kind(k) when k in ["single", "multi", "buttons"], do: k
-defp normalize_next_kind(k) when is_atom(k) and k in [:single, :multi, :buttons], do: to_string(k)
-defp normalize_next_kind(_), do: "single"
+  defp normalize_next_kind(k) when k in ["single", "multi", "buttons"], do: k
+  defp normalize_next_kind(k) when is_atom(k) and k in [:single, :multi, :buttons], do: to_string(k)
+  defp normalize_next_kind(_), do: "single"
 
-defp normalize_next_options(opts) when is_list(opts), do: opts
-defp normalize_next_options(_), do: []
+  defp normalize_next_options(opts) when is_list(opts), do: opts
+  defp normalize_next_options(_), do: []
 
-defp final_check(%{progress: nil} = state), do: {:done, state}
-
+  defp final_check(%{progress: nil} = state), do: {:done, state}
 
   defp final_check(state) do
     p = state.progress

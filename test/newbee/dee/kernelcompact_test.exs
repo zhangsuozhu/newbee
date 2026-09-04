@@ -127,7 +127,7 @@ defmodule Newbee.Agent.LoopCompactTest do
         evaluator: ev,
         session_id: id,
         client_fun: scripted(script),
-        context_window: 2_000,
+        context_window: 12_000,
         compaction_threshold: 0.2,
         compaction_retain: 0.4
       )
@@ -138,6 +138,25 @@ defmodule Newbee.Agent.LoopCompactTest do
     assert Newbee.Archive.archived?(Session.open(id))
     # transcript 只增不删：所有 4 条工具调用原文仍在
     assert transcript |> File.read!() |> String.contains?("a4")
+    GenServer.stop(kernel)
+  end
+
+  test "hard limit overflow refuses provider call", %{id: id, ev: ev} do
+    big = String.duplicate("X", 8000)
+
+    {:ok, kernel} =
+      Loop.start_link(
+        client: %{},
+        evaluator: ev,
+        session_id: id,
+        client_fun: fn _m, _t -> flunk("must not call provider") end,
+        context_window: 2000,
+        compaction_threshold: 0.2,
+        compaction_retain: 0.4
+      )
+
+    assert {:error, {:context_overflow, details}} = Loop.submit(kernel, big)
+    assert details.status_after == :hard_limit
     GenServer.stop(kernel)
   end
 
@@ -205,5 +224,53 @@ defmodule Newbee.Agent.LoopCompactTest do
     assert recall
     assert recall["content"] =~ "history://"
     GenServer.stop(k2)
+  end
+
+  test "archive failure keeps session for retry (no silent persistence loss)", %{id: id, ev: ev} do
+    s = Session.open(id)
+    Enum.each(1..6, fn i -> Session.append(s, %{"role" => "user", "content" => "PRE_" <> to_string(i)}) end)
+    File.write!(Path.join(s.dir, "archive"), "block")
+
+    {:ok, kernel} =
+      Loop.start_link(
+        client: %{},
+        evaluator: ev,
+        session_id: id,
+        context_window: 20000,
+        compaction_threshold: 0.2,
+        client_fun: scripted([fn _m, _t -> {:ok, %{"role" => "assistant", "content" => "reply"}, %{}} end])
+      )
+
+    assert {:text, "reply"} = Loop.submit(kernel, String.duplicate("N", 2000))
+    state = :sys.get_state(kernel)
+    refute is_nil(state.session)
+    assert state.session.id == id
+    GenServer.stop(kernel)
+  end
+
+  test "history scope prefers capability over global current", %{id: _id} do
+    sid_a = "hist_a_" <> to_string(:erlang.unique_integer([:positive]))
+    sid_b = "hist_b_" <> to_string(:erlang.unique_integer([:positive]))
+    sa = Session.open(sid_a)
+    sb = Session.open(sid_b)
+    Enum.each(1..4, fn i -> Session.append(sa, %{"role" => "user", "content" => "A_MARKER_" <> to_string(i)}) end)
+    Enum.each(1..4, fn i -> Session.append(sb, %{"role" => "user", "content" => "B_MARKER_" <> to_string(i)}) end)
+    {:ok, _} = Newbee.Archive.compact(sa, retain: 1)
+    {:ok, _} = Newbee.Archive.compact(sb, retain: 1)
+    Session.set_current(sid_b)
+    :ok = Newbee.Collaboration.Capability.register(self(), sid_a, File.cwd!())
+    {:ok, token} = Newbee.Collaboration.Capability.issue(self())
+    Process.put({Newbee.Tools.Collaboration, :context}, %{capability: token})
+
+    try do
+      assert {:ok, idx} = Newbee.read("history://")
+      assert idx =~ sid_a
+      refute idx =~ sid_b
+    after
+      Process.delete({Newbee.Tools.Collaboration, :context})
+      Session.set_current(nil)
+      Session.delete(sid_a)
+      Session.delete(sid_b)
+    end
   end
 end
