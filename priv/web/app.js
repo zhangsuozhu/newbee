@@ -591,8 +591,8 @@ case "queue_updated": {
   renderQueue();
   const ev = p.event || {};
   if (ev.type === "cancelled") line("notice", `已取消排队：${ev.preview || ev.id || ""}`);
-  else if (ev.type === "cleared") line("notice", `已清空 ${ev.count || 0} 条排队`);
-  else if (ev.type === "discarded") line("notice", `排队已丢弃 ${ev.count || 0} 条（内核启动失败）`);
+  else if (ev.type === "cleared" && (ev.count || 0) > 0) line("notice", `已清空 ${ev.count} 条排队`);
+  else if (ev.type === "discarded" && (ev.count || 0) > 0) line("notice", `排队已丢弃 ${ev.count} 条（内核启动失败）`);
   break;
 }
 case "queue_cancelled": {
@@ -2455,8 +2455,8 @@ case "goal_round": break;
     recent.slice(0, 3).forEach((ev) => {
       if (!ev || !ev.type) return;
       if (ev.type === "cancelled") line("notice", "最近已取消排队：" + (ev.preview || ev.id || ""));
-      else if (ev.type === "cleared") line("notice", "最近已清空排队 " + (ev.count || 0) + " 条");
-      else if (ev.type === "discarded") line("notice", "最近排队已丢弃 " + (ev.count || 0) + " 条（内核启动失败）");
+      else if (ev.type === "cleared" && (ev.count || 0) > 0) line("notice", "最近已清空排队 " + ev.count + " 条");
+      else if (ev.type === "discarded" && (ev.count || 0) > 0) line("notice", "最近排队已丢弃 " + ev.count + " 条（内核启动失败）");
     });
     // 切回正在等待权限确认的会话时恢复确认条（permission_ask 事件在切走期间已错过）
     if (sessionState.awaiting_permission === true) showPermission("该会话正在等待权限确认（代码执行请求）");
@@ -3170,11 +3170,10 @@ case "goal_round": break;
     const cur = $("queue-current");
     if (!bar || !list) return;
     const q = Array.isArray(state.queue) ? state.queue : [];
-    if (q.length === 0 && !state.queueCurrent) { bar.classList.add("hidden"); return; }
+    if (q.length === 0) { bar.classList.add("hidden"); list.innerHTML = ""; if (count) count.textContent = ""; if (cur) cur.textContent = ""; return; }
     bar.classList.remove("hidden");
-    if (count) count.textContent = q.length > 0 ? ("等待队列 " + q.length + " 条") : "等待队列空";
+    if (count) count.textContent = "等待队列 " + q.length + " 条";
     if (cur) cur.textContent = state.queueCurrent && state.queueCurrent.preview ? ("执行中: " + state.queueCurrent.preview) : "";
-    list.innerHTML = "";
     q.forEach((item, idx) => {
       const row = document.createElement("div");
       row.className = "queue-item";
