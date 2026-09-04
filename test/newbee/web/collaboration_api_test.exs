@@ -273,7 +273,7 @@ defmodule Newbee.Web.CollaborationApiTest do
     parent_sid = "delivery-parent-#{suffix}"
     worker_sid = "delivery-worker-#{suffix}"
 
-    assert {:ok, worker} = Newbee.Web.Session.start_link(worker_sid)
+    assert {:ok, _worker} = Newbee.Web.Session.start_link(worker_sid)
 
     group =
       post_rpc("group.create", %{"sessionId" => parent_sid, "title" => "投递群"})
@@ -301,9 +301,18 @@ defmodule Newbee.Web.CollaborationApiTest do
              })
 
     assert_receive {:newbee_event, :web_event, {:web_event, ^worker_sid, kind, _payload}}, 2_000
-    assert kind in [:collab_message_queued, :error, :notice]
-
-    # notify 消息不触碰会话进程：不发任何下行事件
+    assert kind in [:collab_message_queued, :queue_updated, :error, :notice]
+    # 新行为一次入队发两帧（queue_updated + 兼容老事件），排空残留再测 notify，否则残留会误判。
+    receive do
+      {:newbee_event, :web_event, {:web_event, ^worker_sid, _, _}} -> :ok
+    after
+      200 -> :ok
+    end
+    receive do
+      {:newbee_event, :web_event, {:web_event, ^worker_sid, _, _}} -> :ok
+    after
+      0 -> :ok
+    end
     before = :counters
 
     assert {:ok, _} =
@@ -364,11 +373,16 @@ defmodule Newbee.Web.CollaborationApiTest do
     st = :sys.get_state(session)
     q = st.queue |> :queue.to_list()
 
-    assert [%{:collab_message => _}] =
-             Enum.map(q, fn {tag, m} -> %{tag => m["message_id"]} end)
-
     assert Enum.count(q) == 1
     assert :queue.len(st.queue) == 1
+    [only] = q
+    mid = case only do
+      %{kind: "collab_message", message_id: m} -> m
+      %{message_id: m} -> m
+      {:collab_message, %{"message_id" => m}} -> m
+      _ -> nil
+    end
+    assert mid == "m-fixed-#{suffix}"
   end
 
   test "总控可审查、应用并清理子代理变更，成员只能查看" do

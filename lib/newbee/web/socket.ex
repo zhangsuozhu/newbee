@@ -24,20 +24,49 @@ defmodule Newbee.Web.Socket do
     case Jason.decode(text) do
       {:ok, %{"type" => "interrupt"}} ->
         cast_session(st.sid, &WSession.interrupt/1)
-
       {:ok, %{"type" => "permission", "ok" => ok} = frame} ->
         target = frame["sessionId"] || st.sid
-
         if Newbee.Collaboration.Coordinator.can_approve_permission?(st.sid, target) do
           cast_session(target, &WSession.permission_reply(&1, ok))
         end
-
-      {:ok, %{"type" => "prompt", "text" => t}} ->
-        cast_session(st.sid, &WSession.prompt(&1, t))
-
-      {:ok, %{"type" => "promptImage", "images" => images, "text" => t}} ->
-        cast_session(st.sid, &WSession.prompt_images(&1, images || [], t || ""))
-
+      {:ok, %{"type" => "prompt", "text" => t} = frame} ->
+        qid = frame["queueId"] || frame["queue_id"]
+        if is_binary(qid) and String.trim(qid) != "" do
+          cast_session(st.sid, &WSession.prompt(&1, t, qid))
+        else
+          cast_session(st.sid, &WSession.prompt(&1, t))
+        end
+      {:ok, %{"type" => "promptImage", "images" => images, "text" => t} = frame} ->
+        qid = frame["queueId"] || frame["queue_id"]
+        if is_binary(qid) and String.trim(qid) != "" do
+          cast_session(st.sid, &WSession.prompt_images(&1, images || [], t || "", qid))
+        else
+          cast_session(st.sid, &WSession.prompt_images(&1, images || [], t || ""))
+        end
+      {:ok, %{"type" => "cancelQueued"} = frame} ->
+        qid = frame["queueId"] || frame["queue_id"] || frame["id"]
+        if is_binary(qid) do
+          q = String.trim(qid)
+          if q != "" do
+            case WSession.lookup(st.sid) do
+              {:ok, pid} ->
+                case WSession.cancel_queued(pid, q) do
+                  {:ok, _} -> :ok
+                  _ -> :ok
+                end
+              _ -> :ok
+            end
+          end
+        end
+      {:ok, %{"type" => "clearQueue"}} ->
+        case WSession.lookup(st.sid) do
+          {:ok, pid} ->
+            case WSession.clear_queue(pid) do
+              {:ok, _} -> :ok
+              _ -> :ok
+            end
+          _ -> :ok
+        end
       _ ->
         :ok
     end

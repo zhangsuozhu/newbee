@@ -867,14 +867,20 @@ defmodule Newbee.Web.Api do
     e -> {:error, "rename_error", Exception.message(e)}
   end
 
-  defp dispatch_rpc("session.prompt", %{"sessionId" => sid, "text" => text})
+  defp dispatch_rpc("session.prompt", %{"sessionId" => sid, "text" => text} = payload)
        when is_binary(sid) and is_binary(text) do
     if String.trim(sid) == "" or text == "" do
       {:error, "bad_request", "sessionId 和 text 不能为空"}
     else
+      qid = Map.get(payload, "queueId") || Map.get(payload, "queue_id")
       with {:ok, pid} <- find_session(sid) do
-        Newbee.Web.Session.prompt(pid, text)
-        {:ok, %{accepted: true}}
+        if is_binary(qid) and String.trim(qid) != "" do
+          Newbee.Web.Session.prompt(pid, text, qid)
+          {:ok, %{accepted: true, queueId: String.trim(qid)}}
+        else
+          Newbee.Web.Session.prompt(pid, text)
+          {:ok, %{accepted: true}}
+        end
       end
     end
   end
@@ -882,50 +888,74 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("session.prompt", _payload),
     do: {:error, "bad_request", "需要 sessionId 和 text 字段"}
 
-  defp dispatch_rpc("session.promptImage", %{
-         "sessionId" => sid,
-         "images" => images,
-         "text" => text
-       }) do
+  defp dispatch_rpc("session.promptImage", %{"sessionId" => sid, "images" => images, "text" => text} = payload) do
+    qid = Map.get(payload, "queueId") || Map.get(payload, "queue_id")
     with {:ok, pid} <- find_session(sid) do
-      if images == nil or images == [] do
-        Newbee.Web.Session.prompt(pid, text || "")
-      else
-        Newbee.Web.Session.prompt_images(pid, images, text || "")
+      cond do
+        images == nil or images == [] ->
+          if is_binary(qid) and String.trim(qid) != "" do
+            Newbee.Web.Session.prompt(pid, text || "", qid)
+          else
+            Newbee.Web.Session.prompt(pid, text || "")
+          end
+        is_binary(qid) and String.trim(qid) != "" ->
+          Newbee.Web.Session.prompt_images(pid, images, text || "", qid)
+        true ->
+          Newbee.Web.Session.prompt_images(pid, images, text || "")
       end
-
       {:ok, %{accepted: true}}
     end
   end
-
-  defp dispatch_rpc(
-         "session.promptAttachments",
-         %{
-           "sessionId" => sid,
-           "uploadIds" => upload_ids
-         } = payload
-       ) do
+  defp dispatch_rpc("session.promptAttachments", %{"sessionId" => sid, "uploadIds" => upload_ids} = payload) do
     text = Map.get(payload, "text", "")
-
+    qid = Map.get(payload, "queueId") || Map.get(payload, "queue_id")
     with {:ok, pid} <- find_session(sid),
          {:ok, prepared} <- Newbee.Upload.prepare_prompt(sid, upload_ids, text) do
-      if prepared.images == [] do
-        Newbee.Web.Session.prompt(pid, prepared.text)
-      else
-        Newbee.Web.Session.prompt_images(pid, prepared.images, prepared.text)
+      cond do
+        prepared.images == [] ->
+          if is_binary(qid) and String.trim(qid) != "" do
+            Newbee.Web.Session.prompt(pid, prepared.text, qid)
+          else
+            Newbee.Web.Session.prompt(pid, prepared.text)
+          end
+        is_binary(qid) and String.trim(qid) != "" ->
+          Newbee.Web.Session.prompt_images(pid, prepared.images, prepared.text, qid)
+        true ->
+          Newbee.Web.Session.prompt_images(pid, prepared.images, prepared.text)
       end
-
       {:ok, %{accepted: true, files: length(prepared.files)}}
     end
   end
-
   defp dispatch_rpc("session.promptAttachments", _payload),
     do: {:error, "bad_request", "需要 sessionId、uploadIds 和 text 字段"}
-
   defp dispatch_rpc("session.cancel", %{"sessionId" => sid}) do
     with {:ok, pid} <- find_session(sid) do
       Newbee.Web.Session.interrupt(pid)
       {:ok, %{interrupted: true}}
+    end
+  end
+  defp dispatch_rpc("session.queue", %{"sessionId" => sid}) do
+    with {:ok, pid} <- find_session(sid) do
+      {:ok, Newbee.Web.Session.queue_list(pid)}
+    end
+  end
+  defp dispatch_rpc("session.cancelQueued", %{"sessionId" => sid} = payload) do
+    qid = Map.get(payload, "queueId") || Map.get(payload, "queue_id") || Map.get(payload, "id")
+    cond do
+      not is_binary(sid) or String.trim(sid) == "" -> {:error, "bad_request", "sessionId 不能为空"}
+      not is_binary(qid) or String.trim(qid) == "" -> {:error, "bad_request", "需要 queueId 字段"}
+      true ->
+        with {:ok, pid} <- find_session(sid) do
+          case Newbee.Web.Session.cancel_queued(pid, String.trim(qid)) do
+            {:ok, result} -> {:ok, result}
+            {:error, :not_found} -> {:error, "not_found", "排队项不存在或已开始执行"}
+          end
+        end
+    end
+  end
+  defp dispatch_rpc("session.clearQueue", %{"sessionId" => sid}) do
+    with {:ok, pid} <- find_session(sid) do
+      {:ok, elem(Newbee.Web.Session.clear_queue(pid), 1)}
     end
   end
 
