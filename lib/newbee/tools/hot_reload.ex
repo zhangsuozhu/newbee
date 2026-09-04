@@ -97,8 +97,12 @@ defmodule Newbee.Tools.HotReload do
   def replace_local(source, opts \\ []) do
     file = Keyword.get(opts, :file, "hot_reload.ex")
     force? = Keyword.get(opts, :force, false)
+    prev_ignore_conflict = Code.get_compiler_option(:ignore_module_conflict)
+    Code.put_compiler_option(:ignore_module_conflict, true)
 
     try do
+      # 热替换必然重定义已加载模块；屏蔽预期的 redefining module 噪音（与 PluginContract/PluginManager 一致），
+      # 其它警告仍正常输出。after 恢复调用前的值，避免污染调用方编译选项。
       compiled = Code.compile_string(source, file)
       results = Enum.map(compiled, fn {mod, _bin} -> load_swap(%{mod: mod}, force?) end)
 
@@ -120,6 +124,8 @@ defmodule Newbee.Tools.HotReload do
       e -> %{ok: false, error: Exception.message(e)}
     catch
       kind, reason -> %{ok: false, error: "#{kind}: #{inspect(reason)}"}
+    after
+      Code.put_compiler_option(:ignore_module_conflict, prev_ignore_conflict)
     end
   end
 
