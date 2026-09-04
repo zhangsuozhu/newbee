@@ -10,9 +10,9 @@ defmodule Newbee.Environment.Projection do
     环境重新投影（见 Verifier.projection_replay）；
   - 渐进式披露（§9.4/§9.12）：一行签名清单 + 价签，全文按需 Newbee.read。
 
-  视图成分：system 基底 + 项目记忆（不可信隔离）+ 工具一行签名清单（带价签）+
-  记忆 Guidance + 进化 prompt 片段 +
-  绑定摘要 + module_ready/迁移摘要通知 + 沉睡规则挂载表。
+  视图成分：system 基底（首载唯一必含）+ 按需成分（项目记忆/工具清单/协作指南/
+  记忆 Guidance/进化 prompt 片段/绑定摘要/通知，经公开函数 + `prompt://` 懒加载）。
+  视图 map 仍保留各成分字段供诊断/测试。
   Agent.Loop 的 system prompt 由本模块产出（唯一视图构建器）。
   """
 
@@ -22,11 +22,12 @@ defmodule Newbee.Environment.Projection do
   @guidance_max_bytes 4_000
 
   @doc """
-  构建 worker 视图。context: root / bindings_summary / session_id。
+  构建 worker 视图。context: root / bindings_summary / session_id / collaboration。
   返回 map（含 `:prompt` 渲染文本，以及各成分字段供诊断/测试）。
   注意：本函数**每次调用都重新读取**项目记忆、价签、绑定与通知——
   它每步渲染当前实况；Loop 只在会话首建时取一次 `:prompt` 并持久化复用（前缀缓存），
-  不会每步重build。
+  不会每步重build。`:prompt` 首载仅 system 基底（+ 非空绑定/通知尾）；
+  其余成分经公开函数/`prompt://` 按需加载。`collaboration: true` 时才含协作指南。
   """
   def build(context \\ %{}) do
     root = context[:root] || File.cwd!()
@@ -93,8 +94,9 @@ defmodule Newbee.Environment.Projection do
     base <> "\n\nCurrent project root: #{root}\n"
   end
 
-  # NEWBEE.md / AGENTS.md / CLAUDE.md 项目记忆（§5.4，封顶 200 行）
-  defp project_memory(root) do
+  @doc "按需加载：项目记忆（NEWBEE.md / AGENTS.md / CLAUDE.md，封顶 200 行，不可信隔离；root 缺省取求值进程 cwd）。"
+  # NEWBEE.md / AGENTS.md / CLAUDE.md 项目记忆（封顶 200 行）
+  def project_memory(root \\ File.cwd!()) do
     Enum.find_value(["NEWBEE.md", "AGENTS.md", "CLAUDE.md"], "", fn f ->
       path = Path.join(root, f)
       if File.exists?(path), do: File.read!(path) |> String.split("\n") |> Enum.take(200) |> Enum.join("\n"), else: nil
@@ -148,21 +150,34 @@ defmodule Newbee.Environment.Projection do
     _ -> Newbee.Plugins.prompt_section(%{})
   end
 
-  # 协作策略提示（稳定成分）：告诉模型有 delegate 能力，遇到可拆分/可并行的
-  # 子任务时使用。会话后续是否进组不影响这段（system prompt 会被缓存复用）。
-  # 组态感知提示未来通过 inject_prompt 走易变通道。
-  defp collaboration_section(_context) do
-    """
-
-    ## Collaboration (Newbee.Tools.Collaboration)
-
-    When a subtask splits, parallelizes, or needs its own context, spawn it with
-    `Newbee.Tools.Collaboration.delegate(title, opts)` and keep the mainline yourself.
-    Full usage: `Newbee.read("tool://Newbee.Tools.Collaboration")`.
-    """
+  @doc "按需加载：工具/插件一行签名清单（含价签）。"
+  def capability_index do
+    tools_section()
   end
 
-  defp memory_guidance do
+
+  @doc "按需加载：协作指南（priv/prompts/collaboration.md；缺失时回退到指向 tool 的一行）。"
+  def collaboration_prompt do
+    priv = Path.join(:code.priv_dir(:newbee), "prompts/collaboration.md")
+
+    case File.read(priv) do
+      {:ok, body} -> body
+      _ -> "## Collaboration\nDelegate splittable subtasks with `Newbee.Tools.Collaboration.delegate(title, opts)`; details: `Newbee.read(\"tool://Newbee.Tools.Collaboration\")`.\n"
+    end
+  rescue
+      _ -> "## Collaboration\nDelegate splittable subtasks with `Newbee.Tools.Collaboration.delegate(title, opts)`; details: `Newbee.read(\"tool://Newbee.Tools.Collaboration\")`.\n"
+  end
+
+  # 协作指南只在协作上下文中注入：context 含 collaboration 真值，或
+  # 有协作 profile 的子会话（Loop 经 system_prompt_for_session 追加）。
+  # 主会话首载不含本段，需要时经 collaboration_prompt 或 prompt 协作段按需加载。
+  defp collaboration_section(context) do
+    if context[:collaboration], do: collaboration_prompt(), else: ""
+  end
+
+
+  @doc "按需加载：记忆指引（memory 主题清单，封顶 20 条）。"
+  def memory_guidance do
     if function_exported?(Newbee.Memory, :topics, 0) do
       Newbee.Memory.topics()
       |> Enum.take(20)
@@ -219,26 +234,10 @@ defmodule Newbee.Environment.Projection do
     _, _ -> []
   end
 
+
   defp render(view) do
-    notices =
-      case view.notices do
-        [] ->
-          ""
-
-        notices ->
-          body = Enum.map_join(notices, "\n", &notice_line/1)
-          "\n## Environment updates (module_ready / generation switches)\n" <> body <> "\n"
-      end
-
-    bindings =
-      case view.bindings do
-        [] ->
-          ""
-
-        bs ->
-          body = Enum.map_join(bs, "\n", fn b -> "  - #{b[:name] || b["name"]}: #{b[:type] || b["type"]}" end)
-          "\n## Live bindings (bindings://)\n" <> body <> "\n"
-      end
+    bindings = render_binding_list(view.bindings)
+    notices = render_notice_list(view.notices)
 
     rules_count = length(view.rules)
 
@@ -247,19 +246,50 @@ defmodule Newbee.Environment.Projection do
         do: "\n## Sleeping rules (#{rules_count} mounted, zero cost until triggered)\n",
         else: ""
 
-    # 缓存友好拼接（§4.6 前缀缓存最大化）：稳定成分在前（base/project_memory/
-    # repomap/tools），易变成分在后（memory/fragments/bindings/notices）。
-    # 小变化不再打碎其后的大块稳定前缀，跨 session 复用 provider 前缀缓存。
+    # Prefix stability: initial prompt renders the stable base only; the rest loads
+    # on demand via public functions and prompt sections. Bindings/notices append
+    # only when non-empty, so drained notices are never lost yet cost zero tokens normally.
     view.base <>
-      view.project_memory <>
-      view.repomap <>
-      view.tools <>
-      view.collaboration <>
-      view.memory <>
-      view.fragments <>
       bindings <>
       notices <>
       rules_note
+  end
+
+  defp render_notice_list([]), do: ""
+
+  defp render_notice_list(notices) do
+    body = Enum.map_join(notices, "\n", &notice_line/1)
+    "\n## Environment updates (module_ready / generation switches)\n" <> body <> "\n"
+  end
+
+  defp render_binding_list([]), do: ""
+
+  defp render_binding_list(bs) do
+    body = Enum.map_join(bs, "\n", fn b -> "  - #{b[:name] || b["name"]}: #{b[:type] || b["type"]}" end)
+    "\n## Live bindings (bindings://)\n" <> body <> "\n"
+  end
+
+  @doc "按需加载：排出 Coordinator 通知并渲染（drain 语义与旧 build 一致）。"
+  def environment_notices do
+    drain_notices() |> render_notice_list()
+  end
+
+  @doc "按需加载：渲染绑定摘要（context 显式清单优先，否则查实况）。"
+  def bindings_section(context \\ %{}) do
+    context |> bindings_summary() |> render_binding_list()
+  end
+
+  @doc "供 prompt 段按需读取调用：按名取段。"
+  def read_prompt_section(name) do
+    case name do
+      "collaboration" -> {:ok, collaboration_prompt()}
+      "capabilities" -> {:ok, capability_index()}
+      "project-memory" -> {:ok, project_memory()}
+      "notices" -> {:ok, environment_notices()}
+      "bindings" -> {:ok, bindings_section()}
+      "" -> {:ok, "prompt://collaboration | prompt://capabilities | prompt://project-memory | prompt://notices | prompt://bindings"}
+      _ -> {:error, {:unknown_prompt_section, name}}
+    end
   end
 
   # 通知行：module_ready（版本/契约/usage/评测摘要）与 generation 迁移摘要两种形态

@@ -16,6 +16,7 @@ defmodule Newbee do
     - `skill://n`   → skill snippet (~/.newbee/skills or project .newbee/skills, dot-md suffix idempotent, trust envelope)
     - `agent://<id>/<path>` → subagent result field at path (missing segment returns :path_not_found)
     - `conflict://` → git merge-conflict list; `conflict://<file>` conflict-hunk view (bad hunks skipped, never crashes)
+    - `prompt://<section>` → lazy prompt sections (collaboration/capabilities/project-memory/notices/bindings; routed to host)
     - `http(s)://`  → web pages (credentialless public GET via Newbee.Tools.Http; private nets blocked against SSRF)
 
   Discoverability: `schemes/0` returns a machine-readable list; new protocols must register plus carry contract tests.
@@ -65,6 +66,9 @@ defmodule Newbee do
 
       String.starts_with?(path, "file://") ->
         read_path(String.replace_prefix(path, "file://", ""))
+
+      String.starts_with?(path, "prompt://") ->
+        read_prompt(String.replace_prefix(path, "prompt://", ""))
 
       true ->
         read_path(path)
@@ -136,6 +140,7 @@ defmodule Newbee do
       %{scheme: "skill://", example: "skill://github_flow", reads: "skill snippet, dot-md suffix idempotent"},
       %{scheme: "agent://", example: "agent://id/findings", reads: "subagent structured results"},
       %{scheme: "conflict://", example: "conflict://", reads: "merge-conflict list/hunk views"},
+      %{scheme: "prompt://", example: "prompt://collaboration", reads: "lazy prompt sections: collaboration/capabilities/project-memory/notices/bindings"},
       %{scheme: "https://", example: "https://example.com", reads: "public pages, private nets blocked"},
     ]
   end
@@ -535,4 +540,24 @@ defmodule Newbee do
   defp doc_text({_format, text}) when is_binary(text), do: text
   defp doc_text(text) when is_binary(text), do: text
   defp doc_text(_), do: ""
+
+  # prompt sections: on-demand counterparts of the minimal-first initial prompt.
+  # Host-routed so peer evaluator contexts work; falls back to local when host is unavailable.
+  defp read_prompt(query) do
+    section = query |> String.split("/") |> hd() |> String.trim()
+
+    result =
+      try do
+        Newbee.Host.call(Newbee.Environment.Projection, :read_prompt_section, [section])
+      rescue
+        _ -> :unavailable
+      catch
+        _, _ -> :unavailable
+      end
+
+    case result do
+      {:ok, _} = ok -> ok
+      _ -> Newbee.Environment.Projection.read_prompt_section(section)
+    end
+  end
 end

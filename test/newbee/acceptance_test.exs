@@ -454,6 +454,25 @@ defmodule Newbee.AcceptanceTest do
     assert :revision_advanced in topics
   end
 
+  # ── 验收 13：前缀缓存稳定性 ──
+
+  @tag :acceptance
+  test "§15.13 视图两次构建逐字节一致，首载仅基底加非空尾巴" do
+    view1 = Newbee.Environment.Projection.build(%{})
+    view2 = Newbee.Environment.Projection.build(%{})
+
+    # 前缀缓存承诺：同一环境实况下，两次构建的 prompt 逐字节相同
+    assert view1.prompt == view2.prompt
+
+    # 懒加载承诺：首载 prompt 只含 system 基底 + 非空尾巴（沉睡规则计数行/
+    # 罕见非空绑定通知）；项目记忆/工具清单/协作段一律不进初始前缀
+    # （经 prompt:// 按需加载）。尾巴挂载即冻结：会话内 build 一次复用。
+    tail = String.replace_prefix(view1.prompt, view1.base, "")
+    assert tail == "" or String.starts_with?(tail, "\n## Sleeping rules (")
+
+    # 协作段默认不注入，仅协作上下文显式开启
+    assert view1.collaboration == ""
+  end
   # ── 验收 11：沉睡规则 compaction 后存活 ──
 
   @tag :acceptance
