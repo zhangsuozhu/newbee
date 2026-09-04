@@ -41,7 +41,8 @@ defmodule Newbee.Session do
             %{
               "id" => id,
               "mtime" => posix_mtime(stat.mtime),
-              "created" => created_from_id(id) || posix_mtime(stat.mtime)
+              "created" => created_from_id(id) || posix_mtime(stat.mtime),
+              "size" => stat.size
             }
           ]
 
@@ -62,7 +63,10 @@ defmodule Newbee.Session do
         %{
           "id" => fs_v["id"],
           "mtime" => idx_v["mtime"] || fs_v["mtime"],
-          "created" => idx_v["created"] || fs_v["created"]
+          "created" => idx_v["created"] || fs_v["created"],
+          "size" => idx_v["size"],
+          "count" => idx_v["count"],
+          "auto_title" => idx_v["auto_title"]
         }
       end)
 
@@ -550,42 +554,132 @@ defmodule Newbee.Session do
 
   @doc "列出会话元信息（新→旧，默认最多 20 个）：id / when_str / mtime / messages / title。"
   def list_with_meta(n \\ 20, offset \\ 0) do
+    {entries, _total} = list_page(n, offset)
+    entries
+  end
+
+  @doc "分页列表加总数（单次 merged_index）：缓存命中时零 transcript 读盘，未命中单次读盘回填。"
+  def list_page(n \\ 20, offset \\ 0) do
     merged = merged_index()
     raw = read_index()
-
-    if length(merged) != length(raw) do
-      spawn(fn -> persist_index(merged) end)
-    end
+    total = length(merged)
 
     recent =
       merged
       |> Enum.drop(offset)
       |> Enum.take(n)
 
-    recent
-    |> Enum.flat_map(fn entry ->
-      id = entry["id"]
-      fp = Path.join(root(), id <> ".jsonl")
+    {entries, updates} =
+      Enum.flat_map_reduce(recent, %{}, fn entry, acc ->
+        id = entry["id"]
+        fp = Path.join(root(), id <> ".jsonl")
 
-      case File.stat(fp) do
-        {:ok, stat} ->
-          msgs = messages(%__MODULE__{id: id, dir: Path.join(artifacts(), id), transcript: fp})
+        case File.stat(fp) do
+          {:ok, stat} ->
+            fsize = stat.size
+            meta = metadata(id)
+            custom = meta["title"]
+            cwd = meta["cwd"]
+            cached_size = entry["size"]
+            cached_count = entry["count"]
+            cached_title = entry["auto_title"]
 
-          [
-            %{
+            hit =
+              cached_size == fsize and is_integer(cached_count) and is_binary(cached_title)
+
+            {count, auto} =
+              if hit do
+                {cached_count, cached_title}
+              else
+                fast_transcript_stats(fp)
+              end
+
+            acc2 =
+              if hit do
+                acc
+              else
+                Map.put(acc, id, %{"size" => fsize, "count" => count, "auto_title" => auto})
+              end
+
+            effective = if is_binary(custom), do: custom, else: auto
+
+            entry_out = %{
               id: id,
               mtime: stat.mtime,
               when_str: when_str(stat.mtime),
-              messages: length(msgs),
-              title: custom_title(id) || title(msgs),
-              cwd: metadata(id)["cwd"]
+              messages: count,
+              title: effective,
+              cwd: cwd
             }
-          ]
 
-        _ ->
-          []
-      end
-    end)
+            {[entry_out], acc2}
+
+          _ ->
+            {[], acc}
+        end
+      end)
+
+    if map_size(updates) > 0 or length(merged) != length(raw) do
+      spawn(fn -> backfill_index_cache(updates) end)
+    end
+
+    {entries, total}
+  end
+
+  defp backfill_index_cache(updates) do
+    try do
+      fresh = merged_index()
+
+      merged =
+        Enum.map(fresh, fn e ->
+          case Map.get(updates, e["id"]) do
+            nil -> e
+            %{"size" => sz, "count" => c, "auto_title" => a} -> e |> Map.put("size", sz) |> Map.put("count", c) |> Map.put("auto_title", a)
+          end
+        end)
+
+      persist_index(merged)
+    rescue
+      _ -> :ok
+    end
+  end
+
+  defp fast_transcript_stats(fp) do
+    case File.read(fp) do
+      {:ok, ""} -> {0, ""}
+      {:ok, bin} ->
+        lines = String.split(bin, "\n", trim: true)
+        {length(lines), fast_title_from_lines(lines)}
+      _ -> {0, ""}
+    end
+  end
+
+  defp fast_title_from_lines(lines) do
+    {first, last} = scan_user_texts(lines, nil, nil)
+
+    cond do
+      is_nil(first) -> ""
+      String.length(first) >= 4 -> title([%{"role" => "user", "content" => first}])
+      true -> title([%{"role" => "user", "content" => first}, %{"role" => "user", "content" => last || first}])
+    end
+  end
+
+  defp scan_user_texts([], first, last), do: {first, last}
+
+  defp scan_user_texts([line | rest], first, last) do
+    case Jason.decode(line) do
+      {:ok, %{"role" => "user", "content" => content}} ->
+        text = content_text(content)
+
+        cond do
+          is_nil(first) and String.length(text) >= 4 -> {text, text}
+          is_nil(first) -> scan_user_texts(rest, text, text)
+          true -> scan_user_texts(rest, first, text)
+        end
+
+      _ ->
+        scan_user_texts(rest, first, last)
+    end
   end
 
   defp touch_index(id) do

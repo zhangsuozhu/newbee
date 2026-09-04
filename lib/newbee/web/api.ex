@@ -763,21 +763,32 @@ defmodule Newbee.Web.Api do
     # 空壳会话回收（懒落盘的兜底）：只在拉第一页时做，60s 限频
     if offset == 0, do: maybe_sweep_empty_sessions()
 
+    {metas, total} = Newbee.Session.list_page(limit, offset)
+
     sessions =
-      Newbee.Session.list_with_meta(limit, offset)
-      |> Enum.map(fn s ->
+      Enum.map(metas, fn s ->
         id = s[:id] || s["id"]
         busy = Newbee.Web.Session.peek_busy(id)
         running = match?({:ok, _}, Newbee.Web.Session.lookup(id))
 
-        Map.merge(s, %{
-          running: running,
-          busy: busy,
-          cwd: Newbee.Session.cwd(id)
-        })
+        Map.merge(s, %{running: running, busy: busy})
       end)
 
-    {:ok, %{sessions: Enum.map(sessions, &json_safe/1), total: Newbee.Session.count_valid()}}
+    {:ok, %{sessions: Enum.map(sessions, &json_safe/1), total: total}}
+  end
+
+  defp dispatch_rpc("session.status", _p) do
+    status =
+      Newbee.Session.list()
+      |> Enum.map(fn id ->
+        %{
+          id: id,
+          busy: Newbee.Web.Session.peek_busy(id),
+          running: match?({:ok, _}, Newbee.Web.Session.lookup(id))
+        }
+      end)
+
+    {:ok, %{status: Enum.map(status, &json_safe/1)}}
   end
 
   defp dispatch_rpc("session.history", %{"sessionId" => sid}) do
