@@ -304,7 +304,7 @@ defmodule Newbee.DEE.EvalWorker do
         collaboration_capability = opts[:collaboration_capability]
 
         if is_binary(collaboration_capability) do
-          Process.put({Newbee.Tools.Collaboration, :context}, %{capability: collaboration_capability})
+          Process.put({Newbee.Tools.Hive, :context}, %{capability: collaboration_capability})
         end
 
         {:ok, io} = Newbee.DEE.BoundedIO.start_link(output_limit)
@@ -326,7 +326,7 @@ defmodule Newbee.DEE.EvalWorker do
           Newbee.DEE.BoundedIO.stop(io)
           clear_remote_active(interrupt_node, interrupt_key, job_id, self())
           if is_binary(media_capability), do: Process.delete({Newbee.Tools.Media, :capability})
-          if is_binary(collaboration_capability), do: Process.delete({Newbee.Tools.Collaboration, :context})
+          if is_binary(collaboration_capability), do: Process.delete({Newbee.Tools.Hive, :context})
         end
       end)
 

@@ -47,6 +47,7 @@ defmodule Newbee.Tools.HiveIntegrationTest do
       {:board_put, ["group", []]},
       {:board_claim, ["group", nil, "revision"]},
       {:report, ["group", "task", :submitted, %{}]},
+      {:retry, [nil, nil, []]},
       {:verify, [nil, nil]},
       {:wait, ["group", %{}]},
       {:send, ["group", "target", :bad, []]},
@@ -62,9 +63,56 @@ defmodule Newbee.Tools.HiveIntegrationTest do
     end
   end
 
+  test "report accepts documented atom and string statuses with revision CAS", ctx do
+    with_identity("lead", ctx.project_root, fn ->
+      {:ok, group} = Hive.open("report contract")
+      gid = group["group_id"]
+
+      assert {:ok, created} =
+               Hive.board_put(gid, %{
+                 "title" => "check project",
+                 "assigned_session_id" => "lead",
+                 "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}],
+                 "expected_revision" => group["revision"]
+               })
+
+      tid = created["task"]["task_id"]
+      assert {:error, "bad_request", _} = Hive.report(gid, tid, :running)
+      assert {:ok, running} = Hive.report(gid, tid, :running, expected_revision: created["revision"])
+      assert running["task"]["status"] == "running"
+      assert {:ok, running} = Hive.report(gid, tid, :running, expected_revision: running["revision"], progress: "50%")
+      assert running["task"]["progress"] == "50%"
+
+      assert {:ok, submitted} =
+               Hive.report(gid, tid, "submitted", expected_revision: running["revision"], result: "checked")
+
+      assert submitted["task"]["status"] == "submitted"
+
+      for status <- [:succeeded, "succeeded", :unknown, %{}, 42] do
+        assert {:error, "bad_request", _} = Hive.report(gid, tid, status, expected_revision: submitted["revision"])
+      end
+    end)
+  end
+
   test "Hive declares the filesystem and shell effects used by delegation and verification" do
     builtin = Newbee.Plugins.builtin("tool.hive")
     assert Enum.sort(builtin.capabilities) == [:fs, :shell]
+  end
+
+  test "Hive is the only registered collaboration tool and prompt contract" do
+    assert is_nil(Newbee.Plugins.builtin("tool.collaboration"))
+    assert Newbee.Plugins.builtin("tool.hive")
+
+    prompt = Newbee.Environment.Projection.collaboration_prompt()
+    assert prompt =~ "Newbee.Tools.Hive"
+    assert prompt =~ "source of truth"
+    assert prompt =~ "untrusted data"
+    assert prompt =~ "expected_attempt"
+    assert prompt =~ "write_scope"
+    assert prompt =~ "queue"
+    refute prompt =~ "Newbee.Tools.Collaboration"
+    refute File.exists?(Path.join(File.cwd!(), "lib/newbee/tools/collaboration.ex"))
+    refute File.exists?(Path.join(File.cwd!(), "lib/newbee/tools/collaboration_host_identity.ex"))
   end
 
   test "normal Agent.Loop capability shape opens one real Coordinator group", ctx do
@@ -217,6 +265,7 @@ defmodule Newbee.Tools.HiveIntegrationTest do
                  "must not materialize",
                  session_id: child_id,
                  protocol_version: 2,
+                 expected_revision: group["revision"],
                  acceptance: [%{"kind" => "shell", "cmd" => "rm -rf /"}],
                  isolate: false
                )
@@ -264,6 +313,7 @@ defmodule Newbee.Tools.HiveIntegrationTest do
                  "must rollback",
                  session_id: child_id,
                  protocol_version: 2,
+                 expected_revision: group["revision"],
                  persona_profile: %{
                    "name" => "invalid-provider",
                    "role" => "worker",
@@ -331,12 +381,12 @@ defmodule Newbee.Tools.HiveIntegrationTest do
   defp with_identity(session_id, root, fun) do
     :ok = Capability.register(self(), session_id, root)
     {:ok, token} = Capability.issue(self())
-    Process.put({Newbee.Tools.Collaboration, :context}, %{capability: token})
+    Process.put({Newbee.Tools.Hive, :context}, %{capability: token})
 
     try do
       fun.()
     after
-      Process.delete({Newbee.Tools.Collaboration, :context})
+      Process.delete({Newbee.Tools.Hive, :context})
       Capability.revoke(token)
     end
   end

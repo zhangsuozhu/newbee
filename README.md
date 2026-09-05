@@ -138,7 +138,12 @@
 ### 会话 Hive v2：有界、可验收的并行协作
 `Newbee.Tools.Hive` 在同一个持久 `Collaboration.Coordinator` 上提供 DAG Board、revision CAS、事件等待、定向消息、Persona 与过滤后的 context fork。worker 只能提交结果，Lead 在受信主节点执行结构化验收后才能标记成功；派生深度、累计数量、任务/载荷/上下文都有硬上限。
 
+Hive 是唯一协作协议；旧 `Newbee.Tools.Collaboration` 工具及旧任务 RPC 已移除。Web 看板同样使用 Hive 的 revision 校验、结构化验收和 Lead 验证；子任务提交后显示为待验收，不能直接宣告成功。
+
 这是一套协作正确性机制，不是“更多代理一定更好”的承诺，也不是代码执行沙箱。设计依据、论文数据、限制和复现命令见 [`docs/collab-v2-analysis.md`](docs/collab-v2-analysis.md)。
+
+协作交付还具备可靠性闭环：协作消息和任务投递有持久 `delivery_id`，会话运行时通过 claim/ack 去重并在重启后补拉；`Hive.retry/3` 保留稳定 `task_id`、增加 `attempt`，旧尝试不能回写新任务。执行者提交时冻结候选源树并绑定验收摘要，Lead 验收和工作区应用都校验同一份冻结快照。
+
 
 *Hive v2 adds a durable DAG board, revision CAS, event-driven waits, bounded context forks, and Lead-owned verification on the existing Coordinator. It governs collaboration; it does not claim universal multi-agent gains or sandbox untrusted project code.*
 

@@ -155,17 +155,20 @@ defmodule Newbee.Environment.Projection do
     tools_section()
   end
 
-
   @doc "按需加载：协作指南（priv/prompts/collaboration.md；缺失时回退到指向 tool 的一行）。"
   def collaboration_prompt do
     priv = Path.join(:code.priv_dir(:newbee), "prompts/collaboration.md")
 
     case File.read(priv) do
-      {:ok, body} -> body
-      _ -> "## Collaboration\nDelegate splittable subtasks with `Newbee.Tools.Collaboration.delegate(title, opts)`; details: `Newbee.read(\"tool://Newbee.Tools.Collaboration\")`.\n"
+      {:ok, body} ->
+        body
+
+      _ ->
+        "## Collaboration\nUse `Newbee.Tools.Hive` for all collaboration; details: `Newbee.read(\"tool://Newbee.Tools.Hive\")`.\n"
     end
   rescue
-      _ -> "## Collaboration\nDelegate splittable subtasks with `Newbee.Tools.Collaboration.delegate(title, opts)`; details: `Newbee.read(\"tool://Newbee.Tools.Collaboration\")`.\n"
+    _ ->
+      "## Collaboration\nUse `Newbee.Tools.Hive` for all collaboration; details: `Newbee.read(\"tool://Newbee.Tools.Hive\")`.\n"
   end
 
   # 协作指南只在协作上下文中注入：context 含 collaboration 真值，或
@@ -174,7 +177,6 @@ defmodule Newbee.Environment.Projection do
   defp collaboration_section(context) do
     if context[:collaboration], do: collaboration_prompt(), else: ""
   end
-
 
   @doc "按需加载：记忆指引（memory 主题清单，封顶 20 条）。"
   def memory_guidance do
@@ -234,7 +236,6 @@ defmodule Newbee.Environment.Projection do
     _, _ -> []
   end
 
-
   defp render(view) do
     bindings = render_binding_list(view.bindings)
     notices = render_notice_list(view.notices)
@@ -282,13 +283,27 @@ defmodule Newbee.Environment.Projection do
   @doc "供 prompt 段按需读取调用：按名取段。"
   def read_prompt_section(name) do
     case name do
-      "collaboration" -> {:ok, collaboration_prompt()}
-      "capabilities" -> {:ok, capability_index()}
-      "project-memory" -> {:ok, project_memory()}
-      "notices" -> {:ok, environment_notices()}
-      "bindings" -> {:ok, bindings_section()}
-      "" -> {:ok, "prompt://collaboration | prompt://capabilities | prompt://project-memory | prompt://notices | prompt://bindings"}
-      _ -> {:error, {:unknown_prompt_section, name}}
+      "collaboration" ->
+        {:ok, collaboration_prompt()}
+
+      "capabilities" ->
+        {:ok, capability_index()}
+
+      "project-memory" ->
+        {:ok, project_memory()}
+
+      "notices" ->
+        {:ok, environment_notices()}
+
+      "bindings" ->
+        {:ok, bindings_section()}
+
+      "" ->
+        {:ok,
+         "prompt://collaboration | prompt://capabilities | prompt://project-memory | prompt://notices | prompt://bindings"}
+
+      _ ->
+        {:error, {:unknown_prompt_section, name}}
     end
   end
 

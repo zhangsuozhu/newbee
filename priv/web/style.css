@@ -2856,3 +2856,31 @@ svg.ico {
   color: var(--accent); font-size: 15px; font-weight: 600;
   pointer-events: none;
 }
+
+/* ── Hive Board 状态与结构化验收 ── */
+.collab-write-conflicts{margin:4px 8px 8px;padding:8px 10px;border:1px solid var(--nb-warn);border-left-width:3px;background:var(--nb-bg-elev);color:var(--nb-label-2);font-size:11px}
+.collab-write-conflicts.hidden{display:none}
+.collab-write-conflicts>strong{display:block;color:var(--nb-warn);margin-bottom:5px}
+.collab-conflict-item{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font:10px var(--nb-mono);overflow-wrap:anywhere}
+.collab-conflict-item b{color:var(--nb-warn);font-family:var(--nb-font)}
+.collab-task-scope{margin-top:6px;color:var(--nb-label-caption);font:10px var(--nb-mono);overflow-wrap:anywhere}
+.collab-accept-heading{color:var(--nb-label-2);font-size:11px;font-weight:600}
+.collab-verification{margin-top:7px;padding:6px 8px;border:1px solid var(--nb-border);background:var(--nb-bg-elev);font-size:11px;color:var(--nb-label-2)}
+.collab-verification ul{margin:4px 0 0 16px;padding:0;font:10px var(--nb-mono);color:var(--nb-label-caption)}
+.collab-verification li.passed{color:var(--nb-green)}
+.collab-verification li.failed{color:var(--nb-red)}
+.collab-task.submitted{border-left-color:var(--nb-warn)}
+.collab-task.blocked{border-left-color:var(--nb-red)}
+#delegate-modal .group-modal-fields,#task-modal .group-modal-fields{max-height:min(62vh,560px);overflow-y:auto;padding-right:2px}
+#delegate-persona,#delegate-fork-turns,#delegate-depends,#delegate-write-scope,#task-depends,#task-write-scope{width:100%;border:1px solid var(--nb-border);border-radius:6px;background:var(--nb-bg-elev);color:var(--nb-label-1);font:13px var(--nb-font);padding:8px 10px;outline:none}
+#delegate-persona:focus,#delegate-fork-turns:focus,#delegate-depends:focus,#delegate-write-scope:focus,#task-depends:focus,#task-write-scope:focus{border-color:var(--nb-accent)}
+.task-accept-row{align-items:stretch}
+.task-accept-row button{min-width:28px;margin:0}
+@media (max-width:768px){
+  .task-accept-row{grid-template-columns:1fr 1fr 28px}
+  .task-accept-row .task-accept-kind{grid-column:1/-1}
+  .collab-conflict-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px}
+  .collab-conflict-item span:last-child{grid-column:1/-1}
+}
+.collab-task-attempt,.collab-submission{color:var(--nb-label-2);font-size:11px}
+.collab-submission{margin-top:5px;padding-top:5px;border-top:1px solid var(--nb-border);word-break:break-word}

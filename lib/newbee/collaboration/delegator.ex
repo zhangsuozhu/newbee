@@ -14,6 +14,8 @@ defmodule Newbee.Collaboration.Delegator do
     child_session_id = Keyword.get(opts, :session_id) || Newbee.Web.Session.gen_session_id()
 
     with {:ok, group} <- Coordinator.get(group_id),
+         :ok <- ensure_hive_protocol(Keyword.get(opts, :protocol_version, 2)),
+         {:ok, expected_revision} <- require_expected_revision(Keyword.get(opts, :expected_revision)),
          :ok <- parent_can_delegate(group, parent_session_id),
          :ok <- Coordinator.can_delegate(group_id, parent_session_id),
          :ok <- ensure_new_session(child_session_id),
@@ -26,6 +28,7 @@ defmodule Newbee.Collaboration.Delegator do
         child_session_id,
         title,
         workspace,
+        expected_revision,
         command_id,
         opts
       )
@@ -40,6 +43,7 @@ defmodule Newbee.Collaboration.Delegator do
          child_session_id,
          title,
          workspace,
+         expected_revision,
          command_id,
          opts
        ) do
@@ -56,14 +60,15 @@ defmodule Newbee.Collaboration.Delegator do
                "parent_session_id" => parent_session_id,
                "role" => Keyword.get(opts, :role, "worker"),
                "persona" => Keyword.get(opts, :persona_profile),
-               "protocol_version" => Keyword.get(opts, :protocol_version, 1),
+               "protocol_version" => 2,
                "title" => title,
                "description" => Keyword.get(opts, :description),
                "acceptance" => Keyword.get(opts, :acceptance),
                "depends_on" => Keyword.get(opts, :depends_on, []),
                "write_scope" => Keyword.get(opts, :write_scope, []),
                "workspace" => workspace,
-               "command_id" => command_id
+               "command_id" => command_id,
+               "expected_revision" => expected_revision
              }) do
         {:ok,
          %{
@@ -136,16 +141,16 @@ defmodule Newbee.Collaboration.Delegator do
       else: :ok
   end
 
-  # v2 合约是无状态可判定的：在创建 workspace/session 副作用之前先拒绝非法 acceptance。
-  # v1 保持兼容，不预检。
+  defp require_expected_revision(revision) when is_integer(revision) and revision >= 0, do: {:ok, revision}
+  defp require_expected_revision(_), do: {:error, "bad_request", "expected_revision is required"}
+
+  defp ensure_hive_protocol(2), do: :ok
+  defp ensure_hive_protocol(_), do: {:error, "protocol_mismatch", "Delegator 仅支持 Hive protocol=2"}
+
   defp preflight_acceptance(opts) do
-    if Keyword.get(opts, :protocol_version, 1) == 2 do
-      case Newbee.Collaboration.Verification.normalize_contract(Keyword.get(opts, :acceptance)) do
-        {:ok, _} -> :ok
-        {:error, _, _} = error -> error
-      end
-    else
-      :ok
+    case Newbee.Collaboration.Verification.normalize_contract(Keyword.get(opts, :acceptance)) do
+      {:ok, _} -> :ok
+      {:error, _, _} = error -> error
     end
   end
 

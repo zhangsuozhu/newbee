@@ -260,14 +260,14 @@ defmodule Newbee.Agent.LoopCompactTest do
     Session.set_current(sid_b)
     :ok = Newbee.Collaboration.Capability.register(self(), sid_a, File.cwd!())
     {:ok, token} = Newbee.Collaboration.Capability.issue(self())
-    Process.put({Newbee.Tools.Collaboration, :context}, %{capability: token})
+    Process.put({Newbee.Tools.Hive, :context}, %{capability: token})
 
     try do
       assert {:ok, idx} = Newbee.read("history://")
       assert idx =~ sid_a
       refute idx =~ sid_b
     after
-      Process.delete({Newbee.Tools.Collaboration, :context})
+      Process.delete({Newbee.Tools.Hive, :context})
       Session.set_current(nil)
       Session.delete(sid_a)
       Session.delete(sid_b)

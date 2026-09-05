@@ -14,7 +14,9 @@ defmodule Newbee.Tools.Hive do
       {:ok, b} = Newbee.Tools.Hive.board(g["group_id"])
       Newbee.Tools.Hive.board_put(gid, task)
       Newbee.Tools.Hive.board_claim(gid, tid, rev)
-      Newbee.Tools.Hive.report(gid, tid, :submitted, expected_revision: rev, result: "done")
+      Newbee.Tools.Hive.report(gid, tid, "submitted", expected_revision: rev, result: "done")
+      Newbee.Tools.Hive.retry(gid, tid, expected_revision: b["revision"], reason: "retry after interruption")
+
       Newbee.Tools.Hive.verify(gid, tid)
       Newbee.Tools.Hive.wait(gid, since_revision: rev)
       Newbee.Tools.Hive.send(gid, sid, "Review")
@@ -24,7 +26,7 @@ defmodule Newbee.Tools.Hive do
       Newbee.Tools.Hive.close(gid, sid)
       Newbee.Tools.Hive.personas()
   """
-  @context_key {Newbee.Tools.Collaboration, :context}
+  @context_key {Newbee.Tools.Hive, :context}
   @report_statuses ~w(accepted running blocked submitted failed cancelled)
 
   @doc "Open a collaboration group; opts take goal/project_root/max_depth/max_total."
@@ -48,7 +50,7 @@ defmodule Newbee.Tools.Hive do
 
   def open(_, _), do: {:error, "bad_request", "title must be a text and opts a keyword list"}
 
-  @doc "Spawn a real subsession; structured acceptance required. Opts take persona/fork_turns/depends_on/write_scope/isolate."
+  @doc "Spawn a real subsession; structured acceptance and Board revision CAS are required. Opts take persona/fork_turns/depends_on/write_scope/isolate/expected_revision."
   def delegate(group_id, title, opts \\ [])
 
   def delegate(group_id, title, opts)
@@ -57,7 +59,10 @@ defmodule Newbee.Tools.Hive do
          {:ok, persona} <- Newbee.Collaboration.Persona.resolve(Keyword.get(opts, :persona, "worker")),
          {:ok, acceptance} <- Newbee.Collaboration.Verification.normalize_contract(Keyword.get(opts, :acceptance)),
          {:ok, group} <- host_call(Newbee.Collaboration.Coordinator, :get, [group_id]),
+         {:ok, board} <- host_call(Newbee.Collaboration.Coordinator, :board, [group_id, identity.session_id]),
          :ok <- command_acceptance_authorized(group, identity.session_id, acceptance) do
+      expected_revision = Keyword.get(opts, :expected_revision, board["revision"])
+
       host_call(Newbee.Collaboration.Delegator, :delegate, [
         group_id,
         identity.session_id,
@@ -67,6 +72,7 @@ defmodule Newbee.Tools.Hive do
           role: persona["role"],
           persona_profile: Newbee.Collaboration.Persona.session_profile(persona),
           protocol_version: 2,
+          expected_revision: expected_revision,
           fork_turns: Keyword.get(opts, :fork_turns, :none),
           description: Keyword.get(opts, :description, title),
           acceptance: acceptance,
@@ -125,26 +131,57 @@ defmodule Newbee.Tools.Hive do
 
   def board_claim(_, _, _), do: {:error, "bad_request", "group_id/task_id must be texts and revision an integer"}
 
-  @doc "Report status; workers finish with :submitted, never succeeded directly. Opts must carry expected_revision."
-  def report(group_id, task_id, status, opts \\ [])
+  @doc "Retry a blocked, failed, or cancelled task using the current Board revision. Only the Lead is authorized by Coordinator."
+  def retry(group_id, task_id, opts \\ [])
 
-  def report(group_id, task_id, status, opts)
-      when is_binary(group_id) and is_binary(task_id) and status in @report_statuses and
-             is_list(opts) do
-    with {:ok, identity} <- identity() do
-      host_call(Newbee.Collaboration.Coordinator, :board_update_task, [
+  def retry(group_id, task_id, opts)
+      when is_binary(group_id) and is_binary(task_id) and is_list(opts) do
+    with {:ok, identity} <- identity(),
+         {:ok, board} <-
+           host_call(Newbee.Collaboration.Coordinator, :board, [group_id, identity.session_id]),
+         expected_revision <- Keyword.get(opts, :expected_revision, board["revision"]),
+         :ok <- valid_revision(expected_revision),
+         reason <- Keyword.get(opts, :reason, "manual retry"),
+         :ok <- valid_reason(reason) do
+      host_call(Newbee.Collaboration.Coordinator, :board_retry, [
         group_id,
         task_id,
         %{
           "session_id" => identity.session_id,
-          "expected_revision" => Keyword.get(opts, :expected_revision),
-          "status" => to_string(status),
-          "progress" => Keyword.get(opts, :progress),
-          "result" => Keyword.get(opts, :result),
-          "evidence" => Keyword.get(opts, :evidence),
-          "command_id" => Keyword.get(opts, :command_id) || command_id("hive-report")
+          "expected_revision" => expected_revision,
+          "command_id" => Keyword.get(opts, :command_id) || command_id("hive-retry"),
+          "reason" => reason
         }
       ])
+    end
+  end
+
+  def retry(_, _, _), do: {:error, "bad_request", "group_id/task_id must be texts and opts a keyword list"}
+
+  @doc "Report an atom or string status; workers finish with :submitted, never succeeded directly. Opts must carry expected_revision."
+  def report(group_id, task_id, status, opts \\ [])
+
+  def report(group_id, task_id, status, opts)
+      when is_binary(group_id) and is_binary(task_id) and
+             (is_atom(status) or is_binary(status)) and is_list(opts) do
+    with true <- to_string(status) in @report_statuses or {:error, "bad_request", "invalid Hive status"},
+         {:ok, identity} <- identity() do
+      attrs = %{
+        "session_id" => identity.session_id,
+        "expected_revision" => Keyword.get(opts, :expected_revision),
+        "status" => to_string(status),
+        "progress" => Keyword.get(opts, :progress),
+        "result" => Keyword.get(opts, :result),
+        "evidence" => Keyword.get(opts, :evidence),
+        "command_id" => Keyword.get(opts, :command_id) || command_id("hive-report")
+      }
+
+      attrs =
+        if Keyword.has_key?(opts, :expected_attempt),
+          do: Map.put(attrs, "expected_attempt", Keyword.get(opts, :expected_attempt)),
+          else: attrs
+
+      host_call(Newbee.Collaboration.Coordinator, :board_update_task, [group_id, task_id, attrs])
     end
   end
 
@@ -261,8 +298,8 @@ defmodule Newbee.Tools.Hive do
     with {:ok, identity} <- identity(),
          {:ok, group} <- host_call(Newbee.Collaboration.Coordinator, :get, [group_id]),
          :ok <- lifecycle_authorized(group, identity.session_id, target_session_id),
-         {:ok, pid} <- Newbee.Web.Session.lookup(target_session_id) do
-      :ok = Newbee.Web.Session.interrupt(pid)
+         {:ok, pid} <- host_call(Newbee.Web.Session, :lookup, [target_session_id]) do
+      :ok = host_call(Newbee.Web.Session, :interrupt, [pid])
       {:ok, %{"interrupted" => target_session_id}}
     else
       {:error, :not_found} -> {:error, "not_found", "target session not running"}
@@ -285,7 +322,7 @@ defmodule Newbee.Tools.Hive do
                "command_id" => command_id("hive-close")
              }
            ]) do
-      _ = Newbee.Web.Session.destroy(target_session_id)
+      _ = host_call(Newbee.Web.Session, :destroy, [target_session_id])
       {:ok, member}
     end
   end
@@ -333,6 +370,17 @@ defmodule Newbee.Tools.Hive do
       true -> {:error, "forbidden_role", "only the Lead or a direct parent session may interrupt the target"}
     end
   end
+
+  defp valid_revision(revision) when is_integer(revision) and revision >= 0, do: :ok
+  defp valid_revision(_), do: {:error, "bad_request", "expected_revision must be a non-negative integer"}
+
+  defp valid_reason(reason) when is_binary(reason) do
+    if String.trim(reason) == "",
+      do: {:error, "bad_request", "reason must be a non-empty text"},
+      else: :ok
+  end
+
+  defp valid_reason(_), do: {:error, "bad_request", "reason must be a non-empty text"}
 
   defp normalize_wait_timeout(timeout) when is_integer(timeout),
     do: timeout |> max(1_000) |> min(120_000)
