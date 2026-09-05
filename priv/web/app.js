@@ -2995,7 +2995,7 @@ case "goal_round": break;
   }
 
   async function addAttachment(file) {
-    if (state.busy) { line("notice", "忙碌中，稍后再添加文件"); return; }
+    // 运行中允许添加附件：上传与会话 busy 无关；发送时随消息一起排队（后端 prompt_images busy 分支入队）。
     if (!state.sid || !file) return;
     if (file.size === 0) { line("notice", "不能上传空文件：" + (file.name || "file")); return; }
     if (file.size > MAX_FILE) { line("notice", "文件过大（>20 MiB）：" + file.name); return; }
