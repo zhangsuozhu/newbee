@@ -25,7 +25,6 @@ defmodule Newbee.Plugins do
     {:tool, "tool.scaffold", Newbee.Tools.Scaffold, [:shell, :fs]},
     {:tool, "tool.introspect", Newbee.Tools.Introspect, []},
     {:tool, "tool.hotreload", Newbee.Tools.HotReload, []},
-    {:tool, "tool.collaboration", Newbee.Tools.Collaboration, []},
     {:tool, "tool.hive", Newbee.Tools.Hive, [:shell, :fs]},
     {:workflow, "workflow.jspace", Newbee.Tools.JSpace, [:fs]},
     {:projection, "projection.repomap", Newbee.Plugins.RepoMap, [:fs]},
@@ -111,8 +110,12 @@ defmodule Newbee.Plugins do
       "  - #{t.name}#{price}: #{t.summary}"
     end)
     |> case do
-      "" -> ""
-      body -> "\n## Capability index (one line each; pull full text via Newbee.read(\"tool://<module>\") as needed)\n" <> body <> "\n"
+      "" ->
+        ""
+
+      body ->
+        "\n## Capability index (one line each; pull full text via Newbee.read(\"tool://<module>\") as needed)\n" <>
+          body <> "\n"
     end
   end
 

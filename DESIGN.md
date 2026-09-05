@@ -472,12 +472,20 @@ rolled_back        coordinator → 双方     {revision, plugin_id, release_id, 
 模型可见入口是 `Newbee.Tools.Hive`，持久事实仍只有 `Newbee.Collaboration.Coordinator`，不得再建第二套 group/board。`open/delegate/board/board_put/board_claim/report/verify/wait/send/inbox/roster/interrupt/close/personas` 的真实签名以 PluginContract 为准。
 
 - Board 写操作带 `expected_revision + command_id`，Coordinator 单写者提供 CAS 线性化点；依赖是显式 DAG，write scope 重叠只作诊断，不声称文件互斥。
-- 执行者只能提交 `submitted`，不能改验收契约或写 `succeeded`；legacy task API 拒绝 v2 task。Lead 在主节点运行结构化验收，调用方不能传入 attestation。
+- 执行者只能提交 `submitted`，不能改验收契约或写 `succeeded`；不保留旧协作工具、v1 状态机或旧任务 RPC。Lead 在主节点运行结构化验收，调用方不能传入 attestation。
 - command 验收只允许 Lead 创建，且会执行项目代码，不是 sandbox；输出只保存有界捕获摘要。Board revision 不冻结文件系统。
 - capability 绑定公开 Hive 工具调用的真实 session；生命周期控制限 Lead/直接父。该机制不是任意 BEAM/RPC 代码的进程沙箱。
 - 派生深度、累计派生数、任务数、验收/argv/JSON 载荷和 fork 上下文均有硬上限；`wait` 是 revision 边沿等待，不轮询。
 - Persona 只支持 runtime 真正消费的 provider/model/reasoning_effort/instructions；严格 JSON，启动前验证 client，system prompt 用 profile digest 失效缓存。
 - Context fork 只复制完整 user/final-assistant 轮次，排除 system/tool/tool_calls；上限 64 轮、128 KiB。异步 child boot 受 Session 生命周期管理，失败补偿须回收 workspace/session/evaluator。
+- 投递使用持久 `delivery_id` 与运行时 `claim/ack`，进程崩溃时不提前确认；重启补拉未消费事件，`task_progress` 只更新展示，不启动模型新轮次。
+- `retry` 不复制任务、不生成漂移的 task id，而是在 Board CAS 下递增 `attempt` 并保存有界历史；所有重试报告可带 `expected_attempt`，旧执行者的迟到结果被拒绝。
+- `Submission.capture/2` 创建不可变候选源树，`Verification.verify/2` 前后校验 tree digest 与 acceptance/result 绑定，Workspace review/apply 只消费同一候选；对外只返回摘要，不暴露冻结目录。
+
+- 运行时消失不等于任务取消：不再执行旧孤儿清扫，重启后保留 Board 状态，活动任务仍阻止删组/移除成员。`wake` 可异步恢复已有持久子会话并投递，避免 Coordinator 同步启动 Session 的自调用死锁。
+- 非终态允许同状态的进度/证据更新；终态保持不可改写。验收通过或明确失败/取消时，隔离工作区从 waiting 转为 pending，进入独立的 diff 审查/应用流程。
+- Web 任务入口为 `hive.board`、`hive.delegate` 和 `hive.task.create/update/claim/verify`。写入显式携带 `expectedRevision`；任务响应保留 `{task, revision, warnings?}`，工作区路径对外脱敏。旧 `group.task.*` 与 `group.member.delegate` 不再提供别名。
+- Web 将 `submitted` 与 `succeeded` 分开展示，验收失败保留检查结果并阻塞依赖；过期 revision 必须重读看板，不能盲目重放用户操作。
 
 论证、外部数据和未证明事项见 [`docs/collab-v2-analysis.md`](docs/collab-v2-analysis.md)。
 

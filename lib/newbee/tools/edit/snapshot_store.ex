@@ -123,8 +123,7 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
         has_trailing: has_trailing
       }
 
-      {hash,
-       lru_touch(Map.put(store, path, (history ++ [snap]) |> Enum.take(-@max_versions)), path)}
+      {hash, lru_touch(Map.put(store, path, (history ++ [snap]) |> Enum.take(-@max_versions)), path)}
     end)
   end
 
@@ -193,7 +192,9 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
     Path.join([Newbee.GlobalStore.root(), "edit_snapshots", project_hash <> ".lock"])
   end
 
-  @lock_timeout_ms 5_000
+  # 多个隔离 evaluator 会共享这份快照索引；短暂竞争不应让合法 patch 失败。
+  @lock_timeout_ms 30_000
+  @lock_stale_ms 120_000
 
   # 简单文件锁：O_EXCL 原子创建 + 过期抢占（持锁进程崩溃后 30s 自动可抢）。
   defp with_file_lock(path, fun) do
@@ -219,7 +220,7 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
         stale? =
           case File.stat(path, time: :posix) do
             {:ok, %File.Stat{mtime: mtime}} ->
-              System.os_time(:second) - mtime_to_seconds(mtime) > 30
+              System.os_time(:millisecond) - mtime_to_milliseconds(mtime) > @lock_stale_ms
 
             _ ->
               false
@@ -237,7 +238,7 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   end
 
   # File.stat(time: :posix) 已返回 Unix 秒；保留 helper 便于锁时钟语义集中。
-  defp mtime_to_seconds(seconds) when is_integer(seconds), do: seconds
+  defp mtime_to_milliseconds(seconds) when is_integer(seconds), do: seconds * 1_000
 
   defp ensure_table do
     case :ets.whereis(@table) do

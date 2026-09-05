@@ -146,16 +146,28 @@ defmodule Newbee.Collaboration.HiveV2CoordinatorTest do
                ctx.server
              )
 
-    assert {:error, "protocol_mismatch", _} =
-             Coordinator.update_task(
+    for {name, arities} <- [
+          {:create_task, [2, 3]},
+          {:update_task, [3, 4]},
+          {:claim_task, [3, 4]},
+          {:renew_task, [4, 5]}
+        ] do
+      for arity <- arities do
+        refute function_exported?(Coordinator, name, arity)
+      end
+    end
+
+    assert {:error, "invalid_state", _} =
+             Coordinator.board_verify(
                ctx.gid,
                task["task_id"],
-               %{"session_id" => "worker", "status" => "succeeded"},
+               %{
+                 "session_id" => "lead",
+                 "expected_revision" => r1,
+                 "command_id" => "verify-before-submit"
+               },
                ctx.server
              )
-
-    assert {:error, "protocol_mismatch", _} =
-             Coordinator.claim_task(ctx.gid, task["task_id"], "worker", ctx.server)
   end
 
   test "assigned worker cannot rewrite acceptance, dependencies, or write scope", ctx do
@@ -414,6 +426,8 @@ defmodule Newbee.Collaboration.HiveV2CoordinatorTest do
 
   test "spawn depth and cumulative total are hard limits", ctx do
     workspace = %{"kind" => "shared", "path" => ctx.root}
+    acceptance = [%{"kind" => "file_exists", "path" => "proof.txt"}]
+    {:ok, before_child} = Coordinator.board(ctx.gid, "lead", ctx.server)
 
     assert {:ok, %{member: child}} =
              Coordinator.delegate(
@@ -423,6 +437,11 @@ defmodule Newbee.Collaboration.HiveV2CoordinatorTest do
                  "parent_session_id" => "lead",
                  "title" => "child",
                  "role" => "worker",
+                 "protocol_version" => 2,
+                 "acceptance" => acceptance,
+                 "depends_on" => [],
+                 "write_scope" => [],
+                 "expected_revision" => before_child["revision"],
                  "workspace" => workspace,
                  "command_id" => "spawn-child"
                },
@@ -430,6 +449,7 @@ defmodule Newbee.Collaboration.HiveV2CoordinatorTest do
              )
 
     assert child["depth"] == 1
+    {:ok, before_grandchild} = Coordinator.board(ctx.gid, "lead", ctx.server)
 
     assert {:error, "depth_limit", _} =
              Coordinator.delegate(
@@ -439,11 +459,275 @@ defmodule Newbee.Collaboration.HiveV2CoordinatorTest do
                  "parent_session_id" => "child",
                  "title" => "grandchild",
                  "role" => "worker",
+                 "protocol_version" => 2,
+                 "acceptance" => acceptance,
+                 "depends_on" => [],
+                 "write_scope" => [],
+                 "expected_revision" => before_grandchild["revision"],
                  "workspace" => workspace,
                  "command_id" => "spawn-grandchild"
                },
                ctx.server
              )
+  end
+
+  test "delegated task waits for unfinished dependencies", ctx do
+    {:ok, board} = Coordinator.board(ctx.gid, "lead", ctx.server)
+
+    {:ok, %{"task" => predecessor, "revision" => revision}} =
+      Coordinator.board_create_task(
+        ctx.gid,
+        %{
+          "session_id" => "lead",
+          "title" => "predecessor",
+          "assigned_session_id" => "worker",
+          "acceptance" => [%{"kind" => "file_exists", "path" => "proof.txt"}],
+          "expected_revision" => board["revision"],
+          "command_id" => "delegate-dependency-predecessor"
+        },
+        ctx.server
+      )
+
+    assert {:ok, %{task: delegated}} =
+             Coordinator.delegate(
+               ctx.gid,
+               %{
+                 "session_id" => "dependent-child",
+                 "parent_session_id" => "lead",
+                 "title" => "dependent",
+                 "role" => "worker",
+                 "protocol_version" => 2,
+                 "acceptance" => [%{"kind" => "file_exists", "path" => "proof.txt"}],
+                 "depends_on" => [predecessor["task_id"]],
+                 "write_scope" => [],
+                 "expected_revision" => revision,
+                 "workspace" => %{"kind" => "shared", "path" => ctx.root},
+                 "command_id" => "delegate-dependency-child"
+               },
+               ctx.server
+             )
+
+    assert delegated["status"] == "pending"
+    assert delegated["depends_on"] == [predecessor["task_id"]]
+  end
+
+  test "wake restores a persisted session runtime before delivery", ctx do
+    sid = "wake-recover-" <> Integer.to_string(System.unique_integer([:positive]))
+    :ok = Newbee.Session.mark_created(sid)
+    :ok = Newbee.Session.set_cwd(sid, ctx.root)
+    on_exit(fn -> Newbee.Web.Session.destroy(sid) end)
+
+    assert {:ok, _member} =
+             Coordinator.add_member(
+               ctx.gid,
+               %{"session_id" => sid, "parent_session_id" => "lead", "command_id" => "wake-member-" <> sid},
+               ctx.server
+             )
+
+    assert {:ok, _message} =
+             Coordinator.send_message(
+               ctx.gid,
+               %{
+                 "sender_session_id" => "lead",
+                 "to_session_id" => sid,
+                 "body" => "wake persisted session",
+                 "delivery" => "wake",
+                 "command_id" => "wake-message-" <> sid
+               },
+               ctx.server
+             )
+
+    assert {:ok, _pid} = await_session_runtime(sid, 100)
+    assert Newbee.Session.cwd(sid) == Path.expand(ctx.root)
+  end
+
+  test "terminal Hive tasks make waiting workspaces reviewable", ctx do
+    child_session_id = "review-success-" <> Integer.to_string(System.unique_integer([:positive]))
+    {:ok, workspace} = Newbee.Collaboration.Workspace.prepare(ctx.root, child_session_id, true)
+    File.write!(Path.join(workspace["path"], "proof.txt"), "changed")
+
+    {:ok, board} = Coordinator.board(ctx.gid, "lead", ctx.server)
+
+    assert {:ok, %{task: task}} =
+             Coordinator.delegate(
+               ctx.gid,
+               %{
+                 "session_id" => child_session_id,
+                 "parent_session_id" => "lead",
+                 "title" => "review success",
+                 "role" => "worker",
+                 "protocol_version" => 2,
+                 "acceptance" => [%{"kind" => "file_exists", "path" => "proof.txt"}],
+                 "depends_on" => [],
+                 "write_scope" => [],
+                 "expected_revision" => board["revision"],
+                 "workspace" => workspace,
+                 "command_id" => "review-success-delegate"
+               },
+               ctx.server
+             )
+
+    assert task["workspace"]["review_status"] == "waiting"
+
+    assert {:ok, %{"revision" => submitted_revision}} =
+             Coordinator.board_update_task(
+               ctx.gid,
+               task["task_id"],
+               %{
+                 "session_id" => child_session_id,
+                 "expected_revision" => task["board_revision"],
+                 "status" => "submitted",
+                 "result" => "ready",
+                 "command_id" => "review-success-submit"
+               },
+               ctx.server
+             )
+
+    assert {:ok, %{"task" => verified}} =
+             Coordinator.board_verify(
+               ctx.gid,
+               task["task_id"],
+               %{
+                 "session_id" => "lead",
+                 "expected_revision" => submitted_revision,
+                 "command_id" => "review-success-verify"
+               },
+               ctx.server
+             )
+
+    assert verified["status"] == "succeeded"
+    assert verified["workspace"]["review_status"] == "pending"
+    assert {:ok, review} = Newbee.Collaboration.Workspace.review(verified)
+    assert review.review_status == "pending"
+
+    assert {:error, "stale_review", _} =
+             Newbee.Collaboration.Workspace.apply(verified, String.duplicate("0", 64))
+
+    {:ok, terminal_group} =
+      Coordinator.create_group(
+        %{
+          "session_id" => "terminal-lead",
+          "title" => "terminal review states",
+          "project_root" => ctx.root,
+          "max_total" => 4,
+          "command_id" => "terminal-review-group"
+        },
+        ctx.server
+      )
+
+    {:ok, terminal_board} = Coordinator.board(terminal_group["group_id"], "terminal-lead", ctx.server)
+
+    assert {:ok, %{task: failed_task}} =
+             Coordinator.delegate(
+               terminal_group["group_id"],
+               %{
+                 "session_id" => "failed-child",
+                 "parent_session_id" => "terminal-lead",
+                 "title" => "failed review",
+                 "protocol_version" => 2,
+                 "acceptance" => [%{"kind" => "file_exists", "path" => "proof.txt"}],
+                 "depends_on" => [],
+                 "write_scope" => [],
+                 "expected_revision" => terminal_board["revision"],
+                 "workspace" => %{"kind" => "shared", "path" => ctx.root, "review_status" => "waiting"},
+                 "command_id" => "failed-review-delegate"
+               },
+               ctx.server
+             )
+
+    assert {:ok, %{"task" => failed}} =
+             Coordinator.board_update_task(
+               terminal_group["group_id"],
+               failed_task["task_id"],
+               %{
+                 "session_id" => "failed-child",
+                 "expected_revision" => failed_task["board_revision"],
+                 "status" => "failed",
+                 "result" => "failed",
+                 "command_id" => "failed-review-update"
+               },
+               ctx.server
+             )
+
+    assert failed["workspace"]["review_status"] == "pending"
+
+    {:ok, cancelled_board} = Coordinator.board(terminal_group["group_id"], "terminal-lead", ctx.server)
+
+    assert {:ok, %{task: cancelled_task}} =
+             Coordinator.delegate(
+               terminal_group["group_id"],
+               %{
+                 "session_id" => "cancelled-child",
+                 "parent_session_id" => "terminal-lead",
+                 "title" => "cancelled review",
+                 "protocol_version" => 2,
+                 "acceptance" => [%{"kind" => "file_exists", "path" => "proof.txt"}],
+                 "depends_on" => [],
+                 "write_scope" => [],
+                 "expected_revision" => cancelled_board["revision"],
+                 "workspace" => %{"kind" => "shared", "path" => ctx.root, "review_status" => "waiting"},
+                 "command_id" => "cancelled-review-delegate"
+               },
+               ctx.server
+             )
+
+    assert {:ok, %{"task" => cancelled}} =
+             Coordinator.board_update_task(
+               terminal_group["group_id"],
+               cancelled_task["task_id"],
+               %{
+                 "session_id" => "cancelled-child",
+                 "expected_revision" => cancelled_task["board_revision"],
+                 "status" => "cancelled",
+                 "command_id" => "cancelled-review-update"
+               },
+               ctx.server
+             )
+
+    assert cancelled["workspace"]["review_status"] == "pending"
+  end
+
+  test "Hive running task survives restart without a live runtime or lease", ctx do
+    {:ok, board} = Coordinator.board(ctx.gid, "lead", ctx.server)
+
+    {:ok, %{"task" => task, "revision" => r1}} =
+      Coordinator.board_create_task(
+        ctx.gid,
+        %{
+          "session_id" => "lead",
+          "title" => "recoverable-running",
+          "assigned_session_id" => "worker",
+          "acceptance" => [%{"kind" => "file_exists", "path" => "proof.txt"}],
+          "expected_revision" => board["revision"],
+          "command_id" => "recoverable-create"
+        },
+        ctx.server
+      )
+
+    assert {:ok, %{"revision" => _running_revision}} =
+             Coordinator.board_update_task(
+               ctx.gid,
+               task["task_id"],
+               %{
+                 "session_id" => "worker",
+                 "expected_revision" => r1,
+                 "status" => "running",
+                 "command_id" => "recoverable-running"
+               },
+               ctx.server
+             )
+
+    GenServer.stop(ctx.pid)
+    restored_name = String.to_atom("hive_restore_#{System.unique_integer([:positive])}")
+    {:ok, restored} = Coordinator.start_link(name: restored_name, path: ctx.path, durability: :event)
+    on_exit(fn -> if Process.alive?(restored), do: GenServer.stop(restored) end)
+
+    assert {:error, "busy", _} = Coordinator.delete_group(ctx.gid, "lead", restored_name)
+    assert {:ok, board_after_restart} = Coordinator.board(ctx.gid, "lead", restored_name)
+    [recovered] = Enum.filter(board_after_restart["tasks"], &(&1["task_id"] == task["task_id"]))
+    assert recovered["protocol_version"] == 2
+    assert recovered["status"] == "running"
+    assert recovered["lease_until"] in [nil, ""]
   end
 
   test "deleting a group wakes registered waiters", ctx do
@@ -462,6 +746,162 @@ defmodule Newbee.Collaboration.HiveV2CoordinatorTest do
     assert {:ok, _} = Coordinator.delete_group(group["group_id"], "solo", ctx.server)
     assert {:error, "group_deleted", _} = Task.await(waiter, 6_000)
   end
+
+  test "delivery claim and ack are durable and idempotent", ctx do
+    {:ok, board} = Coordinator.board(ctx.gid, "lead", ctx.server)
+
+    {:ok, %{"task" => task, "revision" => _revision}} =
+      Coordinator.board_create_task(
+        ctx.gid,
+        %{
+          "session_id" => "lead",
+          "title" => "durable delivery",
+          "assigned_session_id" => "worker",
+          "acceptance" => [%{"kind" => "file_exists", "path" => "proof.txt"}],
+          "expected_revision" => board["revision"],
+          "command_id" => "delivery-create"
+        },
+        ctx.server
+      )
+
+    {:ok, group} = Coordinator.get(ctx.gid, ctx.server)
+    delivery = Enum.find(group["deliveries"], &(&1["task_id"] == task["task_id"]))
+    assert is_binary(delivery["delivery_id"])
+
+    attrs = %{
+      "delivery_id" => delivery["delivery_id"],
+      "runtime_id" => "runtime-one",
+      "kind" => "task",
+      "task_id" => task["task_id"],
+      "attempt" => 0
+    }
+
+    assert {:ok, %{"decision" => "deliver"}} =
+             Coordinator.delivery_claim(ctx.gid, "worker", attrs, ctx.server)
+
+    assert {:ok, %{"decision" => "duplicate"}} =
+             Coordinator.delivery_claim(ctx.gid, "worker", attrs, ctx.server)
+
+    assert {:error, "delivery_owner", _} =
+             Coordinator.delivery_ack(ctx.gid, "worker", %{attrs | "runtime_id" => "runtime-two"}, ctx.server)
+
+    assert {:ok, %{"decision" => "consumed"}} =
+             Coordinator.delivery_ack(ctx.gid, "worker", attrs, ctx.server)
+
+    assert {:ok, %{"decision" => "duplicate"}} =
+             Coordinator.delivery_ack(ctx.gid, "worker", attrs, ctx.server)
+
+    assert {:ok, []} = Coordinator.pending_deliveries("worker", ctx.server)
+  end
+
+  test "submitted task captures a frozen source and running result does not submit", ctx do
+    {:ok, board} = Coordinator.board(ctx.gid, "lead", ctx.server)
+
+    {:ok, %{"task" => task, "revision" => r1}} =
+      Coordinator.board_create_task(
+        ctx.gid,
+        %{
+          "session_id" => "lead",
+          "title" => "frozen submission",
+          "assigned_session_id" => "worker",
+          "acceptance" => [%{"kind" => "file_exists", "path" => "proof.txt"}],
+          "expected_revision" => board["revision"],
+          "command_id" => "submission-create"
+        },
+        ctx.server
+      )
+
+    {:ok, %{"task" => running, "revision" => r2}} =
+      Coordinator.board_update_task(
+        ctx.gid,
+        task["task_id"],
+        %{
+          "session_id" => "worker",
+          "expected_revision" => r1,
+          "status" => "running",
+          "result" => "progress only",
+          "command_id" => "submission-running"
+        },
+        ctx.server
+      )
+
+    refute Map.has_key?(running, "submission")
+
+    assert {:ok, %{"task" => submitted, "revision" => _r3}} =
+             Coordinator.board_update_task(
+               ctx.gid,
+               task["task_id"],
+               %{
+                 "session_id" => "worker",
+                 "expected_revision" => r2,
+                 "expected_attempt" => 0,
+                 "status" => "submitted",
+                 "result" => "proof captured",
+                 "command_id" => "submission-submit"
+               },
+               ctx.server
+             )
+
+    assert %{"id" => submission_id, "root" => root, "tree_sha256" => tree} = submitted["submission"]
+    assert is_binary(submission_id)
+    assert File.dir?(root)
+    assert is_binary(tree)
+
+    {:ok, group_after_submit} = Coordinator.get(ctx.gid, ctx.server)
+    result_delivery = Enum.find(group_after_submit["deliveries"], &(&1["purpose"] == "result"))
+    assert result_delivery["session_id"] == "lead"
+    assert result_delivery["task_id"] == task["task_id"]
+
+    assert {:ok, [%{"delivery_id" => result_delivery_id, "kind" => "task"}]} =
+             Coordinator.pending_deliveries("lead", ctx.server)
+
+    assert result_delivery_id == result_delivery["delivery_id"]
+
+    result_attrs = %{
+      "delivery_id" => result_delivery_id,
+      "runtime_id" => "lead-runtime",
+      "kind" => "task",
+      "task_id" => task["task_id"],
+      "attempt" => 0
+    }
+
+    assert {:ok, %{"decision" => "deliver"}} =
+             Coordinator.delivery_claim(ctx.gid, "lead", result_attrs, ctx.server)
+
+    assert {:ok, %{"decision" => "consumed"}} =
+             Coordinator.delivery_ack(ctx.gid, "lead", result_attrs, ctx.server)
+
+    {:ok, board_after_delivery} = Coordinator.board(ctx.gid, "lead", ctx.server)
+
+    assert {:ok, %{"task" => verified}} =
+             Coordinator.board_verify(
+               ctx.gid,
+               task["task_id"],
+               %{
+                 "session_id" => "lead",
+                 "expected_revision" => board_after_delivery["revision"],
+                 "command_id" => "submission-verify"
+               },
+               ctx.server
+             )
+
+    assert verified["status"] == "succeeded"
+    assert verified["verification"]["submission_id"] == submission_id
+    assert verified["verification"]["tree_sha256"] == tree
+  end
+
+  defp await_session_runtime(sid, attempts) when attempts > 0 do
+    case Newbee.Web.Session.lookup(sid) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      _ ->
+        Process.sleep(50)
+        await_session_runtime(sid, attempts - 1)
+    end
+  end
+
+  defp await_session_runtime(_sid, 0), do: {:error, :not_found}
 
   defp create_task(ctx, revision, title, deps, assigned, scopes) do
     Coordinator.board_create_task(

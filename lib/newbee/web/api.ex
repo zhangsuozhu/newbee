@@ -404,7 +404,7 @@ defmodule Newbee.Web.Api do
              "session_id" => child_sid,
              "role" => blank_to_nil(p["role"]) || "worker",
              "parent_session_id" => parent_sid,
-             "command_id" => blank_to_nil(p["commandId"]) || "workspace-apply-50114"
+             "command_id" => rpc_command_id(p, "member-spawn")
            }) do
       {:ok, %{sessionId: child_sid, member: json_safe(member), cwd: Newbee.Session.cwd(child_sid)}}
     else
@@ -428,7 +428,7 @@ defmodule Newbee.Web.Api do
              "session_id" => sid,
              "role" => blank_to_nil(p["role"]) || "worker",
              "parent_session_id" => blank_to_nil(p["parentSessionId"]) || actor_sid,
-             "command_id" => blank_to_nil(p["commandId"]) || "workspace-reject-50178"
+             "command_id" => rpc_command_id(p, "member-add")
            }) do
       {:ok, json_safe(member)}
     else
@@ -448,7 +448,7 @@ defmodule Newbee.Web.Api do
            Newbee.Collaboration.Coordinator.remove_member(group_id, %{
              "session_id" => sid,
              "actor_session_id" => actor_sid,
-             "command_id" => blank_to_nil(p["commandId"]) || "workspace-cleanup-50242"
+             "command_id" => rpc_command_id(p, "member-remove")
            }) do
       {:ok, %{member: json_safe(member), sessionId: sid}}
     else
@@ -460,22 +460,31 @@ defmodule Newbee.Web.Api do
     do: {:error, "bad_request", "需要 groupId、actorSessionId 和 sessionId 字段"}
 
   defp dispatch_rpc(
-         "group.member.delegate",
-         %{"groupId" => group_id, "parentSessionId" => parent_sid, "title" => title} = p
-       ) do
+         "hive.delegate",
+         %{"groupId" => group_id, "parentSessionId" => parent_sid, "title" => title, "expectedRevision" => revision} = p
+       )
+       when is_integer(revision) and revision >= 0 do
     child_sid = blank_to_nil(p["sessionId"])
 
     with :ok <- require_group_coordinator(group_id, parent_sid),
          :ok <- maybe_require_new_session(child_sid),
+         {:ok, persona} <- Newbee.Collaboration.Persona.resolve(p["persona"] || "worker"),
+         {:ok, acceptance} <- Newbee.Collaboration.Verification.normalize_contract(p["acceptance"]),
          {:ok, delegated} <-
            Newbee.Collaboration.Delegator.delegate(group_id, parent_sid, title,
              session_id: child_sid,
              name: p["name"] || title,
-             role: blank_to_nil(p["role"]) || "worker",
+             role: persona["role"],
+             persona_profile: Newbee.Collaboration.Persona.session_profile(persona),
+             protocol_version: 2,
+             expected_revision: p["expectedRevision"],
+             fork_turns: p["forkTurns"] || :none,
              description: p["description"],
-             acceptance: p["acceptance"],
+             acceptance: acceptance,
+             depends_on: p["dependsOn"] || [],
+             write_scope: p["writeScope"] || [],
              isolate: normalize_isolation(p["isolate"]),
-             command_id: blank_to_nil(p["commandId"])
+             command_id: rpc_command_id(p, "hive-delegate")
            ) do
       {:ok,
        %{
@@ -489,8 +498,8 @@ defmodule Newbee.Web.Api do
     end
   end
 
-  defp dispatch_rpc("group.member.delegate", _p),
-    do: {:error, "bad_request", "需要 groupId、parentSessionId 和 title 字段"}
+  defp dispatch_rpc("hive.delegate", _p),
+    do: {:error, "bad_request", "需要 groupId、parentSessionId、title 和结构化 acceptance 字段"}
 
   defp dispatch_rpc(
          "collab.message.send",
@@ -548,31 +557,54 @@ defmodule Newbee.Web.Api do
     end
   end
 
-  defp dispatch_rpc("group.task.list", %{"groupId" => group_id, "sessionId" => sid}) do
-    with :ok <- require_group_member(group_id, sid),
-         {:ok, tasks} <- Newbee.Collaboration.Coordinator.tasks(group_id) do
-      {:ok, %{tasks: Enum.map(tasks, &public_collab_task/1) |> json_safe()}}
-    else
-      {:error, code, message} -> {:error, code, message}
+  defp dispatch_rpc("hive.board", %{"groupId" => group_id, "sessionId" => sid}) do
+    with {:ok, board} <- Newbee.Collaboration.Coordinator.board(group_id, sid) do
+      {:ok, board |> Map.update!("tasks", &Enum.map(&1, fn task -> public_collab_task(task) end)) |> json_safe()}
     end
   end
 
-  defp dispatch_rpc("group.task.create", %{"groupId" => group_id, "sessionId" => sid} = p) do
-    with :ok <- require_group_member(group_id, sid),
-         {:ok, task} <-
-           Newbee.Collaboration.Coordinator.create_task(group_id, %{
-             "created_by_session_id" => sid,
-             "assigned_session_id" => blank_to_nil(p["assignedSessionId"]),
-             "title" => p["title"],
-             "description" => p["description"],
-             "acceptance" => p["acceptance"],
-             "command_id" => p["commandId"]
-           }) do
-      {:ok, json_safe(task)}
-    else
-      {:error, code, message} -> {:error, code, message}
+  defp dispatch_rpc("hive.board", _p),
+    do: {:error, "bad_request", "需要 groupId 和 sessionId 字段"}
+
+  defp dispatch_rpc("hive.task.create", %{"groupId" => group_id, "sessionId" => sid} = p) do
+    attrs = %{
+      "session_id" => sid,
+      "assigned_session_id" => blank_to_nil(p["assignedSessionId"]),
+      "title" => p["title"],
+      "description" => p["description"],
+      "acceptance" => p["acceptance"],
+      "depends_on" => p["dependsOn"] || [],
+      "write_scope" => p["writeScope"] || [],
+      "expected_revision" => p["expectedRevision"],
+      "command_id" => rpc_command_id(p, "hive-create")
+    }
+
+    with {:ok, result} <- Newbee.Collaboration.Coordinator.board_create_task(group_id, attrs) do
+      {:ok, public_hive_result(result)}
     end
   end
+
+  defp dispatch_rpc("hive.task.create", _p),
+    do: {:error, "bad_request", "需要 groupId、sessionId、expectedRevision 和结构化验收字段"}
+
+  defp dispatch_rpc(
+         "hive.task.retry",
+         %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid} = p
+       ) do
+    attrs = %{
+      "session_id" => sid,
+      "expected_revision" => p["expectedRevision"],
+      "reason" => p["reason"],
+      "command_id" => rpc_command_id(p, "hive-retry")
+    }
+
+    with {:ok, result} <- Newbee.Collaboration.Coordinator.board_retry(group_id, task_id, attrs) do
+      {:ok, public_hive_result(result)}
+    end
+  end
+
+  defp dispatch_rpc("hive.task.retry", _p),
+    do: {:error, "bad_request", "需要 groupId、taskId、sessionId、expectedRevision 和 reason 字段"}
 
   defp dispatch_rpc(
          "group.workspace.review",
@@ -651,21 +683,64 @@ defmodule Newbee.Web.Api do
     end
   end
 
-  defp dispatch_rpc("group.task.update", %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid} = p) do
-    with :ok <- require_group_member(group_id, sid),
-         {:ok, task} <-
-           Newbee.Collaboration.Coordinator.update_task(group_id, task_id, %{
-             "session_id" => sid,
-             "status" => p["status"],
-             "progress" => p["progress"],
-             "result" => p["result"],
-             "command_id" => p["commandId"]
-           }) do
-      {:ok, json_safe(task)}
-    else
-      {:error, code, message} -> {:error, code, message}
+  defp dispatch_rpc(
+         "hive.task.update",
+         %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid} = p
+       ) do
+    attrs = %{
+      "session_id" => sid,
+      "status" => p["status"],
+      "title" => p["title"],
+      "description" => p["description"],
+      "acceptance" => p["acceptance"],
+      "depends_on" => p["dependsOn"],
+      "progress" => p["progress"],
+      "result" => p["result"],
+      "evidence" => p["evidence"],
+      "expected_revision" => p["expectedRevision"],
+      "command_id" => rpc_command_id(p, "hive-update")
+    }
+
+    attrs =
+      if Map.has_key?(p, "writeScope"),
+        do: Map.put(attrs, "write_scope", p["writeScope"]),
+        else: attrs
+
+    attrs =
+      if Map.has_key?(p, "expectedAttempt"),
+        do: Map.put(attrs, "expected_attempt", p["expectedAttempt"]),
+        else: attrs
+
+    with {:ok, result} <- Newbee.Collaboration.Coordinator.board_update_task(group_id, task_id, attrs) do
+      {:ok, public_hive_result(result)}
     end
   end
+
+  defp dispatch_rpc(
+         operation,
+         %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid} = p
+       )
+       when operation in ["hive.task.claim", "hive.task.verify"] do
+    attrs = %{
+      "session_id" => sid,
+      "expected_revision" => p["expectedRevision"],
+      "command_id" => rpc_command_id(p, operation)
+    }
+
+    result =
+      case operation do
+        "hive.task.claim" -> Newbee.Collaboration.Coordinator.board_claim(group_id, task_id, attrs)
+        "hive.task.verify" -> Newbee.Collaboration.Coordinator.board_verify(group_id, task_id, attrs)
+      end
+
+    with {:ok, result} <- result do
+      {:ok, public_hive_result(result)}
+    end
+  end
+
+  defp dispatch_rpc(operation, _p)
+       when operation in ["hive.task.update", "hive.task.claim", "hive.task.verify"],
+       do: {:error, "bad_request", "需要 groupId、taskId、sessionId 和 expectedRevision 字段"}
 
   defp dispatch_rpc("group.status", %{"groupId" => group_id, "sessionId" => sid}) do
     with :ok <- require_group_member(group_id, sid),
@@ -734,27 +809,6 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("group.delete", _p),
     do: {:error, "bad_request", "需要 groupId 和 sessionId 字段"}
 
-  defp dispatch_rpc("group.task.claim", %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid}) do
-    with :ok <- require_group_member(group_id, sid),
-         {:ok, task} <- Newbee.Collaboration.Coordinator.claim_task(group_id, task_id, sid) do
-      {:ok, json_safe(task)}
-    else
-      {:error, code, message} -> {:error, code, message}
-    end
-  end
-
-  defp dispatch_rpc("group.task.renew", %{"groupId" => group_id, "taskId" => task_id, "sessionId" => sid} = p) do
-    seconds = clamp_int(p["seconds"], 300, 30, 3600)
-
-    with :ok <- require_group_member(group_id, sid),
-         {:ok, task} <- Newbee.Collaboration.Coordinator.renew_task(group_id, task_id, sid, seconds) do
-      {:ok, json_safe(task)}
-    else
-      {:error, code, message} -> {:error, code, message}
-    end
-  end
-
-  # 会话域
   defp dispatch_rpc("session.list", p) do
     # 分页：limit 默认 50（上限 200），offset 默认 0；total 供前端算“加载更多”
     limit = clamp_int(p["limit"], 50, 1, 200)
@@ -870,6 +924,7 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("session.btw", %{"sessionId" => sid, "question" => question} = payload)
        when is_binary(sid) and is_binary(question) do
     question = String.trim(question)
+
     if question == "" do
       {:error, "bad_request", "question 不能为空"}
     else
@@ -880,9 +935,9 @@ defmodule Newbee.Web.Api do
       end
     end
   end
+
   defp dispatch_rpc("session.btw", _payload),
     do: {:error, "bad_request", "需要 sessionId 和 question 字段"}
-
 
   defp dispatch_rpc("session.prompt", %{"sessionId" => sid, "text" => text} = payload)
        when is_binary(sid) and is_binary(text) do
@@ -890,6 +945,7 @@ defmodule Newbee.Web.Api do
       {:error, "bad_request", "sessionId 和 text 不能为空"}
     else
       qid = Map.get(payload, "queueId") || Map.get(payload, "queue_id")
+
       with {:ok, pid} <- find_session(sid) do
         if is_binary(qid) and String.trim(qid) != "" do
           Newbee.Web.Session.prompt(pid, text, qid)
@@ -907,6 +963,7 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("session.promptImage", %{"sessionId" => sid, "images" => images, "text" => text} = payload) do
     qid = Map.get(payload, "queueId") || Map.get(payload, "queue_id")
+
     with {:ok, pid} <- find_session(sid) do
       cond do
         images == nil or images == [] ->
@@ -915,17 +972,22 @@ defmodule Newbee.Web.Api do
           else
             Newbee.Web.Session.prompt(pid, text || "")
           end
+
         is_binary(qid) and String.trim(qid) != "" ->
           Newbee.Web.Session.prompt_images(pid, images, text || "", qid)
+
         true ->
           Newbee.Web.Session.prompt_images(pid, images, text || "")
       end
+
       {:ok, %{accepted: true}}
     end
   end
+
   defp dispatch_rpc("session.promptAttachments", %{"sessionId" => sid, "uploadIds" => upload_ids} = payload) do
     text = Map.get(payload, "text", "")
     qid = Map.get(payload, "queueId") || Map.get(payload, "queue_id")
+
     with {:ok, pid} <- find_session(sid),
          {:ok, prepared} <- Newbee.Upload.prepare_prompt(sid, upload_ids, text) do
       cond do
@@ -935,32 +997,44 @@ defmodule Newbee.Web.Api do
           else
             Newbee.Web.Session.prompt(pid, prepared.text)
           end
+
         is_binary(qid) and String.trim(qid) != "" ->
           Newbee.Web.Session.prompt_images(pid, prepared.images, prepared.text, qid)
+
         true ->
           Newbee.Web.Session.prompt_images(pid, prepared.images, prepared.text)
       end
+
       {:ok, %{accepted: true, files: length(prepared.files)}}
     end
   end
+
   defp dispatch_rpc("session.promptAttachments", _payload),
     do: {:error, "bad_request", "需要 sessionId、uploadIds 和 text 字段"}
+
   defp dispatch_rpc("session.cancel", %{"sessionId" => sid}) do
     with {:ok, pid} <- find_session(sid) do
       Newbee.Web.Session.interrupt(pid)
       {:ok, %{interrupted: true}}
     end
   end
+
   defp dispatch_rpc("session.queue", %{"sessionId" => sid}) do
     with {:ok, pid} <- find_session(sid) do
       {:ok, Newbee.Web.Session.queue_list(pid)}
     end
   end
+
   defp dispatch_rpc("session.cancelQueued", %{"sessionId" => sid} = payload) do
     qid = Map.get(payload, "queueId") || Map.get(payload, "queue_id") || Map.get(payload, "id")
+
     cond do
-      not is_binary(sid) or String.trim(sid) == "" -> {:error, "bad_request", "sessionId 不能为空"}
-      not is_binary(qid) or String.trim(qid) == "" -> {:error, "bad_request", "需要 queueId 字段"}
+      not is_binary(sid) or String.trim(sid) == "" ->
+        {:error, "bad_request", "sessionId 不能为空"}
+
+      not is_binary(qid) or String.trim(qid) == "" ->
+        {:error, "bad_request", "需要 queueId 字段"}
+
       true ->
         with {:ok, pid} <- find_session(sid) do
           case Newbee.Web.Session.cancel_queued(pid, String.trim(qid)) do
@@ -970,6 +1044,7 @@ defmodule Newbee.Web.Api do
         end
     end
   end
+
   defp dispatch_rpc("session.clearQueue", %{"sessionId" => sid}) do
     with {:ok, pid} <- find_session(sid) do
       {:ok, elem(Newbee.Web.Session.clear_queue(pid), 1)}
@@ -1951,15 +2026,45 @@ defmodule Newbee.Web.Api do
     group
     |> Map.update("members", [], fn members -> Enum.map(members, &public_collab_member/1) end)
     |> Map.update("tasks", [], fn tasks -> Enum.map(tasks, &public_collab_task/1) end)
+    |> Map.drop(["deliveries"])
   end
 
   defp public_collab_member(member), do: Map.drop(member, ["workspace"])
-  defp public_collab_task(task), do: Map.update(task, "workspace", nil, &public_workspace/1)
+
+  defp public_hive_result(result) do
+    result |> Map.update!("task", &public_collab_task/1) |> json_safe()
+  end
+
+  defp public_collab_task(task) when is_map(task) do
+    task
+    |> Map.update("workspace", nil, &public_workspace/1)
+    |> Map.update("submission", nil, &public_submission/1)
+    |> Map.update("attempt_history", [], fn history -> Enum.map(history || [], &public_attempt/1) end)
+    |> Map.drop(["project_root", "work_root", "root", "candidate_path"])
+  end
+
+  defp public_collab_task(task), do: task
+
+  defp public_attempt(attempt) when is_map(attempt) do
+    attempt
+    |> Map.update("submission", nil, &public_submission/1)
+    |> Map.drop(["project_root", "work_root", "root", "candidate_path"])
+  end
+
+  defp public_attempt(attempt), do: attempt
   defp public_workspace(nil), do: nil
 
   defp public_workspace(workspace) when is_map(workspace) do
     Map.take(workspace, ["kind", "review_status", "reviewed_at", "reviewed_by_session_id", "patch_sha256", "warning"])
   end
+
+  defp public_submission(nil), do: nil
+
+  defp public_submission(submission) when is_map(submission) do
+    Map.take(submission, ["id", "task_id", "attempt", "tree_sha256", "acceptance_sha256", "result_sha256", "created_at"])
+  end
+
+  defp public_submission(_), do: nil
 
   defp public_collab_activity(event) do
     payload = event["payload"] || %{}
@@ -2583,6 +2688,7 @@ defmodule Newbee.Web.Api do
   end
 
   defp plain_evolution_reason(nil), do: "未记录原因"
+
   defp plain_evolution_reason(reason) when is_binary(reason) do
     cleaned =
       reason
@@ -2591,6 +2697,7 @@ defmodule Newbee.Web.Api do
 
     if cleaned == "", do: "未记录原因", else: cleaned
   end
+
   defp plain_evolution_reason(_), do: "未记录原因"
 
   defp ring_risk_label(nil), do: "影响范围未知 · 默认按最谨慎处理"
@@ -2609,6 +2716,7 @@ defmodule Newbee.Web.Api do
 
   defp verification_summary(layers) do
     layers = if is_list(layers), do: layers, else: []
+
     if layers == [] do
       "暂无验证结果"
     else
@@ -2619,7 +2727,11 @@ defmodule Newbee.Web.Api do
       pending = Map.get(counts, "pending", 0)
       skipped = Map.get(counts, "skipped", 0)
       total = length(layers)
-      "#{total} 项验证中 #{passed} 通过" <> if(observing > 0, do: " · #{observing} 观察中", else: "") <> if(failed > 0, do: " · #{failed} 未通过", else: "") <> if(pending > 0, do: " · #{pending} 待运行", else: "") <> if(skipped > 0, do: " · #{skipped} 跳过", else: "")
+
+      "#{total} 项验证中 #{passed} 通过" <>
+        if(observing > 0, do: " · #{observing} 观察中", else: "") <>
+        if(failed > 0, do: " · #{failed} 未通过", else: "") <>
+        if(pending > 0, do: " · #{pending} 待运行", else: "") <> if(skipped > 0, do: " · #{skipped} 跳过", else: "")
     end
   end
 

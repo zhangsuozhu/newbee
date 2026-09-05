@@ -177,10 +177,12 @@ defmodule Newbee.Agent.Loop do
     # 2. evaluator_owned: true 时把本 kernel 登记为求值器宿主，kernel 停止/崩溃
     #    → 求值器自停 → terminate 停掉 primary/standby peer 节点。
     #    具名共享兜底求值器（Newbee.DEE.Evaluator）绝不可标 owned——会误杀其它会话。
-    owner_pid = case Keyword.get(opts, :owner) do
-      pid when is_pid(pid) -> pid
-      _ -> nil
-    end
+    owner_pid =
+      case Keyword.get(opts, :owner) do
+        pid when is_pid(pid) -> pid
+        _ -> nil
+      end
+
     owner_ref = if owner_pid, do: Process.monitor(owner_pid), else: nil
 
     evaluator_owned = Keyword.get(opts, :evaluator_owned, false)
@@ -281,7 +283,6 @@ defmodule Newbee.Agent.Loop do
        evaluator_owned: evaluator_owned,
        owner: owner_ref,
        owner_pid: owner_pid,
-
        render: render,
        client_fun: client_fun,
        session: session,
@@ -384,7 +385,10 @@ defmodule Newbee.Agent.Loop do
           reason: "启动自主目标模式",
           timing: "current_turn"
         })
-        |> push_msg(%{"role" => "user", "content" => "(Autonomous goal mode started) Goal: #{text}\nWork on your own until it is done."})
+        |> push_msg(%{
+          "role" => "user",
+          "content" => "(Autonomous goal mode started) Goal: #{text}\nWork on your own until it is done."
+        })
 
       try do
         Newbee.Goal.persist(%Newbee.Goal.State{
@@ -756,7 +760,11 @@ defmodule Newbee.Agent.Loop do
           state =
             inject_prompt(
               state,
-              %{"role" => "system", "content" => "[Goal Blocked] You flagged blocked 3 rounds running; the goal is now blocked. Wait for the user or /goal resume."},
+              %{
+                "role" => "system",
+                "content" =>
+                  "[Goal Blocked] You flagged blocked 3 rounds running; the goal is now blocked. Wait for the user or /goal resume."
+              },
               %{
                 source: "goal_blocked",
                 reason: "三击阻塞审计",
@@ -1003,6 +1011,7 @@ defmodule Newbee.Agent.Loop do
     - Budget and reflection: watch the token budget and the JSpace ledger; on stall, reflect before switching strategy; mark blocked only after 3 consecutive stuck rounds.
     """
   end
+
   # helpers delegating to Steering for backward compat
   defp parse_token_budget(nil), do: nil
   defp parse_token_budget(n) when is_integer(n) and n > 0, do: n
@@ -1053,7 +1062,8 @@ defmodule Newbee.Agent.Loop do
               state,
               %{
                 "role" => "system",
-                "content" => "[Loop round #{loop.rounds}] Keep pushing: #{loop.task} (#{loop.rounds}/#{loop.iterations})"
+                "content" =>
+                  "[Loop round #{loop.rounds}] Keep pushing: #{loop.task} (#{loop.rounds}/#{loop.iterations})"
               },
               %{
                 source: "loop_continue",
@@ -1214,7 +1224,9 @@ defmodule Newbee.Agent.Loop do
 
             calls ->
               case execute_calls(calls, state) do
-                {:halt, reply, state} -> {reply, state}
+                {:halt, reply, state} ->
+                  {reply, state}
+
                 {:cont, state} ->
                   state = state |> consume_steering() |> elem(0)
                   run_turn(state, step + 1)
@@ -1241,7 +1253,7 @@ defmodule Newbee.Agent.Loop do
     case issue_collaboration_capability(st) do
       {:ok, token} ->
         try do
-          Newbee.DEE.Evaluator.eval(st.evaluator, code, media_capability: token)
+          Newbee.DEE.Evaluator.eval(st.evaluator, code, media_capability: token, collaboration_capability: token)
         after
           Newbee.Collaboration.Capability.revoke(token)
         end
@@ -1323,7 +1335,6 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
-
   # Web 宿主保持可取消的 FIFO；Loop 只在两次模型请求之间同步领取，最多一批 20 条。
   defp consume_steering(%{owner_pid: owner} = state) when is_pid(owner) do
     Enum.reduce_while(1..20, {state, 0}, fn _, {st, count} ->
@@ -1382,7 +1393,9 @@ defmodule Newbee.Agent.Loop do
                   # 能力声明校验（物理拒绝）→ Capability Policy（行为策略）
                   case Newbee.Environment.CapabilityGate.check(code) do
                     {:deny, reason} ->
-                      rendered = "✗ error\n⛔ Capability gate denied: #{inspect(reason)} (plugin not in the active graph or capability undeclared)"
+                      rendered =
+                        "✗ error\n⛔ Capability gate denied: #{inspect(reason)} (plugin not in the active graph or capability undeclared)"
+
                       emit(state, {:tool_error, rendered})
                       Newbee.Bus.emit(:audit, {:audit, :capability_denied, reason})
 
@@ -1402,7 +1415,8 @@ defmodule Newbee.Agent.Loop do
                   tool_msg = %{
                     "role" => "tool",
                     "tool_call_id" => call.id,
-                    "content" => "⛔ Not run — environment rules tripped; fix per the reminders below, then retry:\n" <> injections
+                    "content" =>
+                      "⛔ Not run — environment rules tripped; fix per the reminders below, then retry:\n" <> injections
                   }
 
                   reminder = %{
@@ -1572,6 +1586,7 @@ defmodule Newbee.Agent.Loop do
 
   defp normalize_history_ids(msg) when is_map(msg) do
     calls = msg["tool_calls"]
+
     if msg["role"] == "assistant" and is_list(calls) and calls != [] do
       case Newbee.LLM.Client.normalize_tool_calls(calls) do
         [] -> Map.delete(msg, "tool_calls")
@@ -1584,12 +1599,12 @@ defmodule Newbee.Agent.Loop do
 
   defp normalize_history_ids(msg), do: msg
 
-
   defp tool_placeholders(ids) do
     Enum.map(ids, fn id ->
       %{"role" => "tool", "tool_call_id" => id, "content" => "（该工具调用因进程重启/中断未完成，结果已丢失）"}
     end)
   end
+
   defp audit_dangerous(code) do
     hits = Enum.filter(@dangerous, &String.contains?(code, &1))
     reversibility = Newbee.Trust.reversibility(code)

@@ -41,24 +41,43 @@ defmodule Newbee.Collaboration.Verification do
 
   @doc "在给定工作根执行任务的结构化验收，返回带 contract_sha256 的 attestation。"
   def verify(task, root) when is_map(task) and is_binary(root) do
-    with true <- File.dir?(root) or {:error, "workspace_missing", "acceptance work root is missing"},
-         {:ok, criteria} <- normalize_contract(task["acceptance"]) do
+    with :ok <- valid_root(root),
+         {:ok, criteria} <- normalize_contract(task["acceptance"]),
+         {:ok, submission} <- verification_submission(task, root) do
       results = Enum.map(criteria, &run_criterion(&1, root))
 
-      {:ok,
-       %{
-         "contract_sha256" => contract_sha256(criteria),
-         "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
-         "all_passed" => Enum.all?(results, & &1["passed"]),
-         "results" => results
-       }}
-    else
-      false -> {:error, "workspace_missing", "acceptance work root is missing"}
-      {:error, _, _} = error -> error
+      case verify_submission_after(task, root, submission) do
+        :ok ->
+          attestation = %{
+            "contract_sha256" => contract_sha256(criteria),
+            "checked_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+            "all_passed" => Enum.all?(results, & &1["passed"]),
+            "results" => results
+          }
+
+          {:ok, put_submission_attestation(attestation, submission)}
+
+        {:error, _code, _message} = error ->
+          error
+      end
     end
   end
 
   def verify(_, _), do: {:error, "bad_request", "task and work root are invalid"}
+
+  @doc false
+  def value_sha256(value) when is_binary(value), do: sha256(value)
+
+  def value_sha256(value) do
+    encoded =
+      try do
+        value |> canonical_json() |> IO.iodata_to_binary()
+      rescue
+        _ -> :erlang.term_to_binary(value)
+      end
+
+    sha256(encoded)
+  end
 
   @doc "验收契约的稳定 SHA-256（Canonical JSON：map key 排序）。"
   def contract_sha256(criteria) when is_list(criteria) do
@@ -67,6 +86,56 @@ defmodule Newbee.Collaboration.Verification do
     |> IO.iodata_to_binary()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
+  end
+
+  defp valid_root(root) do
+    case File.lstat(Path.expand(root)) do
+      {:ok, %File.Stat{type: :directory}} -> :ok
+      {:ok, %File.Stat{type: :symlink}} -> {:error, "workspace_invalid", "acceptance work root cannot be a symlink"}
+      {:ok, _} -> {:error, "workspace_missing", "acceptance work root is not a directory"}
+      {:error, _} -> {:error, "workspace_missing", "acceptance work root is missing"}
+    end
+  end
+
+  defp verification_submission(task, root) do
+    case task["submission"] do
+      submission when is_map(submission) ->
+        with :ok <- Newbee.Collaboration.Submission.validate(task),
+             true <- Path.expand(root) == Path.expand(submission["root"]) do
+          {:ok, submission}
+        else
+          false -> {:error, "submission_root_mismatch", "verification root is not the frozen submission"}
+          {:error, _code, _message} = error -> error
+        end
+
+      _ ->
+        {:ok, nil}
+    end
+  end
+
+  defp verify_submission_after(_task, _root, nil), do: :ok
+
+  defp verify_submission_after(task, root, submission) do
+    with :ok <- Newbee.Collaboration.Submission.validate(task),
+         true <- Path.expand(root) == Path.expand(submission["root"]) do
+      :ok
+    else
+      false -> {:error, "submission_root_mismatch", "verification root is not the frozen submission"}
+      {:error, _code, _message} = error -> error
+    end
+  end
+
+  defp put_submission_attestation(attestation, nil), do: attestation
+
+  defp put_submission_attestation(attestation, submission) do
+    Map.merge(attestation, %{
+      "submission_id" => submission["id"],
+      "tree_sha256" => submission["tree_sha256"],
+      "hermetic" => false,
+      "execution_mode" => "non_hermetic",
+      "execution_limitations" =>
+        "commands execute on the host with configured dependency/build caches; only the frozen source tree is hashed"
+    })
   end
 
   defp normalize_criterion(%{"kind" => "command"} = criterion) do
@@ -110,7 +179,10 @@ defmodule Newbee.Collaboration.Verification do
 
   defp run_criterion(%{"kind" => "command"} = criterion, root) do
     argv = [criterion["program"] | criterion["args"]]
-    command = "cd #{shell_quote(root)} && exec " <> Enum.map_join(argv, " ", &shell_quote/1)
+
+    command =
+      "cd #{shell_quote(root)} && " <> verification_env_prefix() <> "exec " <> Enum.map_join(argv, " ", &shell_quote/1)
+
     result = Newbee.Tools.Run.sh(command, timeout: criterion["timeout_ms"])
     output = result.output || ""
 
@@ -146,6 +218,14 @@ defmodule Newbee.Collaboration.Verification do
     criterion
     |> Map.put("actual_sha256", actual)
     |> Map.put("passed", actual == criterion["sha256"])
+  end
+
+  defp verification_env_prefix do
+    deps_path = System.get_env("MIX_DEPS_PATH") || Path.join(File.cwd!(), "deps")
+
+    if is_binary(deps_path) and File.dir?(deps_path),
+      do: "MIX_DEPS_PATH=" <> shell_quote(Path.expand(deps_path)) <> " ",
+      else: ""
   end
 
   defp relative_path(path) when is_binary(path) do

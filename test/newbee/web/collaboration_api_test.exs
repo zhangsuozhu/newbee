@@ -87,10 +87,11 @@ defmodule Newbee.Web.CollaborationApiTest do
     })
     |> ok!()
 
-    post_rpc("group.task.create", %{
+    hive_request("hive.task.create", group["group_id"], "activity-parent", %{
       "groupId" => group["group_id"],
       "sessionId" => "activity-parent",
       "title" => "一项任务",
+      "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}],
       "commandId" => "activity-task"
     })
     |> ok!()
@@ -229,7 +230,6 @@ defmodule Newbee.Web.CollaborationApiTest do
     assert g["members"] == []
   end
 
-
   test "让另一个 AI 帮忙会创建会话、成员和已分派任务" do
     suffix = System.unique_integer([:positive])
     parent_sid = "delegate-parent-#{suffix}"
@@ -240,13 +240,14 @@ defmodule Newbee.Web.CollaborationApiTest do
       |> ok!()
 
     delegated =
-      post_rpc("group.member.delegate", %{
+      hive_request("hive.delegate", group["group_id"], parent_sid, %{
         "groupId" => group["group_id"],
         "parentSessionId" => parent_sid,
         "sessionId" => child_sid,
         "name" => "认证测试",
         "title" => "补充认证回归测试",
         "description" => "覆盖过期凭证",
+        "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}],
         "commandId" => "delegate-#{suffix}"
       })
       |> ok!()
@@ -302,17 +303,27 @@ defmodule Newbee.Web.CollaborationApiTest do
 
     assert_receive {:newbee_event, :web_event, {:web_event, ^worker_sid, kind, _payload}}, 2_000
     assert kind in [:collab_message_queued, :queue_updated, :error, :notice]
+
+    {:ok, worker_pid} = Newbee.Web.Session.lookup(worker_sid)
+    queue_state = Newbee.Web.Session.queue_list(worker_pid)
+    [queued_message] = queue_state.queue
+    {:ok, internal_group} = Newbee.Collaboration.Coordinator.get(group["group_id"])
+    queued_delivery = Enum.find(internal_group["deliveries"], &(&1["message_id"] == queued_message.messageId))
+    assert queued_message.id == queued_delivery["delivery_id"]
+
     # 新行为一次入队发两帧（queue_updated + 兼容老事件），排空残留再测 notify，否则残留会误判。
     receive do
       {:newbee_event, :web_event, {:web_event, ^worker_sid, _, _}} -> :ok
     after
       200 -> :ok
     end
+
     receive do
       {:newbee_event, :web_event, {:web_event, ^worker_sid, _, _}} -> :ok
     after
       0 -> :ok
     end
+
     before = :counters
 
     assert {:ok, _} =
@@ -376,12 +387,15 @@ defmodule Newbee.Web.CollaborationApiTest do
     assert Enum.count(q) == 1
     assert :queue.len(st.queue) == 1
     [only] = q
-    mid = case only do
-      %{kind: "collab_message", message_id: m} -> m
-      %{message_id: m} -> m
-      {:collab_message, %{"message_id" => m}} -> m
-      _ -> nil
-    end
+
+    mid =
+      case only do
+        %{kind: "collab_message", message_id: m} -> m
+        %{message_id: m} -> m
+        {:collab_message, %{"message_id" => m}} -> m
+        _ -> nil
+      end
+
     assert mid == "m-fixed-#{suffix}"
   end
 
@@ -413,6 +427,9 @@ defmodule Newbee.Web.CollaborationApiTest do
                "parent_session_id" => parent_sid,
                "role" => "worker",
                "title" => "修改功能",
+               "protocol_version" => 2,
+               "expected_revision" => group["revision"],
+               "acceptance" => [%{"kind" => "file_exists", "path" => "feature.txt"}],
                "workspace" => workspace,
                "command_id" => "review-delegate-#{suffix}"
              })
@@ -421,18 +438,26 @@ defmodule Newbee.Web.CollaborationApiTest do
     :ok = Newbee.Session.set_cwd(child_sid, workspace["path"])
     File.write!(Path.join(workspace["path"], "feature.txt"), "base\nchild\n")
 
-    assert {:ok, _} =
-             Newbee.Collaboration.Coordinator.update_task(group["group_id"], task["task_id"], %{
-               "session_id" => child_sid,
-               "status" => "running"
-             })
+    hive_request("hive.task.update", group["group_id"], child_sid, %{
+      "taskId" => task["task_id"],
+      "status" => "running"
+    })
+    |> ok!()
 
-    assert {:ok, _} =
-             Newbee.Collaboration.Coordinator.update_task(group["group_id"], task["task_id"], %{
-               "session_id" => child_sid,
-               "status" => "succeeded",
-               "result" => "done"
-             })
+    hive_request("hive.task.update", group["group_id"], child_sid, %{
+      "taskId" => task["task_id"],
+      "status" => "submitted",
+      "result" => "done"
+    })
+    |> ok!()
+
+    verified =
+      hive_request("hive.task.verify", group["group_id"], parent_sid, %{
+        "taskId" => task["task_id"]
+      })
+      |> ok!()
+
+    assert verified["task"]["status"] == "succeeded"
 
     review =
       post_rpc("group.workspace.review", %{
@@ -497,6 +522,332 @@ defmodule Newbee.Web.CollaborationApiTest do
       Newbee.Web.Session.destroy(child_sid)
       File.rm_rf!(repo)
     end)
+  end
+
+  @tag :hive_api
+  test "old collaboration task RPCs are removed instead of bypassing Hive" do
+    for method <-
+          ~w(group.task.list group.task.create group.task.update group.task.claim group.task.renew group.member.delegate) do
+      response =
+        post_rpc(method, %{
+          "groupId" => "g",
+          "sessionId" => "s",
+          "taskId" => "t",
+          "parentSessionId" => "s",
+          "title" => "task"
+        })
+
+      assert %{"error" => %{"code" => "unknown_method"}} = response["result"]
+    end
+  end
+
+  @tag :hive_api
+  test "Hive RPCs reject malformed requests and non-member board access" do
+    for method <- ~w(hive.board hive.delegate hive.task.create hive.task.update hive.task.claim hive.task.verify) do
+      assert %{"result" => %{"error" => %{"code" => "bad_request"}}} = post_rpc(method, %{})
+    end
+
+    group = post_rpc("group.create", %{"sessionId" => "lead", "title" => "private board"}) |> ok!()
+    response = post_rpc("hive.board", %{"groupId" => group["group_id"], "sessionId" => "outsider"})
+    assert %{"error" => %{"code" => "not_member"}} = response["result"]
+  end
+
+  @tag :hive_api
+  test "Hive creation requires structured acceptance and a current revision" do
+    group = post_rpc("group.create", %{"sessionId" => "lead", "title" => "contracts"}) |> ok!()
+    gid = group["group_id"]
+    attrs = %{"groupId" => gid, "sessionId" => "lead", "title" => "proof", "expectedRevision" => group["revision"]}
+    response = post_rpc("hive.task.create", Map.put(attrs, "acceptance", ["looks good"]))
+    assert %{"error" => %{"code" => "bad_acceptance"}} = response["result"]
+    response = post_rpc("hive.task.create", Map.put(attrs, "acceptance", []))
+    assert %{"error" => %{"code" => "acceptance_required"}} = response["result"]
+
+    valid = Map.put(attrs, "acceptance", [%{"kind" => "file_exists", "path" => "mix.exs"}])
+    response = post_rpc("hive.task.create", Map.delete(valid, "expectedRevision"))
+    assert %{"error" => %{"code" => "bad_request"}} = response["result"]
+    created = post_rpc("hive.task.create", valid) |> ok!()
+    assert created["task"]["protocol_version"] == 2
+    assert created["revision"] > group["revision"]
+    assert %{"error" => %{"code" => "revision_conflict"}} = post_rpc("hive.task.create", valid)["result"]
+    board = post_rpc("hive.board", %{"groupId" => gid, "sessionId" => "lead"}) |> ok!()
+    assert length(board["tasks"]) == 1
+  end
+
+  @tag :hive_api
+  test "workers submit evidence and only the Lead can verify success" do
+    group = post_rpc("group.create", %{"sessionId" => "lead", "title" => "verified results"}) |> ok!()
+    gid = group["group_id"]
+    assert {:ok, _} = Newbee.Collaboration.Coordinator.add_member(gid, %{"session_id" => "worker", "role" => "worker"})
+
+    created =
+      hive_request("hive.task.create", gid, "lead", %{
+        "title" => "inspect project",
+        "assignedSessionId" => "worker",
+        "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}],
+        "writeScope" => ["lib"]
+      })
+      |> ok!()
+
+    tid = created["task"]["task_id"]
+
+    started = hive_request("hive.task.update", gid, "worker", %{"taskId" => tid, "status" => "running"}) |> ok!()
+    assert started["task"]["write_scope"] == ["lib"]
+    denied = hive_request("hive.task.update", gid, "worker", %{"taskId" => tid, "status" => "succeeded"})
+    assert %{"error" => %{"code" => "verification_required"}} = denied["result"]
+
+    submitted =
+      hive_request("hive.task.update", gid, "worker", %{
+        "taskId" => tid,
+        "status" => "submitted",
+        "result" => "project file inspected"
+      })
+      |> ok!()
+
+    assert submitted["task"]["status"] == "submitted"
+    denied = hive_request("hive.task.verify", gid, "worker", %{"taskId" => tid})
+    assert %{"error" => %{"code" => "forbidden_role"}} = denied["result"]
+
+    verified =
+      hive_request("hive.task.verify", gid, "lead", %{"taskId" => tid, "attestation" => %{"all_passed" => false}})
+      |> ok!()
+
+    assert verified["task"]["status"] == "succeeded"
+    assert verified["task"]["verification"]["status"] == "passed"
+    assert verified["task"]["verification"]["all_passed"]
+  end
+
+  @tag :hive_api
+  test "failed acceptance stays blocked and does not release dependent tasks" do
+    group = post_rpc("group.create", %{"sessionId" => "lead", "title" => "failure gate"}) |> ok!()
+    gid = group["group_id"]
+    assert {:ok, _} = Newbee.Collaboration.Coordinator.add_member(gid, %{"session_id" => "worker", "role" => "worker"})
+
+    first =
+      hive_request("hive.task.create", gid, "lead", %{
+        "title" => "missing proof",
+        "assignedSessionId" => "worker",
+        "acceptance" => [%{"kind" => "file_exists", "path" => "missing-hive-proof.txt"}]
+      })
+      |> ok!()
+
+    tid = first["task"]["task_id"]
+
+    second =
+      hive_request("hive.task.create", gid, "lead", %{
+        "title" => "dependent work",
+        "assignedSessionId" => "worker",
+        "dependsOn" => [tid],
+        "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}]
+      })
+      |> ok!()
+
+    assert second["task"]["status"] == "pending"
+
+    hive_request("hive.task.update", gid, "worker", %{
+      "taskId" => tid,
+      "status" => "submitted",
+      "result" => "proof claimed"
+    })
+    |> ok!()
+
+    failed =
+      hive_request("hive.task.verify", gid, "lead", %{"taskId" => tid, "attestation" => %{"all_passed" => true}})
+      |> ok!()
+
+    assert failed["task"]["status"] == "blocked"
+    assert failed["task"]["verification"]["status"] == "failed"
+    refute failed["task"]["verification"]["all_passed"]
+    denied = hive_request("hive.task.claim", gid, "worker", %{"taskId" => second["task"]["task_id"]})
+    assert %{"error" => %{"code" => "dependency_blocked"}} = denied["result"]
+  end
+
+  @tag :hive_api
+  test "Hive delegation rejects free-text acceptance before creating a session" do
+    sid = "hive-rejected-#{System.unique_integer([:positive])}"
+    group = post_rpc("group.create", %{"sessionId" => "lead", "title" => "preflight"}) |> ok!()
+
+    response =
+      hive_request("hive.delegate", group["group_id"], "lead", %{
+        "parentSessionId" => "lead",
+        "sessionId" => sid,
+        "title" => "invalid",
+        "acceptance" => ["done"]
+      })
+
+    assert %{"error" => %{"code" => "bad_acceptance"}} = response["result"]
+
+    for revision <- [nil, "1", -1] do
+      response =
+        post_rpc("hive.delegate", %{
+          "groupId" => group["group_id"],
+          "parentSessionId" => "lead",
+          "sessionId" => sid,
+          "title" => "invalid revision",
+          "expectedRevision" => revision,
+          "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}]
+        })
+
+      assert %{"error" => %{"code" => "bad_request"}} = response["result"]
+    end
+
+    refute sid in Newbee.Session.list()
+    refute match?({:ok, _}, Newbee.Web.Session.lookup(sid))
+    board = post_rpc("hive.board", %{"groupId" => group["group_id"], "sessionId" => "lead"}) |> ok!()
+    assert board["tasks"] == []
+  end
+
+  @tag :hive_api
+  test "distinct member operations do not reuse one fixed idempotency key" do
+    group = post_rpc("group.create", %{"sessionId" => "lead", "title" => "members"}) |> ok!()
+
+    members =
+      for _ <- 1..2 do
+        sid = "hive-member-#{System.unique_integer([:positive])}"
+        :ok = Newbee.Session.mark_created(sid)
+
+        added =
+          post_rpc("group.member.add", %{"groupId" => group["group_id"], "actorSessionId" => "lead", "sessionId" => sid})
+          |> ok!()
+
+        assert added["session_id"] == sid
+        sid
+      end
+
+    for sid <- members do
+      removed =
+        post_rpc("group.member.remove", %{
+          "groupId" => group["group_id"],
+          "actorSessionId" => "lead",
+          "sessionId" => sid
+        })
+        |> ok!()
+
+      assert removed["sessionId"] == sid
+    end
+  end
+
+  @tag :hive_reliability
+  test "Hive retry keeps task identity and rejects stale worker attempts" do
+    group = post_rpc("group.create", %{"sessionId" => "retry-lead", "title" => "retry contract"}) |> ok!()
+    gid = group["group_id"]
+
+    assert {:ok, _} =
+             Newbee.Collaboration.Coordinator.add_member(gid, %{"session_id" => "retry-worker", "role" => "worker"})
+
+    created =
+      hive_request("hive.task.create", gid, "retry-lead", %{
+        "title" => "retryable task",
+        "assignedSessionId" => "retry-worker",
+        "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}]
+      })
+      |> ok!()
+
+    tid = created["task"]["task_id"]
+
+    failed =
+      hive_request("hive.task.update", gid, "retry-worker", %{
+        "taskId" => tid,
+        "status" => "failed",
+        "result" => "worker interrupted"
+      })
+      |> ok!()
+
+    assert failed["task"]["attempt"] == 0
+
+    retried =
+      hive_request("hive.task.retry", gid, "retry-lead", %{"taskId" => tid, "reason" => "recover interrupted work"})
+      |> ok!()
+
+    assert retried["task"]["task_id"] == tid
+    assert retried["task"]["attempt"] == 1
+    assert retried["task"]["status"] in ["assigned", "pending"]
+
+    stale =
+      post_rpc("hive.task.update", %{
+        "groupId" => gid,
+        "taskId" => tid,
+        "sessionId" => "retry-worker",
+        "expectedRevision" => retried["revision"],
+        "expectedAttempt" => 0,
+        "status" => "running",
+        "commandId" => "retry-stale-attempt"
+      })
+
+    assert %{"error" => %{"code" => "attempt_conflict"}} = stale["result"]
+
+    current =
+      post_rpc("hive.task.update", %{
+        "groupId" => gid,
+        "taskId" => tid,
+        "sessionId" => "retry-worker",
+        "expectedRevision" => retried["revision"],
+        "expectedAttempt" => 1,
+        "status" => "running",
+        "commandId" => "retry-current-attempt"
+      })
+      |> ok!()
+
+    assert current["task"]["status"] == "running"
+    assert current["task"]["attempt"] == 1
+  end
+
+  @tag :hive_reliability
+  test "public Hive responses redact workspace and submission roots" do
+    group =
+      post_rpc("group.create", %{
+        "sessionId" => "public-lead",
+        "title" => "public submission",
+        "projectRoot" => File.cwd!()
+      })
+      |> ok!()
+
+    gid = group["group_id"]
+
+    assert {:ok, _} =
+             Newbee.Collaboration.Coordinator.add_member(gid, %{"session_id" => "public-worker", "role" => "worker"})
+
+    created =
+      hive_request("hive.task.create", gid, "public-lead", %{
+        "title" => "public task",
+        "assignedSessionId" => "public-worker",
+        "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}]
+      })
+      |> ok!()
+
+    submitted =
+      hive_request("hive.task.update", gid, "public-worker", %{
+        "taskId" => created["task"]["task_id"],
+        "status" => "submitted",
+        "result" => "captured"
+      })
+      |> ok!()
+
+    public_task = submitted["task"]
+    assert is_map(public_task["submission"])
+    refute Map.has_key?(public_task["submission"], "root")
+    refute Map.has_key?(public_task, "project_root")
+    refute Map.has_key?(public_task, "work_root")
+
+    board = post_rpc("hive.board", %{"groupId" => gid, "sessionId" => "public-lead"}) |> ok!()
+    [board_task] = Enum.filter(board["tasks"], &(&1["task_id"] == public_task["task_id"]))
+    refute Map.has_key?(board_task["submission"], "root")
+    refute Map.has_key?(board_task, "project_root")
+
+    detail = post_rpc("group.get", %{"groupId" => gid, "sessionId" => "public-lead"}) |> ok!()
+    refute Map.has_key?(detail, "deliveries")
+
+    {:ok, internal_group} = Newbee.Collaboration.Coordinator.get(gid)
+    internal_task = Enum.find(internal_group["tasks"], &(&1["task_id"] == public_task["task_id"]))
+    assert :ok = Newbee.Collaboration.Submission.cleanup(internal_task)
+  end
+
+  defp hive_request(method, group_id, session_id, attrs) do
+    board = post_rpc("hive.board", %{"groupId" => group_id, "sessionId" => session_id}) |> ok!()
+
+    params =
+      Map.merge(%{"groupId" => group_id, "sessionId" => session_id, "expectedRevision" => board["revision"]}, attrs)
+
+    post_rpc(method, params)
   end
 
   defp git!(dir, args) do

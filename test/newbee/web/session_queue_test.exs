@@ -97,6 +97,40 @@ defmodule Newbee.Web.SessionQueueTest do
     assert_receive {:newbee_event, :web_event, {:web_event, _, :queue_updated, %{event: %{type: "cleared"}}}}, 500
   end
 
+  test "interrupt preserves queued collaboration deliveries and requeues the current one" do
+    st = base_state("qint_collab_45251", busy: true)
+
+    message = %{
+      "delivery_id" => "delivery-preserved",
+      "message_id" => "m-preserved",
+      "group_id" => "g",
+      "body" => "keep"
+    }
+
+    {:noreply, st2} = Session.handle_cast({:collaboration_message, message}, st)
+    {:noreply, st3} = Session.handle_cast({:prompt, "discard me", "discarded-id"}, st2)
+
+    {:noreply, preserved} = Session.handle_cast(:interrupt, st3)
+    assert [%{delivery_id: "delivery-preserved"}] = :queue.to_list(preserved.queue)
+
+    current_item = %{
+      id: "delivery-current",
+      kind: "collab_message",
+      preview: "keep",
+      delivery_kind: "message",
+      delivery_id: "delivery-current",
+      payload: message
+    }
+
+    current = %{delivery_item: current_item, delivery_id: "delivery-current", delivery_kind: "message"}
+    st4 = %{base_state("qint_current_45252", busy: true) | current: current}
+
+    {:noreply, recovered} = Session.handle_cast(:interrupt, st4)
+    assert recovered.current == nil
+    assert [%{delivery_id: "delivery-current"}] = :queue.to_list(recovered.queue)
+    refute Enum.any?(:queue.to_list(recovered.queue), &Map.has_key?(&1, :retry_after_restart))
+  end
+
   test "booting prompt enqueues and prompt_images enqueues" do
     sid = "qboot_45314"
     st = base_state(sid, busy: false, booting: true)
@@ -173,6 +207,7 @@ defmodule Newbee.Web.SessionQueueTest do
     assert {:noreply, _finished} = Session.handle_info({:DOWN, queued.turn_ref, :process, turn, :killed}, queued)
     assert_received :recover_kernel
   end
+
   test "direct prompt broadcasts started before execution failure and then finished" do
     sid = "qdirect_45402"
     Newbee.Bus.subscribe()
@@ -223,7 +258,6 @@ defmodule Newbee.Web.SessionQueueTest do
     assert :queue.len(same.queue) == 1
   end
 
-
   test "frontend renders pending user input only when the server starts it" do
     js = File.read!("priv/web/app.js")
     css = File.read!("priv/web/style.css")
@@ -239,7 +273,6 @@ defmodule Newbee.Web.SessionQueueTest do
     assert js =~ ~s|type: "btw"|
     assert js =~ "renderBtwStart(p)"
     assert css =~ ".msg-btw"
-
   end
 
   test "/btw runs independently without changing the main transcript" do
@@ -251,6 +284,7 @@ defmodule Newbee.Web.SessionQueueTest do
     plug = fn conn ->
       {:ok, raw, conn} = Plug.Conn.read_body(conn)
       send(test_pid, {:btw_request, Jason.decode!(raw)})
+
       Req.Test.json(conn, %{
         "output" => [%{"type" => "message", "content" => [%{"type" => "output_text", "text" => "side answer"}]}],
         "usage" => %{"input_tokens" => 3, "output_tokens" => 2, "total_tokens" => 5}
@@ -267,6 +301,7 @@ defmodule Newbee.Web.SessionQueueTest do
       )
 
     Newbee.Bus.subscribe()
+
     on_exit(fn ->
       Newbee.Bus.unsubscribe()
       Newbee.Session.delete(sid)
@@ -282,8 +317,48 @@ defmodule Newbee.Web.SessionQueueTest do
     assert_receive {:btw_finished, "btwid", result}, 5_000
 
     {:noreply, _st3} = Session.handle_info({:btw_finished, "btwid", result}, st2)
-    assert_receive {:newbee_event, :web_event, {:web_event, ^sid, :btw_done, %{id: "btwid", content: "side answer"}}}, 500
+
+    assert_receive {:newbee_event, :web_event, {:web_event, ^sid, :btw_done, %{id: "btwid", content: "side answer"}}},
+                   500
+
     refute Enum.any?(Newbee.Session.messages(session), &(&1["content"] == "当前改动做了什么？"))
   end
 
+  test "collaboration queue retains raw payload and stable delivery id" do
+    st = base_state("qraw_45400", busy: true)
+
+    message = %{
+      "delivery_id" => "delivery-question-1",
+      "message_id" => "m-question-1",
+      "group_id" => "g-raw",
+      "sender_session_id" => "sender",
+      "kind" => "question",
+      "body" => "question body"
+    }
+
+    {:noreply, st2} = Session.handle_cast({:collaboration_message, message}, st)
+    [item] = :queue.to_list(st2.queue)
+
+    assert item.delivery_id == "delivery-question-1"
+    assert item.payload == message
+    refute Map.has_key?(item, :prompt)
+    refute Map.has_key?(item, :text)
+  end
+
+  test "task progress is display-only and does not enter the model queue" do
+    st = base_state("qprogress_45401", busy: true)
+
+    progress = %{
+      "delivery_id" => "delivery-progress-1",
+      "message_id" => "m-progress-1",
+      "group_id" => "g-progress",
+      "task_id" => "task-progress-1",
+      "attempt" => 2,
+      "kind" => "task_progress",
+      "progress" => "50%"
+    }
+
+    {:noreply, st2} = Session.handle_cast({:collaboration_message, progress}, st)
+    assert :queue.len(st2.queue) == 0
+  end
 end
