@@ -21,6 +21,8 @@ defmodule Newbee.Tools.HiveIntegrationTest do
 
   alias Newbee.Collaboration.{Capability, Coordinator, HiveSessionStub}
   alias Newbee.Tools.Hive
+  alias Newbee.Agent.Loop
+  alias Newbee.DEE.Evaluator
 
   setup do
     if pid = Process.whereis(Coordinator), do: GenServer.stop(pid)
@@ -77,6 +79,51 @@ defmodule Newbee.Tools.HiveIntegrationTest do
       assert {:error, "bad_request", _} = Hive.wait(group["group_id"])
       assert {:error, "bad_request", _} = Hive.wait(group["group_id"], since_revision: "stale")
     end)
+  end
+
+  test "Agent.Loop passes collaboration capability into the current evaluator cell", ctx do
+    {:ok, evaluator} = Evaluator.start(mode: :local)
+    {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+    tool =
+      loop_tool_msg("Newbee.Tools.Hive.open(\"loop capability group\", max_depth: 1, max_total: 3)", "call_loop_hive")
+
+    done = loop_done_msg("loop delegation works")
+
+    client_fun = fn _messages, _on_text ->
+      Agent.get_and_update(counter, fn
+        0 -> {{:ok, tool, %{}}, 1}
+        _ -> {{:ok, done, %{}}, 2}
+      end)
+    end
+
+    {:ok, kernel} =
+      Loop.start_link(
+        client: %{},
+        evaluator: evaluator,
+        root: ctx.project_root,
+        client_fun: client_fun
+      )
+
+    session_id = :sys.get_state(kernel).session.id
+
+    on_exit(fn ->
+      if Process.alive?(kernel), do: GenServer.stop(kernel)
+      if Process.alive?(evaluator), do: GenServer.stop(evaluator)
+      Newbee.Session.delete(session_id)
+    end)
+
+    assert {:done, "loop delegation works"} = Loop.submit(kernel, "delegate")
+    final_state = :sys.get_state(kernel)
+
+    result =
+      Enum.find(final_state.messages, &(&1["role"] == "tool" and &1["tool_call_id"] == "call_loop_hive"))
+
+    assert is_map(result)
+    refute result["content"] =~ "no_execution_context"
+    assert result["content"] =~ "revision"
+    assert [group] = Coordinator.groups_for_session(session_id)
+    assert group["coordinator_session_id"] == session_id
   end
 
   test "delegate uses the same group and persists persona plus filtered fork", ctx do
@@ -292,5 +339,33 @@ defmodule Newbee.Tools.HiveIntegrationTest do
       Process.delete({Newbee.Tools.Collaboration, :context})
       Capability.revoke(token)
     end
+  end
+
+  defp loop_tool_msg(code, id) do
+    %{
+      "role" => "assistant",
+      "content" => "",
+      "tool_calls" => [
+        %{
+          "id" => id,
+          "type" => "function",
+          "function" => %{"name" => "run_elixir", "arguments" => Jason.encode!(%{code: code})}
+        }
+      ]
+    }
+  end
+
+  defp loop_done_msg(summary) do
+    %{
+      "role" => "assistant",
+      "content" => "final text",
+      "tool_calls" => [
+        %{
+          "id" => "call_done",
+          "type" => "function",
+          "function" => %{"name" => "done", "arguments" => Jason.encode!(%{summary: summary})}
+        }
+      ]
+    }
   end
 end

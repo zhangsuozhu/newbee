@@ -139,6 +139,14 @@ defmodule Newbee.DEE.EvalWorker do
         media_capability = opts[:media_capability]
         if is_binary(media_capability), do: Process.put({Newbee.Tools.Media, :capability}, media_capability)
 
+        # collaboration capability 也必须在实际执行代码的 cell Task 内注入；
+        # 前一个 eval 的进程字典不会跨 Task 存活。
+        collaboration_capability = opts[:collaboration_capability]
+
+        if is_binary(collaboration_capability) do
+          Process.put({Newbee.Tools.Collaboration, :context}, %{capability: collaboration_capability})
+        end
+
         try do
           {:ok, io} = StringIO.open("")
           Process.group_leader(self(), io)
@@ -159,6 +167,7 @@ defmodule Newbee.DEE.EvalWorker do
         after
           clear_remote_active(interrupt_node, interrupt_key, self())
           if is_binary(media_capability), do: Process.delete({Newbee.Tools.Media, :capability})
+          if is_binary(collaboration_capability), do: Process.delete({Newbee.Tools.Collaboration, :context})
         end
       end)
 
