@@ -1701,7 +1701,7 @@ defmodule Newbee.Agent.Loop do
 
   # 模型代码在独立 evaluator 节点执行；只注入主节点签发的单次短时 token，
   # 不注入 session_id。模型即使改写进程字典，也无法伪造其它会话身份。
-  # 保持三段 eval（put → 裸代码 → delete），避免 try 块吞掉 evaluator 顶层绑定。
+  # token 作为当前 cell 的执行选项注入，因为每个 eval 都运行在独立的短命 Task 中。
   defp issue_collaboration_capability(state) do
     sid = if state.session, do: state.session.id, else: nil
     root = state.root || File.cwd!()
@@ -1715,12 +1715,6 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
-  defp collaboration_context_put(token) do
-    "Process.put({Newbee.Tools.Collaboration, :context}, %{capability: " <> inspect(token) <> "})"
-  end
-
-  @collab_context_delete "Process.delete({Newbee.Tools.Collaboration, :context})"
-
   # 权限放行后的真实执行（与 ask 拒绝路径分离，避免重复代码）
   defp execute_run_elixir(state, call, code, title) do
     audit_dangerous(code)
@@ -1733,13 +1727,13 @@ defmodule Newbee.Agent.Loop do
         :ok ->
           try do
             with {:ok, token} <- issue_collaboration_capability(state) do
-              _ = Newbee.DEE.Evaluator.eval(state.evaluator, collaboration_context_put(token), media_capability: token)
-
               try do
-                Newbee.DEE.Evaluator.eval(state.evaluator, code, media_capability: token)
+                Newbee.DEE.Evaluator.eval(state.evaluator, code,
+                  media_capability: token,
+                  collaboration_capability: token
+                )
               after
-                # token 清理独立成步：保留裸代码的顶层绑定；主节点撤销阻止 token 复用
-                Newbee.DEE.Evaluator.eval(state.evaluator, @collab_context_delete, media_capability: token)
+                # EvalWorker 在 cell Task 结束时清理 context；主节点撤销阻止 token 复用
                 Newbee.Collaboration.Capability.revoke(token)
               end
             else
