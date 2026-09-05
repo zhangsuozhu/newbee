@@ -136,8 +136,9 @@
     // 图片：![alt](url) —— 渲染为可点击放大的缩略图
     t = t.replace(/!\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<img class="md-img" src="$2" alt="$1" loading="lazy" />');
     t = t.replace(/\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noopener">$1</a>');
-    // 文件路径可点击（lib/xxx.ex 等）
-    t = t.replace(/\b((?:lib|test|config|docs|priv|bench)\/[\w\/.\-]+\.(?:ex|exs|js|css|html|md|json|toml|yml|yaml))\b/g, '<span class="file-ref" data-path="$1" title="点击查看 diff">$1</span>');
+    // 文件路径可点击（lib/xxx.ex 等）。负向后顾 (?<!["'“”‘’]) 防止在已生成的
+    // <a href="..."> 等属性值内再套 file-ref span 而破坏链接标签结构。
+    t = t.replace(/(?<!["'“”‘’])\b((?:lib|test|config|docs|priv|bench)\/[\w\/.\-]+\.(?:ex|exs|js|css|html|md|json|toml|yml|yaml))\b/g, '<span class="file-ref" data-path="$1" title="点击查看 diff">$1</span>');
     return t;
   }
 
