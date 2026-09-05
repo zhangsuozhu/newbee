@@ -242,9 +242,10 @@ defmodule Newbee.LLM.Client do
   @doc """
   流式聊天。`on_text.(delta)` 收到正文增量；`on_reasoning.(delta)`（DeepSeek 系）
   收到思考增量。返回 {:ok, message, usage} | {:error, term}，
-  message 含 "content" 与 "tool_calls"（可能为空列表）。
+  message 含 "content" 与 "tool_calls"（可能为空列表）。`opts[:tools]` 可覆盖工具列表，
+  传入 `tools: []` 时执行无工具请求。
   """
-  def stream_chat(%__MODULE__{} = client, messages, on_text \\ fn _ -> :ok end, on_reasoning \\ fn _ -> :ok end) do
+  def stream_chat(%__MODULE__{} = client, messages, on_text \\ fn _ -> :ok end, on_reasoning \\ fn _ -> :ok end, opts \\ []) do
     if interrupted?(client) do
       {:interrupted, ""}
     else
@@ -258,7 +259,7 @@ defmodule Newbee.LLM.Client do
           # 既保留诊断信息，又天然进入 goal 模式的可重试白名单。
           result =
             try do
-              stream_chat_request(client, messages, on_text, on_reasoning)
+              stream_chat_request(client, messages, on_text, on_reasoning, opts)
             rescue
               e -> {:error, {:stream_error, Exception.format(:error, e, __STACKTRACE__), ""}}
             catch
@@ -278,20 +279,22 @@ defmodule Newbee.LLM.Client do
 
   # Req.request/1 在收到首个响应前可能同步等待连接/首 token，
   # 所以整个请求放到可杀的 worker；调用方每 50ms 检查一次 Esc 标志。
-  defp stream_chat_request(%__MODULE__{} = client, messages, on_text, on_reasoning) do
+  defp stream_chat_request(%__MODULE__{} = client, messages, on_text, on_reasoning, opts) do
+    tools = Keyword.get(opts, :tools, Newbee.Codec.tools())
+
     case client.responses_mode do
       :responses ->
-        Newbee.LLM.Responses.request(client, messages, Newbee.Codec.tools(),
+        Newbee.LLM.Responses.request(client, messages, tools,
           on_text: on_text,
           on_reasoning: on_reasoning
         )
 
       _ ->
-        stream_chat_request_chat(client, messages, on_text, on_reasoning)
+        stream_chat_request_chat(client, messages, on_text, on_reasoning, tools)
     end
   end
 
-  defp stream_chat_request_chat(%__MODULE__{} = client, messages, on_text, on_reasoning) do
+  defp stream_chat_request_chat(%__MODULE__{} = client, messages, on_text, on_reasoning, tools) do
     messages = sanitize_messages(messages)
     Newbee.DebugLog.log(:llm, "start model=#{client.model} messages=#{length(messages)}")
     t0 = System.monotonic_time(:millisecond)
@@ -300,10 +303,11 @@ defmodule Newbee.LLM.Client do
       %{
         model: client.model,
         messages: messages,
-        tools: Newbee.Codec.tools(),
+        tools: tools,
         stream: true,
         stream_options: %{include_usage: true}
       }
+
       |> put_cache_field(client)
 
 

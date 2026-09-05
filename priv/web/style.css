@@ -2797,6 +2797,15 @@ svg.ico {
 .evo-explain:hover { color: var(--nb-label-1); border-color: var(--nb-label-caption); }
 .evo-explain:disabled { opacity: .6; cursor: wait; }
 .evo-layers-detail { margin: 6px 9px 8px; border: 1px solid var(--nb-border); border-radius: 6px; }
+/* /btw 旁路问题：不进入主会话历史，也不占用主任务状态 */
+.msg-btw { align-self: flex-start; max-width: min(760px, 92%); margin: 6px 0; padding: 9px 11px; border: 1px solid var(--nb-border); border-left: 3px solid var(--nb-accent, var(--accent)); border-radius: 6px; background: var(--nb-bg-elev, rgba(128,128,128,.08)); }
+.btw-head { color: var(--nb-label-caption); font: 10px/1.2 var(--nb-mono); letter-spacing: .04em; text-transform: uppercase; }
+.btw-question { margin-top: 5px; color: var(--nb-label-2); font-size: 12px; white-space: pre-wrap; }
+.btw-answer { margin-top: 7px; min-height: 16px; }
+.btw-answer:empty::before { content: "正在回答…"; color: var(--nb-label-caption); }
+.btw-error { color: var(--nb-red, #e5534b); }
+
+
 /* 等待队列条（方案A）：刷新可重建 + 单条取消 */
 .queue-bar { margin: 0 0 8px; border: 1px solid var(--nb-border); border-radius: 8px; background: var(--nb-bg-elev, rgba(128,128,128,.08)); padding: 6px 8px; font-size: 12px; }
 .queue-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
