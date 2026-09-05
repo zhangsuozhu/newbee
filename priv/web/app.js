@@ -3162,6 +3162,7 @@ case "goal_round": break;
     const q = Array.isArray(state.queue) ? state.queue : [];
     if (q.length === 0) { bar.classList.add("hidden"); list.innerHTML = ""; if (count) count.textContent = ""; if (cur) cur.textContent = ""; return; }
     bar.classList.remove("hidden");
+    list.innerHTML = ""; // 重渲染前清空，避免在旧行上重复叠加（否则头部条数与行数不一致）
     if (count) count.textContent = "等待队列 " + q.length + " 条";
     if (cur) cur.textContent = state.queueCurrent && state.queueCurrent.preview ? ("执行中: " + state.queueCurrent.preview) : "";
     q.forEach((item, idx) => {
