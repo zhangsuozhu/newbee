@@ -52,7 +52,7 @@ defmodule Newbee.DEE.Rules do
     %{
       id: "jspace-outer",
       scope: :content,
-      pattern: "(→|⇒|⇔|∃|∀|∈|∉|⊆|⊇|⊢|⊨|⟦|⟧|↦|≡|✓\\d{2}|\\[CP\\s\\d+\\])",
+      pattern: "(⇒|⇔|∃|∀|∈|∉|⊆|⊇|⊢|⊨|⟦|⟧|↦|✓\\d{2}|\\[CP\\s\\d+\\])",
       injection: "[J-Space] Dense symbols leaked into outer output — expand inner shorthand into plain words, or move it to thinking/ledger. Only expandable compression counts as capacity."
     },
     %{
@@ -64,7 +64,7 @@ defmodule Newbee.DEE.Rules do
     %{
       id: "jspace-hedge",
       scope: :content,
-      pattern: "(可能.*也可能|it could be .* or .*|一方面.*另一方面|both .* and .* are possible|或许.*或许)",
+      pattern: "(可能.*也可能|it could be [^.\\n]{1,80} or [^.\\n]{1,80}|一方面.*另一方面|both .* and .* are possible|或许.*或许)",
       injection: "[J-Space] Listing options instead of deciding (hedge) — the workspace holds no mixtures. Keep a candidate set only when you can name a separating test; otherwise pick one belief and mark it ?."
     },
     %{
@@ -206,6 +206,11 @@ defmodule Newbee.DEE.Rules do
     rules
   end
 
+  # 旧版误报模式（2026-09-05 熔断修复前）：单箭头 → / ≡ 极易误伤正常外层解释，
+  # 英文 hedge 跨句贪婪。已落盘的老规则若仍是旧 pattern 则自动迁移（保留用户 injection 翻译）。
+  @old_jspace_outer_pattern "(→|⇒|⇔|∃|∀|∈|∉|⊆|⊇|⊢|⊨|⟦|⟧|↦|≡|✓\\d{2}|\\[CP\\s\\d+\\])"
+  @old_jspace_hedge_pattern "(可能.*也可能|it could be .* or .*|一方面.*另一方面|both .* and .* are possible|或许.*或许)"
+
   defp seed_jspace(rules) do
     {rules, added?} =
       Enum.reduce(@jspace_rules, {rules, false}, fn r, {acc, added?} ->
@@ -216,8 +221,28 @@ defmodule Newbee.DEE.Rules do
         end
       end)
 
-    if added?, do: persist(rules)
+    {rules, migrated?} = migrate_jspace_patterns(rules)
+
+    if added? or migrated?, do: persist(rules)
     rules
+  end
+
+  defp migrate_jspace_patterns(rules) do
+    outer_new = Enum.find(@jspace_rules, &(&1.id == "jspace-outer")).pattern
+    hedge_new = Enum.find(@jspace_rules, &(&1.id == "jspace-hedge")).pattern
+
+    Enum.map_reduce(rules, false, fn r, acc ->
+      cond do
+        r.id == "jspace-outer" and r.pattern == @old_jspace_outer_pattern ->
+          {%{r | pattern: outer_new}, true}
+
+        r.id == "jspace-hedge" and r.pattern == @old_jspace_hedge_pattern ->
+          {%{r | pattern: hedge_new}, true}
+
+        true ->
+          {r, acc}
+      end
+    end)
   end
 
   defp persist(rules) do

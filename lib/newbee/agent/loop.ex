@@ -30,7 +30,9 @@ defmodule Newbee.Agent.Loop do
             root: nil,
             # 宿主 pid + monitor 引用（web 会话进程）；pid 用于模型调用边界领取 steering。
             owner_pid: nil,
-            owner: nil
+            owner: nil,
+            # 沉睡规则正文重试熔断：同一组规则连续命中计数，达上限放行防无限重试。
+            rule_streak: %{ids: [], count: 0}
 
   # ── API ──
 
@@ -594,6 +596,8 @@ defmodule Newbee.Agent.Loop do
     state = %{state | messages: repair_history(drop_empty_assistant_messages(state.messages))}
     state = push_msg(state, message)
     state = maybe_history_recall(state, message)
+    # 新回合开始：沉睡规则连续命中清零（跨回合不累计，避免误熔断）。
+    state = %{state | rule_streak: %{ids: [], count: 0}}
     # 回合开始清本会话中断标志（per-session scope，无跨会话竞态）。
     # 标志语义 = "本回合内是否收到 Esc"；execute_calls 阶段的中断检查依赖它。
     Newbee.LLM.Client.clear_interrupt(state.client)
@@ -1192,29 +1196,40 @@ defmodule Newbee.Agent.Loop do
                   # 流监控（§4.5）：正文 + 思考流一并检查沉睡规则（scope 分流见 stream_rule_hits）
                   case stream_rule_hits(msg) do
                     [] ->
+                      state = %{state | rule_streak: %{ids: [], count: 0}}
                       {state, steered} = consume_steering(state)
                       if steered > 0, do: run_turn(state, step + 1), else: {{:text, msg["content"]}, state}
 
                     hits ->
-                      # 沉睡规则命中正文（§4.5 流监控）：注入提醒，模型下轮纠正
-                      emit(state, {:rule_hit, hits})
+                      {state, allow_retry} = content_rule_retry_budget(state, hits)
                       # 规则命中热度（§8.5 profiling 输入）
                       Newbee.Environment.UsageTracker.observe_rules(hits)
-                      injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
-                      reminder = %{"role" => "system", "content" => "[Sleeping-rule hit] " <> injections}
 
-                      state =
-                        inject_prompt(state, reminder, %{
-                          source: "sleeping_rule",
-                          reason: "模型可见正文或隐藏思考流命中沉睡规则",
-                          timing: "current_turn_retry",
-                          step: step,
-                          trigger: visible_rule_trigger(msg["content"] || "", hits),
-                          rules: rule_audit_details(hits)
-                        })
+                      if allow_retry do
+                        # 沉睡规则命中正文（§4.5 流监控）：注入提醒，模型下轮纠正
+                        emit(state, {:rule_hit, hits})
+                        injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
+                        reminder = %{"role" => "system", "content" => "[Sleeping-rule hit] " <> injections}
 
-                      state = state |> consume_steering() |> elem(0)
-                      run_turn(state, step + 1)
+                        state =
+                          inject_prompt(state, reminder, %{
+                            source: "sleeping_rule",
+                            reason: "模型可见正文或隐藏思考流命中沉睡规则",
+                            timing: "current_turn_retry",
+                            step: step,
+                            trigger: visible_rule_trigger(msg["content"] || "", hits),
+                            rules: rule_audit_details(hits)
+                          })
+
+                        state = state |> consume_steering() |> elem(0)
+                        run_turn(state, step + 1)
+                      else
+                        # 熔断：同一组规则连续命中已达上限，放行原文避免无限重试烧 token
+                        emit(state, {:rule_hit, hits})
+                        state = %{state | rule_streak: %{ids: [], count: 0}}
+                        {state, steered} = consume_steering(state)
+                        if steered > 0, do: run_turn(state, step + 1), else: {{:text, msg["content"]}, state}
+                      end
                   end
 
                 {blocks, cleaned} ->
@@ -1225,9 +1240,10 @@ defmodule Newbee.Agent.Loop do
             calls ->
               case execute_calls(calls, state) do
                 {:halt, reply, state} ->
-                  {reply, state}
+                  {reply, %{state | rule_streak: %{ids: [], count: 0}}}
 
                 {:cont, state} ->
+                  state = %{state | rule_streak: %{ids: [], count: 0}}
                   state = state |> consume_steering() |> elem(0)
                   run_turn(state, step + 1)
               end
@@ -1265,6 +1281,9 @@ defmodule Newbee.Agent.Loop do
 
   # 降级通道：执行正文里的 elixir 块（按 run_elixir 语义），结果回填后继续循环 + 温和纠偏
   defp execute_fallback(blocks, cleaned, state, step) do
+    # fallback 本质是工具进展：正文违规连续计数清零。
+    state = %{state | rule_streak: %{ids: [], count: 0}}
+
     result =
       Enum.reduce_while(blocks, {:cont, state, []}, fn code, {:cont, st, acc} ->
         if Newbee.LLM.Client.interrupted?(st.client) do
@@ -1639,6 +1658,22 @@ defmodule Newbee.Agent.Loop do
 
     (check_rules(content <> "\n" <> reasoning, :all) ++ check_rules(content, :content))
     |> Enum.uniq_by(& &1.id)
+  end
+
+  # 沉睡规则正文重试熔断：同一组规则连续命中超过上限则放行，避免模型坚持用
+  # 稠密符号时无限重试烧 token（曾出现 158M 输入 / 696 步）。上限 2 次重试
+  # （共 3 次同规则输出后放行）；命中组合变化则重新计数；放行/工具调用后清零。
+  @content_rule_max_retries 2
+
+  defp content_rule_retry_budget(state, hits) do
+    ids = hits |> Enum.map(& &1.id) |> Enum.sort()
+    streak = Map.get(state, :rule_streak) || %{ids: [], count: 0}
+    last_ids = Map.get(streak, :ids, [])
+    last_count = Map.get(streak, :count, 0)
+    count = if ids == last_ids, do: last_count + 1, else: 1
+    allow = count <= @content_rule_max_retries
+    state = Map.put(state, :rule_streak, %{ids: ids, count: count})
+    {state, allow}
   end
 
   defp merge_usage(a, b) when is_map(b) do
