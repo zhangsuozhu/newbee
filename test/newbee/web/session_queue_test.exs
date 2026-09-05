@@ -47,8 +47,10 @@ defmodule Newbee.Web.SessionQueueTest do
     {:noreply, st2} = Session.handle_cast({:prompt, "one", "id_one"}, st)
     {:noreply, st3} = Session.handle_cast({:prompt, "two", "id_two"}, st2)
     assert {:reply, %{queued: 2}, _} = Session.handle_call(:queue_list, self(), st3)
+
     assert {:reply, {:ok, %{cancelled: "id_one", queued: 1}}, st4} =
              Session.handle_call({:cancel_queued, "id_one"}, self(), st3)
+
     assert :queue.len(st4.queue) == 1
     assert {:reply, {:error, :not_found}, _} = Session.handle_call({:cancel_queued, "nope"}, self(), st4)
     assert {:reply, {:ok, %{cleared: 1}}, st5} = Session.handle_call(:clear_queue, self(), st4)
@@ -79,6 +81,7 @@ defmodule Newbee.Web.SessionQueueTest do
         500 -> :ok
       end
     end
+
     # also drain legacy queued notices
     for _ <- 1..2 do
       receive do
@@ -87,6 +90,7 @@ defmodule Newbee.Web.SessionQueueTest do
         0 -> :ok
       end
     end
+
     {:noreply, st4} = Session.handle_cast(:interrupt, st3)
     assert :queue.len(st4.queue) == 0
     assert st4.current == nil
@@ -102,5 +106,71 @@ defmodule Newbee.Web.SessionQueueTest do
     assert :queue.len(st3.queue) == 2
     assert {:reply, %{queue: q}, _} = Session.handle_call(:queue_list, self(), st3)
     assert Enum.map(q, & &1.id) == ["bootid", "imgid"]
+  end
+
+  test "turn DOWN clears busy and late results do not finish another turn" do
+    ref = make_ref()
+    id = make_ref()
+
+    state = %{
+      base_state("turn-down-safety", busy: true)
+      | turn_task: self(),
+        turn_ref: ref,
+        turn_id: id,
+        current: %{id: "turn"}
+    }
+
+    assert {:noreply, finished} = Session.handle_info({:DOWN, ref, :process, self(), :killed}, state)
+    refute finished.busy
+    assert finished.current == nil
+    assert finished.turn_ref == nil
+    assert finished.turns == 1
+    assert {:noreply, ^finished} = Session.handle_info({:turn_finished, id, {:text, "late"}}, finished)
+    next = %{state | turn_id: make_ref(), turn_ref: make_ref()}
+    assert {:noreply, ^next} = Session.handle_info({:turn_finished, id, {:text, "late"}}, next)
+  end
+
+  test "peek_busy derives from live turn" do
+    alive = spawn(fn -> Process.sleep(5000) end)
+    on_exit(fn -> Process.exit(alive, :kill) end)
+    live_state = %{base_state("peek-live", busy: true) | turn_task: alive, turn_ref: make_ref(), turn_id: make_ref()}
+    assert {:reply, true, _} = Session.handle_call(:peek_busy, self(), live_state)
+    dead = spawn(fn -> :ok end)
+    dead_ref = Process.monitor(dead)
+    assert_receive {:DOWN, ^dead_ref, :process, ^dead, _}, 1000
+    dead_state = %{base_state("peek-dead", busy: true) | turn_task: dead, turn_ref: make_ref(), turn_id: make_ref()}
+    assert {:reply, false, _} = Session.handle_call(:peek_busy, self(), dead_state)
+    assert {:reply, false, _} = Session.handle_call(:peek_busy, self(), base_state("peek-idle", busy: false))
+  end
+
+  test "watchdog mismatch and recover guards are ignored" do
+    st = base_state("watch-guard", busy: false)
+    assert {:noreply, ^st} = Session.handle_info({:turn_watchdog, make_ref()}, st)
+    booting = %{st | booting: true}
+    assert {:noreply, ^booting} = Session.handle_info(:recover_kernel, booting)
+    active = %{st | turn_id: make_ref()}
+    assert {:noreply, ^active} = Session.handle_info(:recover_kernel, active)
+  end
+
+  test "abnormal turn with queued input schedules kernel recovery" do
+    dead_kernel = spawn(fn -> :ok end)
+    kref = Process.monitor(dead_kernel)
+    assert_receive {:DOWN, ^kref, :process, ^dead_kernel, _}, 1000
+    turn = spawn(fn -> :ok end)
+    tref = Process.monitor(turn)
+    assert_receive {:DOWN, ^tref, :process, ^turn, _}, 1000
+
+    base = %{
+      base_state("recover-q", busy: true)
+      | kernel: dead_kernel,
+        turn_task: turn,
+        turn_ref: make_ref(),
+        turn_id: make_ref(),
+        current: %{id: "t"}
+    }
+
+    queued = %{base | queue: :queue.in(%{id: "q1", kind: "text", text: "hi"}, base.queue)}
+    assert {:noreply, _finished} = Session.handle_info({:DOWN, queued.turn_ref, :process, turn, :killed}, queued)
+    assert_received :recover_kernel
   end
 end

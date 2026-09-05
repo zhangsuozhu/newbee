@@ -222,6 +222,7 @@ defmodule Newbee.Agent.Loop do
     session =
       if session_seed do
         s = session_seed
+        Newbee.Session.seal_pending_tools(s)
         # 恢复 = 物化视图重建（§4.6）：transcript 只增不删，压缩只是账本上的切点；
         # 视图 = 基底 + 段汇总消息 + 切点后原文。无压缩账本的旧会话逐字节兼容。
         prior =

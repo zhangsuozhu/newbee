@@ -34,8 +34,9 @@ defmodule Newbee.DEE.EvaluatorTest do
     assert Enum.any?(Evaluator.bindings_summary(ev), &(&1.name == :good))
   end
 
-  test "默认 cell 不设置固定墙钟截止" do
-    assert Newbee.DEE.EvalWorker.default_timeout() == :infinity
+  test "default cell lease is finite and permits long tasks" do
+    assert Newbee.DEE.EvalWorker.default_timeout() > 60_000
+    assert is_integer(Newbee.DEE.EvalWorker.default_timeout())
   end
 
   test "超时返回错误", %{ev: ev} do

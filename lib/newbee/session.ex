@@ -168,6 +168,48 @@ defmodule Newbee.Session do
     touch_index(id)
   end
 
+  @doc "Seal abandoned tool calls before a recovered kernel accepts new input. Never call on a running turn."
+  def seal_pending_tools(%__MODULE__{} = session) do
+    :global.trans(
+      {{__MODULE__, :seal, session.id}, self()},
+      fn ->
+        pending =
+          Enum.reduce(messages(session), %{}, fn message, acc ->
+            case message do
+              %{"role" => "assistant", "tool_calls" => calls} when is_list(calls) ->
+                Enum.reduce(calls, acc, fn
+                  %{"id" => id}, found when is_binary(id) -> Map.put(found, id, true)
+                  _, found -> found
+                end)
+
+              %{"role" => "tool", "tool_call_id" => id} ->
+                Map.delete(acc, id)
+
+              _ ->
+                acc
+            end
+          end)
+
+        if map_size(pending) > 0 do
+          File.write!(session.transcript, "\n", [:append])
+
+          Enum.each(Enum.sort(Map.keys(pending)), fn id ->
+            append(session, %{
+              "role" => "tool",
+              "tool_call_id" => id,
+              "content" =>
+                "outcome_unknown: execution interrupted before its result was persisted; code was not replayed",
+              "recovery" => true
+            })
+          end)
+        end
+
+        map_size(pending)
+      end,
+      [node()]
+    )
+  end
+
   @doc """
   重写整个 transcript。**已废弃**：/compact 自 Archive 落地后走 append-only 账本
   （Newbee.Archive），transcript 永不覆写——本函数仅为兼容保留，勿在新代码使用
@@ -633,8 +675,11 @@ defmodule Newbee.Session do
       merged =
         Enum.map(fresh, fn e ->
           case Map.get(updates, e["id"]) do
-            nil -> e
-            %{"size" => sz, "count" => c, "auto_title" => a} -> e |> Map.put("size", sz) |> Map.put("count", c) |> Map.put("auto_title", a)
+            nil ->
+              e
+
+            %{"size" => sz, "count" => c, "auto_title" => a} ->
+              e |> Map.put("size", sz) |> Map.put("count", c) |> Map.put("auto_title", a)
           end
         end)
 
@@ -646,11 +691,15 @@ defmodule Newbee.Session do
 
   defp fast_transcript_stats(fp) do
     case File.read(fp) do
-      {:ok, ""} -> {0, ""}
+      {:ok, ""} ->
+        {0, ""}
+
       {:ok, bin} ->
         lines = String.split(bin, "\n", trim: true)
         {length(lines), fast_title_from_lines(lines)}
-      _ -> {0, ""}
+
+      _ ->
+        {0, ""}
     end
   end
 

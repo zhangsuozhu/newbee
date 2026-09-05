@@ -12,9 +12,9 @@ defmodule Newbee.DEE.EvaluatorLongTaskTest do
     on_exit(fn -> if Process.alive?(ev), do: GenServer.stop(ev) end)
 
     command_module = "Newbee.Tools." <> "Run"
-    code = command_module <> ~S|.sh_long("sleep 61; printf long-ok")|
+    code = command_module <> ~S|.sh("sleep 61; printf long-ok")|
     t0 = System.monotonic_time(:millisecond)
-    result = Evaluator.eval(ev, code)
+    result = Evaluator.eval(ev, code, timeout: 90_000)
     elapsed = System.monotonic_time(:millisecond) - t0
 
     assert result.status == :ok
@@ -57,7 +57,7 @@ defmodule Newbee.DEE.EvaluatorLongTaskTest do
 
     command_module = "Newbee.Tools." <> "Run"
     command = shell_tree_command(marker)
-    code = command_module <> ".sh_long(" <> inspect(command) <> ")"
+    code = command_module <> ".sh(" <> inspect(command) <> ")"
     task = Task.async(fn -> Evaluator.eval(ev, code) end)
 
     assert wait_until(fn -> length(read_pids(marker)) == 2 end, 10_000)
@@ -82,7 +82,7 @@ defmodule Newbee.DEE.EvaluatorLongTaskTest do
 
     command_module = "Newbee.Tools." <> "Run"
     command = shell_tree_command(marker)
-    code = command_module <> ".sh_long(" <> inspect(command) <> ")"
+    code = command_module <> ".sh(" <> inspect(command) <> ")"
     caller = spawn(fn -> Evaluator.eval(ev, code) end)
 
     assert wait_until(fn -> length(read_pids(marker)) == 2 end, 10_000)
