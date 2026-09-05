@@ -119,7 +119,7 @@
       <button class="mc-tab" data-tab="steps" title="执行步骤"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg> 步骤<span class="mc-badge hidden" id="mc-badge-steps"></span></button>
       <button class="mc-tab" data-tab="diff" title="全量 Diff"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg> Diff</button>
       <button class="mc-tab" data-tab="overview" title="会话概览"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg> 概览</button>
-      <button class="mc-tab" data-tab="evolution" title="环境进化">⟁ 进化<span class="mc-badge hidden" id="mc-badge-evolution"></span></button>
+       <button class="mc-tab" data-tab="evolution" title="环境进化"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 22V12"/><path d="M3.5 7.5L12 12l8.5-4.5"/></svg> 进化<span class="mc-badge hidden" id="mc-badge-evolution"></span></button>
       <button class="mc-tab" data-tab="collaboration" title="协作消息">协作</button>
       <button class="mc-tab" data-tab="tasks" title="工作项">工作项</button>
       <button class="mc-tab" data-tab="debug" title="大模型 HTTP 调试">调试</button>
@@ -207,8 +207,14 @@
         </div>
       </div>
 
+      <section class="evo-section evo-decide-section">
+        <div class="evo-section-head"><span>① 需要你决定</span><span id="evo-decide-summary" class="evo-section-meta">-</span></div>
+        <div id="evo-decide-list" class="evo-changes-list"></div>
+        <div id="evo-changes-list" class="hidden"></div>
+        <span id="evo-change-summary" class="hidden">-</span>
+      </section>
       <div class="evo-intro">
-        <div class="evo-intro-text"><strong>环境进化 = 让 AI 自己变好，但由你把关</strong><span>AI 发现重复问题 → 提出最小改进 → 跑完 5 道验证 → 需要你批准才会生效。旧版本保留，随时可回退。</span></div>
+        <div class="evo-intro-text"><strong>让 AI 自己变好，但由你把关</strong><span>AI 发现重复问题 → 提出最小改进 → 跑完 5 道验证 → 需要你批准才会生效。旧版本保留，随时可回退。</span></div>
         <button id="evo-how" class="btn-ghost evo-how-btn" title="展开判断标准与术语">怎么判断要不要批准？</button>
       </div>
       <div id="evo-guide" class="evo-guide hidden">
@@ -219,7 +225,6 @@
         </ol>
         <div class="evo-gloss">术语一句话：版本 = 环境的快照（r1/r2…）；改进 = 一次提议；验证 = 5 道门（格式 · 复测 · 回放 · 试用 · 长期）；信号 = AI 注意到的问题，攒多了会变成改进。</div>
       </div>
-
       <div class="evo-overview">
         <div class="evo-revision-block">
           <span class="evo-eyebrow">当前生效版本</span>
@@ -233,18 +238,9 @@
           <div><strong id="evo-signal-count">-</strong><span>待看问题</span></div>
         </div>
       </div>
-
       <div class="evo-loop" aria-label="进化生命周期：信号到版本的五个阶段">
         <span>信号</span><i>→</i><span>候选</span><i>→</i><span>五层验证</span><i>→</i><span>门控</span><i>→</i><span>版本</span>
       </div>
-
-      <section class="evo-section evo-decide-section">
-        <div class="evo-section-head"><span>① 需要你决定</span><span id="evo-decide-summary" class="evo-section-meta">-</span></div>
-        <div id="evo-decide-list" class="evo-changes-list"></div>
-        <div id="evo-changes-list" class="hidden"></div>
-        <span id="evo-change-summary" class="hidden">-</span>
-      </section>
-
       <section class="evo-section">
         <div class="evo-section-head"><span>② 正在验证 / 观察中</span><span id="evo-progress-summary" class="evo-section-meta">-</span></div>
         <div id="evo-progress-list" class="evo-changes-list"></div>
