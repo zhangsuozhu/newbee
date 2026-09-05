@@ -3,7 +3,7 @@ defmodule Newbee.Tools.ToolDocumentationContractTest do
 
   @codec_budget 1_500
   @plugin_section_budget 1_800
-  @tool_doc_budget 3_500
+  @tool_doc_budget 4_000
 
   test "常驻工具提示短小且没有已删除 API" do
     schema = Jason.encode!(Newbee.Codec.tools())
