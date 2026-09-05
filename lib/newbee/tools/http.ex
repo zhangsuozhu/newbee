@@ -23,7 +23,7 @@ defmodule Newbee.Tools.Http do
     request(:get, url, nil, headers)
   end
 
-  @doc "POST request (json takes map/string)."
+  @doc "POST request (json takes map/string). Returns `{:ok, %{status: integer(), body: String.t()}} | {:error, reason}` (same error split as `get/2`)."
   def post(url, json, headers \\ []) do
     request(:post, url, json, headers)
   end

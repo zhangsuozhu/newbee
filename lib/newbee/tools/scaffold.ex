@@ -18,7 +18,7 @@ defmodule Newbee.Tools.Scaffold do
     if result.exit == 0, do: {:ok, result.output}, else: {:error, result.output}
   end
 
-  @doc "Fetch deps (mix deps.get)."
+  @doc "Fetch deps (mix deps.get). Returns `{:ok, output} | {:error, output}`."
   def deps_get do
     result = Newbee.Tools.Run.sh("mix deps.get")
     if result.exit == 0, do: {:ok, result.output}, else: {:error, result.output}

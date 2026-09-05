@@ -27,7 +27,7 @@ defmodule Newbee.Tools.Fs do
   `write` content also takes `binary` | `%{content: c}`.
 
   - Writes land in Staging first (Newbee.Staging), flushed to disk on /approve — the rollback promise of the lenient sandbox;
-  - Reads return content directly; paths stay inside the project tree (workspace isolation).
+  - `read/1` returns `{:ok, content} | {:error, reason}`, `read!/1` returns content directly (raises when missing); paths stay inside the project tree (workspace isolation).
 
   ## Functions
   - `read(path)` — read a file; `{:ok, content} | {:error, reason}`.

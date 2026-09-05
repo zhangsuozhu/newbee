@@ -9,12 +9,12 @@ defmodule Newbee.Tools.Introspect do
   - `beam_info(module :: module()) :: %{module: module(), exports: [...], attributes: map()}` — BEAM chunk digest, `:attributes` via `:beam_lib.chunks`.
 
   ## Runnable example
-      Newbee.Tools.Introspect.exports(Newbee.Tools.Fs)
-      Newbee.Tools.Introspect.moduledoc(Newbee.Tools.Run)
-      Newbee.Tools.Introspect.beam_info(Newbee.Diff)
+      sigs = Newbee.Tools.Introspect.exports(Newbee.Tools.Fs)
+      doc = Newbee.Tools.Introspect.moduledoc(Newbee.Tools.Run)
+      info = Newbee.Tools.Introspect.beam_info(Newbee.Diff)
   """
 
-  @doc "Public function list of a module: [{name, arity}]."
+  @doc "Public function list of a module: [{name, arity}]. Returns the list directly (not `{:ok, ...}`); `[]` when the module is not loaded."
   def exports(module) do
     if Code.ensure_loaded?(module) do
       module.__info__(:functions) |> Enum.reject(fn {n, _} -> n in [:__info__, :module_info] end)
@@ -23,7 +23,7 @@ defmodule Newbee.Tools.Introspect do
     end
   end
 
-  @doc "A module's @moduledoc (opener)."
+  @doc "A module's @moduledoc opener. Returns the text directly (or `nil` when missing), not `{:ok, ...}`."
   def moduledoc(module) do
     case Code.fetch_docs(module) do
       {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) ->
@@ -36,7 +36,7 @@ defmodule Newbee.Tools.Introspect do
     _ -> nil
   end
 
-  @doc "BEAM chunk digest: %{module, exports, attributes} (attributes subset pulled from Abstract Code)."
+  @doc "BEAM chunk digest: %{module, exports, attributes} (attributes subset pulled from Abstract Code). Returns the map directly (not `{:ok, ...}`)."
   def beam_info(module) do
     case :code.which(module) do
       path when is_list(path) or is_binary(path) ->
