@@ -575,8 +575,11 @@ case "collab_task_queued": line("notice", `协作任务已排队（${p.queued ||
 case "collab_result_queued": line("notice", `协作结果已排队（${p.queued || 1} 位）`); break;
 case "collab_message_queued": line("notice", `协作消息已排队（${p.queued || 1} 位）`); break;
 case "queue_updated": {
+  // 乱序丢弃：服务端 queue_seq 单调递增；迟到的旧快照（seq 更小）不得覆盖较新状态，
+  // 否则会把“正在执行的项”重新当成等待项（行与 current 重复）。
+  if (typeof p.seq === "number" && p.seq <= (state.queueSeq || 0)) break;
   state.queue = Array.isArray(p.queue) ? p.queue : [];
-  if (typeof p.seq === "number") state.queueSeq = p.seq;
+  state.queueSeq = typeof p.seq === "number" ? p.seq : state.queueSeq;
   state.queueCurrent = p.current || null;
   renderQueue();
   const ev = p.event || {};
