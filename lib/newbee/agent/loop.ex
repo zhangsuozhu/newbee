@@ -28,8 +28,8 @@ defmodule Newbee.Agent.Loop do
             auto_compact: true,
             # 会话唯一绝对工作根；启动时物化，切换时与 evaluator/prompt 同步。
             root: nil,
-            # 宿主进程 monitor 引用（web 会话进程）；宿主死亡 → kernel 自停，
-            # 链式触发会话私有求值器释放（见 evaluator_owned / Evaluator.monitor_owner）
+            # 宿主 pid + monitor 引用（web 会话进程）；pid 用于模型调用边界领取 steering。
+            owner_pid: nil,
             owner: nil
 
   # ── API ──
@@ -177,11 +177,11 @@ defmodule Newbee.Agent.Loop do
     # 2. evaluator_owned: true 时把本 kernel 登记为求值器宿主，kernel 停止/崩溃
     #    → 求值器自停 → terminate 停掉 primary/standby peer 节点。
     #    具名共享兜底求值器（Newbee.DEE.Evaluator）绝不可标 owned——会误杀其它会话。
-    owner_ref =
-      case Keyword.get(opts, :owner) do
-        pid when is_pid(pid) -> Process.monitor(pid)
-        _ -> nil
-      end
+    owner_pid = case Keyword.get(opts, :owner) do
+      pid when is_pid(pid) -> pid
+      _ -> nil
+    end
+    owner_ref = if owner_pid, do: Process.monitor(owner_pid), else: nil
 
     evaluator_owned = Keyword.get(opts, :evaluator_owned, false)
 
@@ -280,6 +280,8 @@ defmodule Newbee.Agent.Loop do
        evaluator: evaluator,
        evaluator_owned: evaluator_owned,
        owner: owner_ref,
+       owner_pid: owner_pid,
+
        render: render,
        client_fun: client_fun,
        session: session,
@@ -1180,7 +1182,8 @@ defmodule Newbee.Agent.Loop do
                   # 流监控（§4.5）：正文 + 思考流一并检查沉睡规则（scope 分流见 stream_rule_hits）
                   case stream_rule_hits(msg) do
                     [] ->
-                      {{:text, msg["content"]}, state}
+                      {state, steered} = consume_steering(state)
+                      if steered > 0, do: run_turn(state, step + 1), else: {{:text, msg["content"]}, state}
 
                     hits ->
                       # 沉睡规则命中正文（§4.5 流监控）：注入提醒，模型下轮纠正
@@ -1200,6 +1203,7 @@ defmodule Newbee.Agent.Loop do
                           rules: rule_audit_details(hits)
                         })
 
+                      state = state |> consume_steering() |> elem(0)
                       run_turn(state, step + 1)
                   end
 
@@ -1211,7 +1215,9 @@ defmodule Newbee.Agent.Loop do
             calls ->
               case execute_calls(calls, state) do
                 {:halt, reply, state} -> {reply, state}
-                {:cont, state} -> run_turn(state, step + 1)
+                {:cont, state} ->
+                  state = state |> consume_steering() |> elem(0)
+                  run_turn(state, step + 1)
               end
           end
 
@@ -1312,8 +1318,40 @@ defmodule Newbee.Agent.Loop do
             })
           end
 
+        state = state |> consume_steering() |> elem(0)
         run_turn(state, step + 1)
     end
+  end
+
+
+  # Web 宿主保持可取消的 FIFO；Loop 只在两次模型请求之间同步领取，最多一批 20 条。
+  defp consume_steering(%{owner_pid: owner} = state) when is_pid(owner) do
+    Enum.reduce_while(1..20, {state, 0}, fn _, {st, count} ->
+      result =
+        try do
+          GenServer.call(owner, :take_steering, 1_000)
+        catch
+          :exit, _ -> :none
+        end
+
+      case result do
+        {:ok, item} -> {:cont, {push_msg(st, steering_message(item)), count + 1}}
+        _ -> {:halt, {st, count}}
+      end
+    end)
+  end
+
+  defp consume_steering(state), do: {state, 0}
+
+  defp steering_message(%{kind: "images"} = item) do
+    case Newbee.LLM.Image.message_with_images(Map.get(item, :images, []), Map.get(item, :text, "")) do
+      {:ok, message} -> message
+      {:error, _} -> %{"role" => "user", "content" => Map.get(item, :text, Map.get(item, :preview, ""))}
+    end
+  end
+
+  defp steering_message(item) do
+    %{"role" => "user", "content" => Newbee.Commands.expand_at_files(Map.get(item, :text, ""))}
   end
 
   defp call_client(fun, messages, on_text, on_reasoning) do

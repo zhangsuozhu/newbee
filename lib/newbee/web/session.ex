@@ -180,6 +180,10 @@ defmodule Newbee.Web.Session do
   def prompt_images(pid, data_urls, text, _queue_id),
     do: GenServer.cast(pid, {:prompt_images, data_urls, text})
 
+  @doc "异步发起旁路问题（/btw）：独立无工具请求，不打断主 turn，也不写入会话历史。"
+  def btw(pid, question, request_id \\ nil), do: GenServer.cast(pid, {:btw, question, request_id})
+
+
   @doc "向会话队列投递协作任务（Coordinator 分派；忙时排队，空闲直接提交）。"
   def collaboration_task(pid, task), do: GenServer.cast(pid, {:collaboration_task, task})
 
@@ -357,8 +361,10 @@ defmodule Newbee.Web.Session do
       preview: Map.get(cur, :preview, ""),
       startedAt: Map.get(cur, :started_at, ""),
       origin: Map.get(cur, :origin, "user"),
-      text: Map.get(cur, :text, "")
+      text: Map.get(cur, :text, ""),
+      queued: Map.get(cur, :queued, false)
     }
+
   end
 
   defp push_queue_event(st, type, fields) when is_map(fields) do
@@ -377,7 +383,12 @@ defmodule Newbee.Web.Session do
       current: public_current(Map.get(st, :current))
     }
 
-    broadcast(sid, :queue_updated, payload)
+    if event.type in ["started", "steered"] do
+      broadcast_sync(sid, :queue_updated, payload)
+    else
+      broadcast(sid, :queue_updated, payload)
+    end
+
   end
 
   defp make_user_text_item(text, queue_id) do
@@ -850,6 +861,11 @@ defmodule Newbee.Web.Session do
   defp cleanup_unattached_kernel(_result), do: :ok
 
   @impl true
+  def handle_cast({:btw, question, request_id}, st) do
+    {:noreply, start_btw(st, question, request_id)}
+  end
+
+
   def handle_cast({:collaboration_result, task}, st) do
     prompt = collaboration_result_prompt(task)
 
@@ -970,19 +986,19 @@ defmodule Newbee.Web.Session do
   end
 
   def handle_cast({:prompt_images, data_urls, text, queue_id}, st) when is_binary(queue_id) do
-    {:noreply, dispatch_images(st, data_urls, text, queue_id)}
+    {:noreply, dispatch_item(st, make_user_images_item(data_urls, text, queue_id), false)}
   end
 
   def handle_cast({:prompt_images, data_urls, text}, st) do
-    {:noreply, dispatch_images(st, data_urls, text)}
+    {:noreply, dispatch_item(st, make_user_images_item(data_urls, text, nil), false)}
   end
 
   def handle_cast({:prompt, text, queue_id}, st) when is_binary(queue_id) do
-    {:noreply, dispatch_input(st, text, queue_id)}
+    {:noreply, dispatch_item(st, make_user_text_item(text, queue_id), false)}
   end
 
   def handle_cast({:prompt, text}, st) do
-    {:noreply, dispatch_input(st, text)}
+    {:noreply, dispatch_item(st, make_user_text_item(text, nil), false)}
   end
 
   def handle_cast(:interrupt, st) do
@@ -1128,6 +1144,25 @@ defmodule Newbee.Web.Session do
        cwd: Newbee.Session.cwd(st.sid)
      }, st}
   end
+  # Agent.Loop 在相邻模型请求之间领取普通用户输入；命令和协作项保留到 turn 结束。
+  def handle_call(:take_steering, _from, %{busy: true} = st) do
+    case :queue.out(st.queue) do
+      {{:value, item}, rest} ->
+        if steerable_item?(item, st) do
+          st1 = %{st | queue: rest}
+          input = public_queue_item(item)
+          {st2, ev} = push_queue_event(st1, "steered", %{id: item.id, kind: item.kind, preview: item.preview, input: input})
+          broadcast_queue(st.sid, st2, ev)
+          {:reply, {:ok, item}, st2}
+        else
+          {:reply, :none, st}
+        end
+      {:empty, _} ->
+        {:reply, :none, st}
+    end
+  end
+  def handle_call(:take_steering, _from, st), do: {:reply, :none, st}
+
 
   def handle_call(:queue_list, _from, st) do
     {:reply,
@@ -1342,9 +1377,25 @@ defmodule Newbee.Web.Session do
     {:noreply, %{st | booting: false, boot_client: nil} |> fail_pending()}
   end
 
+  def handle_info({:btw_finished, request_id, result}, st) do
+    case result do
+      {:ok, %{"content" => content}, usage} ->
+        broadcast(st.sid, :btw_done, %{id: request_id, content: content || "", usage: usage})
+      {:interrupted, content} ->
+        broadcast(st.sid, :btw_error, %{id: request_id, message: content || "旁路问题已中断"})
+      {:error, reason} ->
+        broadcast(st.sid, :btw_error, %{id: request_id, message: format_btw_error(reason)})
+      other ->
+        broadcast(st.sid, :btw_error, %{id: request_id, message: inspect(other)})
+    end
+
+    {:noreply, st}
+  end
+
   def handle_info({:turn_finished, id, result}, %{turn_id: id, turn_ref: ref} = st) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
     cancel_turn_timer(st)
+    current = Map.get(st, :current)
 
     st = %{
       st
@@ -1359,12 +1410,14 @@ defmodule Newbee.Web.Session do
 
     save_stats(st)
     broadcast_turn_end(st.sid, result)
-    {:noreply, st |> sync_kernel_effort() |> dispatch_pending()}
+    st = st |> sync_kernel_effort() |> finish_current(current)
+    {:noreply, dispatch_pending(st)}
   end
 
   def handle_info({:DOWN, ref, :process, pid, reason}, %{turn_ref: ref, turn_task: pid} = st) when is_reference(ref) do
     if is_pid(st.kernel), do: Newbee.Agent.Loop.interrupt(st.kernel)
     cancel_turn_timer(st)
+    current = Map.get(st, :current)
 
     st = %{
       st
@@ -1379,12 +1432,14 @@ defmodule Newbee.Web.Session do
 
     save_stats(st)
     broadcast_turn_end(st.sid, {:error, "turn worker exited: " <> inspect(reason)})
+    st = finish_current(st, current)
     {:noreply, recover_after_turn(st)}
   end
 
   def handle_info({:turn_watchdog, id}, %{turn_id: id} = st) when not is_nil(id) do
     if is_pid(st.kernel), do: Newbee.Agent.Loop.interrupt(st.kernel)
     if is_pid(st.turn_task), do: Process.exit(st.turn_task, :kill)
+    current = Map.get(st, :current)
 
     st = %{
       st
@@ -1399,6 +1454,7 @@ defmodule Newbee.Web.Session do
 
     save_stats(st)
     broadcast_turn_end(st.sid, {:error, "turn watchdog: execution lease expired without result"})
+    st = finish_current(st, current)
     {:noreply, recover_after_turn(st)}
   end
 
@@ -1423,6 +1479,7 @@ defmodule Newbee.Web.Session do
 
   def handle_info({:turn_finished, _id, _result}, st), do: {:noreply, st}
   def handle_info({:turn_finished, _legacy_result}, st), do: {:noreply, st}
+
 
   def handle_info({kind, _ref, {:ok, kernel}}, st)
       when kind in [:kernel_booted, :kernel_restarted] do
@@ -1503,31 +1560,62 @@ defmodule Newbee.Web.Session do
     :ok
   end
 
+  # 广播 started 后才执行命令或启动模型 Task，保证客户端先建立正确的 turn 边界。
+  defp steerable_item?(%{origin: "user", kind: "text", text: text}, _st) do
+    value = String.trim(text || "")
+    value != "" and not String.starts_with?(value, ["/", "!"])
+  end
+  defp steerable_item?(%{origin: "user", kind: "images"}, %{client: %{vision: false}}), do: false
+  defp steerable_item?(%{origin: "user", kind: "images"}, _st), do: true
+  defp steerable_item?(_item, _st), do: false
+
+
+  defp btw_question(text) when is_binary(text) do
+    case Regex.run(~r/^\s*\/btw(?:\s+(.*))?\s*$/s, text) do
+      [_, question] -> {:ok, String.trim(question)}
+      [_] -> {:ok, ""}
+      _ -> :none
+    end
+  end
+  defp btw_question(_text), do: :none
+
+
+  defp dispatch_item(st, %{kind: "text", text: text} = item, queued?) do
+    case btw_question(text) do
+      {:ok, question} -> start_btw(st, question, item.id)
+      :none -> dispatch_item_regular(st, item, queued?)
+    end
+  end
+
+
+  defp dispatch_item_regular(st, %{id: id, kind: kind} = item, queued?) do
+    current = %{id: id, kind: kind, preview: Map.get(item, :preview, ""), text: Map.get(item, :text, ""), started_at: now_iso(), origin: Map.get(item, :origin, "user"), queued: queued?}
+    {st1, ev} = push_queue_event(st, "started", %{id: id, kind: kind, preview: current.preview, queued: queued?})
+    broadcast_queue(st.sid, %{st1 | current: current}, ev)
+
+    st2 =
+      case kind do
+        "text" -> dispatch_input(st1, Map.get(item, :text, ""), id)
+        "collab_task" -> dispatch_input(st1, Map.get(item, :prompt, Map.get(item, :text, "")), id)
+        "collab_result" -> dispatch_input(st1, Map.get(item, :prompt, Map.get(item, :text, "")), id)
+        "collab_message" -> dispatch_input(st1, collaboration_message_prompt(Map.get(item, :message, %{})), id)
+        "images" -> dispatch_images(st1, Map.get(item, :images, []), Map.get(item, :text, ""), id)
+        _ -> dispatch_input(st1, Map.get(item, :text, ""), id)
+      end
+
+    if st2.busy and is_map(Map.get(st2, :current)) do
+      %{st2 | current: Map.merge(st2.current, %{kind: kind, origin: current.origin, queued: queued?})}
+    else
+      finish_current(st2, current)
+    end
+  end
+
   # boot 期间到达的输入排队于此；kernel 就绪后按到达顺序提交。
   defp dispatch_pending(%{queue: q} = st) do
     case :queue.out(q) do
-      {{:value, %{id: id, kind: kind} = item}, rest} ->
-        st1 = %{st | queue: rest}
-
-        st2 =
-          case kind do
-            "text" -> dispatch_input(st1, Map.get(item, :text, Map.get(item, :prompt, "")), id)
-            "collab_task" -> dispatch_input(st1, Map.get(item, :prompt, Map.get(item, :text, "")), id)
-            "collab_result" -> dispatch_input(st1, Map.get(item, :prompt, Map.get(item, :text, "")), id)
-            "collab_message" -> dispatch_input(st1, collaboration_message_prompt(Map.get(item, :message, %{})), id)
-            "images" -> dispatch_images(st1, Map.get(item, :images, []), Map.get(item, :text, ""), id)
-            _ -> dispatch_input(st1, Map.get(item, :text, ""), id)
-          end
-
-        if st2.busy do
-          {st_ev, ev} = push_queue_event(st2, "started", %{id: id, kind: kind})
-          broadcast_queue(st.sid, st_ev, ev)
-          st_ev
-        else
-          {st_ev, ev} = push_queue_event(st2, "dequeued", %{id: id, kind: kind})
-          broadcast_queue(st.sid, st_ev, ev)
-          dispatch_pending(st_ev)
-        end
+      {{:value, %{id: _id} = item}, rest} ->
+        st2 = dispatch_item(%{st | queue: rest}, item, true)
+        if st2.busy, do: st2, else: dispatch_pending(st2)
 
       {{:value, {:text, t}}, q2} ->
         st2 = %{st | queue: q2} |> dispatch_input(t)
@@ -1557,6 +1645,19 @@ defmodule Newbee.Web.Session do
     end
   end
 
+  defp finish_current(st, current) do
+    fields =
+      case current do
+        %{id: id} = item -> %{id: id, kind: Map.get(item, :kind, "text"), queued: Map.get(item, :queued, false)}
+        _ -> %{}
+      end
+
+    st1 = %{st | busy: false, current: nil}
+    {st2, ev} = push_queue_event(st1, "finished", fields)
+    broadcast_queue(st.sid, st2, ev)
+    st2
+  end
+
   defp fail_pending(%{queue: q} = st) do
     count = :queue.len(q)
     st1 = %{st | queue: :queue.new(), current: nil}
@@ -1569,6 +1670,92 @@ defmodule Newbee.Web.Session do
 
     st2
   end
+
+  defp start_btw(st, question, request_id) do
+    question = if is_binary(question), do: String.trim(question), else: ""
+    request_id = normalize_queue_id(request_id || new_queue_id())
+
+    cond do
+      question == "" ->
+        broadcast(st.sid, :btw_error, %{id: request_id, message: "用法：/btw <问题>"})
+        st
+
+      not is_map(st.client) ->
+        broadcast(st.sid, :btw_error, %{id: request_id, message: no_kernel_hint()})
+        st
+
+      true ->
+        broadcast_sync(st.sid, :btw_started, %{id: request_id, question: question})
+        parent = self()
+        client = st.client
+        sid = st.sid
+
+        Task.start(fn ->
+          result = run_btw(sid, client, question, request_id)
+          send(parent, {:btw_finished, request_id, result})
+        end)
+
+        st
+    end
+  end
+
+  defp run_btw(sid, client, question, request_id) do
+    side_client = btw_client(client, sid, request_id)
+    messages = btw_messages(sid, question)
+
+    try do
+      Newbee.LLM.Client.stream_chat(
+        side_client,
+        messages,
+        fn delta -> broadcast(sid, :btw_text, %{id: request_id, delta: delta}) end,
+        fn _delta -> :ok end,
+        tools: []
+      )
+    rescue
+      e -> {:error, Exception.message(e)}
+    catch
+      kind, value -> {:error, Exception.format(kind, value, __STACKTRACE__)}
+    end
+  end
+
+  defp btw_client(client, sid, request_id) do
+    base_key = Map.get(client, :cache_key) || "newbee-" <> sid
+    side =
+      client
+      |> Map.put(:responses_continuation, false)
+      |> Map.put(:responses_checkpoint, nil)
+      |> Map.put(:interrupt_scope, {:btw, sid, request_id})
+      |> Map.put(:cache_key, base_key <> "-btw-" <> request_id)
+
+    Newbee.LLM.Client.clear_interrupt(side)
+    side
+  end
+
+  defp btw_messages(sid, question) do
+    history =
+      Newbee.Session.open(sid)
+      |> Newbee.Session.messages()
+      |> Enum.flat_map(fn
+        %{"role" => role, "content" => content} when role in ["user", "assistant"] and content not in [nil, ""] ->
+          [%{"role" => role, "content" => content}]
+        _ ->
+          []
+      end)
+
+    side_system = %{
+      "role" => "system",
+      "content" =>
+        "You are answering a side question about the user's current work. " <>
+          "Answer concisely from the completed conversation context. " <>
+          "Do not use tools, make changes, or propose actions as if you performed them."
+    }
+
+    [side_system | history] ++ [%{"role" => "user", "content" => question}]
+  end
+
+  defp format_btw_error(reason) when is_binary(reason), do: reason
+  defp format_btw_error(reason), do: inspect(reason)
+
 
   # submit 在独立 task 里同步跑整个 turn；终态回投本进程以驱动队列。
   # 期间 interrupt/permission_reply 仍可送达 kernel（Loop 用 send 接收）。
@@ -1584,6 +1771,8 @@ defmodule Newbee.Web.Session do
     case Newbee.Commands.handle(text, ctx) do
       {:submit, t} ->
         do_submit(st, t, queue_id)
+      {:btw, question} ->
+        start_btw(st, question, queue_id)
 
       :new ->
         restart_kernel(st)
@@ -1604,6 +1793,7 @@ defmodule Newbee.Web.Session do
   end
 
   defp run_shell_notice(st, cmd) do
+
     t0 = System.monotonic_time(:millisecond)
     result = Newbee.Tools.Run.sh(cmd, timeout: 300_000)
     duration_ms = System.monotonic_time(:millisecond) - t0
@@ -1866,6 +2056,13 @@ defmodule Newbee.Web.Session do
 
     :ok
   end
+
+  defp broadcast_sync(sid, kind, payload) do
+    payload = Map.put_new(payload, :created_at, DateTime.utc_now() |> DateTime.to_iso8601())
+    if Process.whereis(Newbee.Bus), do: Newbee.Bus.emit_sync(:web_event, {:web_event, sid, kind, payload})
+    :ok
+  end
+
 
   defp encode_event({:text, delta}), do: %{delta: delta}
   defp encode_event({:reasoning, delta}), do: %{delta: delta}

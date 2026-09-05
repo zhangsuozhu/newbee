@@ -867,6 +867,23 @@ defmodule Newbee.Web.Api do
     e -> {:error, "rename_error", Exception.message(e)}
   end
 
+  defp dispatch_rpc("session.btw", %{"sessionId" => sid, "question" => question} = payload)
+       when is_binary(sid) and is_binary(question) do
+    question = String.trim(question)
+    if question == "" do
+      {:error, "bad_request", "question 不能为空"}
+    else
+      with {:ok, pid} <- find_session(sid) do
+        request_id = Map.get(payload, "requestId") || Map.get(payload, "request_id")
+        Newbee.Web.Session.btw(pid, question, request_id)
+        {:ok, %{accepted: true, requestId: request_id}}
+      end
+    end
+  end
+  defp dispatch_rpc("session.btw", _payload),
+    do: {:error, "bad_request", "需要 sessionId 和 question 字段"}
+
+
   defp dispatch_rpc("session.prompt", %{"sessionId" => sid, "text" => text} = payload)
        when is_binary(sid) and is_binary(text) do
     if String.trim(sid) == "" or text == "" do

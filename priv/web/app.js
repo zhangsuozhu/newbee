@@ -279,6 +279,10 @@ const flow = $("flow");
     fileAttribution: {},
     groupBySession: {},
     selectedSessions: new Set(),
+    pendingPrompts: new Map(),
+
+    btwCards: new Map(),
+
     queue: [],
     queueSeq: 0,
     queueCurrent: null,
@@ -516,6 +520,9 @@ const flow = $("flow");
         setBusy(false);
         state.queue = [];
         state.queueCurrent = null;
+        state.pendingPrompts.clear();
+        state.btwCards.clear();
+
         renderQueue();
         resetTimingToZero();
         if (p.text) line("notice", p.text);
@@ -534,6 +541,9 @@ const flow = $("flow");
           state.titleDirty = false;
           hidePermission();
           clearAttachments();
+          state.pendingPrompts.clear();
+          state.btwCards.clear();
+
           setBusy(false);
           resetTimingToZero();
           line("notice", p.text || "已开启新会话");
@@ -569,28 +579,63 @@ const flow = $("flow");
         (p.hits || []).forEach(h => line("notice", `⚑ 沉睡规则命中 [${h.id}] ${h.injection}`));
         break;
       case "prompt_injection": promptInjection(p); break;
+case "btw_started": renderBtwStart(p); break;
+case "btw_text": renderBtwText(p); break;
+case "btw_done": finishBtw(p); break;
+case "btw_error": failBtw(p); break;
+
 case "advisor_note": line("notice", `◉ advisor: ${p.text}`); break;
-case "queued": line("notice", `已排队（第 ${p.queued || 1} 位），当前任务完成后自动执行`); break;
+case "queued": line("notice", `已排队（第 ${p.queued || 1} 位），当前模型调用结束后注入`); break;
 case "collab_task_queued": line("notice", `协作任务已排队（${p.queued || 1} 位）`); break;
 case "collab_result_queued": line("notice", `协作结果已排队（${p.queued || 1} 位）`); break;
 case "collab_message_queued": line("notice", `协作消息已排队（${p.queued || 1} 位）`); break;
 case "queue_updated": {
-  // 乱序丢弃：服务端 queue_seq 单调递增；迟到的旧快照（seq 更小）不得覆盖较新状态，
-  // 否则会把“正在执行的项”重新当成等待项（行与 current 重复）。
+  // 乱序丢弃：服务端 queue_seq 单调递增；迟到的旧快照（seq 更小）不得覆盖较新状态。
   if (typeof p.seq === "number" && p.seq <= (state.queueSeq || 0)) break;
   state.queue = Array.isArray(p.queue) ? p.queue : [];
   state.queueSeq = typeof p.seq === "number" ? p.seq : state.queueSeq;
   state.queueCurrent = p.current || null;
-  renderQueue();
   const ev = p.event || {};
-  if (ev.type === "cancelled") line("notice", `已取消排队：${ev.preview || ev.id || ""}`);
-  else if (ev.type === "cleared" && (ev.count || 0) > 0) line("notice", `已清空 ${ev.count} 条排队`);
-  else if (ev.type === "discarded" && (ev.count || 0) > 0) line("notice", `排队已丢弃 ${ev.count} 条（内核启动失败）`);
+  const pending = ev.id ? state.pendingPrompts.get(ev.id) : null;
+
+  if (ev.type === "enqueued" && pending) pending.queued = true;
+  if (ev.type === "started") {
+    const started = renderStartedPrompt(ev.id, p.current, ev.at);
+    state.busy = true;
+    setBusy(true);
+    resetTurnUsage();
+    state.timing.llmStart = started && !started.queued ? started.sentAt : Date.now();
+    state.timing.ftRecorded = false;
+  } else if (ev.type === "steered") {
+    flushTextBlock();
+    archiveReasoning();
+    renderStartedPrompt(ev.id, ev.input, ev.at);
+    if (state.timing.llmStart !== null) state.timing.llmMs += Date.now() - state.timing.llmStart;
+    state.timing.llmStart = Date.now();
+    state.timing.ftRecorded = false;
+
+  } else if (ev.type === "finished") {
+    state.busy = false;
+    setBusy(false);
+
+  } else if (ev.type === "cancelled") {
+    if (ev.id) state.pendingPrompts.delete(ev.id);
+    line("notice", `已取消排队：${ev.preview || ev.id || ""}`);
+  } else if (ev.type === "cleared" || ev.type === "discarded") {
+    state.pendingPrompts.clear();
+    if (ev.type === "cleared" && (ev.count || 0) > 0) line("notice", `已清空 ${ev.count} 条排队`);
+    if (ev.type === "discarded" && (ev.count || 0) > 0) line("notice", `排队已丢弃 ${ev.count} 条（内核启动失败）`);
+  }
+
+  renderQueue();
   break;
 }
+
 case "queue_cancelled": {
   const id = p.id;
   if (id) state.queue = (state.queue || []).filter((it) => it && it.id !== id);
+  if (id) state.pendingPrompts.delete(id);
+
   renderQueue();
   line("notice", `已取消排队：${p.preview || id || ""}`);
   break;
@@ -2435,13 +2480,16 @@ case "goal_round": break;
     // 同步会话工作目录：切会话后立即反映到侧栏标签 + 底部状态栏
     updateCwdLabel(sessionState.cwd || null);
     state.cwd = sessionState.cwd || null;
-      // 同步会话忙碌状态：切到正在跑任务的会话时，UI 立即反映（中断/排队按钮、busy 圆点）
-    setBusy(sessionState.busy === true);
+      // 同步服务端权威状态；本地 busy 不能跨会话沿用。
+    state.busy = sessionState.busy === true;
+    setBusy(state.busy);
+    state.pendingPrompts.clear();
     // 等待队列重建（方案A）：刷新后按 state.queue/current 恢复排队条与执行中提示。
     state.queue = Array.isArray(sessionState.queue) ? sessionState.queue : [];
     state.queueSeq = sessionState.queue_seq || sessionState.queueSeq || sessionState.seq || 0;
     state.queueCurrent = sessionState.current || null;
     renderQueue();
+
     if (state.queueCurrent && state.queueCurrent.preview) line("notice", "正在执行：" + state.queueCurrent.preview);
     if (state.queue.length > 0) line("notice", "已恢复等待队列 " + state.queue.length + " 条，可单条取消");
     const recent = Array.isArray(sessionState.queue_events) ? sessionState.queue_events : (Array.isArray(sessionState.queueEvents) ? sessionState.queueEvents : []);
@@ -3085,8 +3133,8 @@ case "goal_round": break;
   }
 
   // 用户行回显：文本 + 图片缩略图 + 普通文件
-  function renderUserLine(text, attachments) {
-    const d = el("msg-user", "");
+  function renderUserLine(text, attachments, createdAt) {
+    const d = el("msg-user", "", false, createdAt);
     if (text) {
       const span = document.createElement("div");
       span.textContent = text;
@@ -3149,6 +3197,65 @@ case "goal_round": break;
   function genQueueId() {
     return "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
+  function renderStartedPrompt(queueId, current, startedAt) {
+    const pending = queueId ? state.pendingPrompts.get(queueId) : null;
+    if (pending) {
+      renderUserLine(pending.text, pending.attachments, startedAt || pending.createdAt);
+      state.pendingPrompts.delete(queueId);
+      return pending;
+    }
+    if (current && current.origin === "user") {
+      const fallback = current.text || (current.kind === "images" ? current.preview : "");
+      renderUserLine(fallback, [], startedAt || current.startedAt);
+    }
+    return null;
+  }
+  function renderBtwStart(payload) {
+    const id = payload.id || genQueueId();
+    if (state.btwCards.has(id)) return;
+    const card = el("msg-btw", "", false, payload.created_at);
+    const head = document.createElement("div");
+    head.className = "btw-head";
+    head.textContent = "BTW · 旁路问题";
+    const question = document.createElement("div");
+    question.className = "btw-question";
+    question.textContent = payload.question || "";
+    const answer = document.createElement("div");
+    answer.className = "btw-answer";
+    card.append(head, question, answer);
+    state.btwCards.set(id, { card, answer });
+    scrollBottom();
+  }
+
+  function renderBtwText(payload) {
+    const entry = state.btwCards.get(payload.id);
+    if (!entry) return;
+    entry.answer.dataset.raw = (entry.answer.dataset.raw || "") + String(payload.delta || "");
+    entry.answer.dataset.hasText = "1";
+    entry.answer.innerHTML = renderMarkdown(entry.answer.dataset.raw);
+    scrollBottom();
+  }
+
+  function finishBtw(payload) {
+    const entry = state.btwCards.get(payload.id);
+    if (!entry) return;
+    if (!entry.answer.dataset.hasText && payload.content) {
+      entry.answer.dataset.raw = String(payload.content);
+      entry.answer.innerHTML = renderMarkdown(entry.answer.dataset.raw);
+    }
+    entry.card.classList.add("btw-done");
+  }
+
+  function failBtw(payload) {
+    const entry = state.btwCards.get(payload.id);
+    if (!entry) return;
+    entry.answer.classList.add("btw-error");
+    entry.answer.textContent = payload.message || "旁路问题失败";
+    entry.card.classList.add("btw-done");
+  }
+
+
+
   function queueKindLabel(kind) {
     if (kind === "images") return "图片";
     if (kind === "collab_task") return "协作任务";
@@ -3163,11 +3270,13 @@ case "goal_round": break;
     const cur = $("queue-current");
     if (!bar || !list) return;
     const q = Array.isArray(state.queue) ? state.queue : [];
-    if (q.length === 0) { bar.classList.add("hidden"); list.innerHTML = ""; if (count) count.textContent = ""; if (cur) cur.textContent = ""; return; }
+    const queuedCurrent = state.queueCurrent && state.queueCurrent.queued === true;
+    if (q.length === 0 && !queuedCurrent) { bar.classList.add("hidden"); list.innerHTML = ""; if (count) count.textContent = ""; if (cur) cur.textContent = ""; return; }
     bar.classList.remove("hidden");
     list.innerHTML = ""; // 重渲染前清空，避免在旧行上重复叠加（否则头部条数与行数不一致）
-    if (count) count.textContent = "等待队列 " + q.length + " 条";
-    if (cur) cur.textContent = state.queueCurrent && state.queueCurrent.preview ? ("执行中: " + state.queueCurrent.preview) : "";
+    if (count) count.textContent = q.length > 0 ? ("等待队列 " + q.length + " 条") : "";
+    if (cur) cur.textContent = queuedCurrent && state.queueCurrent.preview ? ("执行中: " + state.queueCurrent.preview) : "";
+
     q.forEach((item, idx) => {
       const row = document.createElement("div");
       row.className = "queue-item";
@@ -3195,6 +3304,8 @@ case "goal_round": break;
     if (!queueId || !state.sid) return;
     const sid = state.sid;
     state.queue = (state.queue || []).filter((it) => it && it.id !== queueId);
+    state.pendingPrompts.delete(queueId);
+
     renderQueue();
     try {
       if (state.ws && state.ws.readyState === 1) {
@@ -3234,31 +3345,57 @@ case "goal_round": break;
     }
     const attachments = state.attachments.slice();
     if (state.uploading > 0) { line("notice", "请等待文件上传完成"); return; }
+    const btw = text.match(/^\/btw(?:\s+([\s\S]*))?$/);
+    if (btw) {
+      input.value = "";
+      autoGrow();
+      saveDraft("");
+      if (!state.sid) return;
+      if (attachments.length > 0) { line("notice", "/btw 不携带附件"); return; }
+      const question = String(btw[1] || "").trim();
+      if (!question) { line("notice", "用法：/btw <问题>"); return; }
+      const requestId = genQueueId();
+      try {
+        if (state.ws && state.ws.readyState === 1) {
+          state.ws.send(JSON.stringify({ type: "btw", question, requestId }));
+        } else {
+          await rpc("session.btw", { sessionId: state.sid, question, requestId });
+        }
+      } catch (e) {
+        line("error", e.message);
+      }
+      return;
+    }
+
     if ((!text && attachments.length === 0) || !state.sid) return;
     const queueId = genQueueId();
     const wasBusy = state.busy === true;
+    const prev = text || (attachments.length > 0 ? ("[图片 x" + attachments.length + "]") : "");
+    state.pendingPrompts.set(queueId, {
+      text,
+      attachments,
+      createdAt: state.eventCreatedAt,
+      sentAt: Date.now(),
+      queued: wasBusy,
+    });
     if (wasBusy) {
-      line("notice", "已加入队列：当前任务完成后自动执行");
-      const prev = text || (attachments.length > 0 ? ("[图片 x" + attachments.length + "]") : "");
       state.queue = [...(state.queue || []), { id: queueId, kind: attachments.length > 0 ? "images" : "text", preview: prev.slice(0, 80), text: text, createdAt: state.eventCreatedAt, origin: "user" }];
       renderQueue();
     } else if (text) {
       lastUserPrompt = text;
     }
+
     input.value = "";
     autoGrow();
     saveDraft("");
     scrollBottom(true);
-    renderUserLine(text, attachments);
     if (!state.hasPrompted) {
       state.hasPrompted = true;
       state.titleDirty = true;
       applyPromptTitle(text, attachments);
     }
     state.busy = true; setBusy(true);
-    // TTFT 锚点：从请求发起计时（排队项不置位，避免排队等待计入首 token）
-    if (!wasBusy) { state.timing.llmStart = Date.now(); state.timing.ftRecorded = false; }
-    resetTurnUsage();
+    // 用户气泡、TTFT 锚点和本轮用量在服务端 started 事件到达时初始化。
     try {
       if (attachments.length > 0) {
         await rpc("session.promptAttachments", {
@@ -3275,9 +3412,11 @@ case "goal_round": break;
       clearAttachments();
     } catch (e) {
       line("error", e.message);
+      state.pendingPrompts.delete(queueId);
       state.queue = (state.queue || []).filter((it) => it && it.id !== queueId);
       renderQueue();
-      state.busy = false; setBusy(false);
+      state.busy = wasBusy; setBusy(wasBusy);
+
     }
   }
   function interrupt() {
@@ -5569,6 +5708,8 @@ case "goal_round": break;
   // ── 命令面板 (Command Palette) ──
   const CMD_LIST = [
     { icon: "▣", name: "/compact", desc: "压缩对话历史", needsArg: false },
+    { icon: "?", name: "/btw", desc: "询问当前工作（不写入对话）", needsArg: true },
+
     { icon: "±", name: "/diff", desc: "查看当前变更", needsArg: false },
     { icon: "◈", name: "/model", desc: "切换模型 (provider/model-id)", needsArg: true },
     { icon: "↩", name: "/undo", desc: "回滚到上一快照", needsArg: false },

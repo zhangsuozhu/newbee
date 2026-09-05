@@ -173,4 +173,117 @@ defmodule Newbee.Web.SessionQueueTest do
     assert {:noreply, _finished} = Session.handle_info({:DOWN, queued.turn_ref, :process, turn, :killed}, queued)
     assert_received :recover_kernel
   end
+  test "direct prompt broadcasts started before execution failure and then finished" do
+    sid = "qdirect_45402"
+    Newbee.Bus.subscribe()
+    on_exit(fn -> Newbee.Bus.unsubscribe() end)
+
+    st = base_state(sid, busy: false)
+    {:noreply, st2} = Session.handle_cast({:prompt, "run later", "directid"}, st)
+
+    refute st2.busy
+    assert st2.current == nil
+
+    assert_receive {:newbee_event, :web_event,
+                    {:web_event, ^sid, :queue_updated,
+                     %{
+                       event: %{type: "started", id: "directid", queued: false},
+                       current: %{id: "directid", text: "run later", queued: false}
+                     }}},
+                   500
+
+    assert_receive {:newbee_event, :web_event, {:web_event, ^sid, :error, _}}, 500
+
+    assert_receive {:newbee_event, :web_event,
+                    {:web_event, ^sid, :queue_updated, %{event: %{type: "finished", id: "directid"}, current: nil}}},
+                   500
+  end
+
+  test "busy queue exposes a steerable head at the model-call checkpoint" do
+    sid = "qsteer_45444"
+    Newbee.Bus.subscribe()
+    on_exit(fn -> Newbee.Bus.unsubscribe() end)
+
+    st = base_state(sid, busy: true)
+    {:noreply, queued} = Session.handle_cast({:prompt, "change direction", "steerid"}, st)
+    assert {:reply, {:ok, item}, consumed} = Session.handle_call(:take_steering, self(), queued)
+    assert item.id == "steerid"
+    assert :queue.len(consumed.queue) == 0
+
+    assert_receive {:newbee_event, :web_event,
+                    {:web_event, ^sid, :queue_updated,
+                     %{event: %{type: "steered", id: "steerid", input: %{text: "change direction"}}}}},
+                   500
+  end
+
+  test "commands stay queued until the current turn finishes" do
+    st = base_state("qcommand_45445", busy: true)
+    {:noreply, queued} = Session.handle_cast({:prompt, "/status", "cmdid"}, st)
+    assert {:reply, :none, same} = Session.handle_call(:take_steering, self(), queued)
+    assert :queue.len(same.queue) == 1
+  end
+
+
+  test "frontend renders pending user input only when the server starts it" do
+    js = File.read!("priv/web/app.js")
+    css = File.read!("priv/web/style.css")
+    [_, send_and_after] = String.split(js, "async function send()", parts: 2)
+    [send_body | _] = String.split(send_and_after, "function interrupt()", parts: 2)
+
+    refute send_body =~ "renderUserLine("
+    assert send_body =~ "state.pendingPrompts.set(queueId"
+    assert js =~ ~s|if (ev.type === "started")|
+    assert js =~ "renderStartedPrompt(ev.id, p.current, ev.at)"
+    assert js =~ ~s|else if (ev.type === "finished")|
+    assert js =~ "const btw = text.match"
+    assert js =~ ~s|type: "btw"|
+    assert js =~ "renderBtwStart(p)"
+    assert css =~ ".msg-btw"
+
+  end
+
+  test "/btw runs independently without changing the main transcript" do
+    sid = "qbtw_#{System.unique_integer([:positive])}"
+    test_pid = self()
+    session = Newbee.Session.open(sid)
+    Newbee.Session.append(session, %{"role" => "user", "content" => "主任务上下文"})
+
+    plug = fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:btw_request, Jason.decode!(raw)})
+      Req.Test.json(conn, %{
+        "output" => [%{"type" => "message", "content" => [%{"type" => "output_text", "text" => "side answer"}]}],
+        "usage" => %{"input_tokens" => 3, "output_tokens" => 2, "total_tokens" => 5}
+      })
+    end
+
+    client =
+      Newbee.LLM.Client.new(
+        api: "openai-responses",
+        model: "test/btw-session",
+        api_key: "test",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    Newbee.Bus.subscribe()
+    on_exit(fn ->
+      Newbee.Bus.unsubscribe()
+      Newbee.Session.delete(sid)
+    end)
+
+    st = %Session{sid: sid, client: client, busy: true}
+    {:noreply, st2} = Session.handle_cast({:btw, "当前改动做了什么？", "btwid"}, st)
+    assert st2.busy
+    assert_receive {:newbee_event, :web_event, {:web_event, ^sid, :btw_started, %{id: "btwid"}}}, 500
+    assert_receive {:btw_request, body}, 5_000
+    assert body["tools"] == []
+    assert List.last(body["input"]) == %{"role" => "user", "content" => "当前改动做了什么？"}
+    assert_receive {:btw_finished, "btwid", result}, 5_000
+
+    {:noreply, _st3} = Session.handle_info({:btw_finished, "btwid", result}, st2)
+    assert_receive {:newbee_event, :web_event, {:web_event, ^sid, :btw_done, %{id: "btwid", content: "side answer"}}}, 500
+    refute Enum.any?(Newbee.Session.messages(session), &(&1["content"] == "当前改动做了什么？"))
+  end
+
 end
