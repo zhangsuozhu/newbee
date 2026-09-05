@@ -85,7 +85,7 @@ defmodule Newbee.Tools.Browser do
     }
   end
 
-  @doc "Run one ordered browser-action plan. Takes a URL or a map with `url`, `backend`, `actions`, `timeout`, `profile`, `viewport`, `storage_state`, and `save_storage`. Returns action results and produced file paths."
+  @doc "Run one ordered browser-action plan. Takes a URL or a map with `url`, `backend`, `actions`, `timeout`, `profile`, `viewport`, `storage_state`, and `save_storage`. Returns `{:ok, result}` with action results and produced file paths, else `{:error, reason}`."
   def run(url) when is_binary(url), do: run(%{url: url})
 
   def run(request) when is_map(request) do

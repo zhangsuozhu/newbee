@@ -2,6 +2,8 @@ defmodule Newbee.Plugins.RepoMap do
   @moduledoc """
   Project map: compact signatures / file tree — locate, then read targets.
 
+  Returns `String.t()` directly (not `{:ok, ...}`); bind it, e.g. `map = build(...)`.
+
   Ranked by reference-graph importance: counts static inter-module references (alias-expanded);
   heavily referenced modules get full signatures (Tier1), the rest collapse into one-line index entries (Tier2).
   Deterministic output. Non-Elixir projects degrade to a directory tree.
@@ -17,9 +19,9 @@ defmodule Newbee.Plugins.RepoMap do
   unchanged projects reuse the cache, no repeat AST parsing.
 
   ## Runnable example
-      Newbee.Plugins.RepoMap.build(".")
-      Newbee.Plugins.RepoMap.build(".", tier1_max_bytes: 8_000)
-      Newbee.Plugins.RepoMap.build(".", format: :slim)
+      map = Newbee.Plugins.RepoMap.build(".")
+      map = Newbee.Plugins.RepoMap.build(".", tier1_max_bytes: 8_000)
+      map = Newbee.Plugins.RepoMap.build(".", format: :slim)
 
   """
   # 无论多大预算，Top-8 必给全签名
@@ -34,7 +36,7 @@ defmodule Newbee.Plugins.RepoMap do
   @cache_dir Path.join(System.user_home!(), ".newbee/cache")
 
   @doc """
-  Build the project map (compact text). Non-Elixir projects degrade to a directory tree.
+  Build the project map (compact text). Returns `String.t()` directly (not `{:ok, ...}`). Non-Elixir projects degrade to a directory tree.
 
   Options:
     - :tier1_max_bytes — Tier1 byte budget (default 14_000); shrink to force two-tier display on small projects.
@@ -42,6 +44,7 @@ defmodule Newbee.Plugins.RepoMap do
   Incremental cache: keyed on an mtime fingerprint of mix.exs + every file under lib;
   unchanged projects reuse the cache, no repeat AST parsing. Cache keys include format, so the two tiers never mix.
   """
+  @spec build(String.t() | Path.t(), keyword()) :: String.t()
   def build(dir \\ ".", opts \\ []) do
     key = "v2-" <> to_string(Keyword.get(opts, :format, :full)) <> "-" <> fingerprint(dir)
 

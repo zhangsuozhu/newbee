@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Hive do
   @moduledoc """
-  Persistent collaboration: revision-CAS Board, DAG, event waits, Lead acceptance.
+  Persistent collaboration: revision-CAS Board, DAG, event waits, Lead acceptance. Returns `{:ok, _} | {:error, _, _}` (`personas/0` returns `[name]` directly).
 
   Workers may only submit `submitted`, never rewrite task contracts; `succeeded` is written solely by the Lead
   after running structured acceptance on the host node — callers pass no attestation. Command acceptance executes
@@ -12,19 +12,19 @@ defmodule Newbee.Tools.Hive do
       {:ok, g} = Newbee.Tools.Hive.open("Auth refactor")
       {:ok, _} = Newbee.Tools.Hive.delegate(g["group_id"], "Add tests", acceptance: checks)
       {:ok, b} = Newbee.Tools.Hive.board(g["group_id"])
-      Newbee.Tools.Hive.board_put(gid, task)
-      Newbee.Tools.Hive.board_claim(gid, tid, rev)
-      Newbee.Tools.Hive.report(gid, tid, "submitted", expected_revision: rev, result: "done")
-      Newbee.Tools.Hive.retry(gid, tid, expected_revision: b["revision"], reason: "retry after interruption")
+      {:ok, _} = Newbee.Tools.Hive.board_put(gid, task)
+      {:ok, _} = Newbee.Tools.Hive.board_claim(gid, tid, rev)
+      {:ok, _} = Newbee.Tools.Hive.report(gid, tid, "submitted", expected_revision: rev, result: "done")
+      {:ok, _} = Newbee.Tools.Hive.retry(gid, tid, expected_revision: b["revision"], reason: "retry after interruption")
 
-      Newbee.Tools.Hive.verify(gid, tid)
-      Newbee.Tools.Hive.wait(gid, since_revision: rev)
-      Newbee.Tools.Hive.send(gid, sid, "Review")
-      Newbee.Tools.Hive.inbox(gid)
-      Newbee.Tools.Hive.roster(gid)
-      Newbee.Tools.Hive.interrupt(gid, sid)
-      Newbee.Tools.Hive.close(gid, sid)
-      Newbee.Tools.Hive.personas()
+      {:ok, _} = Newbee.Tools.Hive.verify(gid, tid)
+      {:ok, _} = Newbee.Tools.Hive.wait(gid, since_revision: rev)
+      {:ok, _} = Newbee.Tools.Hive.send(gid, sid, "Review")
+      {:ok, _} = Newbee.Tools.Hive.inbox(gid)
+      {:ok, _} = Newbee.Tools.Hive.roster(gid)
+      {:ok, _} = Newbee.Tools.Hive.interrupt(gid, sid)
+      {:ok, _} = Newbee.Tools.Hive.close(gid, sid)
+      names = Newbee.Tools.Hive.personas()
   """
   @context_key {Newbee.Tools.Hive, :context}
   @report_statuses ~w(accepted running blocked submitted failed cancelled)

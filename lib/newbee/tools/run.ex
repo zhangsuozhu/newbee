@@ -28,7 +28,7 @@ defmodule Newbee.Tools.Run do
 
   @dangerous_re ~r/(rm\s+.*-rf|rm\s+-r\s+\/|git\s+push|rm\s+-rf\s+\/)/i
 
-  @doc "Run a shell command under the project root. Returns %{exit, output}."
+  @doc "Run a shell command under the project root. Returns `%{exit: integer() | :timeout | :denied, exit_code: integer() | :timeout | :denied, output: String.t()}` (`exit_code` aliases `exit`)."
   def sh(cmd, opts \\ []) do
     case gate(cmd) do
       {:deny, msg} -> %{exit: :denied, exit_code: :denied, output: msg}
