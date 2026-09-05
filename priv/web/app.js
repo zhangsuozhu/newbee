@@ -3781,15 +3781,39 @@ case "goal_round": break;
     e.target.value = "";
   });
   input.addEventListener("paste", (e) => {
+    // 粘贴任意文件（不再仅图片）：图片/截图/文档等都会作为附件加入输入框。
     const items = (e.clipboardData && e.clipboardData.items) || [];
-    let hasImage = false;
+    let hasFile = false;
     for (const it of items) {
-      if (it.kind === "file" && it.type.startsWith("image/")) {
+      if (it.kind === "file") {
         const f = it.getAsFile();
-        if (f) { addAttachment(f); hasImage = true; }
+        if (f) { addAttachment(f); hasFile = true; }
       }
     }
-    if (hasImage) e.preventDefault();
+    if (hasFile) e.preventDefault();
+  });
+  // ── 拖放上传：拖文件到窗口任意处即加入输入框（支持任意文件）──
+  const dropOverlay = $("drop-overlay");
+  const dragHasFiles = (e) => !!(e.dataTransfer && [...(e.dataTransfer.types || [])].includes("Files"));
+  ["dragenter", "dragover"].forEach((ev) => document.addEventListener(ev, (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    if (dropOverlay) dropOverlay.classList.remove("hidden");
+  }));
+  const maybeHideDrop = (e) => {
+    if (e.relatedTarget) return; // 仍在窗口内部移动
+    if (dropOverlay) dropOverlay.classList.add("hidden");
+  };
+  document.addEventListener("dragleave", maybeHideDrop);
+  document.addEventListener("drop", (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    if (dropOverlay) dropOverlay.classList.add("hidden");
+    const files = [...(e.dataTransfer && e.dataTransfer.files ? e.dataTransfer.files : [])];
+    if (files.length === 0) return;
+    if (!state.sid) { line("notice", "请先开始会话再添加文件"); return; }
+    files.forEach(addAttachment);
   });
   $("interrupt").onclick = interrupt;
   if ($("queue-clear")) $("queue-clear").onclick = clearQueueOnly;

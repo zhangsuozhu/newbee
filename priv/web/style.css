@@ -2837,3 +2837,13 @@ svg.ico {
   mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%);
 }
 
+
+/* 拖放上传遮罩：拖拽文件进入窗口时提示，drop 后由 JS 逐个 addAttachment */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 2000;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  border: 2px dashed var(--accent); border-radius: 10px; margin: 10px;
+  color: var(--accent); font-size: 15px; font-weight: 600;
+  pointer-events: none;
+}
