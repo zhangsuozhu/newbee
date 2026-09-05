@@ -5,32 +5,101 @@ defmodule Newbee.DEE.EvalWorker do
   """
   use GenServer
 
-  @default_timeout :infinity
+  @default_output_limit 1_048_576
+  @default_heap_bytes 256 * 1024 * 1024
+  @sample_interval 100
 
   @doc false
-  def default_timeout, do: @default_timeout
+  def default_timeout, do: Newbee.DEE.EvalJob.default_timeout()
+  @doc false
+  def max_timeout, do: Newbee.DEE.EvalJob.max_timeout()
+  @doc false
+  def default_reductions_limit, do: Newbee.DEE.EvalJob.default_reductions_limit()
+
   @active_key :newbee_eval_active_task
 
-  defstruct binding: [], count: 0, quiesced: false, cwd: nil
+  defstruct binding: [], count: 0, quiesced: false, cwd: nil, active: nil
+
+  @doc false
+  def active_job(key), do: :persistent_term.get({@active_key, key}, nil)
 
   @doc false
   def active_pid(key) do
-    :persistent_term.get({@active_key, key}, nil)
+    case active_job(key) do
+      %{pid: pid} when is_pid(pid) ->
+        if Process.alive?(pid) do
+          pid
+        else
+          erase_active(key)
+          nil
+        end
+
+      pid when is_pid(pid) ->
+        if Process.alive?(pid) do
+          pid
+        else
+          erase_active(key)
+          nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp erase_active(key) do
+    try do
+      :persistent_term.erase({@active_key, key})
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
   end
 
   @doc false
-  def clear_active(key, pid) do
-    active_key = {@active_key, key}
-
-    if :persistent_term.get(active_key, nil) == pid do
-      :persistent_term.erase(active_key)
+  def clear_active(key, job_id, pid) do
+    case :persistent_term.get({@active_key, key}, nil) do
+      %{job_id: ^job_id, pid: ^pid} -> :persistent_term.erase({@active_key, key})
+      ^pid when job_id == :legacy -> :persistent_term.erase({@active_key, key})
+      _ -> :ok
     end
 
     :ok
   end
 
   @doc false
-  def register_active(key, pid), do: :persistent_term.put({@active_key, key}, pid)
+  def clear_active(key, pid), do: clear_active(key, :legacy, pid)
+
+  @doc false
+  def register_active(key, job_id, pid) when is_pid(pid) do
+    case :persistent_term.get({@active_key, key}, nil) do
+      %{pid: old_pid, job_id: old_job} when is_pid(old_pid) ->
+        if old_pid != pid and Process.alive?(old_pid) and old_job != job_id do
+          Newbee.DebugLog.log(:node, "active registration overwrites live job")
+        end
+
+        :ok
+
+      _ ->
+        :ok
+    end
+
+    :persistent_term.put(
+      {@active_key, key},
+      %{
+        job_id: job_id,
+        pid: pid,
+        node: node(pid),
+        registered_at: System.monotonic_time(:millisecond)
+      }
+    )
+
+    :ok
+  end
+
+  @doc false
+  def register_active(key, pid), do: register_active(key, :legacy, pid)
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts)
   def start(opts \\ []), do: GenServer.start(__MODULE__, opts)
@@ -49,21 +118,48 @@ defmodule Newbee.DEE.EvalWorker do
 
   @impl true
   def handle_call({:eval, _code, _opts}, _from, %{quiesced: true} = state) do
-    # Binding Continuity step 0（§4.4 quiesce）：静默期拒收新 step
     {:reply,
-     %{status: :error, error: "generation quiescing (switch in progress)", output: "", warnings: "", quiesced: true},
-     state}
+     %{
+       status: :error,
+       error: "generation quiescing (switch in progress)",
+       output: "",
+       warnings: "",
+       quiesced: true
+     }, state}
   end
 
-  def handle_call({:eval, code, opts}, _from, state) do
+  def handle_call({:eval, _code, _opts}, _from, %{active: active} = state)
+      when not is_nil(active) do
+    {:reply, %{status: :error, error: "evaluator busy", output: "", warnings: ""}, state}
+  end
+
+  def handle_call({:eval, code, opts}, from, state) do
     case restore_cwd(state.cwd) do
       :ok ->
-        timeout = Keyword.get(opts, :timeout, @default_timeout)
-        {result, new_binding, count} = run_cell(code, state.binding, timeout, state.count, opts)
-        result = Map.put(result, :cwd, current_cwd())
-        # §9.1：绑定 GC——LRU + 大小预算，冷值逐出为 ArtifactRef（pin 不动）
-        {new_binding, _evicted} = maybe_gc(new_binding, count)
-        {:reply, result, %{state | binding: new_binding, count: count}}
+        timeout = normalize_timeout(Keyword.get(opts, :timeout, default_timeout()))
+        job_id = Keyword.get(opts, :job_id, new_job_id())
+        parent = self()
+
+        {runner, monitor} =
+          spawn_monitor(fn ->
+            owners = [
+              self(),
+              parent,
+              elem(from, 0)
+              | List.wrap(Keyword.get(opts, :cancel_owners) || Keyword.get(opts, :cancel_owner))
+            ]
+
+            job_opts =
+              opts
+              |> Keyword.put(:job_id, job_id)
+              |> Keyword.put(:cancel_owners, Enum.uniq(owners))
+
+            result = run_cell(code, state.binding, timeout, state.count, job_opts)
+            send(parent, {:eval_job_finished, job_id, self(), result})
+          end)
+
+        active = %{job_id: job_id, runner: runner, monitor: monitor, from: from, timeout: timeout}
+        {:noreply, %{state | active: active}}
 
       {:error, reason} ->
         result = %{
@@ -78,15 +174,20 @@ defmodule Newbee.DEE.EvalWorker do
     end
   end
 
-  def handle_call(:quiesce, _from, state), do: {:reply, :ok, %{state | quiesced: true}}
-  def handle_call(:unquiesce, _from, state), do: {:reply, :ok, %{state | quiesced: false}}
-
-  def handle_call(:bindings_summary, _from, state) do
-    {:reply, summarize(state.binding), state}
+  def handle_call({:cancel, job_id}, _from, %{active: %{job_id: job_id, runner: runner}} = state) do
+    Process.exit(runner, :kill)
+    {:reply, :ok, state}
   end
 
-  def handle_call(:dump_bindings, _from, state) do
-    {:reply, state.binding, state}
+  def handle_call({:cancel, _job_id}, _from, state), do: {:reply, {:error, :not_active}, state}
+
+  def handle_call(:quiesce, _from, state), do: {:reply, :ok, %{state | quiesced: true}}
+  def handle_call(:unquiesce, _from, state), do: {:reply, :ok, %{state | quiesced: false}}
+  def handle_call(:bindings_summary, _from, state), do: {:reply, summarize(state.binding), state}
+  def handle_call(:dump_bindings, _from, state), do: {:reply, state.binding, state}
+
+  def handle_call({:set_cwd, _cwd}, _from, %{active: active} = state) when not is_nil(active) do
+    {:reply, {:error, :busy}, state}
   end
 
   def handle_call({:set_cwd, cwd}, _from, state) when is_binary(cwd) do
@@ -100,9 +201,58 @@ defmodule Newbee.DEE.EvalWorker do
 
   def handle_call({:set_cwd, nil}, _from, state), do: {:reply, :ok, %{state | cwd: nil}}
 
-  def handle_call({:restore_bindings, binding}, _from, state) do
-    {:reply, :ok, %{state | binding: binding}}
+  def handle_call({:restore_bindings, _binding}, _from, %{active: active} = state)
+      when not is_nil(active) do
+    {:reply, {:error, :busy}, state}
   end
+
+  def handle_call({:restore_bindings, binding}, _from, state),
+    do: {:reply, :ok, %{state | binding: binding}}
+
+  @impl true
+  def handle_info(
+        {:eval_job_finished, job_id, runner, {result, new_binding, count}},
+        %{active: %{job_id: job_id, runner: runner} = active} = state
+      ) do
+    Process.demonitor(active.monitor, [:flush])
+    result = Map.put(result, :cwd, current_cwd())
+    {new_binding, _evicted} = maybe_gc(new_binding, count)
+    GenServer.reply(active.from, result)
+    {:noreply, %{state | binding: new_binding, count: count, active: nil}}
+  end
+
+  def handle_info(
+        {:DOWN, monitor, :process, runner, reason},
+        %{active: %{monitor: monitor, runner: runner} = active} = state
+      ) do
+    error =
+      if reason == :killed, do: "interrupted", else: "cell runner exited: #{inspect(reason)}"
+
+    GenServer.reply(active.from, %{
+      status: :error,
+      error: error,
+      output: "",
+      warnings: "",
+      outcome_unknown: reason != :killed
+    })
+
+    {:noreply, %{state | count: state.count + 1, active: nil}}
+  end
+
+  def handle_info({:eval_job_finished, _job_id, _runner, _result}, state), do: {:noreply, state}
+  def handle_info({:DOWN, _monitor, :process, _runner, _reason}, state), do: {:noreply, state}
+
+  defp new_job_id, do: {System.unique_integer([:positive, :monotonic]), make_ref()}
+  defp normalize_timeout(:infinity), do: default_timeout()
+
+  defp normalize_timeout(value) when is_integer(value) and value >= 0,
+    do: min(value, max_timeout())
+
+  defp normalize_timeout(value),
+    do: raise(ArgumentError, "invalid eval timeout: #{inspect(value)}")
+
+  defp positive_limit(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_limit(_value, default), do: default
 
   defp normalize_cwd(nil), do: {:ok, nil}
 
@@ -126,16 +276,26 @@ defmodule Newbee.DEE.EvalWorker do
   # ── cell 执行 ──
 
   def run_cell(code, binding, timeout, count, opts \\ []) do
-    parent = self()
+    timeout = normalize_timeout(timeout)
+    job_id = Keyword.get(opts, :job_id, new_job_id())
     interrupt_key = Keyword.get(opts, :interrupt_key)
     interrupt_node = Keyword.get(opts, :interrupt_node, Node.self())
 
+    reductions_limit =
+      positive_limit(Keyword.get(opts, :reductions_limit), default_reductions_limit())
+
+    output_limit = positive_limit(Keyword.get(opts, :output_limit), @default_output_limit)
+    heap_bytes = positive_limit(Keyword.get(opts, :max_heap_bytes), @default_heap_bytes)
+
     task =
       Task.async(fn ->
-        register_remote_active(interrupt_node, interrupt_key, self())
+        register_remote_active(interrupt_node, interrupt_key, job_id, self())
 
-        # 当前 cell 的媒体能力令牌：由 Agent.Loop 在主节点签发，
-        # 只在本次 cell 进程中短暂可见；Tools.Media 会回主节点校验令牌。
+        Process.flag(:max_heap_size, %{
+          size: div(heap_bytes, :erlang.system_info(:wordsize)),
+          kill: true
+        })
+
         media_capability = opts[:media_capability]
         if is_binary(media_capability), do: Process.put({Newbee.Tools.Media, :capability}, media_capability)
 
@@ -147,10 +307,10 @@ defmodule Newbee.DEE.EvalWorker do
           Process.put({Newbee.Tools.Collaboration, :context}, %{capability: collaboration_capability})
         end
 
-        try do
-          {:ok, io} = StringIO.open("")
-          Process.group_leader(self(), io)
+        {:ok, io} = Newbee.DEE.BoundedIO.start_link(output_limit)
+        Process.group_leader(self(), io)
 
+        try do
           outcome =
             try do
               {value, new_binding} = Code.eval_string(code, binding, file: "cell_#{count}")
@@ -161,59 +321,103 @@ defmodule Newbee.DEE.EvalWorker do
               kind, reason -> {:error, "#{kind}: #{safe_inspect(reason)}"}
             end
 
-          {_in, out} = StringIO.contents(io)
-          GenServer.stop(io, :normal, 5_000)
-          send(parent, {:cell_done, self(), outcome, out})
+          {outcome, Newbee.DEE.BoundedIO.contents(io)}
         after
-          clear_remote_active(interrupt_node, interrupt_key, self())
+          Newbee.DEE.BoundedIO.stop(io)
+          clear_remote_active(interrupt_node, interrupt_key, job_id, self())
           if is_binary(media_capability), do: Process.delete({Newbee.Tools.Media, :capability})
           if is_binary(collaboration_capability), do: Process.delete({Newbee.Tools.Collaboration, :context})
         end
       end)
 
-    # Task.async/1 links the worker; unlink so cancellation kills only the cell,
-    # not the long-lived EvalWorker GenServer that owns the bindings.
     Process.unlink(task.pid)
+    owners = List.wrap(Keyword.get(opts, :cancel_owners) || Keyword.get(opts, :cancel_owner))
+    watcher = start_owner_watcher(owners, task.pid)
+    result = await_cell(task, timeout, reductions_limit)
+    if watcher, do: send(watcher, :stop)
+    clear_remote_active(interrupt_node, interrupt_key, job_id, task.pid)
 
-    cancel_owners = List.wrap(Keyword.get(opts, :cancel_owners) || Keyword.get(opts, :cancel_owner))
-    watcher = start_owner_watcher(cancel_owners, task.pid)
+    case result do
+      {:ok, {outcome, out}} ->
+        case outcome do
+          {:ok, value, new_binding} ->
+            {warnings, clean_out} = split_warnings(out)
 
-    result =
-      case Task.yield(task, timeout) do
-        nil ->
-          Task.shutdown(task, :brutal_kill)
-          {%{status: :error, error: "timeout after #{timeout}ms", output: "", warnings: ""}, binding, count + 1}
+            {%{status: :ok, value: safe_inspect(value), output: clean_out, warnings: warnings}, new_binding, count + 1}
 
-        {:ok, _} ->
-          receive do
-            {:cell_done, _, {:ok, value, new_binding}, out} ->
-              {warnings, clean_out} = split_warnings(out)
+          {:error, msg} ->
+            {warnings, clean_out} = split_warnings(out)
+            {extra_w, clean_err} = split_warnings(msg)
+            warnings = if extra_w != "", do: warnings <> "\n" <> extra_w, else: warnings
 
-              {%{status: :ok, value: safe_inspect(value), output: clean_out, warnings: warnings}, new_binding,
-               count + 1}
+            {%{status: :error, error: clean_err, output: clean_out, warnings: warnings}, binding, count + 1}
+        end
 
-            {:cell_done, _, {:error, msg}, out} ->
-              {warnings, clean_out} = split_warnings(out)
-              # 异常里也可能含编译 warning 尾巴，统一拆出
-              {extra_w, clean_err} = split_warnings(msg)
-              warnings = if extra_w != "", do: warnings <> "\n" <> extra_w, else: warnings
-              {%{status: :error, error: clean_err, output: clean_out, warnings: warnings}, binding, count + 1}
-          after
-            1_000 ->
-              {%{status: :error, error: "cell result lost", output: "", warnings: ""}, binding, count + 1}
+      {:error, :timeout} ->
+        Task.shutdown(task, :brutal_kill)
+
+        {%{
+           status: :error,
+           error: "timeout after #{timeout}ms",
+           output: "",
+           warnings: "",
+           recycle_node: true
+         }, binding, count + 1}
+
+      {:error, :reductions} ->
+        Task.shutdown(task, :brutal_kill)
+
+        {%{
+           status: :error,
+           error: "execution budget exceeded (reductions)",
+           output: "",
+           warnings: "",
+           recycle_node: true
+         }, binding, count + 1}
+
+      {:exit, :killed} ->
+        {%{status: :error, error: "interrupted", output: "", warnings: "", recycle_node: true}, binding, count + 1}
+
+      {:exit, reason} ->
+        {%{
+           status: :error,
+           error: "cell task exited: #{inspect(reason)}",
+           output: "",
+           warnings: ""
+         }, binding, count + 1}
+    end
+  end
+
+  defp await_cell(task, timeout, reductions_limit) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    await_cell_until(task, deadline, reductions_limit)
+  end
+
+  defp await_cell_until(task, deadline, reductions_limit) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+    wait = min(max(remaining, 0), @sample_interval)
+
+    case Task.yield(task, wait) do
+      {:ok, result} ->
+        {:ok, result}
+
+      {:exit, reason} ->
+        {:exit, reason}
+
+      nil when remaining <= 0 ->
+        {:error, :timeout}
+
+      nil ->
+        reductions =
+          case Process.info(task.pid, :reductions) do
+            {:reductions, value} -> value
+            _ -> 0
           end
 
-        {:exit, :killed} ->
-          {%{status: :error, error: "interrupted", output: "", warnings: ""}, binding, count + 1}
-
-        {:exit, reason} ->
-          {%{status: :error, error: "cell task exited: #{inspect(reason)}", output: "", warnings: ""}, binding,
-           count + 1}
-      end
-
-    if watcher, do: send(watcher, :stop)
-    clear_remote_active(interrupt_node, interrupt_key, task.pid)
-    result
+        if reductions >= reductions_limit,
+          do: {:error, :reductions},
+          else: await_cell_until(task, deadline, reductions_limit)
+    end
   end
 
   # 监控全部 owner（调用者 + Evaluator）与 cell 本身；任一 owner 退出即杀 cell，
@@ -259,23 +463,23 @@ defmodule Newbee.DEE.EvalWorker do
   end
 
   defp split_warnings(other), do: {"", to_string(other)}
-  defp register_remote_active(_node, key, _pid) when is_nil(key), do: :ok
+  defp register_remote_active(_node, key, _job_id, _pid) when is_nil(key), do: :ok
 
-  defp register_remote_active(node, key, pid) do
+  defp register_remote_active(node, key, job_id, pid) do
     if node == Node.self() do
-      register_active(key, pid)
+      register_active(key, job_id, pid)
     else
-      :rpc.call(node, __MODULE__, :register_active, [key, pid])
+      :rpc.call(node, __MODULE__, :register_active, [key, job_id, pid])
     end
   end
 
-  defp clear_remote_active(_node, key, _pid) when is_nil(key), do: :ok
+  defp clear_remote_active(_node, key, _job_id, _pid) when is_nil(key), do: :ok
 
-  defp clear_remote_active(node, key, pid) do
+  defp clear_remote_active(node, key, job_id, pid) do
     if node == Node.self() do
-      clear_active(key, pid)
+      clear_active(key, job_id, pid)
     else
-      :rpc.call(node, __MODULE__, :clear_active, [key, pid])
+      :rpc.call(node, __MODULE__, :clear_active, [key, job_id, pid])
     end
   end
 

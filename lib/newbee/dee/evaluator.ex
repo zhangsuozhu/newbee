@@ -34,21 +34,21 @@ defmodule Newbee.DEE.Evaluator do
             node_label: "runtime",
             # 宿主进程（会话 kernel）：{pid, mref}；宿主死亡时求值器随停，
             # terminate → stop_all 释放 primary/standby peer 节点（epmd 不残留）
-            owner: nil
+            owner: nil,
+            active_job: nil,
+            pending_evals: :queue.new()
 
   @env_deny_prefixes ~w(OPENROUTER_ DEEPSEEK_ ANTHROPIC_ OPENAI_)
   @env_deny_suffixes ~w(_KEY _TOKEN _SECRET)
 
-  # peer 启动包含新 BEAM + Elixir application 冷启动，不能使用默认短窗口。
   @peer_boot_timeout 60_000
   @rpc_boot_timeout 60_000
   @reboot_cooldown 5_000
-  # cell 自身决定 deadline；默认无限等待但始终可由会话 interrupt 取消。
-  # RPC 不再另设墙钟截止，否则会返回错误却让远端副作用继续执行。
-
-  # 等待在途 standby boot 完成的上限 / boot 失败后的重试间隔
   @standby_wait_timeout 60_000
   @standby_retry_ms 1_000
+  @max_node_memory_bytes 1_500_000_000
+  @max_node_processes 20_000
+  @budget_rpc_timeout 500
 
   # ── API ──
 
@@ -61,22 +61,9 @@ defmodule Newbee.DEE.Evaluator do
   end
 
   @doc "中断当前正在执行的求值 cell；不会影响求值器绑定或后续调用。"
-  def interrupt(server \\ __MODULE__) do
-    server = if is_atom(server), do: Process.whereis(server), else: server
+  def interrupt(server \\ __MODULE__), do: interrupt(server, :current)
 
-    if is_pid(server) do
-      case Newbee.DEE.EvalWorker.active_pid(server) do
-        pid when is_pid(pid) ->
-          Process.exit(pid, :kill)
-          Newbee.DEE.EvalWorker.clear_active(server, pid)
-
-        _ ->
-          :ok
-      end
-    end
-
-    :ok
-  end
+  def interrupt(server, job_id), do: GenServer.call(server, {:cancel_job, job_id}, 1000)
 
   def bindings_summary(server \\ __MODULE__, timeout \\ 5_000), do: GenServer.call(server, :bindings_summary, timeout)
 
@@ -141,68 +128,76 @@ defmodule Newbee.DEE.Evaluator do
 
     if state.mode == :node, do: Process.flag(:trap_exit, true)
 
-    # 异步补 standby（不阻塞 init）
-    if state.mode == :node, do: send(self(), :ensure_standby)
+    if state.mode == :node do
+      send(self(), :ensure_standby)
+      send(self(), :reconcile_orphans)
+    end
+
     {:ok, state}
   end
 
   # ── calls ──
 
   @impl true
-  def handle_call({:eval, code, opts}, {caller, _tag}, state) do
-    t0 = System.monotonic_time(:millisecond)
-    Newbee.DebugLog.log(:eval, "start code=#{String.slice(code, 0, 120) |> inspect()}")
+  def handle_call({:eval, code, opts}, from, %{active_job: job} = state) when not is_nil(job) do
+    if :queue.len(state.pending_evals) < 32 do
+      {:noreply, %{state | pending_evals: :queue.in({from, code, opts}, state.pending_evals)}}
+    else
+      {:reply, %{status: :error, error: "evaluator queue full", output: "", warnings: ""}, state}
+    end
+  end
 
-    # active key 是本地 evaluator GenServer pid；远端 worker 用它把当前 task
-    # 注册回主 VM，Esc 无需等待这个已阻塞的 GenServer 处理 mailbox。
-    # caller 是会话 kernel（或直接 API 调用者），self() 是本 Evaluator；
-    # 任一退出时 cell 必须同步取消，否则默认无限任务会脱离会话生命周期继续运行。
-    opts =
-      Keyword.merge(opts,
-        interrupt_key: self(),
-        interrupt_node: Node.self(),
-        cancel_owners: Enum.uniq([caller, self()])
-      )
+  def handle_call({:eval, code, opts}, from, state) do
+    previous_restarts = state.restarts
+    state = prepare_primary(state)
+    restarted = state.restarts != previous_restarts
 
-    result =
-      case remote_call(primary_target(state), {:eval, code, opts}) do
-        {:ok, result} ->
-          {:reply, result, state}
+    case primary_target(state) do
+      nil ->
+        {:reply, %{status: :error, error: "evaluator unavailable; not started", output: "", warnings: ""}, state}
 
-        :dead ->
-          Newbee.DebugLog.log(:eval, "primary dead, trying standby")
+      target ->
+        case check_node_budget(target) do
+          :ok ->
+            admit_eval(state, target, code, opts, from, restarted)
 
-          {standby, state} = resolve_standby(state)
+          {:error, :node_dead} ->
+            state = isolate_failed_target(state, target)
 
-          case remote_call(standby, {:eval, code, opts}) do
-            {:ok, result} ->
-              # standby 顶替 primary，异步补新 standby
-              s = promote_standby(%{state | standby: standby})
-              send(self(), :ensure_standby)
-              {:reply, Map.put(result, :node_restarted, true), s}
+            {:reply,
+             %{
+               status: :error,
+               error: "evaluation outcome unknown; code was not replayed",
+               output: "",
+               warnings: "",
+               outcome_unknown: true
+             }, state}
 
-            :dead ->
-              # 双死：冷却防抖重建
-              Newbee.DebugLog.log(:eval, "standby also dead, full reboot")
-              s = maybe_reboot(state)
+          {:error, {:over_budget, _detail}} ->
+            state = isolate_over_budget_primary(state, target)
+            send(self(), :ensure_standby)
 
-              case remote_call(primary_target(s), {:eval, code, opts}) do
-                {:ok, result} ->
-                  {:reply, Map.put(result, :node_restarted, true), s}
+            {:reply,
+             %{
+               status: :error,
+               error: "node over resource budget; recycled without replay",
+               output: "",
+               warnings: "",
+               outcome_unknown: false
+             }, state}
+        end
+    end
+  end
 
-                :dead ->
-                  {:reply,
-                   %{
-                     status: :error,
-                     error: "evaluator node unavailable (restarts=#{s.restarts} boot_error=#{inspect(s.boot_error)})",
-                     output: ""
-                   }, s}
-              end
-          end
-      end
-
-    Newbee.DebugLog.log(:eval, "done in #{System.monotonic_time(:millisecond) - t0}ms")
-    result
+  def handle_call({:cancel_job, requested}, _from, %{active_job: job} = state) do
+    if job != nil and (requested == :current or requested == job.job_id) do
+      send(job.guardian, {:cancel, job.job_id, :interrupted})
+      cancel_cell(job)
+      Process.send_after(self(), {:eval_deadline, job.job_id}, 1000)
+      {:reply, :ok, %{state | active_job: %{job | reason: :interrupted}}}
+    else
+      {:reply, {:error, :not_active}, state}
+    end
   end
 
   def handle_call(:bindings_summary, _from, state) do
@@ -292,7 +287,8 @@ defmodule Newbee.DEE.Evaluator do
        restarts: state.restarts,
        alive: alive?(state),
        standby: standby_info(state),
-       boot_error: state.boot_error
+       boot_error: state.boot_error,
+       active_job: if(state.active_job, do: Map.take(state.active_job, [:job_id, :reason]), else: nil)
      }, state}
   end
 
@@ -305,7 +301,54 @@ defmodule Newbee.DEE.Evaluator do
 
   # ── info ──
 
+  def handle_info(:reconcile_orphans, state) do
+    _ = reconcile_orphans()
+    {:noreply, state}
+  end
+
   @impl true
+  def handle_info({:guardian_cancel, id, reason}, %{active_job: %{job_id: id} = job} = state) do
+    {:noreply, %{state | active_job: %{job | reason: reason}}}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{active_job: %{guardian_ref: ref}} = state) do
+    {:noreply, fail_unknown_job(state)}
+  end
+
+  def handle_info({:eval_result, id, {:ok, result}}, %{active_job: %{job_id: id} = job} = state) when is_map(result) do
+    result = if job.restarted, do: Map.put(result, :node_restarted, true), else: result
+
+    result =
+      case job.reason do
+        :interrupted -> Map.merge(result, %{status: :error, error: "interrupted"})
+        :timed_out -> Map.merge(result, %{status: :error, error: "timeout: execution lease expired"})
+        _ -> result
+      end
+
+    {:noreply, finish_job(state, result)}
+  end
+
+  def handle_info({:eval_result, id, _unknown}, %{active_job: %{job_id: id}} = state) do
+    {:noreply, fail_unknown_job(state)}
+  end
+
+  def handle_info({:DOWN, ref, :process, pid, _reason}, %{active_job: %{ref: ref, pid: pid}} = state) do
+    {:noreply, fail_unknown_job(state)}
+  end
+
+  def handle_info({:eval_deadline, id}, %{active_job: %{job_id: id} = job} = state) do
+    cancel_cell(job)
+    Process.exit(job.pid, :kill)
+    state = isolate_failed_primary(state, job)
+
+    error =
+      if job.reason == :interrupted,
+        do: "interrupted",
+        else: "evaluation outcome unknown after deadline; code was not replayed"
+
+    {:noreply, finish_job(state, %{status: :error, error: error, output: "", warnings: "", outcome_unknown: true})}
+  end
+
   # 宿主（会话 kernel）死亡：随停，terminate 释放 primary/standby peer 节点。
   # 覆盖 GenServer.stop 与崩溃两种死因——link 传不动的 :normal 停止也走这里。
   def handle_info({:DOWN, mref, :process, pid, reason}, %{owner: {pid, mref}} = state) do
@@ -377,6 +420,31 @@ defmodule Newbee.DEE.Evaluator do
     Newbee.DebugLog.log(:node, "standby boot failed #{inspect(reason)}; retry in #{@standby_retry_ms}ms")
     Process.send_after(self(), :ensure_standby, @standby_retry_ms)
     {:noreply, %{state | standby_boot: nil}}
+  end
+
+  def handle_info(:dequeue_eval, %{active_job: nil} = state) do
+    case :queue.out(state.pending_evals) do
+      {:empty, _} ->
+        {:noreply, state}
+
+      {{:value, {from, code, opts}}, rest} ->
+        state = %{state | pending_evals: rest}
+
+        if Process.alive?(elem(from, 0)) do
+          case handle_call({:eval, code, opts}, from, state) do
+            {:noreply, next} ->
+              {:noreply, next}
+
+            {:reply, reply, next} ->
+              GenServer.reply(from, reply)
+              send(self(), :dequeue_eval)
+              {:noreply, next}
+          end
+        else
+          send(self(), :dequeue_eval)
+          {:noreply, state}
+        end
+    end
   end
 
   def handle_info(_, state), do: {:noreply, state}
@@ -610,6 +678,208 @@ defmodule Newbee.DEE.Evaluator do
   end
 
   # ── rpc ──
+  defp default_timeout, do: Newbee.DEE.EvalJob.default_timeout()
+
+  defp prepare_primary(%{mode: :local} = state), do: state
+
+  defp prepare_primary(state) do
+    if state.peer != nil and Process.alive?(state.peer) do
+      state
+    else
+      {standby, state} = resolve_standby(state)
+
+      if standby != nil do
+        next = promote_standby(%{state | standby: standby})
+        send(self(), :ensure_standby)
+        next
+      else
+        maybe_reboot(state)
+      end
+    end
+  end
+
+  defp cancel_cell(job) do
+    spawn(fn ->
+      try do
+        case job.target do
+          %{mode: :local, worker: worker} ->
+            GenServer.call(worker, {:cancel, job.job_id}, 500)
+
+          %{node: remote, worker: worker} ->
+            :rpc.call(remote, GenServer, :call, [worker, {:cancel, job.job_id}, 500], 750)
+        end
+      catch
+        _, _ -> :ok
+      end
+    end)
+  end
+
+  defp finish_job(%{active_job: job} = state, result) do
+    send(job.guardian, {:finished, job.job_id})
+    Process.demonitor(job.guardian_ref, [:flush])
+    Process.cancel_timer(job.timer)
+    Process.demonitor(job.ref, [:flush])
+    GenServer.reply(job.from, result)
+    send(self(), :dequeue_eval)
+    %{state | active_job: nil}
+  end
+
+  defp fail_unknown_job(%{active_job: job} = state) do
+    cancel_cell(job)
+    state = isolate_failed_primary(state, job)
+
+    finish_job(state, %{
+      status: :error,
+      error: "evaluation outcome unknown; code was not replayed",
+      output: "",
+      warnings: "",
+      outcome_unknown: true
+    })
+  end
+
+  defp isolate_failed_primary(%{mode: :node} = state, job) do
+    if is_pid(job.peer), do: spawn(fn -> stop_peer(job.peer) end)
+    if state.peer == job.peer, do: %{state | peer: nil, node: nil, worker: nil}, else: state
+  end
+
+  defp isolate_failed_primary(state, _job), do: state
+
+  defp admit_eval(state, target, code, opts, from, restarted) do
+    {caller, _tag} = from
+    job_id = make_ref()
+    timeout = Newbee.DEE.EvalJob.normalize_timeout(Keyword.get(opts, :timeout, default_timeout()))
+    parent = self()
+
+    opts =
+      Keyword.merge(opts,
+        job_id: job_id,
+        timeout: timeout,
+        interrupt_key: parent,
+        interrupt_node: node(),
+        cancel_owners: [caller, parent]
+      )
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        result =
+          try do
+            remote_call(target, {:eval, code, opts})
+          catch
+            kind, reason -> {:unknown, {kind, reason}}
+          end
+
+        send(parent, {:eval_result, job_id, result})
+      end)
+
+    {guardian, guardian_ref} = Newbee.DEE.EvalGuardian.start(parent, caller, target, state.peer, job_id, timeout)
+    timer = Process.send_after(self(), {:eval_deadline, job_id}, timeout + 2000)
+
+    job = %{
+      job_id: job_id,
+      pid: pid,
+      ref: ref,
+      timer: timer,
+      from: from,
+      target: target,
+      peer: state.peer,
+      reason: nil,
+      restarted: restarted,
+      guardian: guardian,
+      guardian_ref: guardian_ref
+    }
+
+    {:noreply, %{state | active_job: job}}
+  end
+
+  @doc false
+  def check_node_budget(%{mode: :local}), do: :ok
+
+  def check_node_budget(%{node: node}) when is_atom(node) do
+    max_mem = Application.get_env(:newbee, :eval_max_node_memory_bytes, @max_node_memory_bytes)
+    max_procs = Application.get_env(:newbee, :eval_max_node_processes, @max_node_processes)
+
+    with {:memory, mem} when is_integer(mem) <- {:memory, safe_rpc(node, :erlang, :memory, [:total])},
+         {:procs, count} when is_integer(count) <- {:procs, safe_rpc(node, :erlang, :system_info, [:process_count])} do
+      cond do
+        is_integer(max_mem) and mem > max_mem -> {:error, {:over_budget, %{memory: mem, limit: max_mem}}}
+        is_integer(max_procs) and count > max_procs -> {:error, {:over_budget, %{processes: count, limit: max_procs}}}
+        true -> :ok
+      end
+    else
+      {:memory, _} -> {:error, :node_dead}
+      {:procs, _} -> {:error, :node_dead}
+    end
+  end
+
+  def check_node_budget(_), do: {:error, :node_dead}
+
+  defp safe_rpc(node, mod, fun, args) do
+    case :rpc.call(node, mod, fun, args, @budget_rpc_timeout) do
+      {:badrpc, _} -> {:badrpc, :dead}
+      other -> other
+    end
+  end
+
+  defp isolate_failed_target(%{mode: :node} = state, %{node: node}) do
+    if state.node == node, do: %{state | peer: nil, node: nil, worker: nil}, else: state
+  end
+
+  defp isolate_failed_target(state, _), do: state
+
+  defp isolate_over_budget_primary(%{mode: :node} = state, %{node: node} = target) do
+    if state.node == node do
+      if is_pid(state.peer), do: spawn(fn -> stop_peer(state.peer) end)
+      %{state | peer: nil, node: nil, worker: nil}
+    else
+      if target[:peer] && is_pid(target[:peer]), do: spawn(fn -> stop_peer(target[:peer]) end)
+      state
+    end
+  end
+
+  defp isolate_over_budget_primary(state, _), do: state
+
+  @doc "Reconcile orphan peer nodes whose origin is gone. Never kills live origins."
+  def reconcile_orphans do
+    self_node = Node.self()
+    known = [self_node | Node.list()]
+
+    Node.list()
+    |> Enum.filter(fn n -> String.starts_with?(Atom.to_string(n), "newbee_eval_") end)
+    |> Enum.reduce({:ok, []}, fn peer_node, {:ok, killed} ->
+      origin =
+        try do
+          :rpc.call(peer_node, :persistent_term, :get, [{Newbee.Host, :main_node}, nil], @budget_rpc_timeout)
+        catch
+          _, _ -> nil
+        end
+
+      cond do
+        origin == self_node ->
+          {:ok, killed}
+
+        origin == nil ->
+          {:ok, killed}
+
+        origin in known ->
+          {:ok, killed}
+
+        true ->
+          try do
+            :rpc.call(peer_node, :init, :stop, [], 1000)
+          catch
+            _, _ -> :ok
+          end
+
+          try do
+            Node.disconnect(peer_node)
+          catch
+            _, _ -> :ok
+          end
+
+          {:ok, [peer_node | killed]}
+      end
+    end)
+  end
 
   defp primary_target(%{mode: :local, worker: w}), do: %{mode: :local, worker: w}
   defp primary_target(%{node: node, worker: w}) when is_pid(w), do: %{node: node, worker: w}
