@@ -40,7 +40,7 @@ defmodule Newbee.Tools.JSpace do
   end
 
   defp collaboration_session_id do
-    case Process.get({Newbee.Tools.Collaboration, :context}) do
+    case Process.get({Newbee.Tools.Hive, :context}) do
       %{capability: token} when is_binary(token) ->
         case Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token]) do
           {:ok, %{session_id: sid}} when is_binary(sid) -> {:ok, sid}

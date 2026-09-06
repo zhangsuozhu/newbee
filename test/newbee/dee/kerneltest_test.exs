@@ -4,6 +4,15 @@ defmodule Newbee.Agent.LoopTest do
   alias Newbee.DEE.Evaluator
   alias Newbee.LLM.Client
 
+  defmodule SteeringOwner do
+    use GenServer
+    def start_link(items), do: GenServer.start_link(__MODULE__, items)
+    def init(items), do: {:ok, items}
+    def handle_call(:take_steering, _from, [item | rest]), do: {:reply, {:ok, item}, rest}
+    def handle_call(:take_steering, _from, []), do: {:reply, :none, []}
+  end
+
+
   defp tool_msg(code, id \\ "call_1") do
     %{
       "role" => "assistant",
@@ -99,6 +108,28 @@ defmodule Newbee.Agent.LoopTest do
     assert {:text, "直接回答"} = Loop.submit(kernel, "hi")
   end
 
+  test "忙时输入在下一次模型调用前注入同一个 turn" do
+    {:ok, ev} = Evaluator.start(mode: :local)
+    item = %{id: "steer1", kind: "text", origin: "user", text: "改用更小的改动"}
+    {:ok, owner} = SteeringOwner.start_link([item])
+
+    script = [
+      fn _messages, _on_text ->
+        {:ok, %{"role" => "assistant", "content" => "先检查现状", "tool_calls" => []}, %{}}
+      end,
+      fn messages, _on_text ->
+        assert Enum.any?(messages, &(&1["role"] == "user" and &1["content"] == "改用更小的改动"))
+        {:ok, %{"role" => "assistant", "content" => "已转向", "tool_calls" => []}, %{}}
+      end
+    ]
+
+    {:ok, kernel} =
+      Loop.start_link(client: %{}, evaluator: ev, session: false, owner: owner, client_fun: scripted(script))
+
+    assert {:text, "已转向"} = Loop.submit(kernel, "开始")
+  end
+
+
   test "done 工具调用也回填 tool 响应（历史不留悬空 tool_calls）" do
     {:ok, ev} = Evaluator.start(mode: :local)
     script = [fn _m, _t -> {:ok, done_msg("完"), %{}} end]
@@ -125,7 +156,7 @@ defmodule Newbee.Agent.LoopTest do
       fn messages, _t ->
         assert Enum.any?(messages, fn m ->
                  m["role"] == "tool" and m["tool_call_id"] == "call_orphan" and
-                   m["content"] =~ "丢失"
+                   m["content"] =~ "outcome_unknown"
                end)
 
         {:ok, %{"role" => "assistant", "content" => "ok", "tool_calls" => []}, %{}}

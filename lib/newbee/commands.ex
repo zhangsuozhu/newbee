@@ -5,23 +5,25 @@ defmodule Newbee.Commands do
   """
 
   @commands ~w(/model /bindings /tokens /rules /status /dump /resume /reset /approve
-    /reject /log /environment /evolve /autonomy /bundles /goal /loop /diff /image
+    /reject /log /environment /evolve /autonomy /bundles /goal /loop /diff /image /btw
     /undo /session /init /tools /permissions /compact /archive /attach /new /quit)
 
   def commands, do: @commands
 
-  @doc "处理输入。返回文本提交、图片提交或控制命令。"
+  @doc "处理输入。返回文本提交、旁路问题、图片提交或控制命令。"
   @spec handle(String.t(), map()) ::
           :ok
           | :handled
           | :quit
           | :new
           | {:submit, String.t()}
+          | {:btw, String.t()}
           | {:image, String.t(), String.t()}
           | {:resume, String.t()}
           | {:resume_picker, list(map())}
           | {:shell, String.t()}
   def handle(input, ctx) do
+
     case String.trim(input) do
       "" -> :ok
       "/quit" -> :quit
@@ -135,6 +137,9 @@ defmodule Newbee.Commands do
 
     :handled
   end
+
+  defp run("btw", arg, _ctx), do: {:btw, String.trim(arg)}
+
 
   defp run("image", arg, ctx) do
     case String.split(String.trim(arg), " ", parts: 2) do

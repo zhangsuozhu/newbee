@@ -2,11 +2,12 @@ defmodule Newbee.Web.Socket do
   @moduledoc """
   WebUI 事件下行通道（移植 dsh websocket-downlink 语义）：浏览器连
   `GET /ws?session=<sid>`，本进程订阅 Bus，把该会话的 Loop 事件以 JSON
-  帧推下去；同时接收上行控制帧（interrupt / permission_reply）。
+  帧推下去；同时接收上行控制帧（interrupt / permission_reply / btw）。
 
   下行帧： {"type": "event", "sessionId": sid, "kind": "text", "payload": {...}}
   上行帧： {"type": "interrupt"} | {"type": "permission", "ok": true} |
-           {"type": "prompt", "text": "..."}（等价 POST session.prompt，省一跳）
+           {"type": "prompt", "text": "..."} | {"type": "btw", "question": "..."}
+
   """
   @behaviour WebSock
 
@@ -29,6 +30,10 @@ defmodule Newbee.Web.Socket do
         if Newbee.Collaboration.Coordinator.can_approve_permission?(st.sid, target) do
           cast_session(target, &WSession.permission_reply(&1, ok))
         end
+      {:ok, %{"type" => "btw", "question" => question} = frame} ->
+        request_id = frame["requestId"] || frame["request_id"]
+        cast_session(st.sid, &WSession.btw(&1, question, request_id))
+
       {:ok, %{"type" => "prompt", "text" => t} = frame} ->
         qid = frame["queueId"] || frame["queue_id"]
         if is_binary(qid) and String.trim(qid) != "" do

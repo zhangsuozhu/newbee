@@ -15,6 +15,7 @@ defmodule Newbee.Collaboration.Coordinator do
   @roles ~w(coordinator worker reviewer observer tester)
   @message_kinds ~w(chat question task_assign task_progress task_result artifact system error)
   @deliveries ~w(notify queue wake)
+  @max_attempt_history 16
   @max_members 12
   @max_tasks 64
   @max_spawn_total 32
@@ -27,7 +28,6 @@ defmodule Newbee.Collaboration.Coordinator do
   @default_max_depth 3
   @default_wait_timeout_ms 30_000
   @max_wait_timeout_ms 120_000
-  @orphan_sweep_interval_ms 60_000
 
   defstruct store: nil, path: nil, groups: %{}, commands: MapSet.new(), waiters: []
 
@@ -78,26 +78,14 @@ defmodule Newbee.Collaboration.Coordinator do
   def member?(group_id, session_id, server \\ __MODULE__),
     do: GenServer.call(server, {:member?, group_id, session_id})
 
-  def create_task(group_id, attrs, server \\ __MODULE__),
-    do: GenServer.call(server, {:create_task, group_id, attrs})
-
-  def update_task(group_id, task_id, attrs, server \\ __MODULE__),
-    do: GenServer.call(server, {:update_task, group_id, task_id, attrs})
-
   def update_workspace(group_id, task_id, attrs, server \\ __MODULE__),
     do: GenServer.call(server, {:update_workspace, group_id, task_id, attrs})
 
   def tasks(group_id, server \\ __MODULE__),
     do: GenServer.call(server, {:tasks, group_id})
 
-  def claim_task(group_id, task_id, session_id, server \\ __MODULE__),
-    do: GenServer.call(server, {:claim_task, group_id, task_id, session_id})
-
   def set_group_status(group_id, status, session_id, server \\ __MODULE__),
     do: GenServer.call(server, {:set_group_status, group_id, status, session_id})
-
-  def renew_task(group_id, task_id, session_id, seconds \\ 300, server \\ __MODULE__),
-    do: GenServer.call(server, {:renew_task, group_id, task_id, session_id, seconds})
 
   def delete_group(group_id, session_id, server \\ __MODULE__),
     do: GenServer.call(server, {:delete_group, group_id, session_id})
@@ -115,19 +103,39 @@ defmodule Newbee.Collaboration.Coordinator do
     do: GenServer.call(server, {:board_create_task, group_id, attrs})
 
   @doc false
-  def board_update_task(group_id, task_id, attrs, server \\ __MODULE__),
-    do: GenServer.call(server, {:board_update_task, group_id, task_id, attrs})
+  def board_update_task(group_id, task_id, attrs, server \\ __MODULE__) do
+    attrs = normalize_submission_request(attrs)
+
+    if submission_update?(attrs),
+      do: board_update_task_with_submission(group_id, task_id, attrs, server),
+      else: GenServer.call(server, {:board_update_task, group_id, task_id, attrs})
+  end
 
   @doc false
   def board_claim(group_id, task_id, attrs, server \\ __MODULE__),
     do: GenServer.call(server, {:board_claim, group_id, task_id, attrs})
 
   @doc false
+  def board_retry(group_id, task_id, attrs, server \\ __MODULE__),
+    do: GenServer.call(server, {:board_retry, group_id, task_id, attrs})
+
+  @doc false
+  def delivery_claim(group_id, session_id, attrs, server \\ __MODULE__),
+    do: GenServer.call(server, {:delivery_claim, group_id, session_id, attrs})
+
+  @doc false
+  def delivery_ack(group_id, session_id, attrs, server \\ __MODULE__),
+    do: GenServer.call(server, {:delivery_ack, group_id, session_id, attrs})
+
+  @doc false
+  def pending_deliveries(session_id, server \\ __MODULE__),
+    do: GenServer.call(server, {:pending_deliveries, session_id})
+
+  @doc false
   def board_verify(group_id, task_id, attrs, server \\ __MODULE__) do
     with {:ok, prepared} <-
            GenServer.call(server, {:board_verify_prepare, group_id, task_id, attrs}),
-         {:ok, attestation} <-
-           Newbee.Collaboration.Verification.verify(prepared.task, prepared.root) do
+         {:ok, attestation} <- verify_prepared_submission(prepared) do
       GenServer.call(
         server,
         {:board_verify_commit, group_id, task_id, prepared.attrs, attestation}
@@ -166,15 +174,10 @@ defmodule Newbee.Collaboration.Coordinator do
       EventStore.start_link(path: path, durability: Keyword.get(opts, :durability, :batch))
 
     state = %__MODULE__{store: store, path: path}
-    schedule_orphan_sweep()
     {:ok, replay(state)}
   end
 
   @impl true
-  def handle_info(:sweep_orphans, state) do
-    {:noreply, sweep_orphans(state) |> tap(fn _ -> schedule_orphan_sweep() end)}
-  end
-
   def handle_info({:collab_wait_timeout, ref}, state) do
     case Enum.split_with(state.waiters, &(&1.ref == ref)) do
       {[waiter], rest} ->
@@ -229,6 +232,7 @@ defmodule Newbee.Collaboration.Coordinator do
         ],
         "messages" => [],
         "tasks" => [],
+        "deliveries" => [],
         "next_seq" => 0,
         "max_depth" => attrs["max_depth"],
         "max_total" => attrs["max_total"],
@@ -316,6 +320,7 @@ defmodule Newbee.Collaboration.Coordinator do
          :ok <- group_accepts_tasks(group),
          {:ok, attrs} <- normalize_delegation(raw_attrs),
          {:ok, attrs} <- validate_delegation_contract(attrs),
+         :ok <- expected_revision(group, attrs["expected_revision"]),
          :ok <- unique_command(state, attrs["command_id"]),
          :ok <- ensure_member(group, attrs["parent_session_id"]),
          :ok <- command_acceptance_allowed(group, attrs["parent_session_id"], attrs["acceptance"]),
@@ -326,6 +331,7 @@ defmodule Newbee.Collaboration.Coordinator do
          :ok <- dependencies_exist(group, attrs["depends_on"]) do
       now = now_iso()
       depth = member_depth(group, attrs["parent_session_id"]) + 1
+      ready = dependencies_completed?(group, attrs["depends_on"])
 
       member = %{
         "member_id" => id("mem"),
@@ -343,28 +349,25 @@ defmodule Newbee.Collaboration.Coordinator do
       task = %{
         "task_id" => id("task"),
         "group_id" => group_id,
-        "protocol_version" => attrs["protocol_version"],
+        "protocol_version" => 2,
         "title" => attrs["title"],
         "description" => attrs["description"],
         "acceptance" => attrs["acceptance"],
-        "acceptance_sha256" =>
-          if(attrs["protocol_version"] == 2,
-            do: Newbee.Collaboration.Verification.contract_sha256(attrs["acceptance"]),
-            else: nil
-          ),
+        "acceptance_sha256" => Newbee.Collaboration.Verification.contract_sha256(attrs["acceptance"]),
         "depends_on" => attrs["depends_on"],
         "write_scope" => attrs["write_scope"],
         "created_by_session_id" => attrs["parent_session_id"],
         "assigned_session_id" => attrs["session_id"],
-        "status" => "assigned",
+        "status" => initial_board_status(attrs["session_id"], ready),
         "progress" => nil,
         "result" => nil,
         "evidence" => [],
-        "verification" => if(attrs["protocol_version"] == 2, do: %{"status" => "pending"}, else: nil),
+        "verification" => %{"status" => "pending"},
         "workspace" => attrs["workspace"],
         "lease_owner" => nil,
         "lease_until" => nil,
         "attempt" => 0,
+        "attempt_history" => [],
         "created_at" => now,
         "updated_at" => now
       }
@@ -373,7 +376,7 @@ defmodule Newbee.Collaboration.Coordinator do
         event(
           "collab_delegated",
           group_id,
-          %{"member" => member, "task" => task},
+          %{"member" => member, "task" => task, "deliveries" => if(ready, do: task_deliveries(group, task), else: [])},
           attrs["command_id"]
         )
 
@@ -381,7 +384,7 @@ defmodule Newbee.Collaboration.Coordinator do
       next = apply_event(state, persisted)
       current_task = task |> Map.put("board_revision", next.groups[group_id]["revision"])
       broadcast(persisted, next.groups[group_id])
-      dispatch_task(current_task)
+      if ready, do: dispatch_task(current_task, task_delivery_id(next.groups[group_id], current_task))
       {:reply, {:ok, %{member: member, task: current_task}}, next}
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
@@ -393,8 +396,6 @@ defmodule Newbee.Collaboration.Coordinator do
          {:ok, attrs} <- normalize_member_removal(attrs),
          :ok <- unique_command(state, attrs["command_id"]),
          :ok <- ensure_coordinator(group, attrs["actor_session_id"]) do
-      {state, group} = cancel_orphans(state, group)
-
       with {:ok, member} <- removable_member(group, attrs["session_id"]) do
         event =
           event(
@@ -434,90 +435,24 @@ defmodule Newbee.Collaboration.Coordinator do
         "kind" => attrs["kind"],
         "delivery" => attrs["delivery"],
         "body" => attrs["body"],
+        "task_id" => attrs["task_id"],
+        "attempt" => attrs["attempt"],
         "created_at" => now_iso()
       }
 
       event =
-        event("collab_message_created", group_id, %{"message" => message}, attrs["command_id"])
+        event(
+          "collab_message_created",
+          group_id,
+          %{"message" => message, "deliveries" => message_deliveries(group, message)},
+          attrs["command_id"]
+        )
 
       {:ok, persisted} = append(state, event)
       next = apply_event(state, persisted)
       broadcast(persisted, next.groups[group_id])
       dispatch_message(message, next.groups[group_id])
       {:reply, {:ok, message}, next}
-    else
-      {:error, code, message} -> {:reply, {:error, code, message}, state}
-    end
-  end
-
-  def handle_call({:create_task, group_id, attrs}, _from, state) do
-    with {:ok, group} <- fetch_group(state, group_id),
-         :ok <- group_accepts_tasks(group),
-         {:ok, attrs} <- normalize_task(attrs),
-         :ok <- unique_command(state, attrs["command_id"]),
-         :ok <- ensure_member(group, attrs["created_by_session_id"]),
-         :ok <- ensure_task_capacity(group),
-         :ok <- ensure_recipient(group, attrs["assigned_session_id"]) do
-      task = %{
-        "task_id" => id("task"),
-        "group_id" => group_id,
-        "title" => attrs["title"],
-        "description" => attrs["description"],
-        "acceptance" => attrs["acceptance"],
-        "created_by_session_id" => attrs["created_by_session_id"],
-        "assigned_session_id" => attrs["assigned_session_id"],
-        "status" => if(attrs["assigned_session_id"], do: "assigned", else: "pending"),
-        "progress" => nil,
-        "result" => nil,
-        "lease_owner" => nil,
-        "lease_until" => nil,
-        "attempt" => 0,
-        "created_at" => now_iso(),
-        "updated_at" => now_iso()
-      }
-
-      event = event("collab_task_created", group_id, %{"task" => task}, attrs["command_id"])
-      {:ok, persisted} = append(state, event)
-      next = apply_event(state, persisted)
-      broadcast(persisted, next.groups[group_id])
-      dispatch_task(task)
-      {:reply, {:ok, task}, next}
-    else
-      {:error, code, message} -> {:reply, {:error, code, message}, state}
-    end
-  end
-
-  def handle_call({:update_task, group_id, task_id, attrs}, _from, state) do
-    with {:ok, group} <- fetch_group(state, group_id),
-         {:ok, task} <- fetch_task(group, task_id),
-         :ok <- legacy_task_api(task),
-         {:ok, attrs} <- normalize_task_update(attrs),
-         :ok <- unique_command(state, attrs["command_id"]),
-         :ok <- ensure_member(group, attrs["session_id"]),
-         :ok <- task_actor_allowed(task, attrs["session_id"]),
-         :ok <- valid_task_transition(task["status"], attrs["status"]) do
-      first_result_terminal? =
-        attrs["status"] in ["succeeded", "failed"] and
-          task["status"] not in ["succeeded", "failed"]
-
-      first_review_terminal? =
-        attrs["status"] in ["succeeded", "failed", "cancelled"] and
-          task["status"] not in ["succeeded", "failed", "cancelled"]
-
-      updated =
-        task
-        |> Map.put("status", attrs["status"])
-        |> maybe_put("progress", attrs["progress"])
-        |> maybe_put("result", attrs["result"])
-        |> maybe_mark_workspace_pending(first_review_terminal?)
-        |> Map.put("updated_at", now_iso())
-
-      event = event("collab_task_updated", group_id, %{"task" => updated}, attrs["command_id"])
-      {:ok, persisted} = append(state, event)
-      next = apply_event(state, persisted)
-      broadcast(persisted, next.groups[group_id])
-      if first_result_terminal?, do: dispatch_result(updated)
-      {:reply, {:ok, updated}, next}
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
@@ -554,35 +489,6 @@ defmodule Newbee.Collaboration.Coordinator do
     end
   end
 
-  def handle_call({:claim_task, group_id, task_id, session_id}, _from, state) do
-    with {:ok, group} <- fetch_group(state, group_id),
-         {:ok, task} <- fetch_task(group, task_id),
-         :ok <- legacy_task_api(task),
-         :ok <- ensure_member(group, session_id),
-         :ok <- task_claimable(task, session_id) do
-      claimed =
-        task
-        |> Map.put("assigned_session_id", session_id)
-        |> Map.put("status", "running")
-        |> Map.put("lease_owner", session_id)
-        |> Map.put(
-          "lease_until",
-          DateTime.add(DateTime.utc_now(), 300, :second) |> DateTime.to_iso8601()
-        )
-        |> Map.put("attempt", (task["attempt"] || 0) + 1)
-        |> Map.put("updated_at", now_iso())
-
-      event = event("collab_task_claimed", group_id, %{"task" => claimed}, nil)
-      {:ok, persisted} = append(state, event)
-      next = apply_event(state, persisted)
-      broadcast(persisted, next.groups[group_id])
-      dispatch_task(claimed)
-      {:reply, {:ok, claimed}, next}
-    else
-      {:error, code, message} -> {:reply, {:error, code, message}, state}
-    end
-  end
-
   def handle_call({:set_group_status, group_id, status, session_id}, _from, state) do
     with {:ok, group} <- fetch_group(state, group_id),
          :ok <- ensure_coordinator(group, session_id),
@@ -599,37 +505,9 @@ defmodule Newbee.Collaboration.Coordinator do
     end
   end
 
-  def handle_call({:renew_task, group_id, task_id, session_id, seconds}, _from, state) do
-    with {:ok, group} <- fetch_group(state, group_id),
-         {:ok, task} <- fetch_task(group, task_id),
-         :ok <- legacy_task_api(task),
-         :ok <- ensure_member(group, session_id),
-         :ok <- lease_owner(task, session_id),
-         true <- is_integer(seconds) and seconds in 30..3600 do
-      renewed =
-        task
-        |> Map.put(
-          "lease_until",
-          DateTime.add(DateTime.utc_now(), seconds, :second) |> DateTime.to_iso8601()
-        )
-        |> Map.put("updated_at", now_iso())
-
-      event = event("collab_task_lease_renewed", group_id, %{"task" => renewed}, nil)
-      {:ok, persisted} = append(state, event)
-      next = apply_event(state, persisted)
-      broadcast(persisted, next.groups[group_id])
-      {:reply, {:ok, renewed}, next}
-    else
-      false -> {:reply, {:error, "bad_request", "lease 时长必须是 30-3600 秒"}, state}
-      {:error, code, message} -> {:reply, {:error, code, message}, state}
-    end
-  end
-
   def handle_call({:delete_group, group_id, session_id}, _from, state) do
     with {:ok, group} <- fetch_group(state, group_id),
          :ok <- ensure_coordinator(group, session_id) do
-      {state, group} = cancel_orphans(state, group)
-
       active_task? =
         Enum.any?(group["tasks"] || [], fn task ->
           task["status"] not in ["succeeded", "failed", "cancelled"]
@@ -707,7 +585,7 @@ defmodule Newbee.Collaboration.Coordinator do
           %{
             "event_id" => event.id,
             "topic" => to_string(event.topic),
-            "payload" => event.data["payload"],
+            "payload" => public_payload(event.data["payload"]),
             "at" => event.at
           }
         end)
@@ -802,17 +680,20 @@ defmodule Newbee.Collaboration.Coordinator do
         "lease_owner" => nil,
         "lease_until" => nil,
         "attempt" => 0,
+        "attempt_history" => [],
         "created_at" => now,
         "updated_at" => now
       }
 
-      event = event("collab_task_created", group_id, %{"task" => task}, attrs["command_id"])
+      deliveries = if ready, do: task_deliveries(group, task), else: []
+      event = event("collab_task_created", group_id, %{"task" => task, "deliveries" => deliveries}, attrs["command_id"])
+
       {:ok, persisted} = append(state, event)
       next = apply_event(state, persisted)
       revision = next.groups[group_id]["revision"]
       delivered = Map.put(task, "board_revision", revision)
       broadcast(persisted, next.groups[group_id])
-      if ready, do: dispatch_task(delivered)
+      if ready, do: dispatch_task(delivered, task_delivery_id(next.groups[group_id], task))
 
       {:reply,
        {:ok,
@@ -826,12 +707,66 @@ defmodule Newbee.Collaboration.Coordinator do
     end
   end
 
+  def handle_call({:board_update_task_prepare, group_id, task_id, raw_attrs}, _from, state) do
+    case prepare_board_update(state, group_id, task_id, raw_attrs) do
+      {:ok, prepared} ->
+        {:reply,
+         {:ok, %{task: prepared.task, attrs: prepared.attrs, group: prepared.group, acceptance: prepared.acceptance}},
+         state}
+
+      {:error, code, message} ->
+        {:reply, {:error, code, message}, state}
+    end
+  end
+
+  def handle_call(
+        {:board_update_task_commit, group_id, task_id, raw_attrs, submission},
+        _from,
+        state
+      ) do
+    with {:ok, prepared} <- prepare_board_update(state, group_id, task_id, raw_attrs),
+         {:ok, bound_submission} <- bind_submission(prepared.task, prepared.attrs, submission) do
+      updated =
+        prepared.task
+        |> build_updated_task(prepared.attrs, prepared.acceptance)
+        |> Map.put("submission", bound_submission)
+        |> Map.put("submission_id", bound_submission["submission_id"])
+        |> Map.put("submission_tree_sha256", bound_submission["tree_sha256"])
+        |> Map.put("project_root", prepared.group["project_root"])
+
+      submitted_transition? =
+        prepared.task["status"] != "submitted" and prepared.attrs["status"] == "submitted" and
+          prepared.attrs["session_id"] != prepared.group["coordinator_session_id"]
+
+      deliveries = if submitted_transition?, do: task_result_deliveries(prepared.group, updated), else: []
+      payload = %{"task" => updated, "deliveries" => deliveries}
+      event = event("collab_task_updated", group_id, payload, prepared.attrs["command_id"])
+      {:ok, persisted} = append(state, event)
+      next = apply_event(state, persisted)
+      revision = next.groups[group_id]["revision"]
+      broadcast(persisted, next.groups[group_id])
+
+      if submitted_transition?, do: dispatch_result(updated, first_delivery_id(deliveries))
+
+      {:reply,
+       {:ok,
+        %{
+          "task" => Map.put(updated, "board_revision", revision),
+          "revision" => revision,
+          "warnings" => task_scope_warnings(next.groups[group_id]["tasks"], updated)
+        }}, next}
+    else
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
+
   def handle_call({:board_update_task, group_id, task_id, raw_attrs}, _from, state) do
     with {:ok, group} <- fetch_group(state, group_id),
          {:ok, task} <- fetch_task(group, task_id),
          {:ok, attrs} <- normalize_board_update(raw_attrs),
          :ok <- ensure_member(group, attrs["session_id"]),
          :ok <- expected_revision(group, attrs["expected_revision"]),
+         :ok <- expected_attempt(task, attrs["expected_attempt"]),
          :ok <- unique_command(state, attrs["command_id"]),
          :ok <- board_actor_allowed(group, task, attrs["session_id"]),
          :ok <- board_fields_allowed(group, task, attrs),
@@ -845,6 +780,10 @@ defmodule Newbee.Collaboration.Coordinator do
              task_id,
              attrs["depends_on"] || task["depends_on"] || []
            ) do
+      submitted_transition? =
+        task["status"] != "submitted" and attrs["status"] == "submitted" and
+          attrs["session_id"] != group["coordinator_session_id"]
+
       updated =
         task
         |> maybe_put("title", attrs["title"])
@@ -862,12 +801,18 @@ defmodule Newbee.Collaboration.Coordinator do
         |> maybe_put("result", attrs["result"])
         |> maybe_put("evidence", attrs["evidence"])
         |> Map.put("updated_at", now_iso())
+        |> ready_workspace_for_review()
 
-      event = event("collab_task_updated", group_id, %{"task" => updated}, attrs["command_id"])
+      deliveries = if submitted_transition?, do: task_result_deliveries(group, updated), else: []
+
+      event =
+        event("collab_task_updated", group_id, %{"task" => updated, "deliveries" => deliveries}, attrs["command_id"])
+
       {:ok, persisted} = append(state, event)
       next = apply_event(state, persisted)
       revision = next.groups[group_id]["revision"]
       broadcast(persisted, next.groups[group_id])
+      if submitted_transition?, do: dispatch_result(updated, first_delivery_id(deliveries))
 
       {:reply,
        {:ok,
@@ -899,19 +844,188 @@ defmodule Newbee.Collaboration.Coordinator do
           "lease_until",
           DateTime.add(DateTime.utc_now(), 300, :second) |> DateTime.to_iso8601()
         )
-        |> Map.put("attempt", (task["attempt"] || 0) + 1)
         |> Map.put("updated_at", now_iso())
 
-      event = event("collab_task_claimed", group_id, %{"task" => claimed}, attrs["command_id"])
+      deliveries = task_deliveries(group, claimed)
+
+      event =
+        event(
+          "collab_task_claimed",
+          group_id,
+          %{"task" => claimed, "deliveries" => deliveries},
+          attrs["command_id"]
+        )
+
       {:ok, persisted} = append(state, event)
       next = apply_event(state, persisted)
       revision = next.groups[group_id]["revision"]
       broadcast(persisted, next.groups[group_id])
-      dispatch_task(Map.put(claimed, "board_revision", revision))
+      dispatch_task(Map.put(claimed, "board_revision", revision), task_delivery_id(next.groups[group_id], claimed))
       {:reply, {:ok, %{"task" => claimed, "revision" => revision}}, next}
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
+  end
+
+  def handle_call({:board_retry, group_id, task_id, raw_attrs}, _from, state) do
+    with {:ok, group} <- fetch_group(state, group_id),
+         {:ok, task} <- fetch_task(group, task_id),
+         {:ok, attrs} <- normalize_board_retry(raw_attrs),
+         :ok <- ensure_coordinator(group, attrs["session_id"]),
+         :ok <- expected_revision(group, attrs["expected_revision"]),
+         :ok <- unique_command(state, attrs["command_id"]),
+         :ok <- retryable_task(task) do
+      attempt = (task["attempt"] || 0) + 1
+      ready = dependencies_completed?(group, task["depends_on"] || [])
+
+      retried =
+        task
+        |> Map.put("attempt", attempt)
+        |> Map.put("attempt_history", append_attempt_history(task, attrs["reason"]))
+        |> Map.put("status", if(ready, do: "assigned", else: "pending"))
+        |> Map.put("progress", nil)
+        |> Map.put("result", nil)
+        |> Map.put("evidence", [])
+        |> Map.put("verification", %{"status" => "pending"})
+        |> Map.drop(["submission", "submission_id", "submission_tree_sha256"])
+        |> Map.put("lease_owner", nil)
+        |> Map.put("lease_until", nil)
+        |> Map.put("updated_at", now_iso())
+
+      deliveries = if ready, do: task_deliveries(group, retried), else: []
+
+      event =
+        event(
+          "collab_task_retried",
+          group_id,
+          %{"task" => retried, "reason" => attrs["reason"], "deliveries" => deliveries},
+          attrs["command_id"]
+        )
+
+      {:ok, persisted} = append(state, event)
+      next = apply_event(state, persisted)
+      revision = next.groups[group_id]["revision"]
+      updated = Map.put(retried, "board_revision", revision)
+      broadcast(persisted, next.groups[group_id])
+      if ready, do: dispatch_task(updated, task_delivery_id(next.groups[group_id], updated))
+
+      {:reply, {:ok, %{"task" => updated, "revision" => revision}}, next}
+    else
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
+
+  def handle_call({:delivery_claim, group_id, session_id, raw_attrs}, _from, state) do
+    with {:ok, group} <- fetch_group(state, group_id),
+         :ok <- ensure_member(group, session_id),
+         {:ok, attrs} <- normalize_delivery(raw_attrs),
+         {:ok, delivery} <- find_delivery(group, session_id, attrs) do
+      cond do
+        delivery["state"] == "obsolete" ->
+          {:reply, {:ok, %{"decision" => "obsolete"}}, state}
+
+        delivery["state"] == "consumed" ->
+          {:reply, {:ok, %{"decision" => "duplicate"}}, state}
+
+        delivery_obsolete?(group, delivery) ->
+          obsolete = delivery |> Map.put("state", "obsolete") |> Map.put("obsolete_at", now_iso())
+          event = event("collab_delivery_obsoleted", group_id, %{"delivery" => obsolete}, nil)
+          {:ok, persisted} = append(state, event)
+          next = apply_event(state, persisted)
+          broadcast(persisted, next.groups[group_id])
+          {:reply, {:ok, %{"decision" => "obsolete"}}, next}
+
+        delivery["state"] == "started" and delivery["runtime_id"] == attrs["runtime_id"] ->
+          {:reply, {:ok, %{"decision" => "duplicate"}}, state}
+
+        true ->
+          claimed =
+            delivery
+            |> Map.put("state", "started")
+            |> Map.put("runtime_id", attrs["runtime_id"])
+            |> Map.put("started_at", delivery["started_at"] || now_iso())
+            |> Map.put("last_claimed_at", now_iso())
+
+          event = event("collab_delivery_claimed", group_id, %{"delivery" => claimed}, nil)
+          {:ok, persisted} = append(state, event)
+          next = apply_event(state, persisted)
+          broadcast(persisted, next.groups[group_id])
+          {:reply, {:ok, %{"decision" => "deliver"}}, next}
+      end
+    else
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
+
+  def handle_call({:delivery_ack, group_id, session_id, raw_attrs}, _from, state) do
+    with {:ok, group} <- fetch_group(state, group_id),
+         :ok <- ensure_member(group, session_id),
+         {:ok, attrs} <- normalize_delivery(raw_attrs),
+         {:ok, delivery} <- find_delivery(group, session_id, attrs) do
+      cond do
+        delivery["state"] == "consumed" ->
+          {:reply, {:ok, %{"decision" => "duplicate", "delivery_id" => delivery["delivery_id"]}}, state}
+
+        delivery["state"] == "obsolete" ->
+          {:reply, {:error, "obsolete_delivery", "delivery is obsolete"}, state}
+
+        delivery_obsolete?(group, delivery) ->
+          {:reply, {:error, "obsolete_delivery", "delivery is obsolete"}, state}
+
+        delivery["state"] != "started" ->
+          {:reply, {:error, "invalid_state", "delivery must be claimed before acknowledgement"}, state}
+
+        delivery["runtime_id"] != attrs["runtime_id"] ->
+          {:reply, {:error, "delivery_owner", "delivery is owned by another runtime"}, state}
+
+        true ->
+          consumed =
+            delivery
+            |> Map.put("state", "consumed")
+            |> Map.put("consumed_at", now_iso())
+
+          event = event("collab_delivery_acked", group_id, %{"delivery" => consumed}, nil)
+          {:ok, persisted} = append(state, event)
+          next = apply_event(state, persisted)
+          broadcast(persisted, next.groups[group_id])
+
+          {:reply,
+           {:ok,
+            %{
+              "decision" => "consumed",
+              "delivery_id" => delivery["delivery_id"],
+              "status" => "consumed"
+            }}, next}
+      end
+    else
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
+
+  def handle_call({:pending_deliveries, session_id}, _from, state) do
+    deliveries =
+      state.groups
+      |> Map.values()
+      |> Enum.filter(&session_member?(&1, session_id))
+      |> Enum.flat_map(fn group ->
+        group
+        |> Map.get("deliveries", [])
+        |> Enum.reject(fn delivery ->
+          delivery["state"] in ["consumed", "obsolete"] or delivery_obsolete?(group, delivery)
+        end)
+      end)
+      |> Enum.take(128)
+
+    pending =
+      Enum.map(deliveries, fn delivery ->
+        %{
+          "kind" => delivery["kind"],
+          "payload" => delivery["payload"],
+          "delivery_id" => delivery["delivery_id"]
+        }
+      end)
+
+    {:reply, {:ok, pending}, state}
   end
 
   def handle_call({:board_verify_prepare, group_id, task_id, raw_attrs}, _from, state) do
@@ -951,6 +1065,7 @@ defmodule Newbee.Collaboration.Coordinator do
           Map.put(attestation, "status", if(passed, do: "passed", else: "failed"))
         )
         |> Map.put("updated_at", now_iso())
+        |> ready_workspace_for_review()
 
       event = event("collab_task_updated", group_id, %{"task" => updated}, attrs["command_id"])
       {:ok, persisted} = append(state, event)
@@ -958,8 +1073,15 @@ defmodule Newbee.Collaboration.Coordinator do
       broadcast(persisted, next.groups[group_id])
       {next, activated} = activate_ready_dependents(next, group_id)
       revision = next.groups[group_id]["revision"]
-      Enum.each(activated, &dispatch_task(Map.put(&1, "board_revision", revision)))
-      if passed, do: dispatch_result(updated)
+
+      Enum.each(activated, fn task ->
+        task = Map.put(task, "board_revision", revision)
+        dispatch_task(task, task_delivery_id(next.groups[group_id], task))
+      end)
+
+      if passed and updated["created_by_session_id"] != group["coordinator_session_id"],
+        do: dispatch_result(updated, result_delivery_id(next.groups[group_id], updated))
+
       {:reply, {:ok, %{"task" => updated, "revision" => revision}}, next}
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
@@ -1067,7 +1189,7 @@ defmodule Newbee.Collaboration.Coordinator do
          %{
            "topic" => "collab_delegated",
            "group_id" => group_id,
-           "payload" => %{"member" => member, "task" => task}
+           "payload" => %{"member" => member, "task" => task} = payload
          } = event
        ) do
     group = state.groups[group_id]
@@ -1077,6 +1199,7 @@ defmodule Newbee.Collaboration.Coordinator do
       |> Map.put("members", group["members"] ++ [member])
       |> Map.put("tasks", (group["tasks"] || []) ++ [task])
       |> Map.put("total_spawned", (group["total_spawned"] || 1) + 1)
+      |> Map.put("deliveries", append_deliveries(group["deliveries"] || [], payload["deliveries"]))
       |> Map.put("updated_at", event["at"])
 
     state
@@ -1106,17 +1229,17 @@ defmodule Newbee.Collaboration.Coordinator do
          %{
            "topic" => "collab_message_created",
            "group_id" => group_id,
-           "payload" => %{"message" => message}
+           "payload" => %{"message" => message} = payload
          } = event
        ) do
     group = state.groups[group_id]
 
-    group = %{
+    group =
       group
-      | "messages" => group["messages"] ++ [message],
-        "next_seq" => max(group["next_seq"], message["seq"]),
-        "updated_at" => event["at"]
-    }
+      |> Map.put("messages", group["messages"] ++ [message])
+      |> Map.put("next_seq", max(group["next_seq"], message["seq"]))
+      |> Map.put("deliveries", append_deliveries(group["deliveries"] || [], payload["deliveries"]))
+      |> Map.put("updated_at", event["at"])
 
     state
     |> put_group(group)
@@ -1125,9 +1248,13 @@ defmodule Newbee.Collaboration.Coordinator do
 
   defp apply_event(
          state,
-         %{"topic" => topic, "group_id" => group_id, "payload" => %{"task" => task}} = event
+         %{
+           "topic" => topic,
+           "group_id" => group_id,
+           "payload" => %{"task" => task} = payload
+         } = event
        )
-       when topic in ["collab_task_created", "collab_task_updated", "collab_workspace_updated"] do
+       when topic in ["collab_task_created", "collab_task_updated", "collab_task_retried", "collab_workspace_updated"] do
     group = state.groups[group_id]
 
     tasks =
@@ -1135,7 +1262,11 @@ defmodule Newbee.Collaboration.Coordinator do
       |> Enum.reject(&(&1["task_id"] == task["task_id"]))
       |> Kernel.++([task])
 
-    group = %{group | "tasks" => tasks, "updated_at" => event["at"]}
+    group =
+      group
+      |> Map.put("tasks", tasks)
+      |> Map.put("deliveries", append_deliveries(group["deliveries"] || [], payload["deliveries"]))
+      |> Map.put("updated_at", event["at"])
 
     state
     |> put_group(group)
@@ -1147,7 +1278,7 @@ defmodule Newbee.Collaboration.Coordinator do
          %{
            "topic" => "collab_task_claimed",
            "group_id" => group_id,
-           "payload" => %{"task" => task}
+           "payload" => %{"task" => task} = payload
          } = event
        ) do
     group = state.groups[group_id]
@@ -1157,7 +1288,29 @@ defmodule Newbee.Collaboration.Coordinator do
       |> Enum.reject(&(&1["task_id"] == task["task_id"]))
       |> Kernel.++([task])
 
-    group = %{group | "tasks" => tasks, "updated_at" => event["at"]}
+    group =
+      group
+      |> Map.put("tasks", tasks)
+      |> Map.put("deliveries", append_deliveries(group["deliveries"] || [], payload["deliveries"]))
+      |> Map.put("updated_at", event["at"])
+
+    state
+    |> put_group(group)
+    |> remember_command(event["command_id"])
+  end
+
+  defp apply_event(
+         state,
+         %{
+           "topic" => topic,
+           "group_id" => group_id,
+           "payload" => %{"delivery" => delivery}
+         } = event
+       )
+       when topic in ["collab_delivery_claimed", "collab_delivery_acked", "collab_delivery_obsoleted"] do
+    group = state.groups[group_id]
+    deliveries = upsert_delivery(group["deliveries"] || [], delivery)
+    group = group |> Map.put("deliveries", deliveries) |> Map.put("updated_at", event["at"])
 
     state
     |> put_group(group)
@@ -1211,7 +1364,7 @@ defmodule Newbee.Collaboration.Coordinator do
   defp put_group(state, group) do
     group_id = group["group_id"]
     revision = group_revision(state, group_id) + 1
-    group = Map.put(group, "revision", revision)
+    group = group |> Map.put_new("deliveries", []) |> Map.put("revision", revision)
     next = %{state | groups: Map.put(state.groups, group_id, group)}
     notify_waiters(next, group_id)
   end
@@ -1405,27 +1558,33 @@ defmodule Newbee.Collaboration.Coordinator do
     session_id = clean(attrs["session_id"] || attrs[:session_id])
     role = clean(attrs["role"] || attrs[:role]) || "worker"
     workspace = attrs["workspace"] || attrs[:workspace]
-    protocol_version = attrs["protocol_version"] || attrs[:protocol_version] || 1
+    protocol_version = attrs["protocol_version"] || attrs[:protocol_version] || 2
+    expected_revision = attrs["expected_revision"] || attrs[:expected_revision]
 
-    if title && parent && session_id && role in @roles && is_map(workspace) &&
-         protocol_version in [1, 2] do
-      {:ok,
-       %{
-         "title" => title,
-         "description" => description || title,
-         "acceptance" => attrs["acceptance"] || attrs[:acceptance] || [],
-         "depends_on" => attrs["depends_on"] || attrs[:depends_on] || [],
-         "write_scope" => attrs["write_scope"] || attrs[:write_scope] || [],
-         "parent_session_id" => parent,
-         "session_id" => session_id,
-         "role" => role,
-         "persona" => attrs["persona"] || attrs[:persona],
-         "protocol_version" => protocol_version,
-         "workspace" => workspace,
-         "command_id" => clean(attrs["command_id"] || attrs[:command_id])
-       }}
-    else
-      {:error, "bad_request", "派生任务需要父会话、子会话、角色、工作区和标题"}
+    cond do
+      protocol_version != 2 ->
+        {:error, "protocol_mismatch", "仅支持 Hive protocol=2"}
+
+      not ((title && parent && session_id && role in @roles) and is_map(workspace)) ->
+        {:error, "bad_request", "派生任务需要父会话、子会话、角色、工作区和标题"}
+
+      true ->
+        {:ok,
+         %{
+           "title" => title,
+           "description" => description || title,
+           "acceptance" => attrs["acceptance"] || attrs[:acceptance],
+           "depends_on" => attrs["depends_on"] || attrs[:depends_on] || [],
+           "write_scope" => attrs["write_scope"] || attrs[:write_scope] || [],
+           "parent_session_id" => parent,
+           "session_id" => session_id,
+           "role" => role,
+           "persona" => attrs["persona"] || attrs[:persona],
+           "protocol_version" => protocol_version,
+           "expected_revision" => expected_revision,
+           "workspace" => workspace,
+           "command_id" => clean(attrs["command_id"] || attrs[:command_id])
+         }}
     end
   end
 
@@ -1446,85 +1605,6 @@ defmodule Newbee.Collaboration.Coordinator do
   end
 
   defp normalize_member_removal(_), do: {:error, "bad_request", "成员移除参数格式错误"}
-
-  defp lease_owner(task, session_id) do
-    cond do
-      task["lease_owner"] != session_id -> {:error, "lease_lost", "当前会话不是 lease 持有者"}
-      not lease_active?(task) -> {:error, "lease_lost", "任务 lease 已过期"}
-      true -> :ok
-    end
-  end
-
-  defp lease_active?(task) do
-    case task["lease_until"] do
-      until when is_binary(until) ->
-        case DateTime.from_iso8601(until) do
-          {:ok, dt, _} -> DateTime.compare(dt, DateTime.utc_now()) == :gt
-          _ -> false
-        end
-
-      _ ->
-        false
-    end
-  end
-
-  # ── 孤儿任务回收 ──
-  # 子会话崩溃/结束后，其任务会永久卡在 assigned/running，阻塞删组与成员移除。
-  # 孤儿判据：指派会话进程已不存在 + 租约已过期（或从未租出）。
-  # 协调者自建的 pending 任务（无指派）不算孤儿，留给协调者处置。
-
-  defp task_active?(task), do: task["status"] not in ["succeeded", "failed", "cancelled"]
-
-  defp orphan_task?(%{"assigned_session_id" => nil}, _now), do: false
-
-  defp orphan_task?(task, _now) do
-    task_active?(task) and not session_alive?(task["assigned_session_id"]) and
-      not lease_active?(task)
-  end
-
-  defp session_alive?(session_id) do
-    try do
-      case Registry.lookup(Newbee.Web.SessionRegistry, session_id) do
-        [] -> false
-        [{pid, _}] -> Process.alive?(pid)
-        _ -> false
-      end
-    rescue
-      # registry 未启动（非 Web 环境）时视为无活跃会话进程
-      _ -> false
-    end
-  end
-
-  defp cancel_orphans(state, group) do
-    now = now_iso()
-
-    (group["tasks"] || [])
-    |> Enum.filter(&orphan_task?(&1, now))
-    |> Enum.reduce({state, group}, fn task, {acc_state, acc_group} ->
-      updated =
-        task
-        |> Map.put("status", "cancelled")
-        |> Map.put("result", "orphan: 子会话已结束且租约过期，自动取消")
-        |> Map.put("updated_at", now)
-
-      event = event("collab_task_updated", acc_group["group_id"], %{"task" => updated}, nil)
-      {:ok, persisted} = append(acc_state, event)
-      next = apply_event(acc_state, persisted)
-      broadcast(persisted, next.groups[acc_group["group_id"]])
-      {next, next.groups[acc_group["group_id"]]}
-    end)
-  end
-
-  defp sweep_orphans(state) do
-    Enum.reduce(state.groups, state, fn {_group_id, group}, acc ->
-      {next, _group} = cancel_orphans(acc, group)
-      next
-    end)
-  end
-
-  defp schedule_orphan_sweep do
-    Process.send_after(self(), :sweep_orphans, @orphan_sweep_interval_ms)
-  end
 
   defp task_claimable(task, session_id) do
     lease_active? =
@@ -1554,48 +1634,6 @@ defmodule Newbee.Collaboration.Coordinator do
     end
   end
 
-  defp normalize_task(attrs) when is_map(attrs) do
-    title = clean(attrs["title"] || attrs[:title])
-    description = clean(attrs["description"] || attrs[:description])
-    creator = clean(attrs["created_by_session_id"] || attrs[:created_by_session_id])
-
-    if creator && (title || description) do
-      {:ok,
-       %{
-         "title" => title || String.slice(description, 0, 80),
-         "description" => description || title,
-         "acceptance" => attrs["acceptance"] || attrs[:acceptance] || [],
-         "created_by_session_id" => creator,
-         "assigned_session_id" => clean(attrs["assigned_session_id"] || attrs[:assigned_session_id]),
-         "command_id" => clean(attrs["command_id"] || attrs[:command_id])
-       }}
-    else
-      {:error, "bad_request", "任务需要创建会话和标题/描述"}
-    end
-  end
-
-  defp normalize_task(_), do: {:error, "bad_request", "任务参数格式错误"}
-
-  defp normalize_task_update(attrs) when is_map(attrs) do
-    status = clean(attrs["status"] || attrs[:status])
-    session_id = clean(attrs["session_id"] || attrs[:session_id])
-
-    if status in ~w(accepted running blocked succeeded failed cancelled) and session_id do
-      {:ok,
-       %{
-         "status" => status,
-         "session_id" => session_id,
-         "progress" => attrs["progress"] || attrs[:progress],
-         "result" => attrs["result"] || attrs[:result],
-         "command_id" => clean(attrs["command_id"] || attrs[:command_id])
-       }}
-    else
-      {:error, "bad_request", "任务状态或 sessionId 无效"}
-    end
-  end
-
-  defp normalize_task_update(_), do: {:error, "bad_request", "任务更新参数格式错误"}
-
   defp normalize_workspace_update(attrs) when is_map(attrs) do
     actor = clean(attrs["actor_session_id"] || attrs[:actor_session_id])
     action = clean(attrs["action"] || attrs[:action])
@@ -1614,6 +1652,18 @@ defmodule Newbee.Collaboration.Coordinator do
   end
 
   defp normalize_workspace_update(_), do: {:error, "bad_request", "工作区操作参数格式错误"}
+
+  defp ready_workspace_for_review(
+         %{
+           "status" => status,
+           "workspace" => %{"review_status" => "waiting"} = workspace
+         } = task
+       )
+       when status in ["succeeded", "failed", "cancelled"] do
+    Map.put(task, "workspace", Map.put(workspace, "review_status", "pending"))
+  end
+
+  defp ready_workspace_for_review(task), do: task
 
   defp transition_workspace(%{"workspace" => workspace} = task, attrs) when is_map(workspace) do
     current = workspace["review_status"]
@@ -1647,43 +1697,11 @@ defmodule Newbee.Collaboration.Coordinator do
 
   defp transition_workspace(_, _), do: {:error, "workspace_missing", "任务没有隔离工作区"}
 
-  defp maybe_mark_workspace_pending(
-         %{"workspace" => %{"review_status" => "waiting"} = workspace} = task,
-         true
-       ) do
-    Map.put(task, "workspace", Map.put(workspace, "review_status", "pending"))
-  end
-
-  defp maybe_mark_workspace_pending(task, _), do: task
-
   defp fetch_task(group, task_id) do
     case Enum.find(group["tasks"] || [], &(&1["task_id"] == task_id)) do
       nil -> {:error, "not_found", "任务不存在"}
       task -> {:ok, task}
     end
-  end
-
-  defp legacy_task_api(%{"protocol_version" => 2}),
-    do: {:error, "protocol_mismatch", "Hive v2 任务必须使用 Hive Board 生命周期 API"}
-
-  defp legacy_task_api(_task), do: :ok
-
-  defp task_actor_allowed(task, session_id) do
-    if session_id in [task["created_by_session_id"], task["assigned_session_id"]],
-      do: :ok,
-      else: {:error, "forbidden_role", "当前会话不能更新该任务"}
-  end
-
-  defp valid_task_transition(from, to) do
-    allowed = %{
-      "pending" => ~w(cancelled assigned),
-      "assigned" => ~w(accepted running cancelled),
-      "accepted" => ~w(running blocked succeeded failed cancelled),
-      "running" => ~w(blocked succeeded failed cancelled),
-      "blocked" => ~w(running failed cancelled)
-    }
-
-    if to in Map.get(allowed, from, []), do: :ok, else: {:error, "invalid_state", "非法任务状态转换"}
   end
 
   defp maybe_put(map, _key, nil), do: map
@@ -1693,23 +1711,34 @@ defmodule Newbee.Collaboration.Coordinator do
     sender = clean(attrs["sender_session_id"] || attrs[:sender_session_id])
     kind = clean(attrs["kind"] || attrs[:kind]) || "chat"
     delivery = clean(attrs["delivery"] || attrs[:delivery]) || "notify"
+    delivery = if kind == "task_progress", do: "notify", else: delivery
+
     body = clean(attrs["body"] || attrs[:body])
+    task_id = clean(attrs["task_id"] || attrs[:task_id])
+    attempt = attrs["attempt"] || attrs[:attempt]
 
     cond do
       is_nil(sender) ->
-        {:error, "bad_request", "senderSessionId 不能为空"}
+        {:error, "bad_request", "senderSessionId cannot be empty"}
 
       kind not in @message_kinds ->
-        {:error, "bad_request", "未知消息类型"}
+        {:error, "bad_request", "unknown message kind"}
 
       delivery not in @deliveries ->
-        {:error, "bad_request", "未知投递方式，只支持 notify / queue / wake"}
+        {:error, "bad_request", "unknown delivery; use notify, queue, or wake"}
 
       is_nil(body) ->
-        {:error, "bad_request", "消息内容不能为空"}
+        {:error, "bad_request", "message body cannot be empty"}
 
       byte_size(body) > 65_536 ->
-        {:error, "message_too_large", "消息超过 64 KiB"}
+        {:error, "message_too_large", "message exceeds 64 KiB"}
+
+      not is_nil(attempt) and (not is_integer(attempt) or attempt < 0) ->
+        {:error, "bad_request", "message attempt must be a non-negative integer"}
+
+      kind in ["task_progress", "task_result"] and
+          ((is_nil(task_id) and not is_nil(attempt)) or (not is_nil(task_id) and is_nil(attempt))) ->
+        {:error, "bad_request", "task progress/result requires task_id and attempt together"}
 
       true ->
         {:ok,
@@ -1720,6 +1749,8 @@ defmodule Newbee.Collaboration.Coordinator do
            "delivery" => delivery,
            "body" => body,
            "message_id" => clean(attrs["message_id"] || attrs[:message_id]),
+           "task_id" => task_id,
+           "attempt" => attempt,
            "command_id" => clean(attrs["command_id"] || attrs[:command_id])
          }}
     end
@@ -1750,6 +1781,7 @@ defmodule Newbee.Collaboration.Coordinator do
     group
     |> Map.drop(["next_seq"])
     |> Map.put("last_seq", group["next_seq"])
+    |> Map.put("deliveries", Enum.map(group["deliveries"] || [], &public_delivery/1))
   end
 
   defp event(topic, group_id, payload, command_id) do
@@ -1763,29 +1795,59 @@ defmodule Newbee.Collaboration.Coordinator do
   end
 
   # 终态只通知一次：终态间不再转换；重放路径不走 dispatch，重启后不重复打扰。
-  defp dispatch_result(task) do
+  defp dispatch_result(task, delivery_id) do
+    task = if is_binary(delivery_id), do: Map.put(task, "delivery_id", delivery_id), else: task
+
     case Newbee.Web.Session.lookup(task["created_by_session_id"]) do
       {:ok, pid} -> Newbee.Web.Session.collaboration_result(pid, task)
       _ -> :ok
     end
   end
 
-  # notify 只进时间线（不打扰模型）；queue/wake 投给目标会话运行时：
-  # 忙时运行时自行排队，空闲立即处理。重启重放不走 dispatch（事件流即事实）。
+  # notify 只进时间线（不打扰模型）；queue 投给已运行的会话；wake 对持久会话异步恢复运行时。
+  # ensure 不在 Coordinator 进程内同步调用，避免 Session/Coordinator 回调形成自调用死锁。
+  defp dispatch_message(%{"kind" => "task_progress"}, _group), do: :ok
+
   defp dispatch_message(%{"delivery" => d} = message, group) when d in ["queue", "wake"] do
     target = message["to_session_id"] || group["coordinator_session_id"]
+    delivery_id = message_delivery_id(group, message, target)
+    message = if is_binary(delivery_id), do: Map.put(message, "delivery_id", delivery_id), else: message
 
     case Newbee.Web.Session.lookup(target) do
       {:ok, pid} -> Newbee.Web.Session.collaboration_message(pid, message)
+      _ when d == "wake" -> wake_persisted_session(target, message)
       _ -> :ok
     end
   end
 
   defp dispatch_message(_message, _group), do: :ok
 
-  defp dispatch_task(%{"assigned_session_id" => nil}), do: :ok
+  defp wake_persisted_session(target, message) do
+    case persisted_session_cwd(target) do
+      cwd when is_binary(cwd) ->
+        Task.start(fn ->
+          case Newbee.Web.Session.ensure(target, cwd) do
+            {:ok, pid, _sid} -> Newbee.Web.Session.collaboration_message(pid, message)
+            _ -> :ok
+          end
+        end)
 
-  defp dispatch_task(task) do
+      _ ->
+        :ok
+    end
+  end
+
+  defp persisted_session_cwd(target) do
+    if target in Newbee.Session.list(), do: Newbee.Session.cwd(target), else: nil
+  rescue
+    _ -> nil
+  end
+
+  defp dispatch_task(%{"assigned_session_id" => nil}, _delivery_id), do: :ok
+
+  defp dispatch_task(task, delivery_id) do
+    task = if is_binary(delivery_id), do: Map.put(task, "delivery_id", delivery_id), else: task
+
     case Newbee.Web.Session.lookup(task["assigned_session_id"]) do
       {:ok, pid} -> Newbee.Web.Session.collaboration_task(pid, task)
       _ -> :ok
@@ -1795,6 +1857,7 @@ defmodule Newbee.Collaboration.Coordinator do
   defp broadcast(event, group) do
     envelope =
       event
+      |> public_event()
       |> Map.put("session_ids", Enum.map(group["members"], & &1["session_id"]))
 
     if Process.whereis(Newbee.Bus), do: Newbee.Bus.emit(:collab_event, envelope)
@@ -1880,14 +1943,14 @@ defmodule Newbee.Collaboration.Coordinator do
     end
   end
 
-  defp validate_delegation_contract(%{"protocol_version" => 2} = attrs) do
+  defp validate_delegation_contract(attrs) do
     with :ok <- command_id_required(attrs["command_id"]),
+         :ok <- delegation_revision(attrs["expected_revision"]),
          :ok <- bounded_text(attrs["title"], @max_task_title_bytes, "title"),
          :ok <- bounded_text(attrs["description"], @max_task_description_bytes, "description"),
          :ok <- bounded_json(attrs["persona"], @max_task_payload_bytes, "persona"),
          :ok <- bounded_json(attrs["workspace"], @max_task_payload_bytes, "workspace"),
-         {:ok, acceptance} <-
-           Newbee.Collaboration.Verification.normalize_contract(attrs["acceptance"]),
+         {:ok, acceptance} <- Newbee.Collaboration.Verification.normalize_contract(attrs["acceptance"]),
          true <- valid_id_list?(attrs["depends_on"]),
          {:ok, scopes} <- normalize_write_scopes(attrs["write_scope"]) do
       {:ok,
@@ -1902,8 +1965,6 @@ defmodule Newbee.Collaboration.Coordinator do
       error -> error
     end
   end
-
-  defp validate_delegation_contract(attrs), do: {:ok, attrs}
 
   defp normalize_board_task(attrs) when is_map(attrs) do
     session_id = clean(attrs["session_id"] || attrs[:session_id])
@@ -1944,6 +2005,7 @@ defmodule Newbee.Collaboration.Coordinator do
   defp normalize_board_update(attrs) when is_map(attrs) do
     session_id = clean(attrs["session_id"] || attrs[:session_id])
     revision = attrs["expected_revision"] || attrs[:expected_revision]
+    expected_attempt = attrs["expected_attempt"] || attrs[:expected_attempt]
     status = clean(attrs["status"] || attrs[:status])
     title = clean(attrs["title"] || attrs[:title])
     description = clean(attrs["description"] || attrs[:description])
@@ -1959,6 +2021,7 @@ defmodule Newbee.Collaboration.Coordinator do
          :ok <- bounded_json(result, @max_task_payload_bytes, "result"),
          :ok <- bounded_evidence(evidence),
          true <- is_binary(session_id) and is_integer(revision) and revision >= 0,
+         true <- is_nil(expected_attempt) or (is_integer(expected_attempt) and expected_attempt >= 0),
          true <-
            is_nil(status) or
              status in ~w(assigned accepted running blocked submitted succeeded failed cancelled),
@@ -1968,6 +2031,7 @@ defmodule Newbee.Collaboration.Coordinator do
        %{
          "session_id" => session_id,
          "expected_revision" => revision,
+         "expected_attempt" => expected_attempt,
          "title" => title,
          "description" => description,
          "acceptance" => attrs["acceptance"] || attrs[:acceptance],
@@ -1980,7 +2044,7 @@ defmodule Newbee.Collaboration.Coordinator do
          "command_id" => command_id
        }}
     else
-      false -> {:error, "bad_request", "Board 更新需要 session_id、expected_revision 和合法状态"}
+      false -> {:error, "bad_request", "Board update requires session_id, expected_revision, and valid status/attempt"}
       {:error, _, _} = error -> error
     end
   end
@@ -2022,6 +2086,9 @@ defmodule Newbee.Collaboration.Coordinator do
   end
 
   defp normalize_board_verify(_), do: {:error, "bad_request", "验证参数格式错误"}
+
+  defp delegation_revision(revision) when is_integer(revision) and revision >= 0, do: :ok
+  defp delegation_revision(_), do: {:error, "bad_request", "delegation requires expected_revision"}
 
   defp expected_revision(group, expected) do
     actual = group["revision"] || 0
@@ -2067,6 +2134,9 @@ defmodule Newbee.Collaboration.Coordinator do
        do: {:error, "invalid_state", "终态任务不可再修改"}
 
   defp validate_board_status_change(_group, _task, %{"status" => nil}), do: :ok
+
+  defp validate_board_status_change(_group, %{"status" => status}, %{"status" => status}),
+    do: :ok
 
   defp validate_board_status_change(_group, _task, %{"status" => "succeeded"}),
     do: {:error, "verification_required", "Hive v2 任务只能由 verify/3 进入 succeeded"}
@@ -2126,6 +2196,9 @@ defmodule Newbee.Collaboration.Coordinator do
       attestation["all_passed"] != Enum.all?(results, &(&1["passed"] == true)) ->
         {:error, "bad_attestation", "all_passed 与逐项结果不一致"}
 
+      not submission_attestation_matches?(task, attestation) ->
+        {:error, "stale_submission", "submission changed or attestation binding is stale"}
+
       true ->
         :ok
     end
@@ -2133,6 +2206,17 @@ defmodule Newbee.Collaboration.Coordinator do
 
   defp attestation_matches(_task, _attestation),
     do: {:error, "bad_attestation", "attestation 结构无效"}
+
+  defp submission_attestation_matches?(task, attestation) do
+    if submission_present?(task) do
+      submission = task["submission"] || %{}
+      id = task["submission_id"] || submission_field(submission, "submission_id")
+      tree = task["submission_tree_sha256"] || submission_field(submission, "tree_sha256")
+      attestation["submission_id"] == id and attestation["tree_sha256"] == tree
+    else
+      true
+    end
+  end
 
   defp result_specs_match?(criteria, results) do
     Enum.zip(criteria, results)
@@ -2178,7 +2262,9 @@ defmodule Newbee.Collaboration.Coordinator do
 
     Enum.reduce(ready, {state, []}, fn task, {current_state, activated} ->
       updated = task |> Map.put("status", "assigned") |> Map.put("updated_at", now_iso())
-      event = event("collab_task_updated", group_id, %{"task" => updated}, nil)
+      deliveries = task_deliveries(current_state.groups[group_id], updated)
+      event = event("collab_task_updated", group_id, %{"task" => updated, "deliveries" => deliveries}, nil)
+
       {:ok, persisted} = append(current_state, event)
       next = apply_event(current_state, persisted)
       broadcast(persisted, next.groups[group_id])
@@ -2256,11 +2342,14 @@ defmodule Newbee.Collaboration.Coordinator do
   end
 
   defp optional_write_scopes(attrs) do
-    cond do
-      Map.has_key?(attrs, "write_scope") -> normalize_write_scopes(attrs["write_scope"])
-      Map.has_key?(attrs, :write_scope) -> normalize_write_scopes(attrs[:write_scope])
-      true -> {:ok, nil}
-    end
+    value =
+      cond do
+        Map.has_key?(attrs, "write_scope") -> attrs["write_scope"]
+        Map.has_key?(attrs, :write_scope) -> attrs[:write_scope]
+        true -> nil
+      end
+
+    if is_nil(value), do: {:ok, nil}, else: normalize_write_scopes(value)
   end
 
   defp normalize_write_scopes(scopes) when is_list(scopes) and length(scopes) <= @max_write_scope_count do
@@ -2316,5 +2405,571 @@ defmodule Newbee.Collaboration.Coordinator do
   defp scopes_overlap?(left, right) do
     left == right or String.starts_with?(left, right <> "/") or
       String.starts_with?(right, left <> "/")
+  end
+
+  defp expected_attempt(%{"attempt" => current}, nil) when is_integer(current) and current > 0,
+    do: {:error, "attempt_required", "retry reports must include expected_attempt"}
+
+  defp expected_attempt(%{"attempt" => current}, expected) when is_integer(expected) do
+    if current == expected,
+      do: :ok,
+      else: {:error, "attempt_conflict", "task attempt=#{current}, expected=#{expected}"}
+  end
+
+  defp expected_attempt(_task, nil), do: :ok
+  defp expected_attempt(_task, _expected), do: {:error, "attempt_conflict", "expected_attempt is invalid"}
+
+  defp retryable_task(%{"status" => status}) when status in ["blocked", "failed", "cancelled"], do: :ok
+
+  defp retryable_task(_task),
+    do: {:error, "invalid_state", "only blocked, failed, or cancelled tasks may be retried"}
+
+  defp append_attempt_history(task, reason) do
+    entry =
+      task
+      |> Map.take([
+        "attempt",
+        "status",
+        "progress",
+        "result",
+        "evidence",
+        "verification",
+        "submission",
+        "lease_owner",
+        "lease_until",
+        "updated_at"
+      ])
+      |> Map.put("reason", reason)
+
+    (task["attempt_history"] || [])
+    |> Kernel.++([entry])
+    |> Enum.take(-@max_attempt_history)
+  end
+
+  defp normalize_board_retry(attrs) when is_map(attrs) do
+    session_id = clean(attrs["session_id"] || attrs[:session_id])
+    revision = attrs["expected_revision"] || attrs[:expected_revision]
+    command_id = clean(attrs["command_id"] || attrs[:command_id])
+    reason = clean(attrs["reason"] || attrs[:reason])
+
+    with :ok <- command_id_required(command_id),
+         true <- is_binary(session_id) and is_integer(revision) and revision >= 0 and is_binary(reason),
+         :ok <- bounded_text(reason, @max_task_description_bytes, "reason") do
+      {:ok,
+       %{
+         "session_id" => session_id,
+         "expected_revision" => revision,
+         "command_id" => command_id,
+         "reason" => reason
+       }}
+    else
+      false -> {:error, "bad_request", "retry requires session_id, expected_revision, and reason"}
+      {:error, _, _} = error -> error
+    end
+  end
+
+  defp normalize_board_retry(_),
+    do: {:error, "bad_request", "retry parameters must be a map"}
+
+  defp normalize_delivery(attrs) when is_map(attrs) do
+    delivery_id = clean(attrs["delivery_id"] || attrs[:delivery_id])
+    runtime_id = clean(attrs["runtime_id"] || attrs[:runtime_id])
+    kind = clean(attrs["kind"] || attrs[:kind])
+    message_id = clean(attrs["message_id"] || attrs[:message_id])
+    task_id = clean(attrs["task_id"] || attrs[:task_id])
+    attempt = attrs["attempt"] || attrs[:attempt]
+
+    cond do
+      is_nil(delivery_id) or is_nil(runtime_id) or kind not in ["message", "task"] ->
+        {:error, "bad_request", "delivery_id, runtime_id, and kind are required"}
+
+      kind == "message" and is_nil(message_id) ->
+        {:error, "bad_request", "message delivery requires message_id"}
+
+      kind == "task" and (is_nil(task_id) or not is_integer(attempt) or attempt < 0) ->
+        {:error, "bad_request", "task delivery requires task_id and non-negative attempt"}
+
+      not is_nil(attempt) and (not is_integer(attempt) or attempt < 0) ->
+        {:error, "bad_request", "attempt must be a non-negative integer"}
+
+      true ->
+        {:ok,
+         %{
+           "delivery_id" => delivery_id,
+           "runtime_id" => runtime_id,
+           "kind" => kind,
+           "message_id" => message_id,
+           "task_id" => task_id,
+           "attempt" => attempt
+         }}
+    end
+  end
+
+  defp normalize_delivery(_),
+    do: {:error, "bad_request", "delivery parameters must be a map"}
+
+  defp find_delivery(group, session_id, attrs) do
+    case Enum.find(group["deliveries"] || [], fn delivery ->
+           delivery["delivery_id"] == attrs["delivery_id"] and
+             delivery["session_id"] == session_id and
+             delivery["kind"] == attrs["kind"] and
+             optional_equal?(delivery["message_id"], attrs["message_id"]) and
+             optional_equal?(delivery["task_id"], attrs["task_id"]) and
+             optional_equal?(delivery["attempt"], attrs["attempt"])
+         end) do
+      nil -> {:error, "not_found", "delivery does not exist for this session"}
+      delivery -> {:ok, delivery}
+    end
+  end
+
+  defp optional_equal?(left, right), do: optional_value(left) == optional_value(right)
+
+  defp optional_value(value) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: value
+  end
+
+  defp optional_value(value), do: value
+
+  defp delivery_obsolete?(group, %{"kind" => "message", "payload" => payload}) do
+    case payload do
+      %{"kind" => kind, "task_id" => task_id, "attempt" => attempt}
+      when kind in ["task_progress", "task_result"] and is_binary(task_id) and is_integer(attempt) ->
+        case fetch_task(group, task_id) do
+          {:ok, task} ->
+            task["attempt"] != attempt or
+              case kind do
+                "task_progress" -> task["status"] not in ["assigned", "accepted", "running"]
+                "task_result" -> task["status"] != "submitted"
+              end
+
+          _ ->
+            true
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp delivery_obsolete?(group, %{"kind" => "task", "task_id" => task_id, "attempt" => attempt} = delivery) do
+    case fetch_task(group, task_id) do
+      {:ok, task} ->
+        valid_statuses =
+          if delivery["purpose"] == "result",
+            do: ["submitted", "succeeded"],
+            else: ["assigned", "accepted", "running"]
+
+        task["attempt"] != attempt or task["status"] not in valid_statuses
+
+      _ ->
+        true
+    end
+  end
+
+  defp delivery_obsolete?(_group, _delivery), do: false
+
+  defp task_result_deliveries(group, task) do
+    target = task["created_by_session_id"] || group["coordinator_session_id"]
+    attempt = task["attempt"] || 0
+
+    if is_binary(target) and
+         not Enum.any?(group["deliveries"] || [], fn delivery ->
+           delivery["purpose"] == "result" and delivery["kind"] == "task" and
+             delivery["session_id"] == target and delivery["task_id"] == task["task_id"] and
+             delivery["attempt"] == attempt
+         end) do
+      delivery = new_delivery("task", target, task["task_id"], nil, attempt, task)
+      payload = Map.put(task, "delivery_id", delivery["delivery_id"])
+      [delivery |> Map.put("purpose", "result") |> Map.put("payload", payload)]
+    else
+      []
+    end
+  end
+
+  defp first_delivery_id([%{"delivery_id" => delivery_id} | _]), do: delivery_id
+  defp first_delivery_id(_), do: nil
+
+  defp result_delivery_id(group, task) do
+    case Enum.find(group["deliveries"] || [], fn delivery ->
+           delivery["purpose"] == "result" and delivery["kind"] == "task" and
+             delivery["session_id"] == task["created_by_session_id"] and
+             delivery["task_id"] == task["task_id"] and delivery["attempt"] == (task["attempt"] || 0)
+         end) do
+      %{"delivery_id" => delivery_id} -> delivery_id
+      _ -> nil
+    end
+  end
+
+  defp task_delivery_id(group, task) do
+    target = task["assigned_session_id"]
+    attempt = task["attempt"] || 0
+
+    Enum.find_value(group["deliveries"] || [], fn delivery ->
+      if delivery["purpose"] != "result" and delivery["kind"] == "task" and
+           delivery["session_id"] == target and delivery["task_id"] == task["task_id"] and
+           delivery["attempt"] == attempt,
+         do: delivery["delivery_id"]
+    end)
+  end
+
+  defp task_deliveries(group, task) do
+    target = task["assigned_session_id"]
+    attempt = task["attempt"] || 0
+
+    if is_binary(target) and is_nil(task_delivery_id(group, task)) do
+      delivery = new_delivery("task", target, task["task_id"], nil, attempt, task)
+      payload = Map.put(task, "delivery_id", delivery["delivery_id"])
+      [Map.put(delivery, "payload", payload)]
+    else
+      []
+    end
+  end
+
+  defp message_deliveries(group, message) do
+    targets =
+      case message["to_session_id"] do
+        nil -> Enum.map(group["members"] || [], & &1["session_id"])
+        target -> [target]
+      end
+
+    targets
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+    |> Enum.map(fn target ->
+      delivery =
+        new_delivery(
+          "message",
+          target,
+          message["task_id"],
+          message["message_id"],
+          message["attempt"],
+          message
+        )
+
+      Map.put(delivery, "payload", Map.put(message, "delivery_id", delivery["delivery_id"]))
+    end)
+  end
+
+  defp message_delivery_id(group, message, target) do
+    Enum.find_value(group["deliveries"] || [], fn delivery ->
+      if delivery["kind"] == "message" and delivery["session_id"] == target and
+           delivery["message_id"] == message["message_id"] and
+           delivery["task_id"] == message["task_id"] and delivery["attempt"] == message["attempt"],
+         do: delivery["delivery_id"]
+    end)
+  end
+
+  defp new_delivery(kind, session_id, task_id, message_id, attempt, payload) do
+    %{
+      "delivery_id" => id("delivery"),
+      "session_id" => session_id,
+      "kind" => kind,
+      "message_id" => message_id,
+      "task_id" => task_id,
+      "attempt" => attempt,
+      "payload" => payload,
+      "state" => "pending",
+      "runtime_id" => nil,
+      "started_at" => nil,
+      "last_claimed_at" => nil,
+      "consumed_at" => nil
+    }
+  end
+
+  defp append_deliveries(existing, nil), do: existing
+
+  defp append_deliveries(existing, deliveries) when is_list(deliveries) do
+    Enum.reduce(deliveries, existing, &upsert_delivery(&2, &1))
+  end
+
+  defp append_deliveries(existing, _), do: existing
+
+  defp upsert_delivery(deliveries, delivery) do
+    if Enum.any?(deliveries, &(&1["delivery_id"] == delivery["delivery_id"])) do
+      Enum.map(deliveries, fn current ->
+        if current["delivery_id"] == delivery["delivery_id"], do: delivery, else: current
+      end)
+    else
+      deliveries ++ [delivery]
+    end
+  end
+
+  defp public_event(event), do: Map.update(event, "payload", nil, &public_payload/1)
+
+  defp public_payload(payload) when is_map(payload) do
+    payload
+    |> map_public_field("task", &public_task/1)
+    |> map_public_field("delivery", &public_delivery/1)
+    |> map_public_field("deliveries", fn deliveries -> Enum.map(deliveries || [], &public_delivery/1) end)
+  end
+
+  defp public_payload(payload), do: payload
+
+  defp map_public_field(map, key, fun) do
+    if Map.has_key?(map, key), do: Map.update!(map, key, fun), else: map
+  end
+
+  defp public_task(task) when is_map(task) do
+    task
+    |> Map.update("workspace", nil, &public_workspace/1)
+    |> Map.update("submission", nil, &public_submission/1)
+    |> Map.update("attempt_history", [], fn history -> Enum.map(history || [], &public_attempt/1) end)
+    |> Map.drop(["project_root", "work_root", "root", "candidate_path"])
+  end
+
+  defp public_task(task), do: task
+
+  defp public_attempt(attempt) when is_map(attempt) do
+    attempt
+    |> Map.update("submission", nil, &public_submission/1)
+    |> Map.drop(["project_root", "work_root", "root", "candidate_path"])
+  end
+
+  defp public_attempt(attempt), do: attempt
+  defp public_workspace(nil), do: nil
+
+  defp public_workspace(workspace) when is_map(workspace) do
+    Map.take(workspace, ["kind", "review_status", "reviewed_at", "reviewed_by_session_id", "patch_sha256", "warning"])
+  end
+
+  defp public_workspace(workspace), do: workspace
+  defp public_submission(nil), do: nil
+
+  defp public_submission(submission) when is_map(submission) do
+    Map.take(submission, ["id", "task_id", "attempt", "tree_sha256", "acceptance_sha256", "result_sha256", "created_at"])
+  end
+
+  defp public_submission(submission), do: submission
+
+  defp public_delivery(delivery) when is_map(delivery) do
+    delivery
+    |> Map.drop(["runtime_id"])
+    |> map_public_field("payload", &public_task/1)
+  end
+
+  defp public_delivery(delivery), do: delivery
+
+  defp prepare_board_update(state, group_id, task_id, raw_attrs) do
+    with {:ok, group} <- fetch_group(state, group_id),
+         {:ok, task} <- fetch_task(group, task_id),
+         {:ok, attrs} <- normalize_board_update(raw_attrs),
+         :ok <- ensure_member(group, attrs["session_id"]),
+         :ok <- expected_revision(group, attrs["expected_revision"]),
+         :ok <- expected_attempt(task, attrs["expected_attempt"]),
+         :ok <- unique_command(state, attrs["command_id"]),
+         :ok <- board_actor_allowed(group, task, attrs["session_id"]),
+         :ok <- board_fields_allowed(group, task, attrs),
+         :ok <- validate_board_status_change(group, task, attrs),
+         {:ok, acceptance} <- normalize_updated_acceptance(task, attrs),
+         :ok <- command_acceptance_change_allowed(group, attrs["session_id"], attrs["acceptance"], acceptance),
+         :ok <- dependencies_exist(group, attrs["depends_on"] || task["depends_on"] || []),
+         :ok <-
+           dependency_graph_acyclic(
+             group,
+             task_id,
+             attrs["depends_on"] || task["depends_on"] || []
+           ) do
+      {:ok, %{group: group, task: task, attrs: attrs, acceptance: acceptance}}
+    else
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp build_updated_task(task, attrs, acceptance) do
+    task
+    |> maybe_put("title", attrs["title"])
+    |> maybe_put("description", attrs["description"])
+    |> Map.put("acceptance", acceptance)
+    |> Map.put("acceptance_sha256", Newbee.Collaboration.Verification.contract_sha256(acceptance))
+    |> maybe_reset_verification(attrs["acceptance"])
+    |> maybe_put("depends_on", attrs["depends_on"])
+    |> maybe_put("write_scope", attrs["write_scope"])
+    |> maybe_put("status", attrs["status"])
+    |> maybe_put("progress", attrs["progress"])
+    |> maybe_put("result", attrs["result"])
+    |> maybe_put("evidence", attrs["evidence"])
+    |> Map.put("updated_at", now_iso())
+    |> ready_workspace_for_review()
+  end
+
+  defp submission_update?(attrs) when is_map(attrs) do
+    status = attrs["status"] || attrs[:status]
+    status == "submitted" or explicit_submit_request?(attrs)
+  end
+
+  defp submission_update?(_), do: false
+
+  defp explicit_submit_request?(attrs) do
+    action = attrs["action"] || attrs[:action]
+
+    attrs["submit"] == true or attrs[:submit] == true or
+      attrs["submit_requested"] == true or attrs[:submit_requested] == true or
+      action in ["submit", :submit]
+  end
+
+  defp normalize_submission_request(attrs) when is_map(attrs) do
+    status = attrs["status"] || attrs[:status]
+
+    if explicit_submit_request?(attrs) and status != "submitted",
+      do: Map.put(attrs, "status", "submitted"),
+      else: attrs
+  end
+
+  defp normalize_submission_request(attrs), do: attrs
+
+  defp board_update_task_with_submission(group_id, task_id, attrs, server) do
+    with {:ok, prepared} <-
+           GenServer.call(server, {:board_update_task_prepare, group_id, task_id, attrs}),
+         capture_task = submission_task(prepared.task, prepared.group, prepared.attrs, prepared.acceptance),
+         {:ok, source_root} <- submission_source_root(capture_task),
+         {:ok, submission} <- submission_capture(capture_task, source_root),
+         {:ok, bound} <- bind_submission(prepared.task, prepared.attrs, submission),
+         :ok <- submission_validate(Map.put(capture_task, "submission", bound)) do
+      GenServer.call(
+        server,
+        {:board_update_task_commit, group_id, task_id, prepared.attrs, submission}
+      )
+    end
+  end
+
+  defp submission_task(task, group, attrs, acceptance) do
+    task
+    |> Map.put_new("project_root", group["project_root"])
+    |> Map.put("status", "submitted")
+    |> Map.put("acceptance", acceptance)
+    |> Map.put("acceptance_sha256", Newbee.Collaboration.Verification.contract_sha256(acceptance))
+    |> maybe_put("progress", attrs["progress"])
+    |> maybe_put("result", attrs["result"])
+    |> maybe_put("evidence", attrs["evidence"])
+  end
+
+  defp submission_source_root(task) do
+    workspace = task["workspace"] || task[:workspace] || %{}
+    candidates = [workspace["path"] || workspace[:path], task["work_root"], task["project_root"]]
+
+    case Enum.find(candidates, &(is_binary(&1) and File.dir?(&1))) do
+      root when is_binary(root) -> {:ok, Path.expand(root)}
+      _ -> {:error, "workspace_missing", "Submission source workspace is missing"}
+    end
+  end
+
+  defp submission_module do
+    [
+      :"Elixir.Newbee.Collaboration.Submission",
+      :"Elixir.Newbee.Submission",
+      :"Elixir.Submission"
+    ]
+    |> Enum.find(fn module ->
+      Code.ensure_loaded?(module) and
+        function_exported?(module, :capture, 2) and
+        function_exported?(module, :verification_root, 1) and
+        function_exported?(module, :validate, 1)
+    end)
+  end
+
+  defp submission_verification_root(task) do
+    case submission_module() do
+      nil -> {:error, "submission_unavailable", "Submission API is not loaded"}
+      module -> normalize_submission_root(apply_submission(module, :verification_root, [task]))
+    end
+  end
+
+  defp submission_capture(task, root) do
+    case submission_module() do
+      nil -> {:error, "submission_unavailable", "Submission API is not loaded"}
+      module -> normalize_submission_capture(apply_submission(module, :capture, [task, root]))
+    end
+  end
+
+  defp submission_validate(task) do
+    case submission_module() do
+      nil ->
+        {:error, "submission_unavailable", "Submission API is not loaded"}
+
+      module ->
+        case apply_submission(module, :validate, [task]) do
+          :ok -> :ok
+          {:ok, _} -> :ok
+          {:error, code, message} -> {:error, code, message}
+          {:error, reason} -> {:error, "submission_invalid", inspect(reason)}
+          other -> {:error, "submission_invalid", inspect(other)}
+        end
+    end
+  end
+
+  defp apply_submission(module, function, args) do
+    apply(module, function, args)
+  rescue
+    error -> {:error, "submission_error", Exception.message(error)}
+  catch
+    kind, reason -> {:error, "submission_error", "#{kind}:#{inspect(reason)}"}
+  end
+
+  defp normalize_submission_root({:ok, root}) when is_binary(root), do: {:ok, root}
+  defp normalize_submission_root({:error, code, message}), do: {:error, code, message}
+  defp normalize_submission_root({:error, reason}), do: {:error, "submission_invalid", inspect(reason)}
+  defp normalize_submission_root(other), do: {:error, "submission_invalid", inspect(other)}
+
+  defp normalize_submission_capture({:ok, submission}) when is_map(submission), do: {:ok, submission}
+  defp normalize_submission_capture({:error, code, message}), do: {:error, code, message}
+  defp normalize_submission_capture({:error, reason}), do: {:error, "submission_invalid", inspect(reason)}
+  defp normalize_submission_capture(other), do: {:error, "submission_invalid", inspect(other)}
+
+  defp bind_submission(task, attrs, submission) when is_map(submission) do
+    submission_id = submission_field(submission, "submission_id") || submission_field(submission, "id")
+    tree_sha256 = submission_field(submission, "tree_sha256")
+
+    cond do
+      not is_binary(submission_id) or submission_id == "" ->
+        {:error, "submission_invalid", "submission_id is required"}
+
+      not is_binary(tree_sha256) or tree_sha256 == "" ->
+        {:error, "submission_invalid", "tree_sha256 is required"}
+
+      true ->
+        {:ok,
+         submission
+         |> Map.put("submission_id", submission_id)
+         |> Map.put("tree_sha256", tree_sha256)
+         |> Map.put("task_id", task["task_id"])
+         |> Map.put("attempt", task["attempt"] || 0)
+         |> Map.put("result", attrs["result"])
+         |> Map.put("acceptance_sha256", task["acceptance_sha256"])}
+    end
+  end
+
+  defp bind_submission(_task, _attrs, _submission),
+    do: {:error, "submission_invalid", "Submission.capture must return a map"}
+
+  defp submission_field(map, key) do
+    Map.get(map, key) || Map.get(map, String.to_atom(key))
+  end
+
+  defp verify_prepared_submission(%{task: task, root: fallback_root}) do
+    if submission_present?(task) do
+      with :ok <- submission_validate(task),
+           {:ok, root} <- submission_verification_root(task),
+           {:ok, attestation} <- Newbee.Collaboration.Verification.verify(task, root),
+           :ok <- submission_validate(task),
+           {:ok, attestation} <- bind_submission_attestation(task, attestation) do
+        {:ok, attestation}
+      end
+    else
+      Newbee.Collaboration.Verification.verify(task, fallback_root)
+    end
+  end
+
+  defp submission_present?(task),
+    do: is_map(task["submission"]) or is_binary(task["submission_id"])
+
+  defp bind_submission_attestation(task, attestation) do
+    submission = task["submission"] || %{}
+    submission_id = task["submission_id"] || submission_field(submission, "submission_id")
+    tree_sha256 = task["submission_tree_sha256"] || submission_field(submission, "tree_sha256")
+
+    if is_binary(submission_id) and is_binary(tree_sha256),
+      do: {:ok, attestation |> Map.put("submission_id", submission_id) |> Map.put("tree_sha256", tree_sha256)},
+      else: {:error, "submission_invalid", "task submission binding is incomplete"}
   end
 end

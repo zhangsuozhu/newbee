@@ -212,7 +212,7 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     GenServer.stop(restored)
   end
 
-  test "移出成员保护任务和父子关系，并在重启后保持结果", %{
+  test "移出成员保护 Hive 任务和父子关系，并在重启后保持结果", %{
     server: server,
     pid: pid,
     path: path
@@ -228,14 +228,20 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     assert {:ok, _} =
              Coordinator.add_member(
                group_id,
-               %{"session_id" => "worker", "parent_session_id" => "parent"},
+               %{
+                 "session_id" => "worker",
+                 "parent_session_id" => "parent"
+               },
                server
              )
 
     assert {:ok, _} =
              Coordinator.add_member(
                group_id,
-               %{"session_id" => "reviewer", "parent_session_id" => "worker"},
+               %{
+                 "session_id" => "reviewer",
+                 "parent_session_id" => "worker"
+               },
                server
              )
 
@@ -246,8 +252,6 @@ defmodule Newbee.Collaboration.CoordinatorTest do
                server
              )
 
-    # 协调者现在可以直接移出（用于删除会话时自动解散工作组）；
-    # 保护只剩 member_has_children / member_has_active_tasks。
     assert {:error, "member_has_children", _} =
              Coordinator.remove_member(
                group_id,
@@ -270,15 +274,11 @@ defmodule Newbee.Collaboration.CoordinatorTest do
              )
 
     assert {:ok, task} =
-             Coordinator.create_task(
-               group_id,
-               %{
-                 "created_by_session_id" => "parent",
-                 "assigned_session_id" => "worker",
-                 "title" => "进行中的工作"
-               },
-               server
-             )
+             board_create_task(server, group_id, %{
+               "created_by_session_id" => "parent",
+               "assigned_session_id" => "worker",
+               "title" => "进行中的 Hive 工作"
+             })
 
     assert {:error, "member_has_active_tasks", _} =
              Coordinator.remove_member(
@@ -287,13 +287,13 @@ defmodule Newbee.Collaboration.CoordinatorTest do
                server
              )
 
-    assert {:ok, _} =
-             Coordinator.update_task(
-               group_id,
-               task["task_id"],
-               %{"session_id" => "parent", "status" => "cancelled"},
-               server
-             )
+    assert {:ok, cancelled} =
+             board_update_task(server, group_id, task["task_id"], %{
+               "session_id" => "parent",
+               "status" => "cancelled"
+             })
+
+    assert cancelled["status"] == "cancelled"
 
     assert {:ok, removed} =
              Coordinator.remove_member(
@@ -342,18 +342,22 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     Newbee.Bus.unsubscribe()
   end
 
-  test "原子派生事件同时持久化成员、任务和工作区，重放不产生半状态", %{
+  test "原子 Hive 委派事件同时持久化成员、任务和工作区，重放不产生半状态", %{
     server: server,
     path: path
   } do
-    assert {:ok, group} = Coordinator.create_group(%{"session_id" => "parent", "title" => "原子派生"}, server)
+    assert {:ok, group} =
+             Coordinator.create_group(
+               %{"session_id" => "parent", "title" => "原子派生"},
+               server
+             )
 
     workspace = %{
       "kind" => "git_worktree",
-      "root" => "/repo",
-      "path" => "/repo/.newbee/worktrees/child",
+      "root" => File.cwd!(),
+      "path" => File.cwd!(),
       "base_ref" => String.duplicate("a", 40),
-      "review_status" => "waiting",
+      "review_status" => "pending",
       "reviewed_at" => nil,
       "reviewed_by_session_id" => nil
     }
@@ -362,7 +366,12 @@ defmodule Newbee.Collaboration.CoordinatorTest do
       "session_id" => "child",
       "parent_session_id" => "parent",
       "role" => "worker",
+      "protocol_version" => 2,
       "title" => "实现功能",
+      "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}],
+      "depends_on" => [],
+      "write_scope" => [],
+      "expected_revision" => group["revision"],
       "workspace" => workspace,
       "command_id" => "delegate-atomic"
     }
@@ -370,30 +379,48 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     assert {:ok, %{member: member, task: task}} = Coordinator.delegate(group["group_id"], attrs, server)
     assert member["workspace"] == workspace
     assert task["workspace"] == workspace
+    assert task["protocol_version"] == 2
+
+    {:ok, after_delegate} = Coordinator.board(group["group_id"], "parent", server)
 
     assert {:error, "duplicate_command", _} =
-             Coordinator.delegate(group["group_id"], %{attrs | "session_id" => "other"}, server)
-
-    assert {:ok, _running} =
-             Coordinator.update_task(
+             Coordinator.delegate(
                group["group_id"],
-               task["task_id"],
-               %{"session_id" => "child", "status" => "running"},
+               %{attrs | "session_id" => "other", "expected_revision" => after_delegate["revision"]},
                server
              )
 
-    assert {:ok, done} =
-             Coordinator.update_task(
+    assert {:ok, %{"task" => running, "revision" => running_revision}} =
+             Coordinator.board_update_task(
                group["group_id"],
                task["task_id"],
                %{
                  "session_id" => "child",
-                 "status" => "succeeded"
+                 "expected_revision" => task["board_revision"],
+                 "status" => "running",
+                 "command_id" => "run-atomic"
                },
                server
              )
 
-    assert done["workspace"]["review_status"] == "pending"
+    assert running["status"] == "running"
+
+    assert {:ok, %{"task" => submitted, "revision" => _submitted_revision}} =
+             Coordinator.board_update_task(
+               group["group_id"],
+               task["task_id"],
+               %{
+                 "session_id" => "child",
+                 "expected_revision" => running_revision,
+                 "status" => "submitted",
+                 "result" => "ready",
+                 "command_id" => "submit-atomic"
+               },
+               server
+             )
+
+    assert submitted["status"] == "submitted"
+    assert submitted["workspace"]["review_status"] == "pending"
 
     assert {:error, "forbidden_role", _} =
              Coordinator.update_workspace(
@@ -430,7 +457,7 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     GenServer.stop(restored)
   end
 
-  test "delete_group 自动取消孤儿任务后成功删除", %{server: server} do
+  test "delete_group 保留 Hive 孤儿任务直到显式取消", %{server: server} do
     assert {:ok, group} =
              Coordinator.create_group(%{"session_id" => "parent", "title" => "孤儿删组"}, server)
 
@@ -444,25 +471,27 @@ defmodule Newbee.Collaboration.CoordinatorTest do
              )
 
     assert {:ok, task} =
-             Coordinator.create_task(
-               group_id,
-               %{
-                 "created_by_session_id" => "parent",
-                 "assigned_session_id" => "ghost-worker",
-                 "title" => "幽灵任务"
-               },
-               server
-             )
+             board_create_task(server, group_id, %{
+               "created_by_session_id" => "parent",
+               "assigned_session_id" => "ghost-worker",
+               "title" => "可恢复的 Hive 任务"
+             })
 
     assert task["status"] == "assigned"
+    assert {:error, "busy", _} = Coordinator.delete_group(group_id, "parent", server)
 
-    # ghost-worker 从未启动为真实会话进程 -> 孤儿；先删组报错保护，随后租约窗口过后可清理。
-    # delete_group 内置孤儿回收：立即成功删除。
+    assert {:ok, cancelled} =
+             board_update_task(server, group_id, task["task_id"], %{
+               "session_id" => "parent",
+               "status" => "cancelled"
+             })
+
+    assert cancelled["status"] == "cancelled"
     assert {:ok, %{"group_id" => ^group_id}} = Coordinator.delete_group(group_id, "parent", server)
     assert {:error, "not_found", _} = Coordinator.get(group_id, server)
   end
 
-  test "活跃会话的任务仍阻止删除（不误伤活任务）", %{server: server} do
+  test "活跃会话的 Hive 任务仍阻止删除", %{server: server} do
     assert {:ok, group} =
              Coordinator.create_group(%{"session_id" => "parent", "title" => "活任务保护"}, server)
 
@@ -475,27 +504,23 @@ defmodule Newbee.Collaboration.CoordinatorTest do
                server
              )
 
-    # 用真实进程占位 SessionRegistry，模拟活着的子会话
     {:ok, stub} =
       Newbee.Collaboration.SilentStub.start_link({:via, Registry, {Newbee.Web.SessionRegistry, "stub-alive"}})
 
-    assert {:ok, _} =
-             Coordinator.create_task(
-               group_id,
-               %{
-                 "created_by_session_id" => "parent",
-                 "assigned_session_id" => "stub-alive",
-                 "title" => "真活任务"
-               },
-               server
-             )
+    assert {:ok, task} =
+             board_create_task(server, group_id, %{
+               "created_by_session_id" => "parent",
+               "assigned_session_id" => "stub-alive",
+               "title" => "真活任务"
+             })
 
+    assert task["status"] == "assigned"
     assert {:error, "busy", _} = Coordinator.delete_group(group_id, "parent", server)
 
     GenServer.stop(stub)
   end
 
-  test "remove_member 自动取消被移除成员的孤儿任务", %{server: server} do
+  test "remove_member 保留 Hive 孤儿任务直到显式取消", %{server: server} do
     assert {:ok, group} =
              Coordinator.create_group(%{"session_id" => "parent", "title" => "孤儿移除"}, server)
 
@@ -508,16 +533,25 @@ defmodule Newbee.Collaboration.CoordinatorTest do
                server
              )
 
-    assert {:ok, _} =
-             Coordinator.create_task(
+    assert {:ok, task} =
+             board_create_task(server, group_id, %{
+               "created_by_session_id" => "parent",
+               "assigned_session_id" => "ghost-2",
+               "title" => "可恢复的 Hive 任务二"
+             })
+
+    assert {:error, "member_has_active_tasks", _} =
+             Coordinator.remove_member(
                group_id,
-               %{
-                 "created_by_session_id" => "parent",
-                 "assigned_session_id" => "ghost-2",
-                 "title" => "幽灵任务二"
-               },
+               %{"session_id" => "ghost-2", "actor_session_id" => "parent"},
                server
              )
+
+    assert {:ok, _cancelled} =
+             board_update_task(server, group_id, task["task_id"], %{
+               "session_id" => "parent",
+               "status" => "cancelled"
+             })
 
     assert {:ok, _removed} =
              Coordinator.remove_member(
@@ -529,68 +563,150 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     refute Coordinator.member?(group_id, "ghost-2", server)
   end
 
-  test "claim 后可续租，accepted 可直接完成", %{server: server} do
+  test "Board claim 后由 worker submitted，Lead verify 才能完成", %{server: server} do
     assert {:ok, group} =
-             Coordinator.create_group(%{"session_id" => "parent", "title" => "lease 测试"}, server)
+             Coordinator.create_group(
+               %{
+                 "session_id" => "parent",
+                 "title" => "Hive lease 测试",
+                 "project_root" => File.cwd!()
+               },
+               server
+             )
 
     group_id = group["group_id"]
-
-    assert {:ok, _} =
-             Coordinator.add_member(group_id, %{"session_id" => "child"}, server)
+    assert {:ok, _} = Coordinator.add_member(group_id, %{"session_id" => "child"}, server)
 
     assert {:ok, task} =
-             Coordinator.create_task(
-               group_id,
-               %{
-                 "created_by_session_id" => "parent",
-                 "assigned_session_id" => "child",
-                 "title" => "短任务"
-               },
-               server
-             )
+             board_create_task(server, group_id, %{
+               "created_by_session_id" => "parent",
+               "assigned_session_id" => "child",
+               "title" => "短任务"
+             })
 
-    assert {:ok, claimed} = Coordinator.claim_task(group_id, task["task_id"], "child", server)
+    assert {:ok, claimed} = board_claim_task(server, group_id, task["task_id"], "child")
     assert claimed["lease_owner"] == "child"
-    assert {:ok, renewed} = Coordinator.renew_task(group_id, task["task_id"], "child", 60, server)
-    assert renewed["lease_owner"] == "child"
 
-    assert {:ok, done} =
-             Coordinator.update_task(
+    assert {:ok, submitted} =
+             board_update_task(server, group_id, task["task_id"], %{
+               "session_id" => "child",
+               "status" => "submitted",
+               "result" => "done"
+             })
+
+    assert submitted["status"] == "submitted"
+
+    {:ok, submitted_board} = Coordinator.board(group_id, "parent", server)
+
+    assert {:ok, verified} =
+             Coordinator.board_verify(
                group_id,
                task["task_id"],
-               %{"session_id" => "child", "status" => "succeeded", "result" => "done"},
-               server
-             )
-
-    assert done["status"] == "succeeded"
-
-    assert {:ok, accepted_task} =
-             Coordinator.create_task(
-               group_id,
                %{
-                 "created_by_session_id" => "parent",
-                 "assigned_session_id" => "child",
-                 "title" => "直接完成"
+                 "session_id" => "parent",
+                 "expected_revision" => submitted_board["revision"],
+                 "command_id" => "verify-short"
                },
                server
              )
 
-    assert {:ok, _} =
-             Coordinator.update_task(
+    assert verified["task"]["status"] == "succeeded"
+
+    assert {:ok, accepted_task} =
+             board_create_task(server, group_id, %{
+               "created_by_session_id" => "parent",
+               "assigned_session_id" => "child",
+               "title" => "直接完成"
+             })
+
+    assert {:ok, accepted} =
+             board_update_task(server, group_id, accepted_task["task_id"], %{
+               "session_id" => "child",
+               "status" => "accepted"
+             })
+
+    assert accepted["status"] == "accepted"
+
+    assert {:ok, accepted_submitted} =
+             board_update_task(server, group_id, accepted_task["task_id"], %{
+               "session_id" => "child",
+               "status" => "submitted",
+               "result" => "accepted done"
+             })
+
+    assert accepted_submitted["status"] == "submitted"
+    {:ok, accepted_board} = Coordinator.board(group_id, "parent", server)
+
+    assert {:ok, accepted_verified} =
+             Coordinator.board_verify(
                group_id,
                accepted_task["task_id"],
-               %{"session_id" => "child", "status" => "accepted"},
+               %{
+                 "session_id" => "parent",
+                 "expected_revision" => accepted_board["revision"],
+                 "command_id" => "verify-accepted"
+               },
                server
              )
 
-    assert {:ok, accepted_done} =
-             Coordinator.update_task(
-               group_id,
-               accepted_task["task_id"],
-               %{"session_id" => "child", "status" => "succeeded"},
-               server
-             )
-
-    assert accepted_done["status"] == "succeeded"
+    assert accepted_verified["task"]["status"] == "succeeded"
   end
+
+  defp board_create_task(server, group_id, attrs) do
+    actor = attrs["created_by_session_id"] || attrs["session_id"] || "parent"
+    {:ok, board} = Coordinator.board(group_id, actor, server)
+
+    defaults = %{
+      "session_id" => actor,
+      "title" => "Hive task",
+      "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}],
+      "depends_on" => [],
+      "write_scope" => [],
+      "expected_revision" => board["revision"],
+      "command_id" => command_id("board-create")
+    }
+
+    attrs = Map.drop(attrs, ["created_by_session_id"])
+
+    case Coordinator.board_create_task(group_id, Map.merge(defaults, attrs), server) do
+      {:ok, %{"task" => task}} -> {:ok, task}
+      other -> other
+    end
+  end
+
+  defp board_update_task(server, group_id, task_id, attrs) do
+    actor = attrs["session_id"] || "parent"
+    {:ok, board} = Coordinator.board(group_id, actor, server)
+
+    defaults = %{
+      "session_id" => actor,
+      "expected_revision" => board["revision"],
+      "command_id" => command_id("board-update")
+    }
+
+    case Coordinator.board_update_task(group_id, task_id, Map.merge(defaults, attrs), server) do
+      {:ok, %{"task" => task}} -> {:ok, task}
+      other -> other
+    end
+  end
+
+  defp board_claim_task(server, group_id, task_id, session_id) do
+    {:ok, board} = Coordinator.board(group_id, session_id, server)
+
+    case Coordinator.board_claim(
+           group_id,
+           task_id,
+           %{
+             "session_id" => session_id,
+             "expected_revision" => board["revision"],
+             "command_id" => command_id("board-claim")
+           },
+           server
+         ) do
+      {:ok, %{"task" => task}} -> {:ok, task}
+      other -> other
+    end
+  end
+
+  defp command_id(prefix), do: prefix <> "-" <> Integer.to_string(System.unique_integer([:positive]))
 end

@@ -158,10 +158,12 @@
       <div id="mc-task-filters" class="collab-filter-row" role="group" aria-label="工作项筛选">
         <button data-task-filter="all" class="active" title="显示全部工作项">全部</button>
         <button data-task-filter="mine" title="分派给我或由我创建的">我相关</button>
-        <button data-task-filter="attention" title="受阻、失败或待审查的优先">需注意</button>
-        <button data-task-filter="review" title="有待审查变更的">待审查</button>
+        <button data-task-filter="attention" title="受阻、失败或待验收的优先">需注意</button>
+        <button data-task-filter="review" title="待验收的工作项">待验收</button>
       </div>
+      <div id="mc-task-conflicts" class="collab-write-conflicts hidden" aria-live="polite"></div>
       <div id="mc-task-list" class="collab-task-list"></div>
+
     </div>
 
     <div id="mc-files" class="mc-pane">
@@ -300,8 +302,26 @@
     <div class="group-modal-fields">
       <label>会话名称<input id="delegate-name" type="text" placeholder="例如：认证测试" maxlength="80" /></label>
       <label>让它负责什么？<textarea id="delegate-task" rows="4" placeholder="例如：补充过期凭证和登录失败测试" maxlength="2000"></textarea></label>
-      <label>验收标准（口头约定，需人工核对）<input id="delegate-acceptance" type="text" placeholder="例如：相关测试全部通过" maxlength="500" /></label>
+      <label>Persona<select id="delegate-persona">
+        <option value="worker">worker · 编码</option>
+        <option value="tester">tester · 测试</option>
+        <option value="reviewer">reviewer · 审查</option>
+        <option value="observer">observer · 观察</option>
+      </select></label>
+      <label>上下文分叉<select id="delegate-fork-turns">
+        <option value="none">不带历史</option>
+        <option value="all">全部历史</option>
+        <option value="1">最近 1 轮</option>
+        <option value="3">最近 3 轮</option>
+        <option value="5">最近 5 轮</option>
+      </select></label>
+      <label>前置工作项<input id="delegate-depends" type="text" placeholder="可填 task_id，多个用逗号分隔" maxlength="1000" /></label>
+      <label>写入范围<input id="delegate-write-scope" type="text" placeholder="例如 priv/web, test/newbee/web" maxlength="1000" /></label>
+      <div class="task-accept-label">结构化验收标准（至少一条）</div>
+      <div id="delegate-acceptance-list" class="task-accept-list"></div>
+      <button class="btn-ghost" id="delegate-acceptance-add" type="button" title="加一条验收标准：命令 / 文件存在 / 文件哈希">+ 加一条验收标准</button>
     </div>
+
     <div class="modal-actions">
       <button class="btn-ghost" id="delegate-cancel">取消</button>
       <button class="btn-primary" id="delegate-confirm">开始工作</button>
@@ -316,10 +336,13 @@
       <label>工作项名称<input id="task-name" type="text" placeholder="例如：补充认证测试" maxlength="160" /></label>
       <label>交给谁？<select id="task-owner"></select></label>
       <label>说明<textarea id="task-description" rows="3" placeholder="工作内容和注意事项" maxlength="2000"></textarea></label>
-      <div class="task-accept-label">成功标准（可选；界面约定，需人工核对，不是机器验收）</div>
+      <label>前置工作项<input id="task-depends" type="text" placeholder="可填 task_id，多个用逗号分隔" maxlength="1000" /></label>
+      <label>写入范围<input id="task-write-scope" type="text" placeholder="例如 priv/web, test/newbee/web" maxlength="1000" /></label>
+      <div class="task-accept-label">结构化验收标准（至少一条）</div>
       <div id="task-acceptance-list" class="task-accept-list"></div>
-      <button class="btn-ghost" id="task-acceptance-add" type="button" title="加一条成功标准：命令 / 文件存在 / 文件哈希">+ 加一条成功标准</button>
+      <button class="btn-ghost" id="task-acceptance-add" type="button" title="加一条验收标准：命令 / 文件存在 / 文件哈希">+ 加一条验收标准</button>
     </div>
+
     <div class="modal-actions">
       <button class="btn-ghost" id="task-cancel">取消</button>
       <button class="btn-primary" id="task-confirm">创建</button>

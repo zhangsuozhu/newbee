@@ -11,10 +11,10 @@ defmodule Newbee.Tools.Search do
   `list_files/1` prefers `git ls-files -co --exclude-standard` (fast whitelist), falling back to `Path.wildcard`.
 
   ## Runnable example
-      Newbee.Tools.Search.grep("def show", "lib")
-      Newbee.Tools.Search.grep("TODO", ".", max: 20)
-      Newbee.Tools.Search.find("fs.ex")
-      Newbee.Tools.Search.find("edit", "lib/newbee/tools")
+      hits = Newbee.Tools.Search.grep("def show", "lib")
+      hits = Newbee.Tools.Search.grep("TODO", ".", max: 20)
+      paths = Newbee.Tools.Search.find("fs.ex")
+      paths = Newbee.Tools.Search.find("edit", "lib/newbee/tools")
   """
 
   @skip ~r{/(_build|deps|\.git|node_modules|cover)/}

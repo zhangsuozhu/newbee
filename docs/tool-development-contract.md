@@ -70,7 +70,7 @@ Newbee.Environment.ToolContract.template(Newbee.Plugins.MyTool, "tool.my_tool")
 
 1. `Codec.tools/0` 常驻 function schema：≤1.5KB。
 2. `Plugins.prompt_section/1` 常驻能力索引：≤1.8KB，每项只写“何时用”。
-3. `tool://` 按需说明：单模块≤3.5KB；模块用途/边界/示例 + 编译器真实签名，只出现一次函数表。
+3. `tool://` 按需说明：单模块≤4KB；模块用途/边界/示例 + 编译器真实签名，只出现一次函数表。
 
 源码 `@moduledoc` 可保留函数清单供 ExDoc/开发者阅读，但 `tool://` 会去掉该重复段，再以 `Code.fetch_docs` 输出真实签名。
 

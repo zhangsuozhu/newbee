@@ -596,4 +596,36 @@ defmodule Newbee.LLM.ResponsesTest do
     other = {"http://localhost", "test/other-#{System.unique_integer([:positive])}"}
     assert Newbee.LLM.ResponsesCapabilities.load(other) == %{}
   end
+
+  test "stream_chat tools: [] sends a provider request without callable tools" do
+    test_pid = self()
+
+    plug = fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, {:btw_request, Jason.decode!(raw)})
+
+      Req.Test.json(conn, %{
+        "output" => [%{"type" => "message", "content" => [%{"type" => "output_text", "text" => "side answer"}]}],
+        "usage" => %{"input_tokens" => 3, "output_tokens" => 2, "total_tokens" => 5}
+      })
+    end
+
+    client =
+      Client.new(
+        api: "openai-responses",
+        model: "test/btw-no-tools",
+        api_key: "test",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    assert {:ok, %{"content" => "side answer"} = message, _} =
+             Client.stream_chat(client, [%{"role" => "user", "content" => "question"}], fn _ -> :ok end, fn _ -> :ok end, tools: [])
+    assert Map.get(message, "tool_calls", []) == []
+
+
+    assert_received {:btw_request, body}
+    assert body["tools"] == []
+  end
+
 end

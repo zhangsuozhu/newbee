@@ -28,9 +28,11 @@ defmodule Newbee.Agent.Loop do
             auto_compact: true,
             # 会话唯一绝对工作根；启动时物化，切换时与 evaluator/prompt 同步。
             root: nil,
-            # 宿主进程 monitor 引用（web 会话进程）；宿主死亡 → kernel 自停，
-            # 链式触发会话私有求值器释放（见 evaluator_owned / Evaluator.monitor_owner）
-            owner: nil
+            # 宿主 pid + monitor 引用（web 会话进程）；pid 用于模型调用边界领取 steering。
+            owner_pid: nil,
+            owner: nil,
+            # 沉睡规则正文重试熔断：同一组规则连续命中计数，达上限放行防无限重试。
+            rule_streak: %{ids: [], count: 0}
 
   # ── API ──
 
@@ -177,11 +179,13 @@ defmodule Newbee.Agent.Loop do
     # 2. evaluator_owned: true 时把本 kernel 登记为求值器宿主，kernel 停止/崩溃
     #    → 求值器自停 → terminate 停掉 primary/standby peer 节点。
     #    具名共享兜底求值器（Newbee.DEE.Evaluator）绝不可标 owned——会误杀其它会话。
-    owner_ref =
+    owner_pid =
       case Keyword.get(opts, :owner) do
-        pid when is_pid(pid) -> Process.monitor(pid)
+        pid when is_pid(pid) -> pid
         _ -> nil
       end
+
+    owner_ref = if owner_pid, do: Process.monitor(owner_pid), else: nil
 
     evaluator_owned = Keyword.get(opts, :evaluator_owned, false)
 
@@ -280,6 +284,7 @@ defmodule Newbee.Agent.Loop do
        evaluator: evaluator,
        evaluator_owned: evaluator_owned,
        owner: owner_ref,
+       owner_pid: owner_pid,
        render: render,
        client_fun: client_fun,
        session: session,
@@ -382,7 +387,10 @@ defmodule Newbee.Agent.Loop do
           reason: "启动自主目标模式",
           timing: "current_turn"
         })
-        |> push_msg(%{"role" => "user", "content" => "(Autonomous goal mode started) Goal: #{text}\nWork on your own until it is done."})
+        |> push_msg(%{
+          "role" => "user",
+          "content" => "(Autonomous goal mode started) Goal: #{text}\nWork on your own until it is done."
+        })
 
       try do
         Newbee.Goal.persist(%Newbee.Goal.State{
@@ -588,6 +596,8 @@ defmodule Newbee.Agent.Loop do
     state = %{state | messages: repair_history(drop_empty_assistant_messages(state.messages))}
     state = push_msg(state, message)
     state = maybe_history_recall(state, message)
+    # 新回合开始：沉睡规则连续命中清零（跨回合不累计，避免误熔断）。
+    state = %{state | rule_streak: %{ids: [], count: 0}}
     # 回合开始清本会话中断标志（per-session scope，无跨会话竞态）。
     # 标志语义 = "本回合内是否收到 Esc"；execute_calls 阶段的中断检查依赖它。
     Newbee.LLM.Client.clear_interrupt(state.client)
@@ -754,7 +764,11 @@ defmodule Newbee.Agent.Loop do
           state =
             inject_prompt(
               state,
-              %{"role" => "system", "content" => "[Goal Blocked] You flagged blocked 3 rounds running; the goal is now blocked. Wait for the user or /goal resume."},
+              %{
+                "role" => "system",
+                "content" =>
+                  "[Goal Blocked] You flagged blocked 3 rounds running; the goal is now blocked. Wait for the user or /goal resume."
+              },
               %{
                 source: "goal_blocked",
                 reason: "三击阻塞审计",
@@ -1001,6 +1015,7 @@ defmodule Newbee.Agent.Loop do
     - Budget and reflection: watch the token budget and the JSpace ledger; on stall, reflect before switching strategy; mark blocked only after 3 consecutive stuck rounds.
     """
   end
+
   # helpers delegating to Steering for backward compat
   defp parse_token_budget(nil), do: nil
   defp parse_token_budget(n) when is_integer(n) and n > 0, do: n
@@ -1051,7 +1066,8 @@ defmodule Newbee.Agent.Loop do
               state,
               %{
                 "role" => "system",
-                "content" => "[Loop round #{loop.rounds}] Keep pushing: #{loop.task} (#{loop.rounds}/#{loop.iterations})"
+                "content" =>
+                  "[Loop round #{loop.rounds}] Keep pushing: #{loop.task} (#{loop.rounds}/#{loop.iterations})"
               },
               %{
                 source: "loop_continue",
@@ -1180,27 +1196,40 @@ defmodule Newbee.Agent.Loop do
                   # 流监控（§4.5）：正文 + 思考流一并检查沉睡规则（scope 分流见 stream_rule_hits）
                   case stream_rule_hits(msg) do
                     [] ->
-                      {{:text, msg["content"]}, state}
+                      state = %{state | rule_streak: %{ids: [], count: 0}}
+                      {state, steered} = consume_steering(state)
+                      if steered > 0, do: run_turn(state, step + 1), else: {{:text, msg["content"]}, state}
 
                     hits ->
-                      # 沉睡规则命中正文（§4.5 流监控）：注入提醒，模型下轮纠正
-                      emit(state, {:rule_hit, hits})
+                      {state, allow_retry} = content_rule_retry_budget(state, hits)
                       # 规则命中热度（§8.5 profiling 输入）
                       Newbee.Environment.UsageTracker.observe_rules(hits)
-                      injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
-                      reminder = %{"role" => "system", "content" => "[Sleeping-rule hit] " <> injections}
 
-                      state =
-                        inject_prompt(state, reminder, %{
-                          source: "sleeping_rule",
-                          reason: "模型可见正文或隐藏思考流命中沉睡规则",
-                          timing: "current_turn_retry",
-                          step: step,
-                          trigger: visible_rule_trigger(msg["content"] || "", hits),
-                          rules: rule_audit_details(hits)
-                        })
+                      if allow_retry do
+                        # 沉睡规则命中正文（§4.5 流监控）：注入提醒，模型下轮纠正
+                        emit(state, {:rule_hit, hits})
+                        injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
+                        reminder = %{"role" => "system", "content" => "[Sleeping-rule hit] " <> injections}
 
-                      run_turn(state, step + 1)
+                        state =
+                          inject_prompt(state, reminder, %{
+                            source: "sleeping_rule",
+                            reason: "模型可见正文或隐藏思考流命中沉睡规则",
+                            timing: "current_turn_retry",
+                            step: step,
+                            trigger: visible_rule_trigger(msg["content"] || "", hits),
+                            rules: rule_audit_details(hits)
+                          })
+
+                        state = state |> consume_steering() |> elem(0)
+                        run_turn(state, step + 1)
+                      else
+                        # 熔断：同一组规则连续命中已达上限，放行原文避免无限重试烧 token
+                        emit(state, {:rule_hit, hits})
+                        state = %{state | rule_streak: %{ids: [], count: 0}}
+                        {state, steered} = consume_steering(state)
+                        if steered > 0, do: run_turn(state, step + 1), else: {{:text, msg["content"]}, state}
+                      end
                   end
 
                 {blocks, cleaned} ->
@@ -1210,8 +1239,13 @@ defmodule Newbee.Agent.Loop do
 
             calls ->
               case execute_calls(calls, state) do
-                {:halt, reply, state} -> {reply, state}
-                {:cont, state} -> run_turn(state, step + 1)
+                {:halt, reply, state} ->
+                  {reply, %{state | rule_streak: %{ids: [], count: 0}}}
+
+                {:cont, state} ->
+                  state = %{state | rule_streak: %{ids: [], count: 0}}
+                  state = state |> consume_steering() |> elem(0)
+                  run_turn(state, step + 1)
               end
           end
 
@@ -1235,7 +1269,7 @@ defmodule Newbee.Agent.Loop do
     case issue_collaboration_capability(st) do
       {:ok, token} ->
         try do
-          Newbee.DEE.Evaluator.eval(st.evaluator, code, media_capability: token)
+          Newbee.DEE.Evaluator.eval(st.evaluator, code, media_capability: token, collaboration_capability: token)
         after
           Newbee.Collaboration.Capability.revoke(token)
         end
@@ -1247,6 +1281,9 @@ defmodule Newbee.Agent.Loop do
 
   # 降级通道：执行正文里的 elixir 块（按 run_elixir 语义），结果回填后继续循环 + 温和纠偏
   defp execute_fallback(blocks, cleaned, state, step) do
+    # fallback 本质是工具进展：正文违规连续计数清零。
+    state = %{state | rule_streak: %{ids: [], count: 0}}
+
     result =
       Enum.reduce_while(blocks, {:cont, state, []}, fn code, {:cont, st, acc} ->
         if Newbee.LLM.Client.interrupted?(st.client) do
@@ -1312,8 +1349,39 @@ defmodule Newbee.Agent.Loop do
             })
           end
 
+        state = state |> consume_steering() |> elem(0)
         run_turn(state, step + 1)
     end
+  end
+
+  # Web 宿主保持可取消的 FIFO；Loop 只在两次模型请求之间同步领取，最多一批 20 条。
+  defp consume_steering(%{owner_pid: owner} = state) when is_pid(owner) do
+    Enum.reduce_while(1..20, {state, 0}, fn _, {st, count} ->
+      result =
+        try do
+          GenServer.call(owner, :take_steering, 1_000)
+        catch
+          :exit, _ -> :none
+        end
+
+      case result do
+        {:ok, item} -> {:cont, {push_msg(st, steering_message(item)), count + 1}}
+        _ -> {:halt, {st, count}}
+      end
+    end)
+  end
+
+  defp consume_steering(state), do: {state, 0}
+
+  defp steering_message(%{kind: "images"} = item) do
+    case Newbee.LLM.Image.message_with_images(Map.get(item, :images, []), Map.get(item, :text, "")) do
+      {:ok, message} -> message
+      {:error, _} -> %{"role" => "user", "content" => Map.get(item, :text, Map.get(item, :preview, ""))}
+    end
+  end
+
+  defp steering_message(item) do
+    %{"role" => "user", "content" => Newbee.Commands.expand_at_files(Map.get(item, :text, ""))}
   end
 
   defp call_client(fun, messages, on_text, on_reasoning) do
@@ -1344,7 +1412,9 @@ defmodule Newbee.Agent.Loop do
                   # 能力声明校验（物理拒绝）→ Capability Policy（行为策略）
                   case Newbee.Environment.CapabilityGate.check(code) do
                     {:deny, reason} ->
-                      rendered = "✗ error\n⛔ Capability gate denied: #{inspect(reason)} (plugin not in the active graph or capability undeclared)"
+                      rendered =
+                        "✗ error\n⛔ Capability gate denied: #{inspect(reason)} (plugin not in the active graph or capability undeclared)"
+
                       emit(state, {:tool_error, rendered})
                       Newbee.Bus.emit(:audit, {:audit, :capability_denied, reason})
 
@@ -1364,7 +1434,8 @@ defmodule Newbee.Agent.Loop do
                   tool_msg = %{
                     "role" => "tool",
                     "tool_call_id" => call.id,
-                    "content" => "⛔ Not run — environment rules tripped; fix per the reminders below, then retry:\n" <> injections
+                    "content" =>
+                      "⛔ Not run — environment rules tripped; fix per the reminders below, then retry:\n" <> injections
                   }
 
                   reminder = %{
@@ -1534,6 +1605,7 @@ defmodule Newbee.Agent.Loop do
 
   defp normalize_history_ids(msg) when is_map(msg) do
     calls = msg["tool_calls"]
+
     if msg["role"] == "assistant" and is_list(calls) and calls != [] do
       case Newbee.LLM.Client.normalize_tool_calls(calls) do
         [] -> Map.delete(msg, "tool_calls")
@@ -1546,12 +1618,12 @@ defmodule Newbee.Agent.Loop do
 
   defp normalize_history_ids(msg), do: msg
 
-
   defp tool_placeholders(ids) do
     Enum.map(ids, fn id ->
       %{"role" => "tool", "tool_call_id" => id, "content" => "（该工具调用因进程重启/中断未完成，结果已丢失）"}
     end)
   end
+
   defp audit_dangerous(code) do
     hits = Enum.filter(@dangerous, &String.contains?(code, &1))
     reversibility = Newbee.Trust.reversibility(code)
@@ -1586,6 +1658,22 @@ defmodule Newbee.Agent.Loop do
 
     (check_rules(content <> "\n" <> reasoning, :all) ++ check_rules(content, :content))
     |> Enum.uniq_by(& &1.id)
+  end
+
+  # 沉睡规则正文重试熔断：同一组规则连续命中超过上限则放行，避免模型坚持用
+  # 稠密符号时无限重试烧 token（曾出现 158M 输入 / 696 步）。上限 2 次重试
+  # （共 3 次同规则输出后放行）；命中组合变化则重新计数；放行/工具调用后清零。
+  @content_rule_max_retries 2
+
+  defp content_rule_retry_budget(state, hits) do
+    ids = hits |> Enum.map(& &1.id) |> Enum.sort()
+    streak = Map.get(state, :rule_streak) || %{ids: [], count: 0}
+    last_ids = Map.get(streak, :ids, [])
+    last_count = Map.get(streak, :count, 0)
+    count = if ids == last_ids, do: last_count + 1, else: 1
+    allow = count <= @content_rule_max_retries
+    state = Map.put(state, :rule_streak, %{ids: ids, count: count})
+    {state, allow}
   end
 
   defp merge_usage(a, b) when is_map(b) do

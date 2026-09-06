@@ -32,7 +32,7 @@ defmodule Newbee.Tools.Json do
     end
   end
 
-  @doc "Encode to a JSON document (optionally prettified)."
+  @doc "Encode to a JSON document (optionally prettified). Returns the text directly, or `{:error, :encode_failed}`."
   def encode(value, pretty \\ false) do
     if pretty, do: Jason.encode!(value, pretty: true), else: Jason.encode!(value)
   rescue

@@ -2,12 +2,13 @@ defmodule Newbee.Collaboration.CapabilityTest do
   use ExUnit.Case, async: false
 
   alias Newbee.Collaboration.{Capability, Coordinator}
+  alias Newbee.Tools.Hive
 
   setup do
     assert is_pid(Process.whereis(Capability))
 
     on_exit(fn ->
-      Process.delete({Newbee.Tools.Collaboration, :context})
+      Process.delete({Newbee.Tools.Hive, :context})
     end)
 
     :ok
@@ -31,44 +32,46 @@ defmodule Newbee.Collaboration.CapabilityTest do
            end)
   end
 
-  test "工具拒绝 token 身份与参数身份不一致" do
+  test "Hive.send derives sender identity from the capability and addresses the target" do
     if pid = Process.whereis(Coordinator), do: GenServer.stop(pid)
 
-    root = Path.join(System.tmp_dir!(), "newbee-capability-#{System.unique_integer([:positive])}")
+    root = Path.join(System.tmp_dir!(), "newbee-capability-" <> Integer.to_string(System.unique_integer([:positive])))
 
     {:ok, coordinator} =
       Coordinator.start_link(path: Path.join(root, "events.jsonl"), durability: :event)
 
     assert {:ok, group} =
-             Coordinator.create_group(%{"session_id" => "session-a", "title" => "安全群"})
+             Coordinator.create_group(%{
+               "session_id" => "session-a",
+               "title" => "安全群",
+               "project_root" => File.cwd!(),
+               "command_id" => "capability-group"
+             })
 
     assert {:ok, _} = Coordinator.add_member(group["group_id"], %{"session_id" => "session-b"})
 
     assert :ok = Capability.register(self(), "session-a", File.cwd!())
     assert {:ok, token} = Capability.issue(self())
-    Process.put({Newbee.Tools.Collaboration, :context}, %{capability: token})
+    Process.put({Newbee.Tools.Hive, :context}, %{capability: token})
 
-    assert {:error, "identity_mismatch", _} =
-             Newbee.Tools.Collaboration.send_message(group["group_id"], "session-b", "伪造消息")
-
-    assert {:ok, []} = Coordinator.messages(group["group_id"])
-
-    assert {:ok, message} =
-             Newbee.Tools.Collaboration.send_message(group["group_id"], "session-a", "真实消息")
-
+    assert {:ok, message} = Hive.send(group["group_id"], "session-b", "真实消息")
     assert message["sender_session_id"] == "session-a"
+    assert message["to_session_id"] == "session-b"
 
-    Process.delete({Newbee.Tools.Collaboration, :context})
+    assert {:ok, [%{"sender_session_id" => "session-a", "to_session_id" => "session-b"}]} =
+             Coordinator.messages(group["group_id"])
+
+    Process.delete({Newbee.Tools.Hive, :context})
     Capability.revoke(token)
     GenServer.stop(coordinator)
     File.rm_rf!(root)
   end
 
-  test "无 capability 上下文时拒绝协作调用" do
-    Process.delete({Newbee.Tools.Collaboration, :context})
+  test "无 capability 上下文时拒绝 Hive 调用" do
+    Process.delete({Newbee.Tools.Hive, :context})
 
     assert {:error, "no_execution_context", _} =
-             Newbee.Tools.Collaboration.tasks("group-without-context")
+             Hive.inbox("group-without-context")
   end
 
   defp eventually(fun), do: eventually(fun, 20)

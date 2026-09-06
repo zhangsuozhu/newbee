@@ -33,36 +33,36 @@ defmodule Newbee.Tools.Git do
 
   @doc "git status --short: {:ok, output} | {:error, {code, output}}."
   def status(dir \\ "."), do: run(dir, ["status", "--short"])
-  @doc "git diff --stat."
+  @doc "git diff --stat. Returns `{:ok, output} | {:error, {code, output}}`."
   def diff(dir \\ "."), do: run(dir, ["diff", "--stat"])
-  @doc "Full git diff."
+  @doc "Full git diff. Returns `{:ok, output} | {:error, {code, output}}`."
   def diff_full(dir \\ "."), do: run(dir, ["diff"])
-  @doc "Last n git log --oneline entries."
+  @doc "Last n git log --oneline entries. Returns `{:ok, output} | {:error, {code, output}}`."
   def log(dir \\ ".", n \\ 10), do: run(dir, ["log", "--oneline", "-#{n}"])
 
-  @doc "Run git add -A; mutates the index."
+  @doc "Run git add -A; mutates the index. Returns `{:ok, output} | {:error, {code, output}}`."
   def add_all(dir \\ "."), do: run(dir, ["add", "-A"])
 
-  @doc "Commit staged changes; commit(msg) uses the current dir, commit(dir, msg) targets a repo."
+  @doc "Commit staged changes; commit(msg) uses the current dir, commit(dir, msg) targets a repo. Returns `{:ok, output} | {:error, {code, output}}`."
   def commit(dir \\ ".", msg),
     do: run(dir, ["-c", "user.email=newbee@local", "-c", "user.name=newbee", "commit", "-m", msg])
 
-  @doc "Roll the workspace back to HEAD (the lenient sandbox's undo key)."
+  @doc "Roll the workspace back to HEAD (the lenient sandbox's undo key). Returns `{:ok, output} | {:error, {code, output}}`. (checkout + clean)."
   def rollback(dir \\ ".") do
     run(dir, ["checkout", "--", "."])
     run(dir, ["clean", "-fd", "lib/", "test/"])
   end
 
-  @doc "Worktree isolation: open a detached worktree for a subagent (root defaults to the current repo, ref to HEAD)."
+  @doc "Worktree isolation: open a detached worktree for a subagent (root defaults to the current repo, ref to HEAD). Returns `{:ok, output} | {:error, {code, output}}`."
   def worktree_add(path, ref \\ "HEAD"), do: worktree_add(".", path, ref)
 
-  @doc "worktree_add/3: open a detached worktree under the root repo."
+  @doc "worktree_add/3: open a detached worktree under the root repo. Returns `{:ok, output} | {:error, {code, output}}`."
   def worktree_add(root, path, ref), do: run(root, ["worktree", "add", path, ref])
 
-  @doc "Force-remove a Git worktree (root defaults to the current repo)."
+  @doc "Force-remove a Git worktree (root defaults to the current repo). Returns `{:ok, output} | {:error, {code, output}}`."
   def worktree_remove(path), do: worktree_remove(".", path)
 
-  @doc "worktree_remove/2: force-remove a worktree under the root repo."
+  @doc "worktree_remove/2: force-remove a worktree under the root repo. Returns `{:ok, output} | {:error, {code, output}}`."
   def worktree_remove(root, path), do: run(root, ["worktree", "remove", "--force", path])
 
   defp run(dir, args) do

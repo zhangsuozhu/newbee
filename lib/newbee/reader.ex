@@ -96,7 +96,7 @@ defmodule Newbee do
   end
 
   defp collaboration_session_id do
-    case Process.get({Newbee.Tools.Collaboration, :context}) do
+    case Process.get({Newbee.Tools.Hive, :context}) do
       %{capability: token} when is_binary(token) ->
         case Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [token]) do
           {:ok, %{session_id: sid}} when is_binary(sid) -> {:ok, sid}
@@ -140,8 +140,12 @@ defmodule Newbee do
       %{scheme: "skill://", example: "skill://github_flow", reads: "skill snippet, dot-md suffix idempotent"},
       %{scheme: "agent://", example: "agent://id/findings", reads: "subagent structured results"},
       %{scheme: "conflict://", example: "conflict://", reads: "merge-conflict list/hunk views"},
-      %{scheme: "prompt://", example: "prompt://collaboration", reads: "lazy prompt sections: collaboration/capabilities/project-memory/notices/bindings"},
-      %{scheme: "https://", example: "https://example.com", reads: "public pages, private nets blocked"},
+      %{
+        scheme: "prompt://",
+        example: "prompt://collaboration",
+        reads: "lazy prompt sections: collaboration/capabilities/project-memory/notices/bindings"
+      },
+      %{scheme: "https://", example: "https://example.com", reads: "public pages, private nets blocked"}
     ]
   end
 
@@ -293,8 +297,10 @@ defmodule Newbee do
     case rules do
       :unavailable ->
         {:ok, "(rule service not started)"}
+
       [] ->
         {:ok, "(no sleeping rules)"}
+
       list when is_list(list) ->
         filtered =
           if query == "" do
@@ -323,8 +329,13 @@ defmodule Newbee do
 
   defp read_memory("") do
     case Newbee.Memory.topics() do
-      [] -> {:ok, "(no memory topics yet)"}
-      topics -> {:ok, "Memory topics (read one via memory://<name>):\n" <> Enum.map_join(topics, "\n", fn t -> "  - memory://" <> t end)}
+      [] ->
+        {:ok, "(no memory topics yet)"}
+
+      topics ->
+        {:ok,
+         "Memory topics (read one via memory://<name>):\n" <>
+           Enum.map_join(topics, "\n", fn t -> "  - memory://" <> t end)}
     end
   end
 
