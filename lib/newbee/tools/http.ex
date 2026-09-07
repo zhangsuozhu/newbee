@@ -5,7 +5,7 @@ defmodule Newbee.Tools.Http do
 
   ## Functions
   - `get(url, headers \\\\ []) :: {:ok, %{status: integer(), body: String.t()}} | {:error, reason}` — GET request. Errors split three ways: `{:error, %{reason: :invalid_url}}` (malformed URL) vs `{:error, %{reason: :network_error}}` (network down) vs `{:error, %{reason: :request_failed}}` (anything else).
-  - `post(url, json, headers \\\\ []) :: {:ok, %{status, body}} | {:error, reason}` — POST; `json` takes a `map` (auto `Jason.encode!`) or a `String.t()`.
+  - `post(url, json, headers \\ []) :: {:ok, %{status, body}} | {:error, reason}` — POST; `json` takes a `map` (auto `Jason.encode!`) or a JSON `String.t()` sent as-is.
 
   Runs on `Req`, 30_000ms default timeout, bodies cut at 512KB.
 
@@ -23,15 +23,41 @@ defmodule Newbee.Tools.Http do
     request(:get, url, nil, headers)
   end
 
-  @doc "POST request (json takes map/string). Returns `{:ok, %{status: integer(), body: String.t()}} | {:error, reason}` (same error split as `get/2`)."
+  @doc "POST request (json takes map, or a JSON string sent as-is). Returns `{:ok, %{status: integer(), body: String.t()}} | {:error, reason}` (same error split as `get/2`)."
   def post(url, json, headers \\ []) do
     request(:post, url, json, headers)
+  end
+
+  # 负载发送方式：字符串按契约原样发送（body:），仅 map 走 Req 的 JSON 编码（json:）。
+  # GET 负载恒为 nil，沿用 json: nil，行为不变。
+  defp payload_options(nil), do: [json: nil]
+
+  defp payload_options(json) when is_binary(json), do: [body: json]
+  defp payload_options(json), do: [json: json]
+
+  # 请求头：透传用户头（user-agent 除外）；JSON 字符串负载默认补 content-type/accept
+  # （与旧 json: 选项路径对齐，多数服务端按 CT 解析请求体）；用户已提供 content-type 时不覆盖。
+  defp request_headers(headers, json) do
+    has_ct? = Enum.any?(headers, fn {k, _} -> String.downcase(to_string(k)) == "content-type" end)
+
+    json_defaults =
+      if is_binary(json) and not has_ct? do
+        [{"content-type", "application/json"}, {"accept", "application/json"}]
+      else
+        []
+      end
+
+    (headers
+     |> Enum.reject(fn {k, _} -> String.downcase(to_string(k)) == "user-agent" end)
+     |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end)) ++
+      json_defaults ++ [{"user-agent", "newbee"}]
   end
 
   defp request(method, url, json, headers) do
     # Req 的默认 adapter 是 Finch，注册表 `Req.Finch` 由 `Req.Application` 启动；
     # 求值节点可能不引导 :req 应用，这里幂等自举（Host.Shell 使用同一条路径）。
     Newbee.Host.Shell.ensure_finch!()
+    user_headers = request_headers(headers, json)
 
     # 先校验 URL 格式
     case URI.parse(url) do
@@ -44,16 +70,18 @@ defmodule Newbee.Tools.Http do
       _uri ->
         req =
           Req.new(
-            url: url,
-            method: method,
-            headers:
-              (headers
-               |> Enum.reject(fn {k, _} -> String.downcase(to_string(k)) == "user-agent" end)
-               |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end)) ++
-                [{"user-agent", "newbee"}],
-            json: json,
-            receive_timeout: @default_timeout,
-            retry: false
+            [
+              url: url,
+              method: method,
+              headers: user_headers,
+              # Req 默认按 content-type 自动解码 application/json 响应（body 会变成 map/list），
+              # 而本工具契约是 body 始终为原始文本，这里关闭响应体自动解码。
+              decode_body: false,
+              receive_timeout: @default_timeout,
+              retry: false
+            ] ++
+              # 负载：字符串按契约原样发送（body:），map 走 Req 的 JSON 编码（json:）
+              payload_options(json)
           )
 
         case Req.request(req) do
@@ -61,6 +89,7 @@ defmodule Newbee.Tools.Http do
             {:ok, %{status: status, body: String.slice(body, 0, @max_body)}}
 
           {:ok, %{status: status}} ->
+            # 走到这里只剩 Req 原生空体响应（204/304 等）；body 原样为 ""
             {:ok, %{status: status, body: ""}}
 
           {:error, %Req.TransportError{reason: reason}} ->
