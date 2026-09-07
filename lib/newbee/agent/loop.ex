@@ -159,10 +159,16 @@ defmodule Newbee.Agent.Loop do
 
     # client 在外部（web/session.ex client_for_session / CLI）构造好传入——
     # 那些进程没有进程字典 key，Client.new 派生拿到 nil。这里按真实会话补齐：
-    # 会话 id 就是缓存路由键的稳定来源，switch_model 已有继承逻辑。
+    # 缓存路由键和 OpenCode 会话头都绑定到同一个稳定的会话 id。
     client =
-      if Map.get(client, :cache_key) in [nil, ""] and is_binary(session_id) do
-        Map.put(client, :cache_key, "newbee-" <> session_id)
+      if is_binary(session_id) do
+        client = Map.put(client, :session_id, session_id)
+
+        if Map.get(client, :cache_key) in [nil, ""] do
+          Map.put(client, :cache_key, "newbee-" <> session_id)
+        else
+          client
+        end
       else
         client
       end
@@ -576,6 +582,7 @@ defmodule Newbee.Agent.Loop do
     client =
       client
       |> inherit_client_field(state.client, :cache_key)
+      |> inherit_session_id(state.client)
       |> inherit_client_field(state.client, :responses_checkpoint)
 
     client_fun = fn messages, on_text, on_reasoning ->
@@ -2638,6 +2645,13 @@ defmodule Newbee.Agent.Loop do
   defp inherit_client_field(client, previous, field) do
     case {Map.get(client, field), Map.get(previous, field)} do
       {nil, inherited} when not is_nil(inherited) -> Map.put(client, field, inherited)
+      _ -> client
+    end
+  end
+
+  defp inherit_session_id(client, previous) do
+    case Map.get(previous, :session_id) do
+      session_id when is_binary(session_id) and session_id != "" -> Map.put(client, :session_id, session_id)
       _ -> client
     end
   end

@@ -301,6 +301,8 @@ defmodule Newbee.LLM.Responses do
   defp parse_with_id(body), do: {:error, {:bad_response, body}}
 
   defp perform(client, %{} = body, on_text, on_reasoning) do
+    request_headers = Newbee.LLM.Client.request_headers(client)
+
     _dbg_id =
       Newbee.LLM.HttpDebug.start_exchange(%{
         session_id: Newbee.LLM.HttpDebug.session_id_from_cache_key(client.cache_key),
@@ -310,11 +312,7 @@ defmodule Newbee.LLM.Responses do
         method: "POST",
         url: client.base_url <> "/responses",
         api: "responses",
-        req_headers: [
-          {"authorization", "Bearer #{client.api_key}"},
-          {"content-type", "application/json"},
-          {"user-agent", "newbee"}
-        ],
+        req_headers: request_headers,
         req_body: body
       })
 
@@ -356,11 +354,7 @@ defmodule Newbee.LLM.Responses do
       [
         url: client.base_url <> "/responses",
         method: :post,
-        headers: [
-          {"authorization", "Bearer #{client.api_key}"},
-          {"content-type", "application/json"},
-          {"user-agent", "newbee"}
-        ],
+        headers: Newbee.LLM.Client.request_headers(client),
         json: body,
         receive_timeout: 120_000,
         retry: false

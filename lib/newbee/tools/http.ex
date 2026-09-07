@@ -50,7 +50,7 @@ defmodule Newbee.Tools.Http do
     (headers
      |> Enum.reject(fn {k, _} -> String.downcase(to_string(k)) == "user-agent" end)
      |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end)) ++
-      json_defaults ++ [{"user-agent", "newbee"}]
+      json_defaults ++ [{"user-agent", Newbee.LLM.Client.user_agent()}]
   end
 
   defp request(method, url, json, headers) do
@@ -70,6 +70,7 @@ defmodule Newbee.Tools.Http do
       _uri ->
         req =
           Req.new(
+            # 负载：字符串按契约原样发送（body:），map 走 Req 的 JSON 编码（json:）
             [
               url: url,
               method: method,
@@ -80,7 +81,6 @@ defmodule Newbee.Tools.Http do
               receive_timeout: @default_timeout,
               retry: false
             ] ++
-              # 负载：字符串按契约原样发送（body:），map 走 Req 的 JSON 编码（json:）
               payload_options(json)
           )
 
