@@ -1828,6 +1828,8 @@ defmodule Newbee.Web.Session do
     end
   end
 
+  defp dispatch_item(st, item, queued?), do: dispatch_item_regular(st, item, queued?)
+
   defp dispatch_item_regular(st, %{id: id, kind: kind} = item, queued?) do
     current = %{
       id: id,

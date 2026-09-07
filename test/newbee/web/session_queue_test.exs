@@ -142,6 +142,31 @@ defmodule Newbee.Web.SessionQueueTest do
     assert Enum.map(q, & &1.id) == ["bootid", "imgid"]
   end
 
+  test "idle image prompts start a turn and reach the kernel with or without queueId" do
+    urls = ["data:image/png;base64," <> Base.encode64("png")]
+
+    for request <- [
+          {:prompt_images, urls, "inspect image", "image-id"},
+          {:prompt_images, urls, "inspect image"}
+        ] do
+      st = %{base_state("idle-image-dispatch", busy: false) | kernel: self()}
+      assert {:noreply, started} = Session.handle_cast(request, st)
+      assert started.busy
+      assert started.current.kind == "images"
+      assert started.current.queued == false
+      assert :queue.is_empty(started.queue)
+      if tuple_size(request) == 4, do: assert(started.current.id == "image-id")
+      assert Enum.any?(started.queue_events, &(&1.type == "started"))
+
+      assert_receive {:"$gen_call", from, {:submit_images, ^urls, "inspect image"}}, 1_000
+      GenServer.reply(from, {:ok, "received"})
+      turn_id = started.turn_id
+      assert_receive {:turn_finished, ^turn_id, {:ok, "received"}}, 1_000
+      Process.cancel_timer(started.turn_timer)
+      Process.demonitor(started.turn_ref, [:flush])
+    end
+  end
+
   test "turn DOWN clears busy and late results do not finish another turn" do
     ref = make_ref()
     id = make_ref()
