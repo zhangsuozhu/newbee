@@ -104,7 +104,8 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     }
 
     assert {:ok, group} = Coordinator.create_group(attrs, server)
-    assert {:error, "duplicate_command", _} = Coordinator.create_group(attrs, server)
+    assert {:ok, group2} = Coordinator.create_group(attrs, server)
+    assert group2["group_id"] == group["group_id"]
 
     assert {:error, "not_member", _} =
              Coordinator.send_message(

@@ -29,7 +29,7 @@ defmodule Newbee.Tools.Hive do
   @context_key {Newbee.Tools.Hive, :context}
   @report_statuses ~w(accepted running blocked submitted failed cancelled)
 
-  @doc "Open a collaboration group; opts take goal/project_root/max_depth/max_total."
+  @doc "Open a collaboration group; opts take goal/project_root/max_depth/max_total/command_id. Retry with the same command_id returns the existing group instead of creating a duplicate."
   def open(title, opts \\ [])
 
   def open(title, opts) when is_binary(title) and is_list(opts) do
@@ -309,7 +309,7 @@ defmodule Newbee.Tools.Hive do
 
   def interrupt(_, _), do: {:error, "bad_request", "group_id and target_session_id must be texts"}
 
-  @doc "The Lead explicitly removes members with no live tasks/children and destroys their session processes."
+  @doc "The Lead explicitly removes members with no live tasks/children and destroys their session processes when no other group still references them."
   def close(group_id, target_session_id)
       when is_binary(group_id) and is_binary(target_session_id) do
     with {:ok, identity} <- identity(),
@@ -322,7 +322,12 @@ defmodule Newbee.Tools.Hive do
                "command_id" => command_id("hive-close")
              }
            ]) do
-      _ = host_call(Newbee.Web.Session, :destroy, [target_session_id])
+      case host_call(Newbee.Collaboration.Coordinator, :groups_for_session, [target_session_id]) do
+        {:ok, []} -> _ = host_call(Newbee.Web.Session, :destroy, [target_session_id])
+        {:ok, _} -> :ok
+        _ -> _ = host_call(Newbee.Web.Session, :destroy, [target_session_id])
+      end
+
       {:ok, member}
     end
   end

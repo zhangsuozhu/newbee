@@ -206,47 +206,66 @@ defmodule Newbee.Collaboration.Coordinator do
 
   @impl true
   def handle_call({:create_group, attrs}, _from, state) do
-    with {:ok, attrs} <- normalize_group(attrs),
-         :ok <- unique_command(state, attrs["command_id"]) do
-      group_id = attrs["group_id"] || id("grp")
-      member_id = id("mem")
-      now = now_iso()
+    with {:ok, attrs} <- normalize_group(attrs) do
+      cmd = attrs["command_id"]
 
-      group = %{
-        "group_id" => group_id,
-        "title" => attrs["title"],
-        "goal" => attrs["goal"],
-        "project_root" => attrs["project_root"],
-        "created_by_session_id" => attrs["session_id"],
-        "coordinator_session_id" => attrs["session_id"],
-        "status" => "running",
-        "members" => [
-          %{
-            "member_id" => member_id,
-            "session_id" => attrs["session_id"],
-            "role" => "coordinator",
-            "depth" => 0,
-            "state" => "idle",
-            "parent_session_id" => nil,
-            "joined_at" => now
-          }
-        ],
-        "messages" => [],
-        "tasks" => [],
-        "deliveries" => [],
-        "next_seq" => 0,
-        "max_depth" => attrs["max_depth"],
-        "max_total" => attrs["max_total"],
-        "total_spawned" => 1,
-        "created_at" => now,
-        "updated_at" => now
-      }
+      cond do
+        is_binary(cmd) and MapSet.member?(state.commands, cmd) ->
+          case find_group_by_command(state, cmd) do
+            nil -> {:reply, {:error, "duplicate_command", "请求已处理"}, state}
+            existing -> {:reply, {:ok, public_group(existing)}, state}
+          end
 
-      event = event("collab_group_created", group_id, %{"group" => group}, attrs["command_id"])
-      {:ok, persisted} = append(state, event)
-      next = apply_event(state, persisted)
-      broadcast(persisted, next.groups[group_id])
-      {:reply, {:ok, public_group(next.groups[group_id])}, next}
+        is_binary(attrs["group_id"]) and Map.has_key?(state.groups, attrs["group_id"]) ->
+          {:reply, {:error, "duplicate_group", "工作组已存在"}, state}
+
+        true ->
+          group_id = attrs["group_id"] || id("grp")
+
+          if Map.has_key?(state.groups, group_id) do
+            {:reply, {:error, "duplicate_group", "工作组已存在"}, state}
+          else
+            member_id = id("mem")
+            now = now_iso()
+
+            group = %{
+              "group_id" => group_id,
+              "title" => attrs["title"],
+              "goal" => attrs["goal"],
+              "project_root" => attrs["project_root"],
+              "created_by_session_id" => attrs["session_id"],
+              "coordinator_session_id" => attrs["session_id"],
+              "status" => "running",
+              "created_command_id" => cmd,
+              "members" => [
+                %{
+                  "member_id" => member_id,
+                  "session_id" => attrs["session_id"],
+                  "role" => "coordinator",
+                  "depth" => 0,
+                  "state" => "idle",
+                  "parent_session_id" => nil,
+                  "joined_at" => now
+                }
+              ],
+              "messages" => [],
+              "tasks" => [],
+              "deliveries" => [],
+              "next_seq" => 0,
+              "max_depth" => attrs["max_depth"],
+              "max_total" => attrs["max_total"],
+              "total_spawned" => 1,
+              "created_at" => now,
+              "updated_at" => now
+            }
+
+            event = event("collab_group_created", group_id, %{"group" => group}, cmd)
+            {:ok, persisted} = append(state, event)
+            next = apply_event(state, persisted)
+            broadcast(persisted, next.groups[group_id])
+            {:reply, {:ok, public_group(next.groups[group_id])}, next}
+          end
+      end
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
@@ -293,24 +312,39 @@ defmodule Newbee.Collaboration.Coordinator do
 
   def handle_call({:add_member, group_id, attrs}, _from, state) do
     with {:ok, group} <- fetch_group(state, group_id),
-         {:ok, attrs} <- normalize_member(attrs),
-         :ok <- unique_command(state, attrs["command_id"]),
-         :ok <- ensure_member_capacity(group),
-         :ok <- ensure_not_member(group, attrs["session_id"]) do
-      member = %{
-        "member_id" => id("mem"),
-        "session_id" => attrs["session_id"],
-        "role" => attrs["role"],
-        "state" => "idle",
-        "parent_session_id" => attrs["parent_session_id"],
-        "joined_at" => now_iso()
-      }
+         {:ok, attrs} <- normalize_member(attrs) do
+      cmd = attrs["command_id"]
 
-      event = event("collab_member_added", group_id, %{"member" => member}, attrs["command_id"])
-      {:ok, persisted} = append(state, event)
-      next = apply_event(state, persisted)
-      broadcast(persisted, next.groups[group_id])
-      {:reply, {:ok, member}, next}
+      cond do
+        is_binary(cmd) and MapSet.member?(state.commands, cmd) ->
+          case find_member_by_command(group, cmd) do
+            nil -> {:reply, {:error, "duplicate_command", "请求已处理"}, state}
+            existing -> {:reply, {:ok, existing}, state}
+          end
+
+        true ->
+          with :ok <- unique_command(state, cmd),
+               :ok <- ensure_member_capacity(group),
+               :ok <- ensure_not_member(group, attrs["session_id"]) do
+            member = %{
+              "member_id" => id("mem"),
+              "session_id" => attrs["session_id"],
+              "role" => attrs["role"],
+              "state" => "idle",
+              "parent_session_id" => attrs["parent_session_id"],
+              "created_command_id" => cmd,
+              "joined_at" => now_iso()
+            }
+
+            event = event("collab_member_added", group_id, %{"member" => member}, cmd)
+            {:ok, persisted} = append(state, event)
+            next = apply_event(state, persisted)
+            broadcast(persisted, next.groups[group_id])
+            {:reply, {:ok, member}, next}
+          else
+            {:error, code, message} -> {:reply, {:error, code, message}, state}
+          end
+      end
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
@@ -1475,6 +1509,14 @@ defmodule Newbee.Collaboration.Coordinator do
     if MapSet.member?(state.commands, command_id),
       do: {:error, "duplicate_command", "请求已处理"},
       else: :ok
+  end
+
+  defp find_group_by_command(state, command_id) do
+    Enum.find_value(state.groups, fn pair -> if elem(pair, 1)["created_command_id"] == command_id, do: elem(pair, 1) end)
+  end
+
+  defp find_member_by_command(group, command_id) do
+    Enum.find(group["members"] || [], fn m -> m["created_command_id"] == command_id end)
   end
 
   defp ensure_member_capacity(group) do

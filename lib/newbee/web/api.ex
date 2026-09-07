@@ -365,7 +365,8 @@ defmodule Newbee.Web.Api do
       "title" => p["title"],
       "goal" => p["goal"],
       "project_root" => Newbee.Session.cwd(sid) || File.cwd!(),
-      "command_id" => p["commandId"]
+      "command_id" => p["commandId"],
+      "group_id" => p["groupId"]
     }
 
     case Newbee.Collaboration.Coordinator.create_group(attrs) do
@@ -790,12 +791,30 @@ defmodule Newbee.Web.Api do
         true ->
           case Newbee.Collaboration.Coordinator.delete_group(group_id, sid) do
             {:ok, _} ->
-              # 删除整组并销毁全部成员会话
-              Enum.each(group["members"] || [], fn m ->
-                Newbee.Web.Session.destroy(m["session_id"])
-              end)
+              remaining =
+                case Newbee.Collaboration.Coordinator.list(nil) do
+                  groups when is_list(groups) -> groups
+                  _ -> []
+                end
 
-              {:ok, %{deleted: group_id, members_deleted: Enum.map(group["members"] || [], & &1["session_id"])}}
+              still_used =
+                remaining
+                |> Enum.flat_map(fn g -> Enum.map(g["members"] || [], fn m -> m["session_id"] end) end)
+                |> MapSet.new()
+
+              to_destroy =
+                Enum.reject(group["members"] || [], fn m -> MapSet.member?(still_used, m["session_id"]) end)
+
+              Enum.each(to_destroy, fn m -> Newbee.Web.Session.destroy(m["session_id"]) end)
+
+              {:ok,
+               %{
+                 deleted: group_id,
+                 members_deleted: Enum.map(to_destroy, fn m -> m["session_id"] end),
+                 members_kept:
+                   Enum.map(group["members"] || [], fn m -> m["session_id"] end) --
+                     Enum.map(to_destroy, fn m -> m["session_id"] end)
+               }}
 
             {:error, code, message} ->
               {:error, code, message}
