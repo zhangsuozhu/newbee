@@ -120,7 +120,10 @@ defmodule Newbee.Web.CollaborationSocketTest do
 
     state = %{sid: sid, terminal: nil}
     open = Jason.encode!(%{"type" => "terminal_open"})
-    assert {:push, [{:text, ready}], state} = Newbee.Web.Socket.handle_in({open, [opcode: :text]}, state)
+    # shell 首个 prompt 可能抢在 :open 调用前落袋进 scrollback，此时按设计会先回放一帧 output 再发 ready
+    assert {:push, frames, state} = Newbee.Web.Socket.handle_in({open, [opcode: :text]}, state)
+    assert length(frames) in 1..2
+    {:text, ready} = List.last(frames)
     ready = ready |> IO.iodata_to_binary() |> Jason.decode!()
     assert ready["type"] == "terminal"
     assert ready["event"] == "ready"
@@ -177,6 +180,38 @@ defmodule Newbee.Web.CollaborationSocketTest do
     assert :ok = Newbee.Web.Terminal.input(sid, "echo $((300000+14159))" <> <<10>>)
 
     assert wait_for_transcript(sid, "314159")
+  end
+
+  test "terminal_wake 把手动终端上下文作为新一轮提交并清空暂存" do
+    sid = "terminal-wake-" <> Integer.to_string(System.unique_integer([:positive]))
+
+    root =
+      Path.join(System.tmp_dir!(), "newbee-terminal-wake-" <> Integer.to_string(System.unique_integer([:positive])))
+
+    File.mkdir_p!(root)
+    :ok = Newbee.Session.set_cwd(sid, root)
+
+    on_exit(fn ->
+      Newbee.Web.Terminal.close(sid)
+      Newbee.Session.delete(sid)
+      File.rm_rf!(root)
+    end)
+
+    :ok = Newbee.Bus.subscribe()
+    assert {:ok, _pid} = Newbee.Web.Terminal.ensure(sid, root)
+    state = %{sid: sid, terminal: nil}
+
+    assert :ok = Newbee.Web.Terminal.input(sid, "echo wake-me\n")
+
+    wake = Jason.encode!(%{"type" => "terminal_wake"})
+    assert {:ok, ^state} = Newbee.Web.Socket.handle_in({wake, [opcode: :text]}, state)
+
+    # 上下文已被收割，后续提交不再重复携带
+    assert {:ok, ""} = Newbee.Web.Terminal.take_context(sid)
+
+    # prompt 已送达会话：无 kernel 时广播未就绪错误，boot/忙时则排队（排队走 :queued/:queue_updated）
+    assert_receive {:newbee_event, :web_event, {:web_event, ^sid, kind, _}}, 5_000
+    assert kind in [:error, :queued, :queue_updated]
   end
 
   defp wait_for_transcript(sid, needle), do: wait_for_transcript(sid, needle, 50)

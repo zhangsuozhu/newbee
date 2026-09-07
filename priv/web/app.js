@@ -776,6 +776,15 @@ const flow = $("flow");
     if (!state.terminal.pty) terminalAppend("^C\n");
   }
 
+  function terminalWake() {
+    if (!state.terminal.connected || !terminalSend({ type: "terminal_wake" })) {
+      terminalAppend("[终端未连接]\n");
+      terminalStatus("等待连接");
+      return;
+    }
+    terminalAppend("[已请 AI 跟进终端]\n");
+  }
+
   function terminalDisplayText(text) {
     return String(text)
       .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
@@ -891,6 +900,7 @@ const flow = $("flow");
     toggle.dataset.bound = "1";
     toggle.addEventListener("click", toggleTerminal);
     $("terminal-interrupt").addEventListener("click", terminalInterrupt);
+    $("terminal-wake").addEventListener("click", terminalWake);
     const minimize = $("terminal-minimize");
     if (minimize) minimize.addEventListener("click", toggleTerminalMinimize);
 
