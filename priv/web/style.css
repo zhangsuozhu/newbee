@@ -149,6 +149,49 @@ body {
 }
 .session-item:hover .menu-btn { opacity: 1; }
 .session-item .menu-btn:hover { background: var(--nb-border); color: var(--nb-label-1); }
+ /* ── 微信式左滑删除：外层裁剪槽 + 内层平移 + 右侧红色操作区 ── */
+ .swipe-cell { position: relative; overflow: hidden; border-radius: 8px; }
+ .swipe-cell .session-item {
+   position: relative; z-index: 1; margin: 0;
+   background: var(--nb-bg-panel);
+   transition: transform 0.22s var(--nb-ease), background var(--nb-dur) var(--nb-ease);
+   touch-action: pan-y; user-select: none; -webkit-user-select: none;
+ }
+ .swipe-cell.session-child {
+   margin-left: 18px; width: calc(100% - 18px);
+   border-left: 1px solid var(--nb-border); border-radius: 0 8px 8px 0;
+ }
+ .swipe-cell.session-child .session-item { border-radius: 0 8px 8px 0; }
+ .swipe-cell .swipe-actions {
+   position: absolute; top: 0; right: 0; bottom: 0; width: 84px; z-index: 0;
+   display: flex; align-items: stretch; justify-content: flex-end;
+ }
+ .swipe-cell .swipe-delete {
+   flex: 1; border: none; cursor: pointer;
+   background: #fa5151; color: #fff; font-size: 14px; font-weight: 600;
+   font-family: var(--nb-font); letter-spacing: 1px;
+ }
+ .swipe-cell .swipe-delete:active { background: #d63d3d; }
+ /* ── 未读数：微信式红点数字角标 ── */
+ .session-unread {
+   display: inline-flex; align-items: center; justify-content: center;
+   min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px;
+   border-radius: 9px; background: #fa5151; color: #fff;
+   font-size: 11px; line-height: 18px; font-weight: 700; vertical-align: 1px;
+ }
+ /* 触屏无 hover 时 ⋯ 常显，保证重命名/移组可达；左滑仍是快捷删除 */
+ @media (hover: none), (pointer: coarse) {
+   .session-item .menu-btn { opacity: 1; }
+   .swipe-cell .swipe-actions { width: 88px; }
+   .swipe-cell .swipe-delete { font-size: 15px; }
+ }
+ @media (max-width: 768px) {
+   .swipe-cell { border-radius: 10px; }
+   .session-unread { min-width: 20px; height: 20px; border-radius: 10px; font-size: 12px; line-height: 20px; }
+ }
+ @media (prefers-reduced-motion: reduce) {
+   .swipe-cell .session-item { transition: none; }
+ }
 .session-empty {
   padding: 24px 8px; text-align: center; color: var(--nb-label-caption);
   font-size: 12px; font-style: italic;
