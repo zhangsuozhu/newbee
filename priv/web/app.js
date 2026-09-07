@@ -7643,35 +7643,112 @@ case "goal_round": break;
 })();
 
 
-// ── 手机端适配增强 ──
+// ── 手机端适配增强：全屏抽屉 + 左右滑手势 ──
 (function() {
-  function isMobile() { return window.matchMedia("(max-width: 768px)").matches; }
-
-  // 手机端每次加载都强制收起侧栏：
-  // 避免延续桌面/上次的"展开态"，否则全屏遮罩(z-index:35)会常驻盖住 composer，
-  // 导致按钮可见但点不了（点击全被遮罩拦截）。
-  if (isMobile()) {
-    document.getElementById("app").classList.add("sidebar-collapsed");
-    var ex = document.getElementById("sidebar-expand");
-    if (ex) ex.classList.remove("hidden");
+  function isMobile() { return window.matchMedia('(max-width: 768px)').matches; }
+  function sidebarOpen() {
+    var app = document.getElementById('app');
+    return !!(app && !app.classList.contains('sidebar-collapsed'));
   }
-
-  // 遮罩/侧栏外点击关闭（手机端）：
-  // 点在任何 #sidebar 外的内容区时收起；但排除侧栏内 toggle 触发（它本来就会收起）
-  document.addEventListener("click", function(e) {
-    var app = document.getElementById("app");
-    if (!isMobile() || app.classList.contains("sidebar-collapsed")) return;
+  function mcOpen() {
+    var p = document.getElementById('mission-control');
+    return !!(p && !p.classList.contains('hidden'));
+  }
+  function openSidebar() {
+    var btn = document.getElementById('sidebar-expand');
+    if (btn && !btn.classList.contains('hidden')) { btn.click(); return; }
+    var app = document.getElementById('app');
+    if (app) app.classList.remove('sidebar-collapsed');
+    if (btn) btn.classList.add('hidden');
+    try { localStorage.setItem('newbee.sidebar', '0'); } catch (e) {}
+  }
+  function closeSidebar() {
+    var btn = document.getElementById('sidebar-toggle');
+    if (btn) { btn.click(); return; }
+    var app = document.getElementById('app');
+    if (app) app.classList.add('sidebar-collapsed');
+    var ex = document.getElementById('sidebar-expand');
+    if (ex) ex.classList.remove('hidden');
+    try { localStorage.setItem('newbee.sidebar', '1'); } catch (e) {}
+  }
+  function openMC() {
+    var btn = document.getElementById('mc-expand');
+    if (btn && !btn.classList.contains('hidden')) { btn.click(); return; }
+    var p = document.getElementById('mission-control');
+    if (p) p.classList.remove('hidden');
+    try { localStorage.setItem('newbee-mc-open', '1'); } catch (e) {}
+  }
+  function closeMC() {
+    var btn = document.getElementById('mc-collapse');
+    if (btn) { btn.click(); return; }
+    var p = document.getElementById('mission-control');
+    if (p) p.classList.add('hidden');
+    var ex2 = document.getElementById('mc-expand');
+    if (ex2) ex2.classList.remove('hidden');
+    try { localStorage.setItem('newbee-mc-open', '0'); } catch (e) {}
+  }
+  if (isMobile()) {
+    document.getElementById('app').classList.add('sidebar-collapsed');
+    var ex0 = document.getElementById('sidebar-expand');
+    if (ex0) ex0.classList.remove('hidden');
+  }
+  document.addEventListener('click', function(e) {
+    var app = document.getElementById('app');
+    if (!isMobile() || app.classList.contains('sidebar-collapsed')) return;
     var t = e.target;
-    if (!t.closest || t.closest("#sidebar") || t.closest("#sidebar-expand")) return;
-    // 输入区/思考强度等是操作区，点击不应收起侧栏
-    if (t.closest("#composer") || t.closest(".composer-effort")) return;
-    applySidebar(true, true);
+    if (!t.closest || t.closest('#sidebar') || t.closest('#sidebar-expand')) return;
+    if (t.closest('#composer') || t.closest('.composer-effort')) return;
+    closeSidebar();
   });
-
-  // 播放时旋转到横屏提醒（可选，轻量）
-  window.addEventListener("resize", function() {
-    if (isMobile()) {
-      // no-op: 保持 CSS 响应
+  var gStartX = 0, gStartY = 0, gTarget = null, gIgnore = false;
+  var G_MIN = 60;
+  function gestureIgnorable(t) {
+    if (!t || !t.closest) return true;
+    if (t.closest('input, textarea, select, [contenteditable]')) return true;
+    if (t.closest('.modal, #qa-overlay, #login-overlay, #cmd-palette')) return true;
+    return false;
+  }
+  function mainScrollable(t) {
+    if (!t || !t.closest) return false;
+    return !!t.closest('pre, code, .terminal-panel, .terminal-screen, .xterm, #composer, .composer-effort, .permission-bar, .msg-media, .media-body, table');
+  }
+  document.addEventListener('touchstart', function(e) {
+    if (!isMobile()) return;
+    if (!e.touches || e.touches.length !== 1) { gIgnore = true; gTarget = null; return; }
+    var t0 = e.touches[0];
+    gStartX = t0.clientX; gStartY = t0.clientY;
+    gTarget = e.target || null;
+    gIgnore = gestureIgnorable(gTarget);
+  }, { passive: true });
+  document.addEventListener('touchcancel', function() { gTarget = null; gIgnore = true; }, { passive: true });
+  document.addEventListener('touchend', function(e) {
+    if (!isMobile() || gIgnore) return;
+    var t = (e.changedTouches && e.changedTouches[0]) || null;
+    var el = gTarget;
+    gTarget = null;
+    if (!t || !el || !el.closest) return;
+    var dx = t.clientX - gStartX, dy = t.clientY - gStartY;
+    var adx = Math.abs(dx), ady = Math.abs(dy);
+    if (adx < G_MIN || adx < ady * 1.3) return;
+    if (el.closest('#sidebar')) {
+      if (dx < 0 && sidebarOpen()) {
+        var item = el.closest('.session-item');
+        if (item && item.dataset && item.dataset.dragged === '1') return;
+        closeSidebar();
+      }
+      return;
     }
+    if (el.closest('#mission-control')) {
+      if (dx > 0 && mcOpen()) closeMC();
+      return;
+    }
+    if (el.closest('#main')) {
+      if (mainScrollable(el)) return;
+      if (dx > 0 && !sidebarOpen() && !mcOpen()) { openSidebar(); return; }
+      if (dx < 0 && !mcOpen() && !sidebarOpen()) { openMC(); return; }
+    }
+  }, { passive: true });
+  window.addEventListener('resize', function() {
+    if (isMobile()) {}
   });
 })();
