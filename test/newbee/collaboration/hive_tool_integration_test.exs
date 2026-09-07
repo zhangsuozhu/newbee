@@ -54,6 +54,7 @@ defmodule Newbee.Tools.HiveIntegrationTest do
       {:inbox, [nil, []]},
       {:roster, [nil]},
       {:interrupt, [nil, nil]},
+      {:request_preempt, [nil, nil, nil, []]},
       {:close, [nil, nil]}
     ]
 
@@ -347,6 +348,41 @@ defmodule Newbee.Tools.HiveIntegrationTest do
 
     with_identity("outsider", ctx.project_root, fn ->
       assert {:error, "forbidden_role", _} = Hive.interrupt(group["group_id"], "target")
+    end)
+
+    Process.exit(stub, :kill)
+  end
+
+  test "request_preempt routes to member session without interrupting authority", ctx do
+    {:ok, stub} = HiveSessionStub.start_link("ptarget", self())
+
+    group =
+      with_identity("plead", ctx.project_root, fn ->
+        {:ok, group} = Hive.open("preempt lifecycle")
+
+        {:ok, _} =
+          Coordinator.add_member(group["group_id"], %{
+            "session_id" => "ptarget",
+            "parent_session_id" => "plead"
+          })
+
+        assert {:ok, request} =
+                 Hive.request_preempt(group["group_id"], "ptarget", "dependency failed, please re-plan",
+                   task_id: "t-9",
+                   attempt: 1,
+                   board_revision: 0
+                 )
+
+        assert request["accepted"] == true
+        assert request["reason"] == "dependency failed, please re-plan"
+        group
+      end)
+
+    assert_receive {:hive_stub, {:request_preempt, delivered}}, 1_000
+    assert delivered["task_id"] == "t-9"
+
+    with_identity("poutsider", ctx.project_root, fn ->
+      assert {:error, "not_member", _} = Hive.request_preempt(group["group_id"], "ptarget", "stop")
     end)
 
     Process.exit(stub, :kill)

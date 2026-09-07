@@ -4,6 +4,8 @@ defmodule Newbee.Collaboration.Coordinator do
 
   消息语义为可靠事件：先落盘，再按 delivery 调度——notify 只进时间线，
   queue/wake 投递给目标会话的模型运行时（忙时排队，不强行打断当前 turn）。
+  request_preempt 只记时间线并向目标会话排一个下一轮队头请求（亮徽标），永不打断 turn；
+  真正的中断仍走 Lead/直接父的显式 interrupt。
   任务 lease 已存在；模型派生的子会话默认使用独立 worktree，避免并行修改互相污染。
   """
 
@@ -22,6 +24,8 @@ defmodule Newbee.Collaboration.Coordinator do
   @max_task_title_bytes 512
   @max_task_description_bytes 32_768
   @max_task_payload_bytes 65_536
+  @max_preempt_reason_bytes 2_048
+  @max_preempt_request_id_bytes 256
   @max_evidence_items 64
   @max_dependency_count 64
   @max_write_scope_count 64
@@ -69,6 +73,9 @@ defmodule Newbee.Collaboration.Coordinator do
 
   def send_message(group_id, attrs, server \\ __MODULE__),
     do: GenServer.call(server, {:send_message, group_id, attrs})
+
+  def request_preempt(group_id, attrs, server \\ __MODULE__),
+    do: GenServer.call(server, {:request_preempt, group_id, attrs})
 
   def messages(group_id, opts \\ [], server \\ __MODULE__),
     do: GenServer.call(server, {:messages, group_id, opts})
@@ -488,6 +495,36 @@ defmodule Newbee.Collaboration.Coordinator do
       broadcast(persisted, next.groups[group_id])
       dispatch_message(message, next.groups[group_id])
       {:reply, {:ok, message}, next}
+    else
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
+
+  def handle_call({:request_preempt, group_id, attrs}, _from, state) do
+    with {:ok, group} <- fetch_group(state, group_id),
+         {:ok, attrs} <- normalize_preempt(attrs),
+         :ok <- unique_command(state, attrs["command_id"]),
+         :ok <- ensure_member(group, attrs["from_session_id"]),
+         :ok <- ensure_recipient(group, attrs["to_session_id"]) do
+      request = %{
+        "request_id" => attrs["request_id"],
+        "group_id" => group_id,
+        "from_session_id" => attrs["from_session_id"],
+        "to_session_id" => attrs["to_session_id"],
+        "reason" => attrs["reason"],
+        "task_id" => attrs["task_id"],
+        "attempt" => attrs["attempt"],
+        "board_revision" => attrs["board_revision"],
+        "created_at" => now_iso()
+      }
+
+      event = event("collab_preempt_requested", group_id, %{"request" => request}, attrs["command_id"])
+
+      {:ok, persisted} = append(state, event)
+      next = apply_event(state, persisted)
+      broadcast(persisted, next.groups[group_id])
+      accepted = dispatch_preempt(request)
+      {:reply, {:ok, Map.put(request, "accepted", accepted)}, next}
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
@@ -1346,6 +1383,17 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
+  # 抢占请求只进时间线：不占 seq、不碰 revision（不是 Board 写操作），只记 command 幂等。
+  defp apply_event_state(
+         state,
+         %{"topic" => "collab_preempt_requested", "group_id" => group_id} = event
+       ) do
+    group = Map.put(state.groups[group_id], "updated_at", event["at"])
+
+    %{state | groups: Map.put(state.groups, group_id, group)}
+    |> remember_command(event["command_id"])
+  end
+
   defp apply_event_state(
          state,
          %{
@@ -1866,6 +1914,62 @@ defmodule Newbee.Collaboration.Coordinator do
 
   defp normalize_message(_), do: {:error, "bad_request", "消息参数格式错误"}
 
+  # 抢占请求只做结构化校验：不断言原因的真假，不读正文情绪；
+  # 能否停、何时停由目标会话在安全点决定，这里只负责记账与路由。
+  defp normalize_preempt(attrs) when is_map(attrs) do
+    from = clean(attrs["from_session_id"] || attrs[:from_session_id])
+    to = clean(attrs["to_session_id"] || attrs[:to_session_id])
+    request_id = clean(attrs["request_id"] || attrs[:request_id])
+    reason = clean(attrs["reason"] || attrs[:reason])
+    task_id = clean(attrs["task_id"] || attrs[:task_id])
+    attempt = attrs["attempt"] || attrs[:attempt]
+    revision = attrs["board_revision"] || attrs[:board_revision]
+
+    cond do
+      is_nil(from) ->
+        {:error, "bad_request", "fromSessionId cannot be empty"}
+
+      is_nil(to) ->
+        {:error, "bad_request", "toSessionId cannot be empty"}
+
+      is_nil(request_id) ->
+        {:error, "bad_request", "requestId cannot be empty"}
+
+      byte_size(request_id) > @max_preempt_request_id_bytes ->
+        {:error, "bad_request", "requestId exceeds 256 bytes"}
+
+      is_nil(reason) ->
+        {:error, "bad_request", "reason cannot be empty"}
+
+      byte_size(reason) > @max_preempt_reason_bytes ->
+        {:error, "request_too_large", "reason exceeds 2 KiB"}
+
+      not is_nil(attempt) and (not is_integer(attempt) or attempt < 0) ->
+        {:error, "bad_request", "request attempt must be a non-negative integer"}
+
+      not is_nil(revision) and (not is_integer(revision) or revision < 0) ->
+        {:error, "bad_request", "request board_revision must be a non-negative integer"}
+
+      (is_nil(task_id) and not is_nil(attempt)) or (not is_nil(task_id) and is_nil(attempt)) ->
+        {:error, "bad_request", "request task_id and attempt go together"}
+
+      true ->
+        {:ok,
+         %{
+           "from_session_id" => from,
+           "to_session_id" => to,
+           "request_id" => request_id,
+           "reason" => reason,
+           "task_id" => task_id,
+           "attempt" => attempt,
+           "board_revision" => revision,
+           "command_id" => clean(attrs["command_id"] || attrs[:command_id])
+         }}
+    end
+  end
+
+  defp normalize_preempt(_), do: {:error, "bad_request", "抢占请求参数格式错误"}
+
   defp summary(group) do
     %{
       "group_id" => group["group_id"],
@@ -1949,6 +2053,18 @@ defmodule Newbee.Collaboration.Coordinator do
     if target in Newbee.Session.list(), do: Newbee.Session.cwd(target), else: nil
   rescue
     _ -> nil
+  end
+
+  # 抢占请求只管交到目标会话进程的信箱（忙就排队）；离线只留时间线事件，不唤醒。
+  defp dispatch_preempt(request) do
+    case Newbee.Web.Session.lookup(request["to_session_id"]) do
+      {:ok, pid} ->
+        Newbee.Web.Session.request_preempt(pid, request)
+        true
+
+      _ ->
+        false
+    end
   end
 
   defp dispatch_task(%{"assigned_session_id" => nil}, _delivery_id), do: :ok

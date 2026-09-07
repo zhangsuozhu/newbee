@@ -161,6 +161,17 @@ triage(headers, session_state) ->
 3. **只加 request_preempt 请求通道**：不加自动早停，先只做到队头 + 徽标。验证：伪造正文无法触发早停；Lead 控制中断仍走老通道。
 4. **可选：离线合并器**（独立进程，批量 2-5s 窗）：只合并 B 档闲聊展示，不参与分诊。验证：合并错误最多影响展示，不影响任务状态机。
 5. **暂不做**：每消息 LLM 裁判、协作 steering 进当前轮、工具中途强杀、第二套 group/board。
+### 落地记录（worktree collab-sched，2026-09-07/08）
+
+步骤 1–2 已合入 `Web.Session`：`collab_stats` 计数（入队分通道、claim 四态、等待时长、head 服务/让路、抢占请求/服务、合并轮次/条数）、`collab_lane/2` 纯函数分诊、`dequeue_next/2`（head 优先 + 连续 3 个后让路防饿死）、started 事件带 lane/waitMs。
+
+步骤 3 request_preempt 请求通道已实现：`Coordinator.request_preempt/3`（成员校验 + `command_id` 幂等 + `collab_preempt_requested` 时间线事件，不占 seq、不碰 revision）→ 在线则路由到目标会话 `Session.request_preempt`（head 通道 `preempt_request` 条目 + `:preempt_requested` 徽标 + 去重），离线只留时间线并返回 `accepted: false`；`Hive.request_preempt/4` 为模型可见入口（`request_id`/`command_id` 自动默认）。永不打断 turn；interrupt 会清空未处理的抢占请求（中断优先于请求）；重启后不补拉（时间线事件仍在，可审计）。
+
+步骤 4 B 档合并已实现，与原计划有一处差异：合并点选在 dispatch 时（`dispatch_maybe_merged`），而不是独立 2–5s 定时进程——首条不等人为窗口、行为完全确定可测，批量效果等价。规则：仅同组、连续、普通通道的 `collab_message` 可拼（一批最多 5 条、合并正文不超 8 KiB）；任务/结果/抢占/wake/用户输入/legacy 元组永不参与。每条独立 claim（stale 丢弃继续、任一条 defer 整批原样放回队头）、成功逐条 ack、失败把原始各条分别重排。实现中抓到并修复过一个真实 bug：拿走的条目必须立即离队，否则下一轮重复消费（回归测试覆盖）。
+
+验证：`mix compile --warnings-as-errors`（dev/test 双环境零警告）、`mix format --check-formatted` 干净；`session_queue_test` 39 过、`preempt_channel_test` 6 过、Hive 集成 19 过（含新增抢占路由测试）、协作全目录 76 过、dispatch/coordinator/协作 API/socket 组合 39 过。注：中途出现过一次 38/39（单用例失败），随后同 seed 及全目录两次重跑均全过，未能复现，判为负载下偶发抖动，未改代码。
+
+
 
 ---
 

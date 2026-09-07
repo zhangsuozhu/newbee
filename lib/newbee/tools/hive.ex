@@ -23,6 +23,7 @@ defmodule Newbee.Tools.Hive do
       {:ok, _} = Newbee.Tools.Hive.inbox(gid)
       {:ok, _} = Newbee.Tools.Hive.roster(gid)
       {:ok, _} = Newbee.Tools.Hive.interrupt(gid, sid)
+      {:ok, _} = Newbee.Tools.Hive.request_preempt(gid, sid, "dependency failed, please re-plan")
       {:ok, _} = Newbee.Tools.Hive.close(gid, sid)
       names = Newbee.Tools.Hive.personas()
   """
@@ -308,6 +309,30 @@ defmodule Newbee.Tools.Hive do
   end
 
   def interrupt(_, _), do: {:error, "bad_request", "group_id and target_session_id must be texts"}
+
+  @doc "Ask a member session to reconsider at the next turn boundary; never interrupts the running turn. Opts: reason (required), task_id/attempt/board_revision, request_id/command_id."
+  def request_preempt(group_id, to_session_id, reason, opts \\ [])
+
+  def request_preempt(group_id, to_session_id, reason, opts)
+      when is_binary(group_id) and is_binary(to_session_id) and is_binary(reason) and is_list(opts) do
+    with {:ok, identity} <- identity() do
+      host_call(Newbee.Collaboration.Coordinator, :request_preempt, [
+        group_id,
+        %{
+          "from_session_id" => identity.session_id,
+          "to_session_id" => to_session_id,
+          "reason" => reason,
+          "task_id" => Keyword.get(opts, :task_id),
+          "attempt" => Keyword.get(opts, :attempt),
+          "board_revision" => Keyword.get(opts, :board_revision),
+          "request_id" => Keyword.get(opts, :request_id) || command_id("hive-preempt-req"),
+          "command_id" => Keyword.get(opts, :command_id) || command_id("hive-preempt")
+        }
+      ])
+    end
+  end
+
+  def request_preempt(_, _, _, _), do: {:error, "bad_request", "invalid preempt arg types"}
 
   @doc "The Lead explicitly removes members with no live tasks/children and destroys their session processes when no other group still references them."
   def close(group_id, target_session_id)
