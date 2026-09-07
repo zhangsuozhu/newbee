@@ -26,19 +26,34 @@ defmodule Newbee.UploadTest do
     refute String.contains?(stored["path"], "notes.txt")
   end
 
-  test "prepares trusted local paths and supported images for the agent", %{sid: sid} do
+  test "prepares trusted local paths and clipboard images without a filename extension", %{sid: sid} do
     assert {:ok, text_file} = Newbee.Upload.store(sid, "spec.md", "text/markdown", "# spec")
-    assert {:ok, image} = Newbee.Upload.store(sid, "screen.png", "image/png", @png)
+    assert {:ok, image} = Newbee.Upload.store(sid, "clipboard", "image/png", @png)
+    assert image.image == true
+
+    assert {:ok, stored} = Newbee.Upload.info(sid, image.id)
+    assert Path.extname(stored["path"]) == ".png"
 
     assert {:ok, prepared} =
              Newbee.Upload.prepare_prompt(sid, [text_file.id, image.id], "Inspect these files")
 
     assert prepared.text =~ "Inspect these files"
     assert prepared.text =~ "spec.md"
-    assert prepared.text =~ "screen.png"
+    assert prepared.text =~ "clipboard"
     assert prepared.text =~ "local_path:"
     assert ["data:image/png;base64," <> _] = prepared.images
     assert length(prepared.files) == 2
+  end
+
+  test "reports image preparation failures instead of silently sending text only", %{sid: sid} do
+    large = :binary.copy(<<0>>, Newbee.LLM.Image.max_bytes() + 1)
+    assert {:ok, image} = Newbee.Upload.store(sid, "large.png", "image/png", large)
+
+    assert {:error, "image_prepare_failed", message} =
+             Newbee.Upload.prepare_prompt(sid, [image.id], "Inspect this image")
+
+    assert message =~ "large.png"
+    assert message =~ "image_too_large"
   end
 
   test "rejects traversal session ids and unknown upload ids", %{sid: sid} do

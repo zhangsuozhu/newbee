@@ -24,14 +24,15 @@ defmodule Newbee.Upload do
          :ok <- validate_size(binary),
          {:ok, original_name} <- normalize_name(name),
          id <- generate_id(),
-         extension <- safe_extension(original_name),
+         content_type <- normalize_content_type(content_type),
+         extension <- safe_extension(original_name, content_type),
          path <- file_path(sid, id, extension),
          :ok <- File.mkdir_p(Path.dirname(path)),
          :ok <- File.write(path, binary) do
       item = %{
         id: id,
         name: original_name,
-        content_type: normalize_content_type(content_type),
+        content_type: content_type,
         size: byte_size(binary),
         extension: extension,
         image: MapSet.member?(@image_extensions, extension),
@@ -112,17 +113,12 @@ defmodule Newbee.Upload do
           "The files are available at these local paths:\n#{context}\n\n" <>
           String.trim(text)
 
-      images =
-        items
-        |> Enum.filter(& &1["image"])
-        |> Enum.flat_map(fn item ->
-          case Newbee.LLM.Image.data_url(item["path"]) do
-            {:ok, data_url} -> [data_url]
-            _ -> []
-          end
-        end)
-
-      {:ok, %{text: String.trim(prompt), images: images, files: items}}
+      with {:ok, images} <- image_data_urls(items) do
+        {:ok, %{text: String.trim(prompt), images: images, files: items}}
+      else
+        {:error, {name, reason}} ->
+          {:error, "image_prepare_failed", "#{name}: #{format_reason(reason)}"}
+      end
     else
       {:error, _, _} = error -> error
       false -> {:error, "bad_request", "附件参数无效"}
@@ -130,6 +126,21 @@ defmodule Newbee.Upload do
   end
 
   def prepare_prompt(_, _, _), do: {:error, "bad_request", "需要 sessionId、uploadIds 和 text"}
+
+  defp image_data_urls(items) do
+    items
+    |> Enum.filter(& &1["image"])
+    |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
+      case Newbee.LLM.Image.data_url(item["path"]) do
+        {:ok, data_url} -> {:cont, {:ok, [data_url | acc]}}
+        {:error, reason} -> {:halt, {:error, {item["name"], reason}}}
+      end
+    end)
+    |> case do
+      {:ok, urls} -> {:ok, Enum.reverse(urls)}
+      error -> error
+    end
+  end
 
   defp resolve_all(sid, ids) do
     ids
@@ -186,9 +197,29 @@ defmodule Newbee.Upload do
 
   defp normalize_content_type(_), do: "application/octet-stream"
 
-  defp safe_extension(name) do
+  defp safe_extension(name, content_type) do
     extension = name |> Path.extname() |> String.downcase()
-    if Regex.match?(~r/\A\.[a-z0-9]{1,10}\z/, extension), do: extension, else: ""
+
+    cond do
+      Regex.match?(~r/\A\.[a-z0-9]{1,10}\z/, extension) -> extension
+      true -> image_extension_for_type(content_type) || ""
+    end
+  end
+
+  defp image_extension_for_type(content_type) do
+    content_type
+    |> String.split(";", parts: 2)
+    |> hd()
+    |> String.trim()
+    |> String.downcase()
+    |> case do
+      "image/gif" -> ".gif"
+      "image/jpeg" -> ".jpeg"
+      "image/jpg" -> ".jpg"
+      "image/png" -> ".png"
+      "image/webp" -> ".webp"
+      _ -> nil
+    end
   end
 
   defp metadata_extension(%{"extension" => extension}) when is_binary(extension) do

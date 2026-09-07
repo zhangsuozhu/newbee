@@ -258,7 +258,7 @@ defmodule Newbee.Web.SessionQueueTest do
     assert :queue.len(same.queue) == 1
   end
 
-  test "frontend renders pending user input only when the server starts it" do
+  test "frontend renders pending input and identifies image turns" do
     js = File.read!("priv/web/app.js")
     css = File.read!("priv/web/style.css")
     [_, send_and_after] = String.split(js, "async function send()", parts: 2)
@@ -269,6 +269,10 @@ defmodule Newbee.Web.SessionQueueTest do
     assert js =~ ~s|if (ev.type === "started")|
     assert js =~ "renderStartedPrompt(ev.id, p.current, ev.at)"
     assert js =~ ~s|else if (ev.type === "finished")|
+    assert js =~ "normalizeUserAttachments"
+    assert js =~ "typeof a === \"string\""
+    assert js =~ "正在处理图片..."
+    assert js =~ "state.turnKind"
     assert js =~ "const btw = text.match"
     assert js =~ ~s|type: "btw"|
     assert js =~ "renderBtwStart(p)"

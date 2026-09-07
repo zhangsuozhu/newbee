@@ -248,6 +248,8 @@ const flow = $("flow");
     token: localStorage.getItem("newbee.token") || null,
     ws: null,
     busy: false,
+    turnKind: null,
+
     creatingSession: false,
     hasPrompted: false,
     titleDirty: false,
@@ -603,6 +605,8 @@ case "queue_updated": {
   if (ev.type === "enqueued" && pending) pending.queued = true;
   if (ev.type === "started") {
     const started = renderStartedPrompt(ev.id, p.current, ev.at);
+    state.turnKind = (p.current && p.current.kind) || ev.kind ||
+      (started && started.attachments && started.attachments.length > 0 ? "images" : "text");
     state.busy = true;
     setBusy(true);
     resetTurnUsage();
@@ -611,14 +615,18 @@ case "queue_updated": {
   } else if (ev.type === "steered") {
     flushTextBlock();
     archiveReasoning();
-    renderStartedPrompt(ev.id, ev.input, ev.at);
+    const steered = renderStartedPrompt(ev.id, ev.input, ev.at);
+    state.turnKind = (ev.input && ev.input.kind) || ev.kind ||
+      (steered && steered.attachments && steered.attachments.length > 0 ? "images" : state.turnKind || "text");
     if (state.timing.llmStart !== null) state.timing.llmMs += Date.now() - state.timing.llmStart;
     state.timing.llmStart = Date.now();
     state.timing.ftRecorded = false;
 
   } else if (ev.type === "finished") {
+    state.turnKind = null;
     state.busy = false;
     setBusy(false);
+
 
   } else if (ev.type === "cancelled") {
     if (ev.id) state.pendingPrompts.delete(ev.id);
@@ -664,6 +672,8 @@ case "goal_round": break;
 
   function finishTurn() {
     state.busy = false;
+    state.turnKind = null;
+
     if (state.currentAssistant) {
       const _savedBar = state.currentAssistant.querySelector(":scope > .msg-usage");
       state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
@@ -2710,9 +2720,10 @@ case "goal_round": break;
     // 同步会话工作目录：切会话后立即反映到侧栏标签 + 底部状态栏
     updateCwdLabel(sessionState.cwd || null);
     state.cwd = sessionState.cwd || null;
-      // 同步服务端权威状态；本地 busy 不能跨会话沿用。
+    state.turnKind = sessionState.current && sessionState.current.kind ? sessionState.current.kind : null;
     state.busy = sessionState.busy === true;
     setBusy(state.busy);
+
     state.pendingPrompts.clear();
     // 等待队列重建（方案A）：刷新后按 state.queue/current 恢复排队条与执行中提示。
     state.queue = Array.isArray(sessionState.queue) ? sessionState.queue : [];
@@ -3078,6 +3089,23 @@ case "goal_round": break;
   }
 
 
+  function normalizeUserAttachments(attachments) {
+    return (attachments || []).map((a, index) => {
+      if (typeof a === "string") {
+        return { name: `图片 ${index + 1}`, type: "image/*", size: 0, isImage: true, dataUrl: a };
+      }
+      if (!a || typeof a !== "object") return null;
+      const dataUrl = typeof a.dataUrl === "string" ? a.dataUrl : null;
+      return {
+        ...a,
+        name: a.name || `附件 ${index + 1}`,
+        isImage: a.isImage === true || !!(dataUrl && dataUrl.startsWith("data:image/")),
+        dataUrl,
+      };
+    }).filter(Boolean);
+  }
+
+
   function renderOneMsg(m) {
     state.eventCreatedAt = m.created_at || null;
     if (m.role === "user") {
@@ -3364,13 +3392,14 @@ case "goal_round": break;
 
   // 用户行回显：文本 + 图片缩略图 + 普通文件
   function renderUserLine(text, attachments, createdAt) {
+    const normalized = normalizeUserAttachments(attachments);
     const d = el("msg-user", "", false, createdAt);
     if (text) {
       const span = document.createElement("div");
       span.textContent = text;
       d.appendChild(span);
     }
-    const images = (attachments || []).filter(a => a.isImage && a.dataUrl);
+    const images = normalized.filter(a => a.isImage && a.dataUrl);
     if (images.length) {
       const wrap = document.createElement("div");
       wrap.className = "msg-user-images";
@@ -3384,7 +3413,8 @@ case "goal_round": break;
       });
       d.appendChild(wrap);
     }
-    const files = (attachments || []).filter(a => !a.isImage);
+    const files = normalized.filter(a => !a.isImage);
+
     if (files.length) {
       const wrap = document.createElement("div");
       wrap.className = "msg-user-files";
@@ -3600,6 +3630,8 @@ case "goal_round": break;
     if ((!text && attachments.length === 0) || !state.sid) return;
     const queueId = genQueueId();
     const wasBusy = state.busy === true;
+    if (!wasBusy) state.turnKind = attachments.length > 0 ? "images" : "text";
+
     const prev = text || (attachments.length > 0 ? ("[图片 x" + attachments.length + "]") : "");
     state.pendingPrompts.set(queueId, {
       text,
@@ -3861,7 +3893,8 @@ case "goal_round": break;
     sendBtn.title = b ? "加入队列：当前任务完成后自动执行" : "发送";
     sendBtn.setAttribute("aria-label", sendBtn.title);
     if (b) {
-      showTurnStatus();
+      showTurnStatus(state.turnKind);
+
       // 修复抢焦点：AI 起止不再强制 switchMCTab。用户停留在哪个 tab 就留在哪个 tab，
       // 新步骤只亮徽标（updateMCBadges），把控制权还给用户。
       if (MC.open && MC.tab !== "steps") { MC.stepsUnread++; updateMCBadges(); }
@@ -3876,14 +3909,16 @@ case "goal_round": break;
   }
   // dsh turn 状态行：shimmer 文字，turn 进行中显示
   let turnStatusEl = null;
-  function showTurnStatus() {
-    if (turnStatusEl) return;
+  function showTurnStatus(kind) {
+    const text = kind === "images" ? "正在处理图片..." : "正在思考…";
+    if (turnStatusEl) { turnStatusEl.textContent = text; return; }
     turnStatusEl = document.createElement("div");
     turnStatusEl.className = "msg turn-status";
-    turnStatusEl.textContent = "正在思考…";
+    turnStatusEl.textContent = text;
     flow.appendChild(turnStatusEl);
     scrollBottom();
   }
+
   function clearTurnStatus() {
     if (turnStatusEl) { turnStatusEl.remove(); turnStatusEl = null; }
   }
