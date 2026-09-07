@@ -25,4 +25,17 @@ defmodule Newbee.Web.CssSingleSourceTest do
 
     assert MapSet.to_list(MapSet.difference(refs, defs)) == []
   end
+  test "swipe rows cannot shrink out of the scrollable session list" do
+    css = File.read!("priv/web/style.css")
+    assert Regex.match?(~r/\.swipe-cell\s*\{[^}]*flex-shrink:\s*0\s*;/, css)
+  end
+
+  test "swipe foreground covers delete actions until translated" do
+    css = File.read!("priv/web/style.css")
+    assert [_, foreground] = Regex.run(~r/\.swipe-cell \.session-item\s*\{([^}]*)\}/, css)
+    assert foreground =~ "z-index: 1;"
+    assert foreground =~ "background: var(--nb-bg-panel);"
+    assert foreground =~ "position: relative;"
+  end
+
 end
