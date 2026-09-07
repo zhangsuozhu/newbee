@@ -2,33 +2,39 @@ defmodule Newbee.Tools.Browser do
   @behaviour Newbee.Environment.PluginContract
 
   @moduledoc """
-  Browser automation: isolated Playwright + optional X11 visible window.
+  Browser automation: isolated Playwright, resumable sessions, or authorized X11 control.
 
-  The default backend is an isolated browser; the existing desktop window is focused and driven only when the user
-  explicitly passes `backend: \"screen\"`. Actions run inside one ordered plan so the browser isn't relaunched per click.
-  Output files stay in the project dir, `~/.newbee`, or `/tmp`.
+  Omit `session` for a one-shot plan. For interactive work, open `session: "new"` and
+  reuse the returned `result["session"]` in later calls. Sessions require the active
+  newbee capability, are owner/project scoped, and keep the actual page alive.
+  At most four sessions run at once; idle sessions expire after two minutes unless
+  `idle_timeout` (10000..1800000 ms) is set when opening. An
+  expired handle returns an error, never a silently recreated browser. Close when done.
+
+  `timeout` is the whole-plan budget (500..120000 ms, default 30000), including startup;
+  `action_timeout` bounds individual actions (default at most 10000 ms). Errors include
+  the failing action and completed results; inspect before retrying submissions.
+  Chromium temporary files live under the project `.newbee/browser/tmp` and are cleaned
+  up on normal shutdown. Python Playwright and matching browsers must be installed.
+
+  Human-in-the-loop CAPTCHAs: automated solving is not supported. Pause the plan,
+  `screenshot` the challenge element to a stable path, report the path and wait for
+  the user, then `fill` their answer and continue. Open such sessions with a generous
+  `idle_timeout` so the page survives the round-trip.
 
   ## Runnable example
-      {:ok, result} = Newbee.Tools.Browser.run(%{
-        url: \"https://example.com\",
-        actions: [
-          %{action: \"snapshot\"},
-          %{action: \"screenshot\", path: \"/tmp/example.png\", full_page: true}
-        ]
-      })
+      {:ok, opened} = Newbee.Tools.Browser.run(%{session: "new", url: "https://example.com"})
+      {:ok, _page} = Newbee.Tools.Browser.run(%{session: opened["session"], actions: [
+        %{action: "snapshot"}
+      ]})
+      {:ok, _closed} = Newbee.Tools.Browser.run(%{session: opened["session"], actions: [
+        %{action: "close"}
+      ]})
 
-      {:ok, _result} = Newbee.Tools.Browser.run(%{
-        backend: \"screen\",
-        window_title: \"Google Chrome\",
-        actions: [%{action: \"screenshot\", path: \"/tmp/chrome.png\"}]
-      })
+      {:ok, result} = Newbee.Tools.Browser.run(%{url: "https://example.com", actions: [
+        %{action: "screenshot", path: "/tmp/example.png"}
+      ]})
 
-  ## Playwright 动作
-  `goto/navigate`、`reload`、`back`、`forward`、`click`、`fill`、`type`、`press`、`select`、
-  `check/uncheck`、`hover`、`focus`、`scroll`、`wait`、`evaluate`、`set_content`、`set_viewport`、
-  `title`、`url`、`snapshot`、`text/html/value/attribute/count/visible/enabled/bounds`、`links`、
-  `select_text`、`drag_and_drop`、`bring_to_front`、`screenshot`、`pdf`、
-  `new_tab/switch_tab/close_tab/tabs`、`cookies/set_cookie/clear_cookies`、`storage`、
   ## Playwright actions
   `goto/navigate`, `reload`, `back`, `forward`, `click`, `fill`, `type`, `press`, `select`,
   `check/uncheck`, `hover`, `focus`, `scroll`, `wait`, `evaluate`, `set_content`, `set_viewport`,
@@ -36,13 +42,20 @@ defmodule Newbee.Tools.Browser do
   `select_text`, `drag_and_drop`, `bring_to_front`, `screenshot`, `pdf`,
   `new_tab/switch_tab/close_tab/tabs`, `cookies/set_cookie/clear_cookies`, `storage`,
   `headers`, `permissions`, `download`, `upload`, `browser_version` and `close`.
-  Locators span CSS, XPath, id, text, role, label, placeholder, alt, title, test_id, and iframes.
-  The isolated backend needs Python Playwright plus matching browsers; when Chromium is missing, run `playwright install chromium`.
+  Pass `record_video_dir` (plus optional `video_size` as `"W,H"`) when opening a session or
+  one-shot run to record; `close_tab` then reports its `video`, and `close` (or the end of a
+  one-shot run) flushes every page and reports `videos`. Videos must live outside
+  `.newbee/browser/tmp`; idle expiry without `close` does not guarantee a recording.
+  Locators support CSS, XPath, id, text, role, label, placeholder, alt, title, test_id and frames.
+  `snapshot` returns bounded text, links and visible controls with labels and state; use
+  `max_chars` and `limit` to bound it. There are at most four tabs per browser session.
+  `wait` supports selector, URL, load-state and function conditions; prefer these to sleeps.
 
   ## Screen actions
-  `list_windows`, `focus`, `navigate`, coordinate `click`/`double_click`, `scroll`, `press`, ASCII `type`, `wait` and `screenshot`.
-  The screen backend drives the real desktop — use only when the user has authorized control of the currently visible browser.
-
+  Explicit `backend: "screen"` drives the real X11 desktop, only with user authorization:
+  `list_windows`, `focus`, `navigate`, coordinate `click/double_click`, `scroll`, `press`,
+  ASCII `type`, `wait`, `screenshot`. Screen mode does not support session handles.
+  Artifacts stay inside the project, `~/.newbee`, or `/tmp`.
   """
 
   @runner_path "priv/browser/playwright_runner.py"
@@ -54,7 +67,7 @@ defmodule Newbee.Tools.Browser do
   def id, do: "tool.browser"
 
   @doc false
-  def version, do: "1.0.0"
+  def version, do: "1.1.0"
 
   @doc false
   def dependencies, do: []
@@ -64,11 +77,13 @@ defmodule Newbee.Tools.Browser do
     %{
       kind: :tool,
       summary: "Drive an isolated or visible browser: page interaction, DOM queries, downloads, PDFs, screenshots",
-      when_to_use: "When you need a real browser render, page interaction, login state, downloads, PDFs, screenshots, or explicitly authorized visible-Chrome control",
-      avoid_when: "For plain public HTTP content use Newbee.read/1 or Newbee.Tools.Http; never use the screen backend unauthorized",
+      when_to_use:
+        "When you need a real browser render, page interaction, login state, downloads, PDFs, screenshots, or explicitly authorized visible-Chrome control",
+      avoid_when:
+        "For plain public HTTP content use Newbee.read/1 or Newbee.Tools.Http; never use the screen backend unauthorized",
       capabilities: [:browser, :net, :fs, :shell],
       effects: [:process, :external, :fs],
-      state_policy: :stateless,
+      state_policy: :ephemeral,
       error_contract: %{recoverable: :error_tuple, unexpected: :raise},
       api: [
         %{
@@ -85,14 +100,14 @@ defmodule Newbee.Tools.Browser do
     }
   end
 
-  @doc "Run one ordered browser-action plan. Takes a URL or a map with `url`, `backend`, `actions`, `timeout`, `profile`, `viewport`, `storage_state`, and `save_storage`. Returns `{:ok, result}` with action results and produced file paths, else `{:error, reason}`."
+  @doc "Run one ordered browser-action plan. Takes a URL or a map with `url`, `backend`, `session`, `actions`, `timeout`, `action_timeout`, `idle_timeout`, `profile`, `viewport`, `storage_state`, `save_storage`, `record_video_dir`, and `video_size`. Returns `{:ok, result}` with action results and produced file paths, else `{:error, reason}`."
   def run(url) when is_binary(url), do: run(%{url: url})
 
   def run(request) when is_map(request) do
     with {:ok, request} <- normalize_request(request),
          {:ok, json} <- encode_request(request),
          :ok <- validate_request_size(json),
-         {:ok, result} <- invoke(json, request["timeout"]) do
+         {:ok, result} <- invoke(request, json) do
       {:ok, result}
     end
   rescue
@@ -109,7 +124,10 @@ defmodule Newbee.Tools.Browser do
     timeout = Map.get(request, "timeout", @default_timeout)
 
     with :ok <- validate_backend(backend),
-         {:ok, timeout} <- normalize_timeout(timeout) do
+         {:ok, timeout} <- normalize_timeout(timeout),
+         :ok <- validate_session(request["session"], backend),
+         :ok <- validate_action_timeout(request["action_timeout"]),
+         :ok <- validate_idle_timeout(request["idle_timeout"]) do
       {:ok, request |> Map.put("backend", backend) |> Map.put("timeout", timeout)}
     end
   end
@@ -159,7 +177,52 @@ defmodule Newbee.Tools.Browser do
      %{reason: :request_too_large, hint: "browser request exceeds #{@max_request_bytes} bytes", bytes: byte_size(json)}}
   end
 
-  defp invoke(json, timeout) do
+  defp validate_session(nil, _backend), do: :ok
+
+  defp validate_session(session, backend)
+       when is_binary(session) and byte_size(session) in 1..80 and backend in ["playwright", "isolated"], do: :ok
+
+  defp validate_session(_session, _backend),
+    do:
+      {:error,
+       %{
+         reason: :invalid_session,
+         hint: "session must be new or a returned handle, and is only supported by Playwright"
+       }}
+
+  defp validate_action_timeout(nil), do: :ok
+  defp validate_action_timeout(timeout) when is_integer(timeout) and timeout in 1..120_000, do: :ok
+
+  defp validate_action_timeout(_),
+    do: {:error, %{reason: :invalid_action_timeout, hint: "action_timeout must be an integer from 1 to 120000 ms"}}
+
+  defp validate_idle_timeout(nil), do: :ok
+  defp validate_idle_timeout(timeout) when is_integer(timeout) and timeout in 10_000..1_800_000, do: :ok
+
+  defp validate_idle_timeout(_),
+    do:
+      {:error,
+       %{
+         reason: :invalid_idle_timeout,
+         hint: "idle_timeout must be an integer from 10000 to 1800000 ms and is only set when opening a session"
+       }}
+
+  defp invoke(%{"session" => session} = request, _json) when is_binary(session) do
+    token =
+      case Process.get({Newbee.Tools.Hive, :context}) do
+        %{capability: capability} -> capability
+        _ -> Process.get({Newbee.Tools.Media, :capability})
+      end
+
+    case Newbee.Host.call(Newbee.Browser, :run, [token, File.cwd!(), request], request["timeout"] + 5_000) do
+      {:ok, payload} -> decode_result(%{exit: 0, output: Jason.encode!(payload)})
+      {:error, _} = error -> error
+      other -> {:error, %{reason: :session_lost, hint: "browser session call failed: " <> inspect(other)}}
+    end
+  end
+
+  defp invoke(request, json) do
+    timeout = request["timeout"]
     runner = Path.join(File.cwd!(), @runner_path)
 
     cond do
@@ -177,7 +240,9 @@ defmodule Newbee.Tools.Browser do
           |> Enum.map(&shell_quote/1)
           |> Enum.join(" ")
 
-        result = Newbee.Tools.Run.sh(command, timeout: min(timeout + 5_000, @max_timeout + 5_000))
+        result =
+          Newbee.Tools.Run.sh(command, timeout: min(timeout + 5_000, @max_timeout + 5_000), shared_terminal: false)
+
         decode_result(result)
     end
   end

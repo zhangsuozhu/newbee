@@ -4,6 +4,9 @@ import json
 import os
 import re
 import shutil
+import signal
+import tempfile
+from contextlib import contextmanager
 import subprocess
 import sys
 import time
@@ -115,10 +118,70 @@ def safe_input_path(value):
             path=str(candidate),
         )
     return candidate
+def safe_dir(value, default_name):
+    raw = default_name if value in (None, "") else str(value)
+    if "\x00" in raw:
+        raise RunnerFailure("invalid_path", "path contains a NUL byte")
+    candidate = Path(os.path.expanduser(raw))
+    if not candidate.is_absolute():
+        candidate = Path.cwd() / candidate
+    candidate = candidate.resolve()
+    bases = [Path.cwd().resolve(), (Path.home() / ".newbee").resolve(), Path("/tmp").resolve()]
+    if not any(path_is_inside(candidate, base) for base in bases):
+        raise RunnerFailure(
+            "path_out_of_bounds",
+            "browser artifact paths must be inside the project, ~/.newbee, or /tmp",
+            path=str(candidate),
+        )
+    scratch = (Path.cwd() / ".newbee" / "browser" / "tmp").resolve()
+    if candidate == scratch or path_is_inside(candidate, scratch):
+        raise RunnerFailure(
+            "path_out_of_bounds",
+            "video directory must not be inside the session scratch area; it is reaped on close",
+            path=str(candidate),
+        )
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
 
 
+def parse_video_size(request):
+    size = get_value(request, "video_size", get_value(request, "record_video_size"))
+    if size in (None, ""):
+        return None
+    if isinstance(size, str) and "," in size:
+        width, height = size.split(",", 1)
+        size = {"width": width, "height": height}
+    if isinstance(size, dict) and "width" in size and "height" in size:
+        return {"width": as_int(size["width"], 640, 160, 1280), "height": as_int(size["height"], 480, 160, 1280)}
+    raise RunnerFailure("invalid_video_size", "video_size must be 'W,H' or {width, height}")
 
 
+def collect_video(page):
+    try:
+        video = page.video
+    except Exception:
+        return None
+    if video is None:
+        return None
+    try:
+        return str(video.path())
+    except Exception:
+        return None
+
+
+def flush_videos(state):
+    # Playwright only finishes a recording when its page closes.
+    paths = []
+    for page in list(state["pages"]):
+        try:
+            page.close()
+        except Exception:
+            pass
+        path = collect_video(page)
+        if path:
+            paths.append(path)
+    state["pages"] = []
+    return paths
 def trusted_executable(value):
     raw = str(value)
     if "\x00" in raw:
@@ -239,13 +302,26 @@ def response_info(response):
         return None
 
 
-def text_snapshot(page, timeout):
-    body = page.locator("body")
-    text = body.inner_text(timeout=timeout) if body else ""
-    links = page.locator("a").evaluate_all(
-        "els => els.slice(0, 100).map(a => ({text: (a.innerText || a.textContent || '').trim(), href: a.href}))"
-    )
-    return {"url": page.url, "title": page.title(), "text": trim_value(text), "links": trim_value(links)}
+def text_snapshot(page, timeout, action):
+    limits = {"chars": as_int(action.get("max_chars"), 8000, 1, MAX_STRING), "items": as_int(action.get("limit"), 60, 1, MAX_LIST)}
+    script = """(body, limits) => {
+      const clip = text => (text || '').trim().slice(0, 256);
+      const visible = el => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+      const text = body.innerText || '';
+      const elements = Array.from(body.querySelectorAll('a,button,input,textarea,select,[role],[contenteditable=true]')).filter(visible);
+      const controls = elements.slice(0, limits.items).map(el => {
+        const labelled = (el.getAttribute('aria-labelledby') || '').split(/\\s+/).map(id => document.getElementById(id)?.textContent || '').join(' ').trim();
+        const label = labelled || el.getAttribute('aria-label') || Array.from(el.labels || []).map(l => l.innerText).join(' ') || el.innerText || el.getAttribute('placeholder') || el.title;
+        const item = {tag: el.tagName.toLowerCase(), role: el.getAttribute('role'), type: el.type || null, name: clip(label), disabled: el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true'};
+        if (el.id) item.id = el.id;
+        if (el.type !== 'password' && el.type !== 'file' && 'value' in el) item.value = clip(el.value);
+        if (el.type === 'checkbox' || el.type === 'radio') item.checked = el.checked;
+        return item;
+      });
+      const links = Array.from(body.querySelectorAll('a')).filter(visible).slice(0, limits.items).map(a => ({text: clip(a.innerText || a.textContent), href: a.href}));
+      return {url: location.href, title: document.title, text: text.slice(0, limits.chars), text_truncated: text.length > limits.chars, controls, controls_truncated: elements.length > limits.items, links};
+    }"""
+    return page.locator("body").evaluate(script, limits, timeout=timeout)
 
 
 def storage_action(page, action):
@@ -300,7 +376,7 @@ def dispatch_playwright(state, action):
     name = action_name(action)
     page = state["page"]
     context = state["context"]
-    timeout = action_timeout(action, state["timeout"])
+    timeout = remaining_timeout(state, action)
     wait_until = str(option_value(action, "wait_until", "domcontentloaded"))
 
     if name in ("goto", "navigate", "open"):
@@ -396,7 +472,10 @@ def dispatch_playwright(state, action):
         return {"scrolled": True}
     if name in ("wait", "sleep"):
         if "ms" in action or "milliseconds" in action:
-            page.wait_for_timeout(as_int(action.get("ms", action.get("milliseconds")), 0, 0, 120_000))
+            delay = as_int(action.get("ms", action.get("milliseconds")), 0, 0, 120_000)
+            if delay >= timeout:
+                raise RunnerFailure("plan_timeout", "requested sleep exceeds the remaining action budget")
+            page.wait_for_timeout(delay)
         if option_value(action, "selector") is not None:
             page.wait_for_selector(str(action["selector"]), state=action.get("state", "visible"), timeout=timeout)
         if option_value(action, "url") is not None:
@@ -418,7 +497,7 @@ def dispatch_playwright(state, action):
     if name in ("content", "page_content"):
         return page.content()
     if name in ("snapshot", "inspect"):
-        return text_snapshot(page, timeout)
+        return text_snapshot(page, timeout, action)
     if name in ("text", "inner_text"):
         return locator_for(page, action).inner_text(timeout=timeout)
     if name in ("inner_html", "html"):
@@ -492,6 +571,8 @@ def dispatch_playwright(state, action):
         page.pdf(**kwargs)
         return {"path": str(path), "bytes": path.stat().st_size}
     if name in ("new_tab", "new_page"):
+        if len(context.pages) >= 4:
+            raise RunnerFailure("tab_limit", "close a tab before opening more than four")
         new_page = context.new_page()
         if new_page not in state["pages"]:
             state["pages"].append(new_page)
@@ -521,7 +602,11 @@ def dispatch_playwright(state, action):
         page.close()
         state["pages"].pop(index)
         state["page"] = state["pages"][max(0, index - 1)]
-        return {"closed": index, "active": state["pages"].index(state["page"])}
+        closed = {"closed": index, "active": state["pages"].index(state["page"])}
+        video = collect_video(page)
+        if video is not None:
+            closed["video"] = video
+        return closed
     if name in ("tabs", "pages"):
         return [{"index": i, "url": candidate.url, "title": candidate.title()} for i, candidate in enumerate(state["pages"])]
     if name in ("cookies", "get_cookies"):
@@ -581,7 +666,119 @@ def dispatch_playwright(state, action):
 
 
 
-def run_playwright(request):
+@contextmanager
+def browser_runtime():
+    # Keep Chromium's shared files off the system /tmp partition.
+    root = Path.cwd() / ".newbee" / "browser" / "tmp"
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The Elixir owner pre-creates a per-session TMPDIR and removes it on
+    # termination (a SIGKILLed worker cannot clean up after itself).
+    session_tmp = os.environ.get("TMPDIR")
+    if session_tmp:
+        try:
+            if Path(session_tmp).parent == root:
+                Path(session_tmp).mkdir(parents=True, exist_ok=True)
+                yield
+                return
+        except OSError:
+            pass
+    previous = session_tmp
+    with tempfile.TemporaryDirectory(prefix="runtime-", dir=root) as directory:
+        os.environ["TMPDIR"] = directory
+        try:
+            yield
+        finally:
+            if previous is None:
+                os.environ.pop("TMPDIR", None)
+            else:
+                os.environ["TMPDIR"] = previous
+
+
+def remaining_timeout(state, action=None):
+    remaining = int((state["deadline"] - time.monotonic()) * 1000)
+    if remaining <= 0:
+        raise RunnerFailure("plan_timeout", "browser plan exhausted its total timeout")
+    requested = action_timeout(action or {}, state["timeout"])
+    return min(requested or remaining, remaining)
+
+
+def execute_playwright(state, request, started, final=False):
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    budget = as_int(request.get("timeout"), DEFAULT_TIMEOUT, 500, 120_000)
+    state["deadline"] = started + budget / 1000
+    state["timeout"] = as_int(request.get("action_timeout"), min(budget, 10_000), 1, 120_000)
+    state["context"].set_default_timeout(state["timeout"])
+    action_started = time.monotonic()
+    results = []
+    actions = action_list(request, "playwright")
+    if request.get("url") and "actions" in request:
+        actions = [{"action": "goto", "url": request["url"], "wait_until": request.get("wait_until", "domcontentloaded")}] + actions
+    for index, action in enumerate(actions):
+        if state["closed"]:
+            break
+        try:
+            results.append({"action": action_name(action), "result": trim_value(dispatch_playwright(state, action))})
+        except RunnerFailure as exc:
+            exc.details.update(action_index=index, completed=results)
+            raise
+        except PlaywrightTimeoutError as exc:
+            raise RunnerFailure("timeout", "browser action timed out; inspect before retrying a write", action_index=index, completed=results, detail=str(exc))
+        except PlaywrightError as exc:
+            raise RunnerFailure("playwright_error", "browser action failed", action_index=index, completed=results, detail=str(exc))
+    if request.get("save_storage"):
+        state["context"].storage_state(path=str(safe_path(request["save_storage"], "storage-state.json")))
+    active = state["page"]
+    url = active.url
+    try:
+        title = active.title()
+    except Exception:
+        title = ""
+    videos = flush_videos(state) if (final or state["closed"]) else []
+    result = {"backend": "playwright", "browser": state["browser_name"], "url": url, "title": title, "results": results, "closed": state["closed"],
+            "timing_ms": {"startup": round((action_started - started) * 1000), "actions": round((time.monotonic() - action_started) * 1000), "total": round((time.monotonic() - started) * 1000)}}
+    if videos:
+        result["videos"] = videos
+    return result
+
+
+def request_line():
+    line = sys.stdin.readline(256 * 1024 + 1)
+    if not line:
+        return None
+    if len(line.encode("utf-8")) > 256 * 1024 or not line.endswith("\n"):
+        raise RunnerFailure("request_too_large", "session request exceeds 256 KiB")
+    request = json.loads(line)
+    if not isinstance(request, dict):
+        raise RunnerFailure("invalid_request", "browser request must be an object")
+    if request.get("backend", "playwright") not in ("playwright", "isolated"):
+        raise RunnerFailure("invalid_backend", "sessions only support isolated Playwright")
+    return request
+
+
+def error_payload(error):
+    return {"ok": False, "error": {"code": error.code, "message": error.message, **error.details}}
+
+
+def serve_playwright(state, initial, started):
+    mutable = {"session", "actions", "url", "timeout", "action_timeout", "idle_timeout", "wait_until", "save_storage"}
+    request = initial
+    while request is not None:
+        try:
+            changed = [key for key in request if key not in mutable and request[key] != initial.get(key)]
+            if changed:
+                raise RunnerFailure("session_options_changed", "launch and context options cannot change in an existing session", fields=changed)
+            emit({"ok": True, "result": execute_playwright(state, request, started)})
+        except RunnerFailure as exc:
+            emit(error_payload(exc))
+        if state["closed"]:
+            return
+        request = request_line()
+        started = time.monotonic()
+
+
+def run_playwright(request, persistent=False):
     try:
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -589,6 +786,7 @@ def run_playwright(request):
     except Exception as exc:
         raise RunnerFailure("missing_playwright", "Python Playwright is not available", detail=str(exc))
 
+    started = time.monotonic()
     browser = None
     context = None
     timeout = as_int(get_value(request, "timeout"), DEFAULT_TIMEOUT, 500, 120_000)
@@ -597,7 +795,7 @@ def run_playwright(request):
         raise RunnerFailure("invalid_browser", "browser must be chromium, firefox, or webkit")
 
     try:
-        with sync_playwright() as playwright:
+        with browser_runtime(), sync_playwright() as playwright:
             browser_type = getattr(playwright, browser_name)
             launch_options = {
                 "headless": as_bool(get_value(request, "headless"), True),
@@ -653,6 +851,12 @@ def run_playwright(request):
                 context_options["extra_http_headers"] = {str(k): str(v) for k, v in request["extra_http_headers"].items()}
             if get_value(request, "storage_state"):
                 context_options["storage_state"] = str(safe_input_path(request["storage_state"]))
+            video_dir = get_value(request, "record_video_dir")
+            if video_dir not in (None, ""):
+                context_options["record_video_dir"] = str(safe_dir(video_dir, "videos"))
+                size = parse_video_size(request)
+                if size is not None:
+                    context_options["record_video_size"] = size
 
             profile = profile_path(request)
             if profile is not None:
@@ -662,7 +866,7 @@ def run_playwright(request):
                 context = browser.new_context(**context_options)
             context.set_default_timeout(timeout)
             context.set_default_navigation_timeout(timeout)
-            page = context.new_page()
+            page = context.pages[0] if context.pages else context.new_page()
             state = {"browser": browser, "browser_name": browser_name, "context": context, "page": page, "pages": [page], "timeout": timeout, "closed": False}
 
             dialog_mode = get_value(request, "dialog")
@@ -677,6 +881,9 @@ def run_playwright(request):
                     dialog.accept()
 
             def track_page(new_page):
+                if len(context.pages) > 4:
+                    new_page.close()
+                    return
                 if new_page not in state["pages"]:
                     state["pages"].append(new_page)
                 if dialog_mode:
@@ -686,49 +893,25 @@ def run_playwright(request):
             if dialog_mode:
                 page.on("dialog", handle_dialog)
 
-            if get_value(request, "url") and "actions" in request:
-                page.goto(str(request["url"]), wait_until=str(get_value(request, "wait_until", "domcontentloaded")), timeout=timeout)
-
-            results = []
-            for index, action in enumerate(action_list(request, "playwright")):
-                if state["closed"]:
-                    break
-                try:
-                    results.append({"action": action_name(action), "result": trim_value(dispatch_playwright(state, action))})
-                except RunnerFailure as exc:
-                    exc.details.setdefault("action_index", index)
-                    raise
-                except PlaywrightTimeoutError as exc:
-                    raise RunnerFailure("timeout", "browser action timed out", action_index=index, detail=str(exc))
-                except PlaywrightError as exc:
-                    raise RunnerFailure("playwright_error", "browser action failed", action_index=index, detail=str(exc))
-            saved = get_value(request, "save_storage")
-            if saved:
-                target = safe_path(saved, "storage-state.json")
-                context.storage_state(path=str(target))
-            active = state["page"]
-            return {"backend": "playwright", "browser": browser_name, "url": active.url, "title": active.title(), "results": results}
+            try:
+                if persistent:
+                    serve_playwright(state, request, started)
+                    return None
+                return execute_playwright(state, request, started, final=True)
+            finally:
+                context.close()
+                if browser is not None:
+                    browser.close()
     except RunnerFailure:
         raise
     except PlaywrightTimeoutError as exc:
         raise RunnerFailure("browser_launch_timeout", "browser launch or action timed out", detail=str(exc))
     except PlaywrightError as exc:
-        raise RunnerFailure("browser_launch_failed", "Playwright could not start the browser", detail=str(exc))
+        raise RunnerFailure("browser_launch_failed", "Playwright browser failed", detail=str(exc))
     except FileNotFoundError as exc:
         raise RunnerFailure("browser_runtime_missing", "browser executable or helper file is missing", detail=str(exc))
     except Exception as exc:
         raise RunnerFailure("browser_failed", "browser automation failed", detail=str(exc))
-    finally:
-        if context is not None:
-            try:
-                context.close()
-            except Exception:
-                pass
-        elif browser is not None:
-            try:
-                browser.close()
-            except Exception:
-                pass
 
 
 SCREEN_KEY_ALIASES = {
@@ -1007,11 +1190,25 @@ def run_request(request):
 
 
 def emit(payload, exit_code=0):
-    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), flush=True)
     return exit_code
 
 
 def main():
+    if sys.argv[1:] == ["--serve"]:
+        if os.name == "posix":
+            if os.getpgrp() != os.getpid():
+                os.setsid()
+            signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        try:
+            request = request_line()
+            if request is not None:
+                run_playwright(request, persistent=True)
+            return 0
+        except RunnerFailure as exc:
+            return emit(error_payload(exc), 2)
+        except Exception as exc:
+            return emit({"ok": False, "error": {"code": "runner_failed", "message": str(exc)}}, 2)
     if len(sys.argv) != 2:
         return emit({"ok": False, "error": {"code": "invalid_arguments", "message": "expected one base64 JSON request"}}, 2)
     try:
@@ -1030,3 +1227,6 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+

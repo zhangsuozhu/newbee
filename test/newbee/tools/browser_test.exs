@@ -24,4 +24,58 @@ defmodule Newbee.Tools.BrowserTest do
 
     assert hint =~ "JSON"
   end
+
+  test "session and per-action budgets are validated before launching anything" do
+    assert {:error, %{reason: :invalid_session}} = Browser.run(%{session: true})
+    assert {:error, %{reason: :invalid_session}} = Browser.run(%{session: "new", backend: "screen"})
+    assert {:error, %{reason: :invalid_action_timeout}} = Browser.run(%{action_timeout: 0})
+    assert {:error, %{reason: :invalid_action_timeout}} = Browser.run(%{action_timeout: "1000"})
+  end
+
+  test "sessions reject absent identity, foreign roots, and expired handles" do
+    assert {:error, %{reason: :invalid_context}} = Browser.run(%{session: "new"})
+    root = File.cwd!()
+    :ok = Newbee.Collaboration.Capability.register(self(), "browser-contract", root)
+    {:ok, token} = Newbee.Collaboration.Capability.issue(self())
+    Process.put({Newbee.Tools.Media, :capability}, token)
+    assert {:error, %{reason: :session_expired}} = Browser.run(%{session: "expired-handle"})
+
+    assert {:error, %{reason: :invalid_context}} =
+             Newbee.Browser.run(token, Path.join(root, "other"), %{"session" => "new"})
+  end
+
+  test "global worker count is bounded before starting another browser" do
+    root = File.cwd!()
+    :ok = Newbee.Collaboration.Capability.register(self(), "browser-limit", root)
+    {:ok, token} = Newbee.Collaboration.Capability.issue(self())
+    Process.put({Newbee.Tools.Media, :capability}, token)
+
+    pids =
+      for _ <- 1..4 do
+        {:ok, pid} =
+          DynamicSupervisor.start_child(
+            Newbee.Browser.Sessions,
+            {Newbee.Browser.Session, [root: root, runner: Path.expand("test/fixtures/browser_session.py")]}
+          )
+
+        pid
+      end
+
+    try do
+      assert {:error, %{reason: :session_limit}} = Browser.run(%{session: "new"})
+    after
+      Enum.each(pids, &DynamicSupervisor.terminate_child(Newbee.Browser.Sessions, &1))
+    end
+  end
+
+  test "idle_timeout is validated before launching anything" do
+    assert {:error, %{reason: :invalid_idle_timeout}} =
+             Browser.run(%{session: "new", idle_timeout: 5_000})
+
+    assert {:error, %{reason: :invalid_idle_timeout}} =
+             Browser.run(%{session: "new", idle_timeout: 3_600_000})
+
+    assert {:error, %{reason: :invalid_idle_timeout}} =
+             Browser.run(%{session: "new", idle_timeout: "60000"})
+  end
 end
