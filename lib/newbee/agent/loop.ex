@@ -1947,7 +1947,7 @@ defmodule Newbee.Agent.Loop do
 
   defp emit(state, event) do
     # TUI/Web/指标等观察者不属于回合核心；观察者异常只能丢事件，不能杀掉 Loop。
-    safe_render(state.render, event)
+    safe_render(state.render, event, state)
 
     if Process.whereis(Newbee.Bus) do
       # §4.6：durable topic（turn/*、tool/*、usage、progress、rule_hit …）经
@@ -1957,14 +1957,55 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
-  defp safe_render(render, event) do
-    render.(event)
+  defp safe_render(render, event, state) do
+    dispatch_render(render, event)
   rescue
-    e -> Newbee.DebugLog.log(:event, "observer failed event=#{inspect(event, limit: 3)} error=#{Exception.message(e)}")
+    e ->
+      case fallback_web_render(render, state, event) do
+        :ok ->
+          :ok
+
+        :error ->
+          Newbee.DebugLog.log(
+            :event,
+            "observer failed event=#{inspect(event, limit: 3)} error=#{Exception.message(e)}"
+          )
+      end
   catch
     kind, reason ->
-      Newbee.DebugLog.log(:event, "observer failed event=#{inspect(event, limit: 3)} #{kind}=#{inspect(reason)}")
+      case fallback_web_render(render, state, event) do
+        :ok ->
+          :ok
+
+        :error ->
+          Newbee.DebugLog.log(
+            :event,
+            "observer failed event=#{inspect(event, limit: 3)} #{kind}=#{inspect(reason)}"
+          )
+      end
   end
+
+  defp dispatch_render({:web_session, sid}, event),
+    do: Newbee.Web.Session.render_event(sid, event)
+
+  defp dispatch_render(render, event) when is_function(render, 1), do: render.(event)
+  defp dispatch_render(_, _event), do: :ok
+
+  # Existing kernels may still hold a purged anonymous Web.Session closure.
+  # Route those events through the current module so the session recovers in place.
+  defp fallback_web_render(render, %{session: %{id: sid}}, event)
+       when is_function(render, 1) and is_binary(sid) do
+    try do
+      Newbee.Web.Session.render_event(sid, event)
+      :ok
+    rescue
+      _ -> :error
+    catch
+      _, _ -> :error
+    end
+  end
+
+  defp fallback_web_render(_render, _state, _event), do: :error
 
   defp safe_event_emit(topic, event) do
     Newbee.Events.emit(topic, event)

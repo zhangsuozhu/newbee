@@ -841,22 +841,6 @@ defmodule Newbee.Web.Session do
     {evaluator, owned?} =
       Newbee.Environment.Boot.session_evaluator(session_id: sid_opt, cwd: cwd, link: true)
 
-    render = fn event ->
-      kind = elem(event, 0)
-
-      payload =
-        encode_event(event)
-        |> maybe_add_event_context(kind, sid)
-
-      broadcast(sid, kind, payload)
-
-      if kind == :permission_ask do
-        Newbee.Collaboration.Coordinator.permission_request(sid, payload[:preview] || "")
-      end
-
-      if kind == :usage, do: GenServer.cast(reg_name(sid), {:usage_snap, elem(event, 1)})
-    end
-
     case Newbee.Agent.Loop.start_link(
            client: client,
            evaluator: evaluator,
@@ -865,7 +849,9 @@ defmodule Newbee.Web.Session do
            session_id: sid_opt,
            root: cwd,
            auto_antibodies: true,
-           render: render
+           # Keep the callback reload-safe: an anonymous function compiled in
+           # this module becomes invalid when HotReloader purges old code.
+           render: {:web_session, sid}
          ) do
       {:ok, kernel} ->
         # evaluator 由临时 boot worker 通过 start_link 创建。kernel 已成功注册
@@ -2412,6 +2398,24 @@ defmodule Newbee.Web.Session do
       p ->
         p
     end
+  end
+
+  @doc false
+  def render_event(sid, event) when is_binary(sid) and is_tuple(event) do
+    kind = elem(event, 0)
+
+    payload =
+      encode_event(event)
+      |> maybe_add_event_context(kind, sid)
+
+    broadcast(sid, kind, payload)
+
+    if kind == :permission_ask do
+      Newbee.Collaboration.Coordinator.permission_request(sid, payload[:preview] || "")
+    end
+
+    if kind == :usage, do: GenServer.cast(reg_name(sid), {:usage_snap, elem(event, 1)})
+    :ok
   end
 
   defp broadcast_turn_end(sid, result) do
