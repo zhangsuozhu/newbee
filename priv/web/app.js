@@ -2345,12 +2345,16 @@ case "goal_round": break;
     }
     if (state.sid && !ids.includes(state.sid)) ids.unshift(state.sid);
     state.pendingGroupMembers = ids;
+    state.pendingGroupCommandId = `group-create-${Date.now()}-${Math.floor(Math.random() * 65535)}`;
+    state.pendingGroupId = `grp-web-${Date.now()}-${Math.floor(Math.random() * 65535).toString(16)}`;
+    state.pendingGroupResult = null;
     $("group-name-input").value = "";
     $("group-goal-input").value = "";
     $("group-member-chips").innerHTML = ids.map((id) => `<span>${escapeHtml(sessionDisplayName(id))}</span>`).join("");
     $("group-modal").classList.remove("hidden");
     window.setTimeout(() => $("group-name-input").focus(), 0);
   }
+
 
   async function createGroup() {
     if (!state.sid) return;
@@ -2361,21 +2365,46 @@ case "goal_round": break;
     const button = $("group-modal-confirm");
     button.disabled = true;
     try {
-      const group = await rpc("group.create", { sessionId: state.sid, title, goal, commandId: `group-create-${Date.now()}` });
-      for (const sid of ids.filter((id) => id !== state.sid)) {
-        await rpc("group.member.add", { groupId: group.group_id, actorSessionId: state.sid, parentSessionId: state.sid, sessionId: sid, role: "worker", commandId: `group-add-${group.group_id}-${sid}` });
+      if (!state.pendingGroupCommandId) state.pendingGroupCommandId = `group-create-${Date.now()}-${Math.floor(Math.random() * 65535)}`;
+      if (!state.pendingGroupId) state.pendingGroupId = `grp-web-${Date.now()}-${Math.floor(Math.random() * 65535).toString(16)}`;
+      let group = state.pendingGroupResult || null;
+      if (!group) {
+        try {
+          group = await rpc("group.create", { sessionId: state.sid, title, goal, groupId: state.pendingGroupId, commandId: state.pendingGroupCommandId });
+        } catch (e) {
+          const msg = (e && e.message) || "";
+          if (/已处理|duplicate/i.test(msg)) {
+            const groups = await rpc("group.list", { sessionId: state.sid });
+            group = (groups || []).find((g) => g.group_id === state.pendingGroupId) || null;
+            if (!group) throw e;
+          } else throw e;
+        }
+        state.pendingGroupResult = group;
       }
+      for (const sid of ids.filter((id) => id !== state.sid)) {
+        try {
+          await rpc("group.member.add", { groupId: group.group_id, actorSessionId: state.sid, parentSessionId: state.sid, sessionId: sid, role: "worker", commandId: `group-add-${group.group_id}-${sid}` });
+        } catch (e) {
+          const msg = (e && e.message) || "";
+          if (/已在群中|already_member|已处理|duplicate/i.test(msg)) continue;
+          throw e;
+        }
+      }
+      state.pendingGroupCommandId = null;
+      state.pendingGroupId = null;
+      state.pendingGroupResult = null;
       state.selectedSessions.clear();
       $("group-modal").classList.add("hidden");
       await Promise.all([loadSessions(), loadGroups()]);
       switchMCTab("collaboration");
       setMCOpen(true);
     } catch (e) {
-      line("error", "组成工作组失败: " + e.message);
+      line("error", "组成工作组失败: " + e.message + "（已保留本次建组进度，重试不会重复建组）");
     } finally {
       button.disabled = false;
     }
   }
+
 
   function openDelegateModal() {
     const ref = currentGroupRef();
