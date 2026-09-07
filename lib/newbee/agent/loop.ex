@@ -48,6 +48,10 @@ defmodule Newbee.Agent.Loop do
 
   @doc "提交一段用户输入，同步执行整个 turn，返回 {:done, summary} | {:ask, q} | {:text, body} | {:error, e}"
   def submit(kernel, text), do: GenServer.call(kernel, {:submit, text}, :infinity)
+  @doc "异步追加外部上下文；不触发新的模型 turn，但会进入当前 Loop 与 transcript。"
+  def append_external_context(kernel, text) when is_binary(text),
+    do: GenServer.cast(kernel, {:external_context, text})
+
   @doc "提交多张 data URL 图片 + 文本给视觉模型分析（WebUI 多模态入口）。"
   def submit_images(kernel, data_urls, text \\ ""),
     do: GenServer.call(kernel, {:submit_images, data_urls, text}, :infinity)
@@ -300,6 +304,15 @@ defmodule Newbee.Agent.Loop do
        auto_compact: Keyword.get(opts, :auto_compact, true),
        root: root
      }}
+  end
+
+  @impl true
+  def handle_cast({:external_context, content}, state) when is_binary(content) do
+    if String.trim(content) == "" do
+      {:noreply, state}
+    else
+      {:noreply, push_msg(state, %{"role" => "user", "content" => content})}
+    end
   end
 
   @impl true

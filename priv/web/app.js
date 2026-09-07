@@ -247,6 +247,8 @@ const flow = $("flow");
     sid: localStorage.getItem("newbee.sid") || null,
     token: localStorage.getItem("newbee.token") || null,
     ws: null,
+    terminal: { open: false, connected: false, pty: false, resize: false, minimized: false, cwd: "", history: [], historyIndex: -1, term: null, resizeObserver: null, fullscreenFallback: false },
+
     busy: false,
     interrupted: false,
     turnKind: null,
@@ -391,19 +393,534 @@ const flow = $("flow");
         if (boundSid !== state.sid) return; // 连接建立后用户已切到别的会话
         onEvent(frame.kind, frame.payload || {});
       }
+      else if (frame.type === "terminal") {
+        if (boundSid !== state.sid) return;
+        onTerminalFrame(frame);
+      }
+
       else if (frame.type === "system") pushEvoEvent(frame.topic, frame.payload);
       else if (frame.type === "group_event") onGroupEvent(frame);
     };
     ws.onopen = () => {
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
       line("notice", "✓ 已连接");
+      if (state.terminal.open) terminalRequestOpen();
+
     };
     ws.onclose = () => {
       if (ws !== state.ws) return; // 过期连接不重连
       if (state.ws === ws) state.ws = null;
       line("notice", "⚠ 连接断开，正在重连…");
+      if (state.terminal.open) {
+        state.terminal.connected = false;
+        terminalSetInterruptEnabled(false);
+        terminalStatus("等待连接");
+      }
+
       reconnectTimer = setTimeout(connect, 1500);
     };
+  }
+
+  // ── 终端 ──
+  function terminalStatus(text) {
+    const el = $("terminal-status");
+    if (el) el.textContent = text || "";
+  }
+
+  function terminalSetInterruptEnabled(enabled) {
+    const button = $("terminal-interrupt");
+    if (button) button.disabled = !enabled;
+  }
+
+  function terminalSend(frame) {
+    if (state.ws && state.ws.readyState === 1) {
+      state.ws.send(JSON.stringify(frame));
+      return true;
+    }
+    return false;
+  }
+
+  function terminalTheme() {
+    const light = document.documentElement.dataset.theme === "light";
+    return light
+      ? {
+          background: "#f6f8fa",
+          foreground: "#1f2328",
+          cursor: "#0969da",
+          cursorAccent: "#f6f8fa",
+          selectionBackground: "rgba(9, 105, 218, 0.24)",
+          black: "#24292f",
+          red: "#cf222e",
+          green: "#116329",
+          yellow: "#4d2d00",
+          blue: "#0969da",
+          magenta: "#8250df",
+          cyan: "#1b7c83",
+          white: "#6e7781",
+          brightBlack: "#57606a",
+          brightRed: "#a40e26",
+          brightGreen: "#1a7f37",
+          brightYellow: "#633c01",
+          brightBlue: "#218bff",
+          brightMagenta: "#a475f9",
+          brightCyan: "#3192aa",
+          brightWhite: "#8c959f"
+        }
+      : {
+          background: "#0b0e12",
+          foreground: "#e6edf3",
+          cursor: "#58a6ff",
+          cursorAccent: "#0b0e12",
+          selectionBackground: "rgba(88, 166, 255, 0.28)",
+          black: "#0b0e12",
+          red: "#ff7b72",
+          green: "#7ee787",
+          yellow: "#d29922",
+          blue: "#79c0ff",
+          magenta: "#d2a8ff",
+          cyan: "#56d4dd",
+          white: "#b1bac4",
+          brightBlack: "#6e7681",
+          brightRed: "#ffa198",
+          brightGreen: "#a5d6ff",
+          brightYellow: "#e3b341",
+          brightBlue: "#a5d6ff",
+          brightMagenta: "#d2a8ff",
+          brightCyan: "#a5d6ff",
+          brightWhite: "#f0f6fc"
+        };
+  }
+
+  function terminalFit() {
+    const screen = $("terminal-screen");
+    const term = state.terminal.term;
+    if (!screen || !term || !screen.clientWidth || !screen.clientHeight) return;
+    if (term.element) {
+      term.element.style.width = "100%";
+      term.element.style.height = "100%";
+    }
+
+    const screenStyle = window.getComputedStyle(screen);
+    const xtermStyle = term.element ? window.getComputedStyle(term.element) : screenStyle;
+    const measure = term.element && term.element.querySelector(".xterm-char-measure-element");
+    const measured = measure ? measure.getBoundingClientRect() : { width: 0, height: 0 };
+    let cellWidth = measured.width;
+    let cellHeight = measured.height;
+    const fontSize = parseFloat(xtermStyle.fontSize) || Number(term.options.fontSize) || 13;
+
+    // Some layouts report the hidden xterm measuring span with the container width.
+    // Fall back to a canvas glyph measurement so the terminal cannot collapse to a few columns.
+    if (!(cellWidth > 0 && cellWidth < 50)) {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      if (context) {
+        context.font = `${fontSize}px ${xtermStyle.fontFamily || "monospace"}`;
+        cellWidth = context.measureText("W").width;
+      }
+    }
+    if (!(cellHeight > 0 && cellHeight < 100)) {
+      cellHeight = fontSize * (Number(term.options.lineHeight) || 1);
+    }
+    if (!(cellWidth > 0 && cellHeight > 0)) return;
+
+    const paddingX = (parseFloat(screenStyle.paddingLeft) || 0) + (parseFloat(screenStyle.paddingRight) || 0);
+    const paddingY = (parseFloat(screenStyle.paddingTop) || 0) + (parseFloat(screenStyle.paddingBottom) || 0);
+    const cols = Math.max(2, Math.floor(Math.max(1, screen.clientWidth - paddingX) / cellWidth));
+    const rows = Math.max(2, Math.floor(Math.max(1, screen.clientHeight - paddingY) / cellHeight));
+
+    if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+  }
+
+
+  function terminalSendResize() {
+    const term = state.terminal.term;
+    if (!term || !state.terminal.connected || !state.terminal.resize) return;
+    terminalSend({ type: "terminal_resize", cols: term.cols, rows: term.rows });
+  }
+
+  function terminalEnsureEmulator() {
+    const screen = $("terminal-screen");
+    const fallback = $("terminal-fallback");
+    if (!screen) return false;
+    if (state.terminal.term) return true;
+
+    if (typeof window.Terminal !== "function") {
+      screen.classList.add("hidden");
+      if (fallback) fallback.classList.remove("hidden");
+      return false;
+    }
+
+    try {
+      const term = new window.Terminal({
+        cursorBlink: true,
+        convertEol: false,
+        scrollback: 10000,
+        tabStopWidth: 8,
+        fontSize: 13,
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
+        theme: terminalTheme(),
+        allowTransparency: false,
+        macOptionIsMeta: true,
+        scrollOnUserInput: true
+      });
+      term.open(screen);
+      state.terminal.term = term;
+      screen.classList.remove("hidden");
+      if (fallback) fallback.classList.add("hidden");
+
+      term.onData((data) => {
+        if (state.terminal.open && state.terminal.connected) terminalSend({ type: "terminal_input", data });
+      });
+      term.onResize(({ cols, rows }) => {
+        if (state.terminal.connected && state.terminal.resize) {
+          terminalSend({ type: "terminal_resize", cols, rows });
+        }
+      });
+      if (window.ResizeObserver) {
+        state.terminal.resizeObserver = new ResizeObserver(() => window.requestAnimationFrame(terminalFit));
+        state.terminal.resizeObserver.observe(screen);
+      }
+      window.requestAnimationFrame(terminalFit);
+      return true;
+    } catch (error) {
+      console.error("xterm 初始化失败", error);
+      state.terminal.term = null;
+      screen.classList.add("hidden");
+      if (fallback) fallback.classList.remove("hidden");
+      return false;
+    }
+  }
+
+  function terminalRequestOpen() {
+    if (!state.terminal.open) return false;
+    if (!terminalSend({ type: "terminal_open" })) {
+      state.terminal.connected = false;
+      state.terminal.resize = false;
+      terminalStatus("等待连接");
+      return false;
+    }
+    state.terminal.connected = false;
+    state.terminal.pty = false;
+    state.terminal.resize = false;
+    if (state.terminal.term) state.terminal.term.reset();
+    terminalSetInterruptEnabled(false);
+    terminalStatus("启动中");
+    return true;
+  }
+
+  function terminalFullscreenActive() {
+    const panel = $("terminal-panel");
+    return !!panel && (document.fullscreenElement === panel || panel.classList.contains("is-maximized"));
+  }
+
+  function terminalUpdateFullscreenButton() {
+    const button = $("terminal-fullscreen");
+    if (!button) return;
+    const active = terminalFullscreenActive();
+    const title = active ? "退出全屏" : "全屏终端";
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    button.setAttribute("aria-label", title);
+    button.title = title;
+  }
+
+  function terminalFallbackFullscreen(active) {
+    const panel = $("terminal-panel");
+    if (!panel) return;
+    state.terminal.fullscreenFallback = active;
+    panel.classList.toggle("is-maximized", active);
+    terminalUpdateFullscreenButton();
+    window.requestAnimationFrame(terminalFit);
+  }
+
+  function terminalUpdateMinimizeButton() {
+    const button = $("terminal-minimize");
+    if (!button) return;
+    const title = state.terminal.minimized ? "还原终端" : "最小化终端";
+    button.classList.toggle("is-active", state.terminal.minimized);
+    button.setAttribute("aria-pressed", state.terminal.minimized ? "true" : "false");
+    button.setAttribute("aria-label", title);
+    button.title = title;
+  }
+
+  function terminalSetMinimized(minimized) {
+    const panel = $("terminal-panel");
+    if (!panel) return;
+    state.terminal.minimized = minimized;
+    panel.classList.toggle("is-minimized", minimized);
+    terminalUpdateMinimizeButton();
+    if (minimized) {
+      if (state.terminal.term) state.terminal.term.blur();
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      terminalFit();
+      if (state.terminal.open && state.terminal.term) state.terminal.term.focus();
+    });
+  }
+
+  function toggleTerminalMinimize() {
+    terminalSetMinimized(!state.terminal.minimized);
+  }
+
+
+  function toggleTerminalFullscreen() {
+    const panel = $("terminal-panel");
+    if (!panel) return;
+    if (document.fullscreenElement === panel) {
+      const result = document.exitFullscreen && document.exitFullscreen();
+      if (result && result.catch) result.catch(() => terminalFallbackFullscreen(false));
+      return;
+    }
+    if (panel.classList.contains("is-maximized")) {
+      terminalFallbackFullscreen(false);
+      return;
+    }
+    if (state.terminal.minimized) terminalSetMinimized(false);
+
+    if (typeof panel.requestFullscreen === "function") {
+      const result = panel.requestFullscreen();
+      if (result && result.catch) result.catch(() => terminalFallbackFullscreen(true));
+    } else {
+      terminalFallbackFullscreen(true);
+    }
+  }
+
+  function setTerminalPanel(open) {
+    const panel = $("terminal-panel");
+    const toggle = $("terminal-toggle");
+    if (!panel || !toggle) return;
+
+    state.terminal.open = open;
+    panel.classList.toggle("hidden", !open);
+    toggle.classList.toggle("is-active", open);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.title = open ? "关闭终端" : "打开终端";
+    toggle.setAttribute("aria-label", toggle.title);
+    if (open) terminalSetMinimized(false);
+
+
+    if (open) {
+      terminalEnsureEmulator();
+      terminalSetInterruptEnabled(false);
+      terminalStatus(state.ws && state.ws.readyState === 1 ? "连接中" : "等待连接");
+      if (state.ws && state.ws.readyState === 1) terminalRequestOpen();
+      window.requestAnimationFrame(() => {
+        terminalFit();
+        if (state.terminal.term) state.terminal.term.focus();
+        else {
+          const inputEl = $("terminal-input");
+          if (inputEl) {
+            terminalResizeInput();
+            inputEl.focus();
+          }
+        }
+      });
+    } else if (state.terminal.term) {
+      state.terminal.term.blur();
+    }
+  }
+
+  function closeTerminal(sendFrame) {
+    const panel = $("terminal-panel");
+    if (sendFrame !== false) terminalSend({ type: "terminal_close" });
+    if (document.fullscreenElement === panel && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+    terminalFallbackFullscreen(false);
+    state.terminal.connected = false;
+    state.terminal.pty = false;
+    state.terminal.resize = false;
+    state.terminal.minimized = false;
+    if (panel) panel.classList.remove("is-minimized");
+    terminalUpdateMinimizeButton();
+
+    terminalSetInterruptEnabled(false);
+    state.terminal.cwd = "";
+    state.terminal.history = [];
+    state.terminal.historyIndex = -1;
+    if (state.terminal.term) {
+      state.terminal.term.reset();
+      state.terminal.term.blur();
+    }
+    setTerminalPanel(false);
+    const output = $("terminal-output");
+    const inputEl = $("terminal-input");
+    const cwd = $("terminal-cwd");
+    if (output) output.textContent = "";
+    if (inputEl) inputEl.value = "";
+    if (cwd) cwd.textContent = "";
+    terminalStatus("未连接");
+  }
+
+  function toggleTerminal() {
+    if (state.terminal.open) closeTerminal(true);
+    else setTerminalPanel(true);
+  }
+
+  function terminalInterrupt() {
+    if (!state.terminal.connected) return;
+    if (!terminalSend({ type: "terminal_interrupt" })) return;
+    if (!state.terminal.pty) terminalAppend("^C\n");
+  }
+
+  function terminalDisplayText(text) {
+    return String(text)
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n");
+  }
+
+  function terminalAppend(text) {
+    if (!text) return;
+    if (state.terminal.term) {
+      state.terminal.term.write(String(text));
+      return;
+    }
+    const output = $("terminal-output");
+    if (!output) return;
+    const limit = 500000;
+    const next = (output.textContent || "") + terminalDisplayText(text);
+    output.textContent = next.length > limit
+      ? "[输出过长，已保留末尾]\n" + next.slice(-limit)
+      : next;
+    output.scrollTop = output.scrollHeight;
+  }
+
+  function terminalDecode(frame) {
+    if (frame.encoding !== "base64") return typeof frame.data === "string" ? frame.data : "";
+    try {
+      const raw = atob(frame.data || "");
+      const bytes = Uint8Array.from(raw, (char) => char.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    } catch (e) {
+      return "[无法显示二进制输出]\n";
+    }
+  }
+
+  function onTerminalFrame(frame) {
+    if (!state.terminal.open) return;
+    if (frame.event === "ready") {
+      state.terminal.connected = true;
+      state.terminal.pty = frame.pty === true;
+      state.terminal.resize = frame.resize === true;
+      terminalSetInterruptEnabled(true);
+      state.terminal.cwd = frame.cwd || "";
+      const cwd = $("terminal-cwd");
+      if (cwd) {
+        cwd.textContent = state.terminal.cwd;
+        cwd.title = state.terminal.cwd;
+      }
+      terminalStatus("就绪");
+      window.requestAnimationFrame(() => {
+        terminalFit();
+        terminalSendResize();
+        if (state.terminal.term) state.terminal.term.focus();
+      });
+    } else if (frame.event === "output") {
+      terminalAppend(terminalDecode(frame));
+    } else if (frame.event === "error") {
+      terminalAppend("\n[终端错误] " + (frame.message || "未知错误") + "\n");
+      terminalStatus(state.terminal.connected ? "就绪" : "不可用");
+      terminalSetInterruptEnabled(state.terminal.connected);
+    } else if (frame.event === "exit") {
+      state.terminal.connected = false;
+      state.terminal.resize = false;
+      terminalSetInterruptEnabled(false);
+      terminalStatus("已退出");
+      terminalAppend("\n[终端进程已退出]\n");
+    }
+  }
+
+  function terminalResizeInput() {
+    const inputEl = $("terminal-input");
+    if (!inputEl) return;
+    inputEl.style.height = "auto";
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + "px";
+  }
+
+  function terminalSubmit() {
+    const inputEl = $("terminal-input");
+    if (!inputEl) return;
+    const command = inputEl.value;
+    if (!command.trim()) return;
+    if (!state.terminal.connected || !terminalSend({ type: "terminal_input", data: command + "\n" })) {
+      terminalAppend("[终端未连接]\n");
+      terminalStatus("等待连接");
+      return;
+    }
+
+    state.terminal.history = [...state.terminal.history, command].slice(-100);
+    state.terminal.historyIndex = -1;
+    if (!state.terminal.pty) terminalAppend("$ " + command + "\n");
+    inputEl.value = "";
+    terminalResizeInput();
+  }
+
+  function terminalHistoryMove(direction) {
+    const inputEl = $("terminal-input");
+    if (!inputEl) return;
+    const history = state.terminal.history;
+    if (!history.length) return;
+    let index = state.terminal.historyIndex;
+    if (index < 0) index = direction < 0 ? history.length : 0;
+    else index += direction;
+    index = Math.max(0, Math.min(history.length, index));
+    state.terminal.historyIndex = index;
+    inputEl.value = index === history.length ? "" : history[index];
+    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+    terminalResizeInput();
+  }
+
+  function initTerminal() {
+    const toggle = $("terminal-toggle");
+    if (!toggle || toggle.dataset.bound === "1") return;
+    toggle.dataset.bound = "1";
+    toggle.addEventListener("click", toggleTerminal);
+    $("terminal-interrupt").addEventListener("click", terminalInterrupt);
+    const minimize = $("terminal-minimize");
+    if (minimize) minimize.addEventListener("click", toggleTerminalMinimize);
+
+    const fullscreen = $("terminal-fullscreen");
+    if (fullscreen) fullscreen.addEventListener("click", toggleTerminalFullscreen);
+    terminalSetInterruptEnabled(false);
+    terminalUpdateFullscreenButton();
+    terminalUpdateMinimizeButton();
+
+    $("terminal-close").addEventListener("click", () => closeTerminal(true));
+    $("terminal-clear").addEventListener("click", () => {
+      if (state.terminal.term) state.terminal.term.clear();
+      const output = $("terminal-output");
+      if (output) output.textContent = "";
+    });
+    const form = $("terminal-form");
+    if (form) form.addEventListener("submit", (e) => { e.preventDefault(); terminalSubmit(); });
+    const inputEl = $("terminal-input");
+    if (inputEl) {
+      inputEl.addEventListener("input", terminalResizeInput);
+      inputEl.addEventListener("keydown", (e) => {
+        if (e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "c" &&
+            inputEl.selectionStart === inputEl.selectionEnd) {
+          e.preventDefault();
+          terminalInterrupt();
+          return;
+        }
+
+        if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          terminalSubmit();
+        } else if (e.key === "ArrowUp" && !e.shiftKey && inputEl.selectionStart === 0) {
+          e.preventDefault();
+          terminalHistoryMove(-1);
+        } else if (e.key === "ArrowDown" && !e.shiftKey && inputEl.selectionEnd === inputEl.value.length) {
+          e.preventDefault();
+          terminalHistoryMove(1);
+        }
+      });
+    }
+    const output = $("terminal-output");
+    if (output) output.addEventListener("click", () => $("terminal-input").focus());
+    document.addEventListener("fullscreenchange", terminalUpdateFullscreenButton);
+    terminalEnsureEmulator();
   }
 
   // 耗时统计（对齐 TUI）：LLM 段 / 工具段 / 首 token / 速率
@@ -2687,6 +3204,7 @@ case "goal_round": break;
     const stale = () => seq !== resumeSeq || state.sid !== sid;
     exitGroupMode();
     if (state.sid && state.sid !== sid) discardAttachments(state.sid);
+    if (state.sid && state.sid !== sid) closeTerminal(true);
 
     state.sid = sid;
     groupLoadSeq++;
@@ -2781,6 +3299,7 @@ case "goal_round": break;
   // RPC/求值器 boot 在后台完成；不再让用户点完干等 1-3s。
   function prepareNewSessionUI(cwd, sid) {
     if (state.sid && state.sid !== sid) discardAttachments(state.sid);
+    if (state.sid && state.sid !== sid) closeTerminal(true);
 
     // 新建会话：不恢复任何草稿（避免旧会话残留文字串台）
     try { localStorage.removeItem("newbee.draft." + sid); } catch (e) {}
@@ -5866,7 +6385,7 @@ case "goal_round": break;
   function initGlobalKeys() {
     document.addEventListener("keydown", (e) => {
       // 不在输入框中时的快捷键
-      const inInput = document.activeElement === $("input") || document.activeElement === $("cmd-input");
+      const inInput = document.activeElement === $("input") || document.activeElement === $("cmd-input") || document.activeElement === $("terminal-input");
       const mod = e.ctrlKey || e.metaKey;
 
       // Escape: 中断（全局）
@@ -6597,6 +7116,7 @@ case "goal_round": break;
     initEvolution();
     initMissionControl();
     initCmdPalette();
+    initTerminal();
     initGlobalKeys();
     initAtComplete();
     initGroups();

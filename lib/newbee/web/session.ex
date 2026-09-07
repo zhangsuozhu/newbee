@@ -119,6 +119,8 @@ defmodule Newbee.Web.Session do
 
   @doc "销毁会话：停 web 会话进程（如活着）+ 删除底层存储（transcript/artifacts/索引）。"
   def destroy(sid) when is_binary(sid) do
+    Newbee.Web.Terminal.close(sid)
+
     case lookup(sid) do
       {:ok, pid} ->
         if Process.alive?(pid), do: GenServer.stop(pid, :normal, 20_000)
@@ -133,6 +135,8 @@ defmodule Newbee.Web.Session do
 
   @doc "停止会话运行时并迁回指定项目根；保留 transcript、制品和会话索引。"
   def archive_runtime(sid, fallback_cwd) when is_binary(sid) and is_binary(fallback_cwd) do
+    Newbee.Web.Terminal.close(sid)
+
     case lookup(sid) do
       {:ok, pid} ->
         if Process.alive?(pid), do: GenServer.stop(pid, :normal, 20_000)
@@ -173,6 +177,20 @@ defmodule Newbee.Web.Session do
   end
 
   def prompt(pid, text, _queue_id), do: GenServer.cast(pid, {:prompt, text})
+
+  @doc "追加手动终端上下文到当前 Agent Loop；内核未就绪时直接持久化，供后续恢复。"
+  def append_terminal_context(sid, content) when is_binary(sid) and is_binary(content) do
+    case lookup(sid) do
+      {:ok, pid} ->
+        GenServer.cast(pid, {:terminal_context, content})
+        :ok
+
+      _ ->
+        persist_terminal_context(sid, content)
+        :ok
+    end
+  end
+
   @doc "异步提交多模态输入（多张 data URL 图片 + 文本）。"
   def prompt_images(pid, data_urls, text),
     do: GenServer.cast(pid, {:prompt_images, data_urls, text})
@@ -1180,12 +1198,18 @@ defmodule Newbee.Web.Session do
     end
   end
 
+  @impl true
+  def handle_cast({:terminal_context, content}, st) when is_binary(content) do
+    {:noreply, append_terminal_context_to_kernel(st, content)}
+  end
+
   def handle_call({:set_cwd, _cwd}, _from, %{busy: true} = st) do
     {:reply, {:error, :session_busy}, st}
   end
 
   def handle_call({:set_cwd, cwd}, _from, st) when is_binary(cwd) do
     with {:ok, expanded} <- Newbee.Web.Workspace.valid_dir?(cwd),
+         :ok <- Newbee.Web.Terminal.close(st.sid),
          :ok <- set_kernel_cwd(st, expanded) do
       {:reply, {:ok, expanded}, st}
     else
@@ -1361,6 +1385,15 @@ defmodule Newbee.Web.Session do
 
       broadcast(st.sid, :effort_changed, %{effort: effort, applied: true})
       {:reply, {:ok, %{applied: true}}, %{st | client: client}}
+    end
+  end
+
+  defp set_kernel_cwd(%{kernel: nil, sid: sid}, cwd), do: Newbee.Session.set_cwd(sid, cwd)
+
+  defp set_kernel_cwd(%{kernel: kernel}, cwd) do
+    case Newbee.Agent.Loop.set_root(kernel, cwd) do
+      {:ok, _root} -> :ok
+      {:error, _} = error -> error
     end
   end
 
@@ -2150,6 +2183,7 @@ defmodule Newbee.Web.Session do
   # 其余走 do_submit 提交给 LLM。/new /resume 等需要换 kernel 的命令在
   # 此直接处理。
   defp dispatch_input(st, text), do: dispatch_input(st, text, nil, nil)
+
   defp dispatch_input(st, text, queue_id), do: dispatch_input(st, text, queue_id, nil)
 
   defp dispatch_input(st, text, queue_id, delivery) do
@@ -2179,6 +2213,42 @@ defmodule Newbee.Web.Session do
         say.("该命令在 WebUI 暂不支持: " <> inspect(other))
         st
     end
+  end
+
+  defp append_terminal_context_to_kernel(st, content) do
+    content = content |> Newbee.DEE.Result.sanitize() |> String.trim() |> String.slice(0, 20_000)
+
+    cond do
+      content == "" ->
+        st
+
+      is_pid(st.kernel) and Process.alive?(st.kernel) ->
+        Newbee.Agent.Loop.append_external_context(st.kernel, content)
+        st
+
+      true ->
+        persist_terminal_context(st.sid, content)
+        st
+    end
+  end
+
+  defp persist_terminal_context(sid, content) do
+    if is_binary(sid) and String.trim(content) != "" do
+      Newbee.Session.append(Newbee.Session.open(sid), %{"role" => "user", "content" => content})
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp terminal_context_for_submit(sid) do
+    case Newbee.Web.Terminal.take_context(sid) do
+      {:ok, content} when is_binary(content) -> content
+      _ -> ""
+    end
+  rescue
+    _ -> ""
   end
 
   defp run_shell_notice(st, cmd) do
@@ -2274,6 +2344,8 @@ defmodule Newbee.Web.Session do
   defp do_submit(st, text, queue_id, delivery) do
     parent = self()
     kernel = st.kernel
+    terminal_context = terminal_context_for_submit(st.sid)
+
     qid = if is_binary(queue_id), do: normalize_queue_id(queue_id), else: new_queue_id()
 
     base = %{
@@ -2292,6 +2364,8 @@ defmodule Newbee.Web.Session do
       spawn_monitor(fn ->
         result =
           try do
+            if terminal_context != "", do: Newbee.Agent.Loop.append_external_context(kernel, terminal_context)
+
             Newbee.Agent.Loop.submit(kernel, text)
           rescue
             e -> {:error, Exception.message(e)}
@@ -2328,6 +2402,7 @@ defmodule Newbee.Web.Session do
     parent = self()
     kernel = st.kernel
     qid = if is_binary(queue_id), do: normalize_queue_id(queue_id), else: new_queue_id()
+    terminal_context = terminal_context_for_submit(st.sid)
     urls = List.wrap(data_urls)
     base_prev = preview_text(text || "")
 
@@ -2344,6 +2419,7 @@ defmodule Newbee.Web.Session do
       spawn_monitor(fn ->
         result =
           try do
+            if terminal_context != "", do: Newbee.Agent.Loop.append_external_context(kernel, terminal_context)
             Newbee.Agent.Loop.submit_images(kernel, data_urls, text)
           rescue
             e -> {:error, Exception.message(e)}
@@ -2355,16 +2431,8 @@ defmodule Newbee.Web.Session do
       end)
 
     timer = Process.send_after(self(), {:turn_watchdog, turn_id}, @turn_max_ms)
+
     %{st | busy: true, current: cur, turn_task: task, turn_ref: ref, turn_id: turn_id, turn_timer: timer}
-  end
-
-  defp set_kernel_cwd(%{kernel: nil, sid: sid}, cwd), do: Newbee.Session.set_cwd(sid, cwd)
-
-  defp set_kernel_cwd(%{kernel: kernel}, cwd) do
-    case Newbee.Agent.Loop.set_root(kernel, cwd) do
-      {:ok, _root} -> :ok
-      {:error, _} = error -> error
-    end
   end
 
   defp no_kernel_hint do

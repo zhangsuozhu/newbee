@@ -19,6 +19,7 @@ defmodule Newbee.Application do
         Newbee.Web.Auth.SessionWriter,
         Newbee.LLM.HttpDebug,
         {Registry, keys: :unique, name: Newbee.Web.SessionRegistry},
+        {Registry, keys: :unique, name: Newbee.Web.TerminalRegistry},
         {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Web.SessionSup},
         Newbee.Collaboration.Capability
       ] ++

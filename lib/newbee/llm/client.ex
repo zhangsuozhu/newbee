@@ -12,6 +12,8 @@ defmodule Newbee.LLM.Client do
   @overload_statuses [429, 500, 502, 503, 529]
   @overload_retries 5
   @overload_delay 1_000
+  @version Mix.Project.config()[:version] || "dev"
+  @user_agent "newbee/" <> @version
 
   @derive {Inspect, except: [:api_key]}
   defstruct model: @default_model,
@@ -24,6 +26,7 @@ defmodule Newbee.LLM.Client do
             context_window: nil,
             interrupt_scope: nil,
             cache_key: nil,
+            session_id: nil,
             responses_mode: :chat,
             responses_continuation: false,
             responses_checkpoint: nil,
@@ -50,6 +53,22 @@ defmodule Newbee.LLM.Client do
     end
   end
 
+  defp initial_session_id(provider, base_url, cache_key, explicit) do
+    cond do
+      is_binary(explicit) and explicit != "" ->
+        explicit
+
+      is_binary(cache_key) ->
+        Newbee.LLM.HttpDebug.session_id_from_cache_key(cache_key) || cache_key
+
+      opencode_provider?(provider, base_url) ->
+        "newbee-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+
+      true ->
+        nil
+    end
+  end
+
   @doc "获取模型上下文窗口；显式配置优先，否则查询 provider 元数据，失败回退 256K。"
   def new(opts \\ []) do
     api = Keyword.get(opts, :api, "openai-completions")
@@ -60,6 +79,9 @@ defmodule Newbee.LLM.Client do
       |> normalize_responses_mode()
 
     base_url = Keyword.get(opts, :base_url, @default_base_url)
+    provider = Keyword.get(opts, :provider, "openrouter")
+    cache_key = Keyword.get_lazy(opts, :cache_key, fn -> derive_cache_key() end)
+    session_id = initial_session_id(provider, base_url, cache_key, Keyword.get(opts, :session_id))
 
     # :auto 模式只决定端点；续写仍由显式配置控制。
     {mode, continuation_supported?} =
@@ -69,15 +91,16 @@ defmodule Newbee.LLM.Client do
 
     %__MODULE__{
       model: Keyword.get(opts, :model, @default_model),
-      provider: Keyword.get(opts, :provider, "openrouter"),
+      provider: provider,
       api_key: Keyword.get(opts, :api_key, System.get_env("OPENROUTER_API_KEY")),
-      base_url: Keyword.get(opts, :base_url, @default_base_url),
+      base_url: base_url,
       api: api,
       reasoning_effort: normalize_reasoning_effort(Keyword.get(opts, :reasoning_effort)),
       vision: Keyword.get(opts, :vision, true),
       context_window: Keyword.get(opts, :context_window),
       interrupt_scope: Keyword.get(opts, :interrupt_scope),
-      cache_key: Keyword.get_lazy(opts, :cache_key, fn -> derive_cache_key() end),
+      cache_key: cache_key,
+      session_id: session_id,
       responses_mode: mode,
       responses_continuation: continuation,
       responses_checkpoint: Keyword.get(opts, :responses_checkpoint),
@@ -87,6 +110,7 @@ defmodule Newbee.LLM.Client do
   end
 
   @doc false
+
   def cache_route(%__MODULE__{} = client) do
     %{
       "base_url" => client.base_url,
@@ -96,9 +120,57 @@ defmodule Newbee.LLM.Client do
       "reasoning_effort" => client.reasoning_effort,
       "vision" => client.vision,
       "cache_key" => client.cache_key,
+      "session_id" => client.session_id,
       "responses_continuation" => client.responses_continuation,
       "prompt_cache_options" => client.prompt_cache_options
     }
+  end
+
+  @doc false
+  def user_agent, do: @user_agent
+
+  @doc false
+  def request_headers(%__MODULE__{} = client, include_content_type \\ true) do
+    headers = [
+      {"authorization", "Bearer " <> to_string(client.api_key)},
+      {"user-agent", user_agent()}
+    ]
+
+    headers =
+      if include_content_type do
+        [{"content-type", "application/json"} | headers]
+      else
+        headers
+      end
+
+    case opencode_session_id(client) do
+      session_id when is_binary(session_id) and session_id != "" ->
+        [{"x-opencode-session", session_id} | headers]
+
+      _ ->
+        headers
+    end
+  end
+
+  defp opencode_session_id(%__MODULE__{} = client) do
+    if opencode_provider?(client.provider, client.base_url) do
+      Enum.find(
+        [
+          client.session_id,
+          Newbee.LLM.HttpDebug.session_id_from_cache_key(client.cache_key),
+          client.cache_key
+        ],
+        &(is_binary(&1) and &1 != "")
+      )
+    end
+  end
+
+  defp opencode_provider?(provider, base_url) do
+    provider = provider |> to_string() |> String.downcase()
+    base_url = base_url |> to_string() |> String.downcase()
+
+    provider in ["opencode", "console-go", "console go", "console_go"] or
+      String.contains?(base_url, "opencode.ai")
   end
 
   defp default_responses_mode("responses"), do: :responses
@@ -138,7 +210,7 @@ defmodule Newbee.LLM.Client do
       method: :post,
       headers: [
         {"content-type", "application/json"},
-        {"user-agent", "newbee-probe"}
+        {"user-agent", user_agent()}
       ],
       json: body,
       receive_timeout: 5_000,
@@ -209,10 +281,7 @@ defmodule Newbee.LLM.Client do
   defp fetch_context_window(client) do
     with {:ok, %{status: 200, body: body}} <-
            Req.get(client.base_url <> "/models",
-             headers: [
-               {"authorization", "Bearer #{client.api_key}"},
-               {"user-agent", "newbee"}
-             ],
+             headers: request_headers(client, false),
              receive_timeout: 15_000,
              retry: false
            ),
@@ -245,7 +314,13 @@ defmodule Newbee.LLM.Client do
   message 含 "content" 与 "tool_calls"（可能为空列表）。`opts[:tools]` 可覆盖工具列表，
   传入 `tools: []` 时执行无工具请求。
   """
-  def stream_chat(%__MODULE__{} = client, messages, on_text \\ fn _ -> :ok end, on_reasoning \\ fn _ -> :ok end, opts \\ []) do
+  def stream_chat(
+        %__MODULE__{} = client,
+        messages,
+        on_text \\ fn _ -> :ok end,
+        on_reasoning \\ fn _ -> :ok end,
+        opts \\ []
+      ) do
     if interrupted?(client) do
       {:interrupted, ""}
     else
@@ -307,9 +382,7 @@ defmodule Newbee.LLM.Client do
         stream: true,
         stream_options: %{include_usage: true}
       }
-
       |> put_cache_field(client)
-
 
     effort = normalize_reasoning_effort(client.reasoning_effort)
 
@@ -318,11 +391,7 @@ defmodule Newbee.LLM.Client do
         do: Map.put(body, :reasoning_effort, effort),
         else: body
 
-    dbg_headers = [
-      {"authorization", "Bearer #{client.api_key}"},
-      {"content-type", "application/json"},
-      {"user-agent", "newbee"}
-    ]
+    dbg_headers = request_headers(client)
 
     _dbg_id =
       Newbee.LLM.HttpDebug.start_exchange(%{
@@ -343,11 +412,7 @@ defmodule Newbee.LLM.Client do
       [
         url: client.base_url <> "/chat/completions",
         method: :post,
-        headers: [
-          {"authorization", "Bearer #{client.api_key}"},
-          {"content-type", "application/json"},
-          {"user-agent", "newbee"}
-        ],
+        headers: request_headers(client),
         json: body,
         receive_timeout: 120_000,
         finch: [pool_timeout: 30_000, conn_max_idle_time: 300_000, conn_opts: [transport_opts: [timeout: 30_000]]],
@@ -439,7 +504,6 @@ defmodule Newbee.LLM.Client do
     messages = sanitize_messages(messages)
     Newbee.DebugLog.log(:llm, "complete start model=#{client.model} messages=#{length(messages)}")
 
-
     effort = normalize_reasoning_effort(client.reasoning_effort)
 
     body =
@@ -472,11 +536,7 @@ defmodule Newbee.LLM.Client do
         method: "POST",
         url: client.base_url <> "/chat/completions",
         api: "chat-complete",
-        req_headers: [
-          {"authorization", "Bearer #{client.api_key}"},
-          {"content-type", "application/json"},
-          {"user-agent", "newbee"}
-        ],
+        req_headers: request_headers(client),
         req_body: body
       })
 
@@ -484,11 +544,7 @@ defmodule Newbee.LLM.Client do
       [
         url: client.base_url <> "/chat/completions",
         method: :post,
-        headers: [
-          {"authorization", "Bearer #{client.api_key}"},
-          {"content-type", "application/json"},
-          {"user-agent", "newbee"}
-        ],
+        headers: request_headers(client),
         json: body,
         receive_timeout: 120_000,
         retry: false
@@ -670,10 +726,7 @@ defmodule Newbee.LLM.Client do
   def prewarm(%__MODULE__{} = client) do
     # 假 IP 代理 TLS 握手 ~5.2s，预热必须容忍慢拨号；连接入池后请求级 5s 才有意义
     Req.get(client.base_url <> "/models",
-      headers: [
-        {"authorization", "Bearer #{client.api_key}"},
-        {"user-agent", "newbee"}
-      ],
+      headers: request_headers(client, false),
       receive_timeout: 30_000,
       finch: [pool_timeout: 30_000, conn_max_idle_time: 300_000, conn_opts: [transport_opts: [timeout: 30_000]]],
       retry: false
@@ -1000,11 +1053,13 @@ defmodule Newbee.LLM.Client do
       raw_id = tc["id"] || fun["id"] || tc["tool_call_id"]
       new_id = normalize_tool_id(raw_id) || slot["id"]
       name_frag = if is_binary(fun["name"]), do: fun["name"], else: ""
+
       slot = %{
         "id" => new_id,
         "name" => slot["name"] <> name_frag,
         "arguments" => slot["arguments"] <> tool_arg_fragment(fun["arguments"])
       }
+
       %{acc | tool_calls: Map.put(acc.tool_calls, idx, slot)}
     end)
   end
@@ -1014,6 +1069,7 @@ defmodule Newbee.LLM.Client do
     |> Enum.sort_by(fn {idx, _} -> idx end)
     |> Enum.reduce([], fn {idx, slot}, acc ->
       name = slot["name"] || ""
+
       if is_binary(name) and String.trim(name) != "" do
         id =
           case normalize_tool_id(slot["id"]) do
@@ -1021,8 +1077,11 @@ defmodule Newbee.LLM.Client do
               synth = synth_tool_id()
               Newbee.DebugLog.log(:sse, "sensenova without id idx=" <> Integer.to_string(idx))
               synth
-            good -> good
+
+            good ->
+              good
           end
+
         args = slot["arguments"] || ""
         args = if is_binary(args) and String.trim(args) != "", do: args, else: "{}"
         [%{"id" => id, "type" => "function", "function" => %{"name" => name, "arguments" => args}} | acc]
@@ -1033,7 +1092,6 @@ defmodule Newbee.LLM.Client do
     end)
     |> Enum.reverse()
   end
-
 
   @doc "Sanitize chat messages before sending: ensure tool call ids exist."
   def sanitize_messages(messages) when is_list(messages) do
@@ -1060,22 +1118,33 @@ defmodule Newbee.LLM.Client do
     fun = call["function"] || call[:function] || %{}
     fun = if is_map(fun), do: fun, else: %{}
     raw_name = fun["name"] || fun[:name]
+
     if is_binary(raw_name) and String.trim(raw_name) != "" do
       raw_id = call["id"] || call[:id]
       id = normalize_tool_id(raw_id) || synth_tool_id()
       raw_args = fun["arguments"] || fun[:arguments]
+
       args =
         cond do
-          is_binary(raw_args) and String.trim(raw_args) != "" -> raw_args
-          is_binary(raw_args) -> "{}"
+          is_binary(raw_args) and String.trim(raw_args) != "" ->
+            raw_args
+
+          is_binary(raw_args) ->
+            "{}"
+
           is_map(raw_args) ->
             case Jason.encode(raw_args) do
               {:ok, s} -> s
               _ -> "{}"
             end
-          is_nil(raw_args) -> "{}"
-          true -> "{}"
+
+          is_nil(raw_args) ->
+            "{}"
+
+          true ->
+            "{}"
         end
+
       %{"id" => id, "type" => "function", "function" => %{"name" => raw_name, "arguments" => args}}
     else
       nil
@@ -1086,10 +1155,12 @@ defmodule Newbee.LLM.Client do
 
   defp normalize_tool_id(nil), do: nil
   defp normalize_tool_id(""), do: nil
+
   defp normalize_tool_id(id) when is_binary(id) do
     t = String.trim(id)
     if t == "", do: nil, else: t
   end
+
   defp normalize_tool_id(id) when is_atom(id), do: id |> Atom.to_string() |> normalize_tool_id()
   defp normalize_tool_id(id) when is_integer(id), do: Integer.to_string(id)
   defp normalize_tool_id(_), do: nil
@@ -1100,20 +1171,24 @@ defmodule Newbee.LLM.Client do
 
   defp tool_arg_fragment(nil), do: ""
   defp tool_arg_fragment(s) when is_binary(s), do: s
+
   defp tool_arg_fragment(m) when is_map(m) do
     case Jason.encode(m) do
       {:ok, s} -> s
       _ -> ""
     end
   end
+
   defp tool_arg_fragment(_), do: ""
 
   defp empty_sanitize_msg?(msg) when is_map(msg) do
     role = msg["role"] || msg[:role]
     role_s = if is_atom(role), do: Atom.to_string(role), else: role
+
     if role_s == "assistant" do
       content = msg["content"] || msg[:content]
       calls = msg["tool_calls"] || msg[:tool_calls] || []
+
       if is_binary(content) do
         String.trim(content) == "" and calls == []
       else
@@ -1123,6 +1198,7 @@ defmodule Newbee.LLM.Client do
       false
     end
   end
+
   defp empty_sanitize_msg?(_), do: false
 
   defp illegal_sanitize_role?(msg) when is_map(msg) do
@@ -1131,17 +1207,21 @@ defmodule Newbee.LLM.Client do
     has_tid = Map.has_key?(msg, "tool_call_id") or Map.has_key?(msg, :tool_call_id)
     not has_tid and role_s not in ["system", "user", "assistant", "tool"]
   end
+
   defp illegal_sanitize_role?(_), do: false
 
   defp normalize_history_tool_calls(msg) when is_map(msg) do
     calls = msg["tool_calls"] || msg[:tool_calls]
+
     cond do
       is_list(calls) and calls != [] ->
         case normalize_tool_calls(calls) do
           [] -> msg |> Map.delete("tool_calls") |> Map.delete(:tool_calls)
           good -> msg |> Map.put("tool_calls", good) |> Map.delete(:tool_calls)
         end
-      true -> msg
+
+      true ->
+        msg
     end
   end
 
@@ -1157,30 +1237,39 @@ defmodule Newbee.LLM.Client do
         role = msg["role"] || msg[:role]
         role_s = if is_atom(role), do: Atom.to_string(role), else: role
         calls = msg["tool_calls"] || msg[:tool_calls]
+
         cond do
           role_s == "assistant" and is_list(calls) and calls != [] ->
             {sanitize_placeholders(pending) ++ [msg], Enum.map(calls, fn c -> c["id"] || c[:id] end)}
+
           role_s == "tool" ->
             raw = msg["tool_call_id"] || msg[:tool_call_id]
             id = normalize_tool_id(raw)
+
             cond do
               is_nil(id) ->
                 case pending do
                   [first | rest] -> {[Map.put(msg, "tool_call_id", first)], rest}
                   [] -> {[], pending}
                 end
-              id in pending -> {[Map.put(msg, "tool_call_id", id)], pending -- [id]}
-              true -> {[], pending}
+
+              id in pending ->
+                {[Map.put(msg, "tool_call_id", id)], pending -- [id]}
+
+              true ->
+                {[], pending}
             end
+
           pending != [] ->
             {sanitize_placeholders(pending) ++ [msg], []}
+
           true ->
             {[msg], []}
         end
       end)
+
     Enum.concat(chunks) ++ sanitize_placeholders(pending)
   end
-
 
   defp normalize_responses_mode(mode) when mode in [:auto, :responses, :chat], do: mode
   defp normalize_responses_mode("auto"), do: :auto
