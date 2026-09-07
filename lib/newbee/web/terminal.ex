@@ -9,6 +9,7 @@ defmodule Newbee.Web.Terminal do
   @terminal_pid_attempts 20
   @max_manual_context_bytes 16_000
   @manual_context_quiet_ms 500
+  @max_scrollback_bytes 128_000
 
   defstruct sid: nil,
             cwd: nil,
@@ -21,7 +22,8 @@ defmodule Newbee.Web.Terminal do
             pending_exec: nil,
             manual_input: <<>>,
             manual_context: nil,
-            manual_context_timer: nil
+            manual_context_timer: nil,
+            scrollback: <<>>
 
   def reg_name(sid), do: {:via, Registry, {@registry, sid}}
 
@@ -122,7 +124,10 @@ defmodule Newbee.Web.Terminal do
 
   @impl true
   def handle_call(:open, _from, st),
-    do: {:reply, {:ok, %{cwd: st.cwd, pty: st.pty?, resize: st.pty_driver == :script}}, st}
+    do:
+      {:reply,
+       {:ok,
+        %{cwd: st.cwd, pty: st.pty?, resize: st.pty_driver == :script, scrollback: st.scrollback}}, st}
 
   def handle_call(:take_context, _from, st) do
     st = materialize_manual_input(st)
@@ -212,6 +217,7 @@ defmodule Newbee.Web.Terminal do
   @impl true
   def handle_info({port, {:data, data}}, %{port: port} = st) do
     st = if is_nil(st.pending_exec), do: capture_manual_output(st, data), else: st
+    st = append_scrollback(st, data)
     broadcast(st.sid, :output, terminal_output_payload(data))
     {:noreply, complete_pending_exec(st, data)}
   end
@@ -520,6 +526,21 @@ defmodule Newbee.Web.Terminal do
   defp trim_output(data) do
     head = div(@max_exec_output_bytes, 2)
     binary_part(data, 0, head) <> "\n[输出过长，已保留首尾]\n" <> binary_part(data, byte_size(data) - head, head)
+  end
+
+  # 累积终端输出到滚动缓冲（截断保尾部），供 WS 重连后回放，
+  # 让"AI 在终端干了啥"对人可见、可回看。
+  defp append_scrollback(st, data) do
+    buf = st.scrollback <> data
+
+    buf =
+      if byte_size(buf) > @max_scrollback_bytes do
+        binary_part(buf, byte_size(buf) - @max_scrollback_bytes, @max_scrollback_bytes)
+      else
+        buf
+      end
+
+    %{st | scrollback: buf}
   end
 
   defp broadcast(sid, event, payload) do
