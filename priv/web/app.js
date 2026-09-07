@@ -3208,6 +3208,17 @@ case "goal_round": break;
     state.currentToolCard = null;
   }
 
+  function historyIndicatesInterrupted(messages) {
+    const items = (messages || []).filter((m) => m && m.role !== "usage");
+    const last = items[items.length - 1];
+    if (!last) return false;
+    if (last.role === "user") return true;
+    if (last.role === "tool") return true;
+    if (last.role !== "assistant" || !Array.isArray(last.toolCalls)) return false;
+    const resultIds = new Set(items.filter((m) => m.role === "tool" && m.toolCallId).map((m) => m.toolCallId));
+    return last.toolCalls.some((call) => call && call.id && !resultIds.has(call.id));
+  }
+
   // resume 代次守卫：快速连切会话时多个 resume() 并发交错，
   // 晚返回的旧 resume 会把上一个会话的历史/状态渲染进新会话的 flow。
   // 每次 resume 递增序号，await 返回后序号或 sid 已变则直接丢弃后续渲染。
@@ -3248,8 +3259,9 @@ case "goal_round": break;
       rpc("session.state", { sessionId: sid }),
     ]);
     if (stale()) return;
-    renderHistory(hist.messages || []);
-    const hasUserMessage = (hist.messages || []).some(m => m && m.role === "user");
+    const historyMessages = hist.messages || [];
+    renderHistory(historyMessages);
+    const hasUserMessage = historyMessages.some(m => m && m.role === "user");
     state.hasPrompted = hasUserMessage;
     state.titleDirty = false;
     if (!hasUserMessage && flow.children.length === 0) renderWelcome();
@@ -3262,6 +3274,7 @@ case "goal_round": break;
     state.cwd = sessionState.cwd || null;
     state.turnKind = sessionState.current && sessionState.current.kind ? sessionState.current.kind : null;
     state.busy = sessionState.busy === true;
+    if (!state.busy && historyIndicatesInterrupted(historyMessages)) setInterrupted(true);
     setBusy(state.busy);
 
     state.pendingPrompts.clear();
