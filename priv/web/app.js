@@ -294,6 +294,20 @@ const flow = $("flow");
     queueSeq: 0,
     queueCurrent: null,
   };
+  const interruptedKey = (sid) => "newbee.interrupted." + sid;
+  function setInterrupted(value, sid = state.sid) {
+    state.interrupted = value === true;
+    if (!sid) return;
+    try {
+      if (state.interrupted) localStorage.setItem(interruptedKey(sid), "1");
+      else localStorage.removeItem(interruptedKey(sid));
+    } catch (e) {}
+  }
+  function loadInterrupted(sid) {
+    try { return !!sid && localStorage.getItem(interruptedKey(sid)) === "1"; }
+    catch (e) { return false; }
+  }
+
 
   // ── 会话统计持久化（按 sessionId 存 localStorage，刷新/重连后保留）──
   const statsKey = (sid) => "newbee.stats." + sid;
@@ -994,7 +1008,7 @@ const flow = $("flow");
       case "tool_result": toolResult(p.text, !isToolError(p.text), p.duration_ms); break;
       case "tool_error": toolResult(p.text, false); break;
       case "done": {
-        state.interrupted = false;
+        setInterrupted(false);
         finishTurn();
         const doneCard = line("done", p.summary, true, p.created_at);
         // done 总结卡补挂本轮用量（与刷新回放视图一致），避免底部空白
@@ -1016,10 +1030,10 @@ const flow = $("flow");
         break;
       }
 
-      case "ask": state.interrupted = false; finishTurn(); renderAskCard(p.question, p.options || [], p.kind || "text", p.created_at); break;
-      case "text_end": state.interrupted = false; finishTurn(); break;
+      case "ask": setInterrupted(false); finishTurn(); renderAskCard(p.question, p.options || [], p.kind || "text", p.created_at); break;
+      case "text_end": setInterrupted(false); finishTurn(); break;
       case "error": {
-        state.interrupted = false;
+        setInterrupted(false);
         finishTurn();
         const m = String(p.message || "");
         // 模型配置类错误：给出可操作提示（点模型选择器 / 改 model.json）
@@ -1030,9 +1044,9 @@ const flow = $("flow");
         }
         break;
       }
-      case "interrupted": state.interrupted = true; finishTurn(); line("notice", "已中断"); break;
+      case "interrupted": setInterrupted(true); finishTurn(); line("notice", "已中断"); break;
       case "session_cleared": {
-        state.interrupted = false;
+        setInterrupted(false);
         finishTurn();
         try { localStorage.removeItem("newbee.draft." + state.sid); } catch (e) {}
         resetStreamState();
@@ -1054,7 +1068,7 @@ const flow = $("flow");
         break;
       }
       case "session_renewed": {
-        state.interrupted = false;
+        setInterrupted(false);
         finishTurn();
         const newSid = p.sessionId;
         // 后端新实现同 sid 清空：直接清面板；旧实现子 sid：resume 到新 transcript
@@ -1129,7 +1143,7 @@ case "queue_updated": {
     const started = renderStartedPrompt(ev.id, p.current, ev.at);
     state.turnKind = (p.current && p.current.kind) || ev.kind ||
       (started && started.attachments && started.attachments.length > 0 ? "images" : "text");
-    state.interrupted = false;
+    setInterrupted(false);
     state.busy = true;
     setBusy(true);
     resetTurnUsage();
@@ -1141,7 +1155,7 @@ case "queue_updated": {
     const steered = renderStartedPrompt(ev.id, ev.input, ev.at);
     state.turnKind = (ev.input && ev.input.kind) || ev.kind ||
       (steered && steered.attachments && steered.attachments.length > 0 ? "images" : state.turnKind || "text");
-    state.interrupted = false;
+    setInterrupted(false);
     if (state.timing.llmStart !== null) state.timing.llmMs += Date.now() - state.timing.llmStart;
     state.timing.llmStart = Date.now();
     state.timing.ftRecorded = false;
@@ -3219,7 +3233,7 @@ case "goal_round": break;
     state.writeScopeOverlaps = [];
 
     loadTiming(sid);
-    state.interrupted = false;
+    setInterrupted(loadInterrupted(sid));
     resetStreamState();
     // 恢复该会话的输入草稿（未发送文字刷新/切会话不丢）
     restoreDraft();
@@ -3312,7 +3326,7 @@ case "goal_round": break;
     resumeSeq++; // 作废旧会话可能仍在途的 resume()，防止其晚到后覆盖新会话 UI
     state.sid = sid;
     localStorage.setItem("newbee.sid", sid);
-    state.interrupted = false;
+    setInterrupted(false);
     state.busy = false;
     state.hasPrompted = false;
     state.titleDirty = false;
@@ -4123,7 +4137,7 @@ case "goal_round": break;
   async function send(forcedText) {
     state.eventCreatedAt = new Date().toISOString();
     const text = (forcedText == null ? input.value : forcedText).trim();
-    if (text) state.interrupted = false;
+    if (text) setInterrupted(false);
     if (text === "/new" || text.startsWith("/new ")) {
       input.value = "";
       autoGrow();
@@ -4134,7 +4148,7 @@ case "goal_round": break;
       return;
     }
     const attachments = state.attachments.slice();
-    if (text || attachments.length > 0) state.interrupted = false;
+    if (text || attachments.length > 0) setInterrupted(false);
     if (state.uploading > 0) { line("notice", "请等待文件上传完成"); return; }
     const btw = text.match(/^\/btw(?:\s+([\s\S]*))?$/);
     if (btw) {

@@ -286,6 +286,9 @@ defmodule Newbee.Web.SessionQueueTest do
     assert html =~ "whip-icon"
     assert css =~ "#send.whip-mode"
     assert css =~ "#send.whip-cracking"
+    assert js =~ "newbee.interrupted."
+    assert js =~ "function loadInterrupted"
+    assert js =~ "setInterrupted(loadInterrupted(sid))"
   end
 
   test "/btw runs independently without changing the main transcript" do
