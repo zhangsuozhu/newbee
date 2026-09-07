@@ -28,11 +28,21 @@ defmodule Newbee.Tools.Run do
 
   @dangerous_re ~r/(rm\s+.*-rf|rm\s+-r\s+\/|git\s+push|rm\s+-rf\s+\/)/i
 
-  @doc "Run a shell command under the project root. Returns `%{exit: integer() | :timeout | :denied, exit_code: integer() | :timeout | :denied, output: String.t()}` (`exit_code` aliases `exit`)."
+  @doc "Run a shell command. In an AI session this uses that session's shared PTY; pass shared_terminal: false for host-internal maintenance."
   def sh(cmd, opts \\ []) do
     case gate(cmd) do
-      {:deny, msg} -> %{exit: :denied, exit_code: :denied, output: msg}
-      :allow -> do_sh(cmd, opts)
+      {:deny, msg} ->
+        %{exit: :denied, exit_code: :denied, output: msg}
+
+      :allow ->
+        if Keyword.get(opts, :shared_terminal, true) do
+          case shared_terminal_context() do
+            {:ok, {sid, root}} -> do_terminal_sh(sid, root, cmd, opts)
+            :none -> do_sh(cmd, opts)
+          end
+        else
+          do_sh(cmd, opts)
+        end
     end
   end
 
@@ -43,7 +53,9 @@ defmodule Newbee.Tools.Run do
           :allow
 
         :ask ->
-          {:deny, "[denied at ask level — dangerous command needs /permissions lenient or /approve first: " <> String.slice(cmd, 0, 120) <> "]"}
+          {:deny,
+           "[denied at ask level — dangerous command needs /permissions lenient or /approve first: " <>
+             String.slice(cmd, 0, 120) <> "]"}
 
         :deny ->
           {:deny, "[denied at deny level — dangerous command blocked: " <> String.slice(cmd, 0, 120) <> "]"}
@@ -52,6 +64,43 @@ defmodule Newbee.Tools.Run do
       :allow
     end
   end
+
+  defp shared_terminal_context do
+    token =
+      case Process.get({Newbee.Tools.Hive, :context}) do
+        %{capability: value} when is_binary(value) -> value
+        _ -> Process.get({Newbee.Tools.Media, :capability})
+      end
+
+    case token do
+      value when is_binary(value) ->
+        case Newbee.Host.call(Newbee.Collaboration.Capability, :resolve, [value]) do
+          {:ok, %{session_id: sid, project_root: root}} when is_binary(sid) and is_binary(root) ->
+            {:ok, {sid, root}}
+
+          _ ->
+            :none
+        end
+
+      _ ->
+        :none
+    end
+  end
+
+  defp do_terminal_sh(sid, root, cmd, opts) do
+    timeout = normalize_timeout(Keyword.get(opts, :timeout, @default_timeout))
+    result = Newbee.Host.call(Newbee.Web.Terminal, :exec, [sid, root, cmd, timeout], rpc_timeout(timeout))
+
+    case result do
+      %{output: _} = value -> value
+      {:error, reason} -> %{exit: 127, exit_code: 127, output: "shared terminal failed: #{inspect(reason)}"}
+      {:badrpc, reason} -> %{exit: 127, exit_code: 127, output: "shared terminal failed: #{inspect(reason)}"}
+      other -> %{exit: 127, exit_code: 127, output: "shared terminal failed: #{inspect(other)}"}
+    end
+  end
+
+  defp rpc_timeout(:infinity), do: :infinity
+  defp rpc_timeout(timeout), do: timeout + 5_000
 
   defp do_sh(cmd, opts) do
     timeout = normalize_timeout(Keyword.get(opts, :timeout, @default_timeout))

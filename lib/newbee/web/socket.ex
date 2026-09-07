@@ -2,56 +2,93 @@ defmodule Newbee.Web.Socket do
   @moduledoc """
   WebUI 事件下行通道（移植 dsh websocket-downlink 语义）：浏览器连
   `GET /ws?session=<sid>`，本进程订阅 Bus，把该会话的 Loop 事件以 JSON
-  帧推下去；同时接收上行控制帧（interrupt / permission_reply / btw）。
+  帧推下去；同时接收上行控制帧（interrupt / permission_reply / btw / terminal）。
 
   下行帧： {"type": "event", "sessionId": sid, "kind": "text", "payload": {...}}
+           {"type": "terminal", "event": "output", "data": "..."}
   上行帧： {"type": "interrupt"} | {"type": "permission", "ok": true} |
-           {"type": "prompt", "text": "..."} | {"type": "btw", "question": "..."}
+           {"type": "prompt", "text": "..."} | {"type": "btw", "question": "..."} |
+           {"type": "terminal_open"} | {"type": "terminal_input", "data": "..."} | {"type": "terminal_interrupt"} | {"type": "terminal_resize", "cols": 120, "rows": 40}
+
 
   """
   @behaviour WebSock
 
   alias Newbee.Web.Session, as: WSession
 
+  @max_terminal_input_bytes 64_000
+
   @impl true
   def init(%{assigns: %{session: sid}}) do
     Newbee.Bus.subscribe()
     {:ok, _pid, _sid} = WSession.ensure(sid)
-    {:ok, %{sid: sid}}
+    {:ok, %{sid: sid, terminal: nil}}
   end
 
   @impl true
   def handle_in({text, [opcode: :text]}, st) do
     case Jason.decode(text) do
+      {:ok, %{"type" => "terminal_open"}} ->
+        terminal_open(st)
+
+      {:ok, %{"type" => "terminal_input", "data" => data}} when is_binary(data) ->
+        terminal_input(st, data)
+
+      {:ok, %{"type" => "terminal_resize", "cols" => cols, "rows" => rows}} ->
+        terminal_resize(st, cols, rows)
+
+      {:ok, %{"type" => "terminal_interrupt"}} ->
+        terminal_interrupt(st)
+
+      {:ok, %{"type" => "terminal_close"}} ->
+        {:ok, close_terminal(st)}
+
       {:ok, %{"type" => "interrupt"}} ->
         cast_session(st.sid, &WSession.interrupt/1)
+        {:ok, st}
+
       {:ok, %{"type" => "permission", "ok" => ok} = frame} ->
         target = frame["sessionId"] || st.sid
+
         if Newbee.Collaboration.Coordinator.can_approve_permission?(st.sid, target) do
           cast_session(target, &WSession.permission_reply(&1, ok))
         end
+
+        {:ok, st}
+
       {:ok, %{"type" => "btw", "question" => question} = frame} ->
         request_id = frame["requestId"] || frame["request_id"]
         cast_session(st.sid, &WSession.btw(&1, question, request_id))
+        {:ok, st}
 
       {:ok, %{"type" => "prompt", "text" => t} = frame} ->
         qid = frame["queueId"] || frame["queue_id"]
+
         if is_binary(qid) and String.trim(qid) != "" do
           cast_session(st.sid, &WSession.prompt(&1, t, qid))
         else
           cast_session(st.sid, &WSession.prompt(&1, t))
         end
+
+        {:ok, st}
+
       {:ok, %{"type" => "promptImage", "images" => images, "text" => t} = frame} ->
         qid = frame["queueId"] || frame["queue_id"]
+
         if is_binary(qid) and String.trim(qid) != "" do
           cast_session(st.sid, &WSession.prompt_images(&1, images || [], t || "", qid))
         else
           cast_session(st.sid, &WSession.prompt_images(&1, images || [], t || ""))
         end
+
+        {:ok, st}
+
       {:ok, %{"type" => "cancelQueued"} = frame} ->
         qid = frame["queueId"] || frame["queue_id"] || frame["id"]
+
         if is_binary(qid) do
           q = String.trim(qid)
+
           if q != "" do
             case WSession.lookup(st.sid) do
               {:ok, pid} ->
@@ -59,10 +96,15 @@ defmodule Newbee.Web.Socket do
                   {:ok, _} -> :ok
                   _ -> :ok
                 end
-              _ -> :ok
+
+              _ ->
+                :ok
             end
           end
         end
+
+        {:ok, st}
+
       {:ok, %{"type" => "clearQueue"}} ->
         case WSession.lookup(st.sid) do
           {:ok, pid} ->
@@ -70,18 +112,26 @@ defmodule Newbee.Web.Socket do
               {:ok, _} -> :ok
               _ -> :ok
             end
-          _ -> :ok
-        end
-      _ ->
-        :ok
-    end
 
-    {:ok, st}
+          _ ->
+            :ok
+        end
+
+        {:ok, st}
+
+      _ ->
+        {:ok, st}
+    end
   end
 
   def handle_in(_, st), do: {:ok, st}
 
   @impl true
+  def handle_info({:newbee_event, :terminal_event, {:terminal_event, sid, event, payload}}, %{sid: sid} = st) do
+    frame = terminal_frame(event, payload)
+    {:push, [{:text, frame}], st}
+  end
+
   def handle_info({:newbee_event, :web_event, {:web_event, sid, kind, payload}}, %{sid: sid} = st) do
     frame = Jason.encode_to_iodata!(%{type: "event", sessionId: sid, kind: to_string(kind), payload: payload})
     {:push, [{:text, frame}], st}
@@ -133,11 +183,62 @@ defmodule Newbee.Web.Socket do
 
   @impl true
   def terminate(_reason, st) do
+    Newbee.Web.Terminal.close(st.sid)
     Newbee.Bus.unsubscribe()
     {:ok, st}
   end
 
-  # JSON 安全化（atom key / tuple / struct 都能编）
+  defp terminal_open(st) do
+    cwd = Newbee.Session.cwd(st.sid) || File.cwd!()
+
+    case Newbee.Web.Terminal.open(st.sid, cwd) do
+      {:ok, payload} -> terminal_ready(st, payload)
+      {:error, reason} -> terminal_error(st, "无法启动终端: " <> inspect(reason))
+    end
+  end
+
+  defp terminal_ready(st, payload) when is_map(payload) do
+    {:push, [{:text, terminal_frame("ready", payload)}], st}
+  end
+
+  defp terminal_input(st, data) when byte_size(data) > @max_terminal_input_bytes do
+    terminal_error(st, "单次输入不能超过 #{@max_terminal_input_bytes} 字节")
+  end
+
+  defp terminal_input(st, data) do
+    case Newbee.Web.Terminal.input(st.sid, data) do
+      :ok -> {:ok, st}
+      {:error, reason} -> terminal_error(st, "写入终端失败: " <> inspect(reason))
+    end
+  end
+
+  defp terminal_resize(st, cols, rows) do
+    case Newbee.Web.Terminal.resize(st.sid, cols, rows) do
+      {:ok, _state} -> {:ok, st}
+      {:error, reason} -> terminal_error(st, "调整终端大小失败: " <> inspect(reason))
+    end
+  end
+
+  defp terminal_interrupt(st) do
+    case Newbee.Web.Terminal.interrupt(st.sid) do
+      :ok -> {:ok, st}
+      {:error, reason} -> terminal_error(st, "中断终端失败: " <> inspect(reason))
+    end
+  end
+
+  defp close_terminal(st) do
+    _ = Newbee.Web.Terminal.close(st.sid)
+    Map.put(st, :terminal, nil)
+  end
+
+  defp terminal_error(st, message) do
+    {:push, [{:text, terminal_frame("error", %{message: message})}], st}
+  end
+
+  defp terminal_frame(event, payload) do
+    Jason.encode_to_iodata!(Map.merge(%{type: "terminal", event: event}, payload))
+  end
+
   defp json_safe(%{__struct__: _} = v), do: v |> Map.from_struct() |> json_safe()
   defp json_safe(%{} = v), do: Map.new(v, fn {k, val} -> {to_string(k), json_safe(val)} end)
   defp json_safe(v) when is_list(v), do: Enum.map(v, &json_safe/1)

@@ -471,3 +471,4 @@ defmodule Newbee.Web.SessionQueueTest do
     assert :queue.len(full.queue) == 128
     assert MapSet.size(full.queue_ids) == 128
   end
+end
