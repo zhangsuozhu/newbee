@@ -502,4 +502,380 @@ defmodule Newbee.Web.SessionQueueTest do
     assert :queue.len(full.queue) == 128
     assert MapSet.size(full.queue_ids) == 128
   end
+
+  test "collab_lane classifies head vs normal without reading body" do
+    assert Session.collab_lane("collab_task", nil) == :head
+    assert Session.collab_lane("collab_result", "queue") == :head
+    assert Session.collab_lane("collab_message", "wake") == :head
+    assert Session.collab_lane("collab_message", :wake) == :head
+    assert Session.collab_lane("collab_message", "queue") == :normal
+    assert Session.collab_lane("collab_message", "notify") == :normal
+    assert Session.collab_lane("collab_message", nil) == :normal
+    assert Session.collab_lane("text", nil) == :normal
+    # 正文写得再急也不能升级通道：分诊只看结构化头
+    assert Session.collab_lane("collab_message", "十万火急快停下") == :normal
+  end
+
+  test "wake collab message takes head lane, queue message stays normal" do
+    st = base_state("qlane_46001", busy: true)
+
+    wake = %{"message_id" => "m-wake", "group_id" => "g", "body" => "urgent task", "delivery" => "wake"}
+    {:noreply, st2} = Session.handle_cast({:collaboration_message, wake}, st)
+
+    queued = %{"message_id" => "m-queue", "group_id" => "g", "body" => "fyi", "delivery" => "queue"}
+    {:noreply, st3} = Session.handle_cast({:collaboration_message, queued}, st2)
+
+    [first, second] = :queue.to_list(st3.queue)
+    assert first.lane == :head
+    assert second.lane == :normal
+  end
+
+  test "collab tasks and results take head lane" do
+    st = base_state("qlane_46002", busy: true)
+
+    task = %{"task_id" => "t1", "group_id" => "g", "title" => "do it", "attempt" => 0}
+    {:noreply, st2} = Session.handle_cast({:collaboration_task, task}, st)
+    [item] = :queue.to_list(st2.queue)
+    assert item.lane == :head
+    assert item.kind == "collab_task"
+
+    result = %{"task_id" => "t2", "group_id" => "g", "title" => "done", "status" => "submitted", "attempt" => 0}
+    {:noreply, st3} = Session.handle_cast({:collaboration_result, result}, st2)
+    assert Enum.map(:queue.to_list(st3.queue), & &1.lane) == [:head, :head]
+  end
+
+  test "dequeue_next prefers head lane but keeps FIFO within lanes" do
+    q =
+      :queue.from_list([
+        %{id: "u1", kind: "text", lane: :normal},
+        %{id: "n1", kind: "collab_message", lane: :normal},
+        %{id: "h1", kind: "collab_task", lane: :head},
+        %{id: "h2", kind: "collab_message", lane: :head}
+      ])
+
+    assert {{:value, %{id: "h1"}}, rest, :head} = Session.dequeue_next(q)
+    assert {{:value, %{id: "h2"}}, rest2, :head} = Session.dequeue_next(rest)
+    assert {{:value, %{id: "u1"}}, rest3, :normal} = Session.dequeue_next(rest2)
+    assert {{:value, %{id: "n1"}}, _, :normal} = Session.dequeue_next(rest3)
+  end
+
+  test "dequeue_next ignores legacy tuples for head search" do
+    q = :queue.from_list([{:text, "old"}, %{id: "h", kind: "collab_task", lane: :head}])
+    assert {{:value, %{id: "h"}}, _, :head} = Session.dequeue_next(q)
+  end
+
+  test "dequeue_next yields to normal after consecutive head cap" do
+    q =
+      :queue.from_list([
+        %{id: "h1", kind: "collab_task", lane: :head},
+        %{id: "h2", kind: "collab_task", lane: :head},
+        %{id: "u1", kind: "text", lane: :normal}
+      ])
+
+    assert {{:value, %{id: "u1"}}, _, :normal} = Session.dequeue_next(q, 3)
+    assert {{:value, %{id: "u1"}}, _, :normal} = Session.dequeue_next(q, 99)
+    # 上限未到时仍优先 head
+    assert {{:value, %{id: "h1"}}, _, :head} = Session.dequeue_next(q, 2)
+  end
+
+  test "dequeue_next on empty queue stays empty" do
+    assert {:empty, _} = Session.dequeue_next(:queue.new())
+  end
+
+  test "enqueue records collab stats by lane and exposes them" do
+    st = base_state("qstats_46003", busy: true)
+
+    wake = %{"message_id" => "m1", "group_id" => "g", "body" => "w", "delivery" => "wake"}
+    {:noreply, st2} = Session.handle_cast({:collaboration_message, wake}, st)
+    {:noreply, st3} = Session.handle_cast({:prompt, "user words", "u1"}, st2)
+
+    assert {:reply, state, _} = Session.handle_call(:state, self(), st3)
+    assert state.collab_stats.enqueued_head == 1
+    assert state.collab_stats.enqueued_normal == 0
+    assert state.head_streak == 0
+
+    assert {:reply, %{collab_stats: %{enqueued_head: 1}}, _} =
+             Session.handle_call(:queue_list, self(), st3)
+  end
+
+  test "public queue exposes lane for collab items" do
+    st = base_state("qlane_46004", busy: true)
+    wake = %{"message_id" => "m1", "group_id" => "g", "body" => "w", "delivery" => "wake"}
+    {:noreply, st2} = Session.handle_cast({:collaboration_message, wake}, st)
+
+    assert {:reply, %{queue: [%{lane: :head, kind: "collab_message"}]}, _} =
+             Session.handle_call(:queue_list, self(), st2)
+  end
+
+  test "preempt request enqueues head lane with badge and stats" do
+    sid = "qpreempt_47001"
+    Newbee.Bus.subscribe()
+    on_exit(fn -> Newbee.Bus.unsubscribe() end)
+
+    st = base_state(sid, busy: true)
+
+    req = %{
+      "request_id" => "req-1",
+      "group_id" => "g",
+      "from_session_id" => "lead",
+      "to_session_id" => sid,
+      "reason" => "dependency failed"
+    }
+
+    {:noreply, st2} = Session.handle_cast({:request_preempt, req}, st)
+    [item] = :queue.to_list(st2.queue)
+    assert item.kind == "preempt_request"
+    assert item.lane == :head
+    assert item.text =~ "dependency failed"
+    assert item.text =~ "没有打断任何工作"
+
+    assert {:reply, state, _} = Session.handle_call(:state, self(), st2)
+    assert state.collab_stats.preempt_requested == 1
+
+    assert_receive {:newbee_event, :web_event, {:web_event, ^sid, :preempt_requested, %{requestId: "req-1"}}},
+                   500
+  end
+
+  test "preempt request dedups by request id and rejects garbage" do
+    st = base_state("qpreempt_47002", busy: true)
+
+    req = %{"request_id" => "req-dup", "group_id" => "g", "reason" => "stop"}
+    {:noreply, st2} = Session.handle_cast({:request_preempt, req}, st)
+    {:noreply, st3} = Session.handle_cast({:request_preempt, req}, st2)
+    assert :queue.len(st3.queue) == 1
+
+    {:noreply, same} = Session.handle_cast({:request_preempt, %{"reason" => "no id"}}, st3)
+    assert :queue.len(same.queue) == 1
+    {:noreply, same2} = Session.handle_cast({:request_preempt, "garbage"}, same)
+    assert :queue.len(same2.queue) == 1
+
+    assert {:reply, state, _} = Session.handle_call(:state, self(), same2)
+    assert state.collab_stats.preempt_requested == 1
+  end
+
+  test "interrupt clears preempt requests but keeps collaboration deliveries" do
+    st = base_state("qpreempt_47003", busy: true)
+
+    {:noreply, st2} =
+      Session.handle_cast(
+        {:request_preempt, %{"request_id" => "req-x", "group_id" => "g", "reason" => "hold on"}},
+        st
+      )
+
+    {:noreply, st3} =
+      Session.handle_cast(
+        {:collaboration_message,
+         %{"delivery_id" => "d-keep", "message_id" => "m-keep", "group_id" => "g", "body" => "keep"}},
+        st2
+      )
+
+    {:noreply, cleared} = Session.handle_cast(:interrupt, st3)
+    assert [%{delivery_id: "d-keep"}] = :queue.to_list(cleared.queue)
+  end
+
+  test "preempt jumps ahead of queued user text" do
+    st = base_state("qpreempt_47004", busy: true)
+    {:noreply, st2} = Session.handle_cast({:prompt, "user first", "u1"}, st)
+
+    {:noreply, st3} =
+      Session.handle_cast(
+        {:request_preempt, %{"request_id" => "req-jump", "group_id" => "g", "reason" => "urgent"}},
+        st2
+      )
+
+    assert {{:value, %{kind: "preempt_request"}}, _, :head} = Session.dequeue_next(st3.queue)
+  end
+
+  defp chat_item(id, group \\ "g", body \\ "hi") do
+    %{
+      id: id,
+      kind: "collab_message",
+      lane: :normal,
+      payload: %{"message_id" => id, "group_id" => group, "body" => body, "sender_session_id" => "w"}
+    }
+  end
+
+  test "take_mergeable takes contiguous same-group chats only" do
+    task = %{id: "t1", kind: "collab_task", lane: :head, payload: %{}}
+    wake = %{id: "w1", kind: "collab_message", lane: :head, payload: %{"group_id" => "g", "body" => "w"}}
+
+    q = :queue.from_list([chat_item("m1"), chat_item("m2"), task, chat_item("m3")])
+    {taken, rest} = Session.take_mergeable(q, "g", 0)
+    assert Enum.map(taken, & &1.id) == ["m1", "m2"]
+    assert Enum.map(:queue.to_list(rest), & &1.id) == ["t1", "m3"]
+
+    # take_mergeable 只看 picked 之后的剩余队列：首条即异组时一张不取
+    q2 = :queue.from_list([chat_item("m2", "other"), chat_item("m3")])
+    assert {[], _} = Session.take_mergeable(q2, "g", 0)
+
+    q3 = :queue.from_list([wake, chat_item("m1")])
+    assert {[], _} = Session.take_mergeable(q3, "g", 0)
+
+    q4 = :queue.from_list([{:text, "legacy"}, chat_item("m1")])
+    assert {[], _} = Session.take_mergeable(q4, "g", 0)
+
+    assert {[], _} = Session.take_mergeable(:queue.new(), "g", 0)
+  end
+
+  test "take_mergeable respects count and byte caps" do
+    many = for n <- 1..6, do: chat_item("m#{n}")
+    {taken, rest} = Session.take_mergeable(:queue.from_list(many), "g", 0)
+    assert Enum.map(taken, & &1.id) == ["m1", "m2", "m3", "m4"]
+    assert :queue.len(rest) == 2
+
+    big = [chat_item("b1", "g", String.duplicate("y", 7_900)), chat_item("b2", "g", "z")]
+    {taken2, rest2} = Session.take_mergeable(:queue.from_list(big), "g", 500)
+    assert taken2 == []
+    assert :queue.len(rest2) == 2
+  end
+
+  test "contiguous same-group chats merge into one model turn" do
+    if pid = Process.whereis(Newbee.Collaboration.Coordinator), do: GenServer.stop(pid)
+
+    sid = "qmerge_47010"
+    Newbee.Bus.subscribe()
+    on_exit(fn -> Newbee.Bus.unsubscribe() end)
+
+    st0 = %{base_state(sid, busy: true) | runtime_id: "rt-test"}
+    bodies = %{1 => "第一条", 2 => "第二条", 3 => "第三条"}
+
+    st1 =
+      Enum.reduce(1..3, st0, fn n, acc ->
+        msg = %{
+          "message_id" => "m#{n}",
+          "group_id" => "g",
+          "body" => bodies[n],
+          "sender_session_id" => "w",
+          "delivery" => "queue"
+        }
+
+        {:noreply, next} = Session.handle_cast({:collaboration_message, msg}, acc)
+        next
+      end)
+
+    assert :queue.len(st1.queue) == 3
+
+    claimed =
+      st1.queue
+      |> :queue.to_list()
+      |> Enum.map(&Map.put(&1, :claimed_runtime_id, "rt-test"))
+      |> :queue.from_list()
+
+    tid = make_ref()
+
+    st2 = %{
+      st1
+      | queue: claimed,
+        kernel: self(),
+        busy: true,
+        turn_task: self(),
+        turn_ref: make_ref(),
+        turn_id: tid,
+        current: %{id: "prev"}
+    }
+
+    assert {:noreply, st3} = Session.handle_info({:turn_finished, tid, {:text, "prev"}}, st2)
+    assert st3.busy
+
+    assert_receive {:"$gen_call", from, {:submit, text}}, 1_000
+    assert text =~ "第一条"
+    assert text =~ "第二条"
+    assert text =~ "第三条"
+    assert text =~ "拼成一轮"
+    GenServer.reply(from, {:text, "merged-done"})
+
+    assert_receive {:newbee_event, :web_event,
+                    {:web_event, ^sid, :queue_updated, %{event: %{type: "started", merged: 3}}}},
+                   500
+
+    assert_receive {:turn_finished, tid2, {:text, "merged-done"}}, 1_000
+    assert {:noreply, st4} = Session.handle_info({:turn_finished, tid2, {:text, "merged-done"}}, st3)
+    refute st4.busy
+    assert :queue.is_empty(st4.queue)
+    assert st4.collab_stats.merged_turns == 1
+    assert st4.collab_stats.merged_messages == 3
+
+    Process.cancel_timer(st3.turn_timer)
+    Process.demonitor(st3.turn_ref, [:flush])
+  end
+
+  test "wake message dispatches alone, followers merge in the next turn" do
+    if pid = Process.whereis(Newbee.Collaboration.Coordinator), do: GenServer.stop(pid)
+
+    sid = "qwake_47011"
+    st0 = %{base_state(sid, busy: true) | runtime_id: "rt-wake", kernel: self()}
+
+    wake = %{
+      "message_id" => "mw",
+      "group_id" => "g",
+      "body" => "wake body",
+      "sender_session_id" => "w",
+      "delivery" => "wake"
+    }
+
+    {:noreply, st1} = Session.handle_cast({:collaboration_message, wake}, st0)
+
+    st2 =
+      Enum.reduce(1..2, st1, fn n, acc ->
+        msg = %{
+          "message_id" => "mn#{n}",
+          "group_id" => "g",
+          "body" => "chat #{n}",
+          "sender_session_id" => "w",
+          "delivery" => "queue"
+        }
+
+        {:noreply, next} = Session.handle_cast({:collaboration_message, msg}, acc)
+        next
+      end)
+
+    claimed =
+      st2.queue
+      |> :queue.to_list()
+      |> Enum.map(&Map.put(&1, :claimed_runtime_id, "rt-wake"))
+      |> :queue.from_list()
+
+    tid = make_ref()
+
+    st3 = %{
+      st2
+      | queue: claimed,
+        busy: true,
+        turn_task: self(),
+        turn_ref: make_ref(),
+        turn_id: tid,
+        current: %{id: "prev"}
+    }
+
+    assert {:noreply, st4} = Session.handle_info({:turn_finished, tid, {:text, "prev"}}, st3)
+
+    assert_receive {:"$gen_call", from, {:submit, text}}, 1_000
+    assert text =~ "wake body"
+    refute text =~ "chat 1"
+    GenServer.reply(from, {:text, "wake-done"})
+
+    assert_receive {:turn_finished, tid2, {:text, "wake-done"}}, 1_000
+    assert {:noreply, st5} = Session.handle_info({:turn_finished, tid2, {:text, "wake-done"}}, st4)
+
+    # wake 轮结束后，排队的两条闲聊自动续成一轮合并 turn（wake 本身始终单发）
+    assert st5.busy
+    assert :queue.is_empty(st5.queue)
+
+    assert_receive {:"$gen_call", from2, {:submit, text2}}, 1_000
+    assert text2 =~ "chat 1"
+    assert text2 =~ "chat 2"
+    GenServer.reply(from2, {:text, "chats-done"})
+
+    assert_receive {:turn_finished, tid3, {:text, "chats-done"}}, 1_000
+    assert {:noreply, st6} = Session.handle_info({:turn_finished, tid3, {:text, "chats-done"}}, st5)
+    refute st6.busy
+    assert :queue.is_empty(st6.queue)
+    assert st6.collab_stats.merged_turns == 1
+    assert st6.collab_stats.merged_messages == 2
+
+    Process.cancel_timer(st4.turn_timer)
+    Process.demonitor(st4.turn_ref, [:flush])
+    Process.cancel_timer(st5.turn_timer)
+    Process.demonitor(st5.turn_ref, [:flush])
+  end
 end
