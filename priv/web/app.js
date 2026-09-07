@@ -283,6 +283,9 @@ const flow = $("flow");
     activityExpanded: false,
     collabUnread: {},
     collabSeen: loadCollabSeen(),
+    // ── 微信式会话未读（仿微信红点）：seen 存各会话已读消息数，unread 存未读增量，localStorage 持久化 ──
+    sessionUnread: loadSessionUnread(),
+    sessionSeen: loadSessionSeen(),
     fileAttribution: {},
     groupBySession: {},
     selectedSessions: new Set(),
@@ -1290,10 +1293,9 @@ case "goal_round": break;
     hidePermission();
     clearTurnStatus();
     streamAcc = "";
-    if (state.titleDirty) {
-      state.titleDirty = false;
-      loadSessions().catch(() => {});
-    }
+    // 每轮结束都刷新会话列表：保证最近会话置顶 + 当前会话 seen 对齐，避免切走后误报未读。
+    if (state.titleDirty) state.titleDirty = false;
+    loadSessions().catch(() => {});
   }
   function resetTurnUsage() {
     state.turnUsage = null;
@@ -1871,6 +1873,76 @@ case "goal_round": break;
       expand.title = total > 0 ? `打开 Mission Control（${total} 条未读协作动态）` : "打开 Mission Control";
     }
   }
+  // ── 会话未读数（仿微信红点）：按 messages 计数差量计算 ──
+  // seen: sid -> 已读时的 messages 条数；unread: sid -> 未读增量。均持久化到 localStorage。
+  // 首次见到某会话时以当前条数初始化 seen，不算未读，避免刷新后满屏红点。
+  function loadSessionUnread() {
+    try { return JSON.parse(localStorage.getItem("newbee.session.unread") || "{}") || {}; }
+    catch (e) { return {}; }
+  }
+  function loadSessionSeen() {
+    try { return JSON.parse(localStorage.getItem("newbee.session.seen") || "{}") || {}; }
+    catch (e) { return {}; }
+  }
+  function saveSessionUnread() {
+    try { localStorage.setItem("newbee.session.unread", JSON.stringify(state.sessionUnread || {})); } catch (e) {}
+  }
+  function saveSessionSeen() {
+    try { localStorage.setItem("newbee.session.seen", JSON.stringify(state.sessionSeen || {})); } catch (e) {}
+  }
+  function sessionUnreadCount(sid) {
+    return (state.sessionUnread && Number(state.sessionUnread[sid] || 0)) || 0;
+  }
+  function totalSessionUnread() {
+    return Object.values(state.sessionUnread || {}).reduce((a, b) => a + (Number(b) || 0), 0);
+  }
+  function updateSessionTitleBadge() {
+    try {
+      const n = totalSessionUnread();
+      const base = "newbee";
+      document.title = n > 0 ? base + "(" + (n > 99 ? "99+" : n) + ")" : base;
+    } catch (e) {}
+  }
+  function clearSessionUnread(sid) {
+    if (!sid) return;
+    let changed = false;
+    if (state.sessionUnread && state.sessionUnread[sid]) { delete state.sessionUnread[sid]; changed = true; }
+    const cur = (state.allSessions || []).find((x) => x.id === sid);
+    if (cur) {
+      const cnt = Number(cur.messages || 0);
+      if (state.sessionSeen[sid] !== cnt) { state.sessionSeen[sid] = cnt; changed = true; }
+    }
+    if (changed) { saveSessionUnread(); saveSessionSeen(); updateSessionTitleBadge(); }
+  }
+  // loadSessions 拉到新列表后调用：当前会话直接对齐 seen 并清未读；
+  // 其他会话若 messages 变大则按差量累加未读，变小（如删后重建）则对齐。
+  function syncSessionSeen(sessions) {
+    let changed = false;
+    const curSid = state.sid;
+    (sessions || []).forEach((s) => {
+      const id = s.id;
+      const cnt = Number(s.messages || 0);
+      const seen = state.sessionSeen[id];
+      if (seen === undefined) {
+        state.sessionSeen[id] = cnt;
+        changed = true;
+      } else if (id === curSid) {
+        if (seen !== cnt) { state.sessionSeen[id] = cnt; changed = true; }
+        if (state.sessionUnread && state.sessionUnread[id]) { delete state.sessionUnread[id]; changed = true; }
+      } else if (cnt > seen) {
+        const delta = cnt - seen;
+        state.sessionUnread[id] = (Number(state.sessionUnread[id] || 0)) + delta;
+        state.sessionSeen[id] = cnt;
+        changed = true;
+      } else if (cnt < seen) {
+        state.sessionSeen[id] = cnt;
+        changed = true;
+      }
+    });
+    if (changed) { saveSessionSeen(); saveSessionUnread(); updateSessionTitleBadge(); }
+    return changed;
+  }
+
 
   // ── 协作标签与真状态：kind 徽标 / 验证 / 群状态 / 成员 presence（以后端运行时为准，不再恒绿） ──
   function messageKindLabel(kind) {
@@ -2769,6 +2841,7 @@ case "goal_round": break;
     }
     state.allSessions = sessions;
     state.sessionsTotal = (typeof list.total === "number") ? list.total : sessions.length;
+    try { syncSessionSeen(sessions); } catch (e) {}
     renderSessionList();
   }
   // 分页加载下一页（服务端按 mtime 倒序）：按已加载条数作 offset，按 id 去重
@@ -2782,6 +2855,7 @@ case "goal_round": break;
       const more = (list.sessions || []).filter((s) => !(state.allSessions || []).some((x) => x.id === s.id));
       state.allSessions = (state.allSessions || []).concat(more);
       if (typeof list.total === "number") state.sessionsTotal = list.total;
+      try { syncSessionSeen(state.allSessions || []); } catch (e) {}
     } catch (e) {
       line("error", "加载更多会话失败: " + e.message);
     } finally {
@@ -2831,6 +2905,13 @@ case "goal_round": break;
         const res = await rpc("group.delete", { groupId, sessionId: state.sid });
         // 若当前会话在被删组内，切到新会话
         const deletedIds = (res && res.members_deleted) || (group.members || []).map((m) => m.session_id);
+        try {
+          (deletedIds || []).forEach((id) => {
+            if (state.sessionUnread) delete state.sessionUnread[id];
+            if (state.sessionSeen) delete state.sessionSeen[id];
+          });
+          saveSessionUnread(); saveSessionSeen(); updateSessionTitleBadge();
+        } catch (_e) {}
         if (deletedIds.includes(state.sid)) {
           state.sid = null;
           localStorage.removeItem("newbee.sid");
@@ -2850,8 +2931,156 @@ case "goal_round": break;
   }
 
 
+  // ── 微信式左滑（移动触摸 + 桌面鼠标拖拽共用）：同一时间只展开一条 ──
+  let openSwipeWrap = null;
+  function closeSwipeCell(wrap) {
+    if (!wrap) return;
+    const main = wrap.querySelector(":scope > .session-item");
+    if (main) main.style.transform = "";
+    delete wrap.dataset.swipeOpen;
+    if (openSwipeWrap === wrap) openSwipeWrap = null;
+  }
+  function closeAllSwipeCells(except) {
+    document.querySelectorAll('.swipe-cell[data-swipe-open="1"]').forEach((w) => {
+      if (w !== except) closeSwipeCell(w);
+    });
+    if (!except) openSwipeWrap = null;
+  }
+  function swipeActionsWidth(wrap) {
+    const el = wrap && wrap.querySelector(":scope > .swipe-actions");
+    return (el && el.offsetWidth) || 84;
+  }
+  // 触摸左滑（移动端）+ 鼠标左拖（桌面端）：横向位移才劫持，纵向照常滚动列表。
+  function attachSwipeGestures(wrap, main) {
+    let tStartX = 0, tStartY = 0, tBase = 0, tDragging = false, tHorizontal = null;
+    main.addEventListener("touchstart", (e) => {
+      closeAllSwipeCells(wrap);
+      const t = e.touches[0];
+      tStartX = t.clientX; tStartY = t.clientY;
+      tBase = wrap.dataset.swipeOpen === "1" ? -swipeActionsWidth(wrap) : 0;
+      tDragging = true; tHorizontal = null;
+      main.style.transition = "none";
+    }, { passive: true });
+    main.addEventListener("touchmove", (e) => {
+      if (!tDragging) return;
+      const t = e.touches[0];
+      const dx = t.clientX - tStartX, dy = t.clientY - tStartY;
+      if (tHorizontal === null) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        tHorizontal = Math.abs(dx) > Math.abs(dy);
+        if (!tHorizontal) { tDragging = false; main.style.transition = ""; return; }
+      }
+      if (!tHorizontal) return;
+      const w = swipeActionsWidth(wrap);
+      let x = tBase + dx;
+      if (x > 0) x = 0;
+      if (x < -w) x = -w;
+      main.style.transform = x ? "translateX(" + x + "px)" : "";
+      if (Math.abs(dx) > 10) main.dataset.dragged = "1";
+    }, { passive: true });
+    const tEnd = (e) => {
+      if (!tDragging && !main.dataset.dragged) return;
+      tDragging = false;
+      main.style.transition = "";
+      const w = swipeActionsWidth(wrap);
+      let x0 = tBase;
+      try {
+        const t = (e.changedTouches && e.changedTouches[0]) || null;
+        if (t) x0 = tBase + (t.clientX - tStartX);
+      } catch (_e) {}
+      if (x0 < -w * 0.4) {
+        main.style.transform = "translateX(" + (-w) + "px)";
+        closeAllSwipeCells(wrap);
+        wrap.dataset.swipeOpen = "1";
+        openSwipeWrap = wrap;
+      } else {
+        closeSwipeCell(wrap);
+      }
+      setTimeout(() => { if (wrap.dataset.swipeOpen !== "1") delete main.dataset.dragged; }, 60);
+    };
+    main.addEventListener("touchend", tEnd);
+    main.addEventListener("touchcancel", () => { tDragging = false; main.style.transition = ""; if (wrap.dataset.swipeOpen === "1") { main.style.transform = "translateX(" + (-swipeActionsWidth(wrap)) + "px)"; } else closeSwipeCell(wrap); });
+    // 桌面端：按住左键横向拖拽同样展开/收起；纵向移动不处理。
+    // window 监听只在本次拖拽期间挂载，mouseup 后立即摘掉，避免每条会话常驻两个全局监听。
+    main.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest(".session-select") || e.target.closest(".menu-btn")) return;
+      const mStartX = e.clientX;
+      const mBase = wrap.dataset.swipeOpen === "1" ? -swipeActionsWidth(wrap) : 0;
+      let mMoved = 0;
+      const onMove = (ev) => {
+        const dx = ev.clientX - mStartX;
+        if (Math.abs(dx) > 6) mMoved = Math.abs(dx);
+        if (mMoved > 6) {
+          const w = swipeActionsWidth(wrap);
+          let x = mBase + dx;
+          if (x > 0) x = 0;
+          if (x < -w) x = -w;
+          main.style.transition = "none";
+          main.style.transform = x ? "translateX(" + x + "px)" : "";
+          main.dataset.dragged = mMoved > 8 ? "1" : "";
+        }
+      };
+      const onUp = (ev) => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        main.style.transition = "";
+        if (mMoved > 6) {
+          const w = swipeActionsWidth(wrap);
+          const x = mBase + (ev.clientX - mStartX);
+          if (x < -w * 0.4) {
+            main.style.transform = "translateX(" + (-w) + "px)";
+            closeAllSwipeCells(wrap);
+            wrap.dataset.swipeOpen = "1";
+            openSwipeWrap = wrap;
+          } else {
+            closeSwipeCell(wrap);
+          }
+          setTimeout(() => { if (wrap.dataset.swipeOpen !== "1") delete main.dataset.dragged; }, 60);
+        }
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    });
+  }
+  // 左滑删除与 ⋯ 菜单删除共用同一确认 + RPC 流程，保证两端行为一致。
+  function requestDeleteSession(s) {
+    if (!s || !s.id) return;
+    if ((state.allSessions || []).some((x) => x.id === s.id && x.busy)) {
+      line("error", "会话正在运行中，无法删除。请先点“停止”或等待完成。");
+      return;
+    }
+    const title = String(s.title || s.id).slice(0, 40);
+    confirmDialog("删除会话「" + title + "」？此操作不可恢复。", async () => {
+      try {
+        const res = await rpc("session.delete", { sessionId: s.id });
+        clearTiming(s.id);
+        try {
+          if (state.sessionUnread) delete state.sessionUnread[s.id];
+          if (state.sessionSeen) delete state.sessionSeen[s.id];
+          saveSessionUnread(); saveSessionSeen(); updateSessionTitleBadge();
+        } catch (_e) {}
+        if (s.id === state.sid) {
+          state.sid = null;
+          localStorage.removeItem("newbee.sid");
+          await newSession();
+        }
+        await loadSessions();
+        if (res && Array.isArray(res.notices)) {
+          for (const n of res.notices) line("notice", n);
+        }
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        line("error", "删除失败: " + msg);
+      }
+    }, { confirmLabel: "删除", confirmClass: "btn-deny" });
+  }
+
+
   function renderSessionList() {
     const box = $("session-list");
+    openSwipeWrap = null;
+    box.onscroll = () => closeAllSwipeCells();
     box.innerHTML = "";
     const kw = sessionFilter.trim().toLowerCase();
     const all = state.allSessions || [];
@@ -2860,22 +3089,41 @@ case "goal_round": break;
     const addItem = (s, child, ref) => {
       if (!visible(s) || rendered.has(s.id)) return null;
       rendered.add(s.id);
+      const wrap = document.createElement("div");
+      wrap.className = "swipe-cell" + (child ? " session-child" : "");
+      wrap.dataset.sid = s.id;
       const item = document.createElement("div");
-      item.className = "session-item" + (child ? " session-child" : "") + (s.id === state.sid ? " active" : "");
-      const title = String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\\s+/g, " " ).trim().slice(0, 40) || "(未命名)";
+      item.className = "session-item" + (s.id === state.sid ? " active" : "");
+      item.dataset.sid = s.id;
+      const title = String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\s+/g, " ").trim().slice(0, 40) || "(未命名)";
       const stCls = s.busy ? "busy" : (s.running ? "online" : "offline");
       const role = ref && ref.role ? ref.role : "会话";
       const selected = state.selectedSessions && state.selectedSessions.has(s.id) ? " checked" : "";
-      const cwdShort = s.cwd ? (() => { const p = String(s.cwd).replace(/\\$/, ""); return p.split("/").filter(Boolean).pop() || p; })() : null;
-      item.innerHTML = `<label class="session-select"><input type="checkbox" data-select-session="${escapeHtml(s.id)}"${selected}><span class="session-select-mark"></span></label><span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}${child ? `<span class="session-role">${escapeHtml(role)}</span>` : ""}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>`;
-      item.dataset.sid = s.id;
-      item.onclick = (e) => { if (e.target.closest(".session-select") || e.target.classList.contains("menu-btn")) return; if (!state.creatingSession && state.sid !== s.id) resume(s.id); };
+      const cwdShort = s.cwd ? (() => { const p = String(s.cwd).replace(/\/$/, ""); return p.split("/").filter(Boolean).pop() || p; })() : null;
+      const unreadN = sessionUnreadCount(s.id);
+      const unreadHtml = unreadN > 0 ? `<span class="session-unread" title="${unreadN} 条未读消息">${unreadN > 99 ? "99+" : unreadN}</span>` : "";
+      item.innerHTML = `<label class="session-select"><input type="checkbox" data-select-session="${escapeHtml(s.id)}"${selected}><span class="session-select-mark"></span></label><span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}${unreadHtml}${child ? `<span class="session-role">${escapeHtml(role)}</span>` : ""}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>`;
+      item.onclick = (e) => {
+        if (wrap.dataset.swipeOpen === "1") { closeSwipeCell(wrap); return; }
+        if (item.dataset.dragged === "1") { delete item.dataset.dragged; return; }
+        if (e.target.closest(".session-select") || e.target.classList.contains("menu-btn")) return;
+        if (!state.creatingSession && state.sid !== s.id) resume(s.id);
+      };
       const checkbox = item.querySelector("[data-select-session]");
       checkbox.onchange = () => { if (!state.selectedSessions) state.selectedSessions = new Set(); checkbox.checked ? state.selectedSessions.add(s.id) : state.selectedSessions.delete(s.id); updateSelectedSessionCount(); };
       const btn = document.createElement("button"); btn.className = "menu-btn"; btn.textContent = "⋯"; btn.title = "更多操作";
-      btn.onclick = (e) => { e.stopPropagation(); openSessionMenu(e, s); };
+      btn.onclick = (e) => { e.stopPropagation(); closeAllSwipeCells(); openSessionMenu(e, s); };
       item.appendChild(btn);
-      return item;
+      wrap.appendChild(item);
+      const actions = document.createElement("div");
+      actions.className = "swipe-actions";
+      const del = document.createElement("button");
+      del.className = "swipe-delete"; del.type = "button"; del.textContent = "删除"; del.title = "删除该会话";
+      del.onclick = (e) => { e.stopPropagation(); closeSwipeCell(wrap); requestDeleteSession(s); };
+      actions.appendChild(del);
+      wrap.appendChild(actions);
+      attachSwipeGestures(wrap, item);
+      return wrap;
     };
     const findSession = (id) => all.find((s) => s.id === id) || { id, title: id, messages: 0, running: false, busy: false };
     (state.groups || []).forEach((group) => {
@@ -2983,6 +3231,7 @@ case "goal_round": break;
   }
   document.addEventListener("click", (e) => {
     if (!e.target.closest("#session-menu") && !e.target.classList.contains("menu-btn")) closeSessionMenu();
+    if (!e.target.closest(".swipe-cell")) closeAllSwipeCells();
   });
 
   $("session-menu").addEventListener("click", async (e) => {
@@ -3004,26 +3253,8 @@ case "goal_round": break;
     } else if (act === "remove-group") {
       await removeSessionFromGroup(s);
     } else if (act === "delete") {
-      const title = String(s.title || s.id).slice(0, 40);
-      confirmDialog("删除会话「" + title + "」？此操作不可恢复。", async () => {
-        try {
-          const res = await rpc("session.delete", { sessionId: s.id });
-          clearTiming(s.id);
-          if (s.id === state.sid) {
-            state.sid = null;
-            localStorage.removeItem("newbee.sid");
-            await newSession();
-          }
-          await loadSessions();
-          // 删除时若自动移出了工作组，给一条提示
-          if (res && Array.isArray(res.notices)) {
-            for (const n of res.notices) line("notice", n);
-          }
-        } catch (err) {
-          const msg = err && err.message ? err.message : String(err);
-          line("error", "删除失败: " + msg);
-        }
-      }, { confirmLabel: "删除", confirmClass: "btn-deny" });
+      // 左滑与菜单共用同一删除确认流程
+      requestDeleteSession(s);
     }
   });
 
@@ -3308,6 +3539,8 @@ case "goal_round": break;
     if (state.sid && state.sid !== sid) closeTerminal(true);
 
     state.sid = sid;
+    // 切会话即视为已读（仿微信点开清红点）：立即清当前未读并收起左滑，保证秒反馈。
+    try { closeAllSwipeCells(); clearSessionUnread(sid); updateSessionTitleBadge(); } catch (_e) {}
     groupLoadSeq++;
     groupRenderSeq++;
     // 组视图是全局的：切会话不清空 state.groups，避免点到未分组会话时侧栏组瞬间消失。
@@ -5290,6 +5523,37 @@ case "goal_round": break;
       refreshSessionStatus();
     }, 2000);
   }
+  // ── 会话未读轮询（仿微信后台消息红点）：8s 拉一次前 50 会话，按 messages 差量累未读 ──
+  // 桌面与移动共用同一套；页面不可见时跳过；有新会话出现时走全量 loadSessions 对齐顺序。
+  let unreadPollTimer = 0;
+  function startUnreadPoll() {
+    if (unreadPollTimer) clearInterval(unreadPollTimer);
+    try { updateSessionTitleBadge(); } catch (_e) {}
+    const poll = async () => {
+      if (document.hidden) return;
+      try {
+        const sid = state.sid;
+        const list = await rpc("session.list", { limit: 50, offset: 0 });
+        if (state.sid !== sid) return;
+        const sessions = list.sessions || [];
+        const known = new Set((state.allSessions || []).map((x) => x.id));
+        const hasNew = sessions.some((s) => !known.has(s.id));
+        if (hasNew) { await loadSessions(); return; }
+        let touched = false;
+        (state.allSessions || []).forEach((cur) => {
+          const fresh = sessions.find((s) => s.id === cur.id);
+          if (fresh && (fresh.messages !== cur.messages || fresh.title !== cur.title || fresh.when_str !== cur.when_str)) {
+            cur.messages = fresh.messages; cur.title = fresh.title; cur.when_str = fresh.when_str; cur.mtime = fresh.mtime;
+            touched = true;
+          }
+        });
+        let synced = false;
+        try { synced = syncSessionSeen(state.allSessions || []); } catch (_e) {}
+        if (touched || synced) renderSessionList();
+      } catch (_e) {}
+    };
+    unreadPollTimer = setInterval(poll, 8000);
+  }
   async function refreshStats() {
     if (!state.sid) return;
     try {
@@ -7233,6 +7497,7 @@ case "goal_round": break;
     }
     loadSessions();
     startStats();
+    startUnreadPoll();
   }
 
   // ── 启动 ──
