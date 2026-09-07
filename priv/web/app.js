@@ -248,6 +248,7 @@ const flow = $("flow");
     token: localStorage.getItem("newbee.token") || null,
     ws: null,
     busy: false,
+    interrupted: false,
     turnKind: null,
 
     creatingSession: false,
@@ -476,6 +477,7 @@ const flow = $("flow");
       case "tool_result": toolResult(p.text, !isToolError(p.text), p.duration_ms); break;
       case "tool_error": toolResult(p.text, false); break;
       case "done": {
+        state.interrupted = false;
         finishTurn();
         const doneCard = line("done", p.summary, true, p.created_at);
         // done 总结卡补挂本轮用量（与刷新回放视图一致），避免底部空白
@@ -497,9 +499,10 @@ const flow = $("flow");
         break;
       }
 
-      case "ask": finishTurn(); renderAskCard(p.question, p.options || [], p.kind || "text", p.created_at); break;
-      case "text_end": finishTurn(); break;
+      case "ask": state.interrupted = false; finishTurn(); renderAskCard(p.question, p.options || [], p.kind || "text", p.created_at); break;
+      case "text_end": state.interrupted = false; finishTurn(); break;
       case "error": {
+        state.interrupted = false;
         finishTurn();
         const m = String(p.message || "");
         // 模型配置类错误：给出可操作提示（点模型选择器 / 改 model.json）
@@ -510,8 +513,9 @@ const flow = $("flow");
         }
         break;
       }
-      case "interrupted": finishTurn(); line("notice", "已中断"); break;
+      case "interrupted": state.interrupted = true; finishTurn(); line("notice", "已中断"); break;
       case "session_cleared": {
+        state.interrupted = false;
         finishTurn();
         try { localStorage.removeItem("newbee.draft." + state.sid); } catch (e) {}
         resetStreamState();
@@ -533,6 +537,7 @@ const flow = $("flow");
         break;
       }
       case "session_renewed": {
+        state.interrupted = false;
         finishTurn();
         const newSid = p.sessionId;
         // 后端新实现同 sid 清空：直接清面板；旧实现子 sid：resume 到新 transcript
@@ -607,6 +612,7 @@ case "queue_updated": {
     const started = renderStartedPrompt(ev.id, p.current, ev.at);
     state.turnKind = (p.current && p.current.kind) || ev.kind ||
       (started && started.attachments && started.attachments.length > 0 ? "images" : "text");
+    state.interrupted = false;
     state.busy = true;
     setBusy(true);
     resetTurnUsage();
@@ -618,6 +624,7 @@ case "queue_updated": {
     const steered = renderStartedPrompt(ev.id, ev.input, ev.at);
     state.turnKind = (ev.input && ev.input.kind) || ev.kind ||
       (steered && steered.attachments && steered.attachments.length > 0 ? "images" : state.turnKind || "text");
+    state.interrupted = false;
     if (state.timing.llmStart !== null) state.timing.llmMs += Date.now() - state.timing.llmStart;
     state.timing.llmStart = Date.now();
     state.timing.ftRecorded = false;
@@ -2694,6 +2701,7 @@ case "goal_round": break;
     state.writeScopeOverlaps = [];
 
     loadTiming(sid);
+    state.interrupted = false;
     resetStreamState();
     // 恢复该会话的输入草稿（未发送文字刷新/切会话不丢）
     restoreDraft();
@@ -2785,6 +2793,7 @@ case "goal_round": break;
     resumeSeq++; // 作废旧会话可能仍在途的 resume()，防止其晚到后覆盖新会话 UI
     state.sid = sid;
     localStorage.setItem("newbee.sid", sid);
+    state.interrupted = false;
     state.busy = false;
     state.hasPrompted = false;
     state.titleDirty = false;
@@ -3337,6 +3346,7 @@ case "goal_round": break;
   }
 
   function renderAttachPreview() {
+    updateSendButton();
     const box = $("attach-preview");
     if (!box) return;
     if (state.attachments.length === 0 && state.uploading === 0) {
@@ -3591,9 +3601,10 @@ case "goal_round": break;
     }
   }
   // 发送
-  async function send() {
+  async function send(forcedText) {
     state.eventCreatedAt = new Date().toISOString();
-    const text = input.value.trim();
+    const text = (forcedText == null ? input.value : forcedText).trim();
+    if (text) state.interrupted = false;
     if (text === "/new" || text.startsWith("/new ")) {
       input.value = "";
       autoGrow();
@@ -3604,6 +3615,7 @@ case "goal_round": break;
       return;
     }
     const attachments = state.attachments.slice();
+    if (text || attachments.length > 0) state.interrupted = false;
     if (state.uploading > 0) { line("notice", "请等待文件上传完成"); return; }
     const btw = text.match(/^\/btw(?:\s+([\s\S]*))?$/);
     if (btw) {
@@ -3680,6 +3692,23 @@ case "goal_round": break;
       state.busy = wasBusy; setBusy(wasBusy);
 
     }
+  }
+  function composerCanWhip(busy = state.busy) {
+    return !busy && state.interrupted && !!state.sid &&
+      input.value.trim() === "" && state.attachments.length === 0 && state.uploading === 0;
+  }
+
+  function crackWhip() {
+    if (!composerCanWhip()) return send();
+
+    const button = $("send");
+    if (button) {
+      button.classList.remove("whip-cracking");
+      void button.offsetWidth;
+      button.classList.add("whip-cracking");
+      window.setTimeout(() => button.classList.remove("whip-cracking"), 260);
+    }
+    return send("继续干活");
   }
   function interrupt() {
     if (state.ws && state.ws.readyState === 1) {
@@ -3882,6 +3911,16 @@ case "goal_round": break;
 
 
 
+  function updateSendButton(busy = state.busy) {
+    const sendBtn = $("send");
+    if (!sendBtn) return;
+    const whip = composerCanWhip(busy);
+    sendBtn.classList.toggle("whip-mode", whip);
+    const title = whip ? "抽一鞭子，继续干活" : (busy ? "加入队列：当前任务完成后自动执行" : "发送");
+    sendBtn.title = title;
+    sendBtn.setAttribute("aria-label", title);
+  }
+
   // ── utils ──
   function setBusy(b) {
     $("status-dot").className = `dot ${b ? "busy" : "idle"}`;
@@ -3890,8 +3929,7 @@ case "goal_round": break;
     sendBtn.disabled = false;
     // 图标按钮：不动 innerHTML，只用 class/title 表达状态
     sendBtn.classList.toggle("queuing", b);
-    sendBtn.title = b ? "加入队列：当前任务完成后自动执行" : "发送";
-    sendBtn.setAttribute("aria-label", sendBtn.title);
+    updateSendButton(b);
     if (b) {
       showTurnStatus(state.turnKind);
 
@@ -4178,7 +4216,7 @@ case "goal_round": break;
      renderSegs("medium");
     }
 
-  $("send").onclick = send;
+  $("send").onclick = crackWhip;
   $("attach-btn").onclick = () => $("file-input").click();
   $("file-input").addEventListener("change", (e) => {
     [...(e.target.files || [])].forEach(addAttachment);
@@ -4607,6 +4645,7 @@ case "goal_round": break;
   input.addEventListener("input", () => {
     autoGrow();
     saveDraft(input.value);
+    updateSendButton();
   });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }

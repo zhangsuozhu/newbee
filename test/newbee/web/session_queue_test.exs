@@ -261,7 +261,8 @@ defmodule Newbee.Web.SessionQueueTest do
   test "frontend renders pending input and identifies image turns" do
     js = File.read!("priv/web/app.js")
     css = File.read!("priv/web/style.css")
-    [_, send_and_after] = String.split(js, "async function send()", parts: 2)
+    html = File.read!("priv/web/index.html")
+    [_, send_and_after] = String.split(js, "async function send(", parts: 2)
     [send_body | _] = String.split(send_and_after, "function interrupt()", parts: 2)
 
     refute send_body =~ "renderUserLine("
@@ -277,6 +278,14 @@ defmodule Newbee.Web.SessionQueueTest do
     assert js =~ ~s|type: "btw"|
     assert js =~ "renderBtwStart(p)"
     assert css =~ ".msg-btw"
+    assert js =~ "state.interrupted"
+    assert js =~ "function composerCanWhip"
+    assert js =~ "return send(\"继续干活\")"
+    assert js =~ "whip-mode"
+    assert html =~ "send-icon"
+    assert html =~ "whip-icon"
+    assert css =~ "#send.whip-mode"
+    assert css =~ "#send.whip-cracking"
   end
 
   test "/btw runs independently without changing the main transcript" do

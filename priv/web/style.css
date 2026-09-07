@@ -2193,6 +2193,19 @@ svg.ico {
 /* 排队中：发送按钮微脉动 */
 #send.btn-send.queuing { animation: nb-send-pulse 1.2s ease-in-out infinite; }
 @keyframes nb-send-pulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.3); } }
+.btn-icon-round .whip-icon { display: none; }
+#send.whip-mode { background: var(--nb-warn); color: #1f2328; }
+#send.whip-mode .send-icon { display: none; }
+#send.whip-mode .whip-icon { display: block; }
+#send.whip-mode:hover { filter: brightness(1.08); }
+#send.whip-cracking { animation: nb-whip-crack 260ms ease-out; }
+@keyframes nb-whip-crack {
+  0% { transform: rotate(0deg) scale(1); }
+  35% { transform: rotate(-12deg) scale(.96); }
+  70% { transform: rotate(10deg) scale(1.03); }
+  100% { transform: rotate(0deg) scale(1); }
+}
+@media (prefers-reduced-motion: reduce) { #send.whip-cracking { animation: none; } }
 
 /* ── 思考强度：收纳进 composer-card 顶部一行 ── */
 #composer .composer-card > .composer-effort {
