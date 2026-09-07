@@ -289,6 +289,9 @@ defmodule Newbee.Web.SessionQueueTest do
     assert js =~ "newbee.interrupted."
     assert js =~ "function loadInterrupted"
     assert js =~ "setInterrupted(loadInterrupted(sid))"
+    assert js =~ "function historyIndicatesInterrupted"
+    assert js =~ "historyIndicatesInterrupted(historyMessages)"
+    assert js =~ "last.role === \"tool\""
   end
 
   test "/btw runs independently without changing the main transcript" do
