@@ -210,23 +210,11 @@ defmodule Newbee do
   defp read_agent(query) do
     case String.split(query, "/", parts: 2) do
       [id, path] ->
-        file = Path.join([System.user_home!(), ".newbee", "agents", id, "result.json"])
-
-        case File.read(file) do
-          {:ok, body} ->
-            case Jason.decode(body) do
-              {:ok, value} ->
-                case Newbee.Tools.Json.get(value, path) do
-                  {:ok, v} -> {:ok, inspect(v, pretty: true, limit: 50)}
-                  :error -> {:error, :path_not_found}
-                end
-
-              {:error, e} ->
-                {:error, {:bad_json, e}}
-            end
-
-          _ ->
-            {:error, :agent_not_found}
+        with {:ok, value} <- Newbee.Agent.Explorer.read(id) do
+          case Newbee.Tools.Json.get(value, path) do
+            {:ok, v} -> {:ok, inspect(v, pretty: true, limit: 50)}
+            :error -> {:error, :path_not_found}
+          end
         end
 
       [id] ->

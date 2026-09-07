@@ -279,14 +279,15 @@ lib/newbee/
 ## 🧪 测试与基准 / Testing & Benchmarks
 
 ```bash
-mix test                          # 全量测试
-mix test test/newbee/acceptance_test.exs  # §15 架构验收 (12 项)
-mix newbee.bench                   # 真实 LLM 公开基准
-mix newbee.doctor                  # 工具链/配置/目录体检
+mix test.fast                    # 隔离分区快速回归：排除长时间 acceptance
+mix test.acceptance              # §15 架构验收，固定 seed，单独运行
+mix test.all                     # 快速分区回归 + acceptance 的完整入口
+mix test                         # 原生单进程入口（适合传入自定义文件/参数）
+mix newbee.bench                 # 真实 LLM 公开基准
+mix newbee.doctor                # 工具链/配置/目录体检
 ```
 
-- 全套件 **282–284/287** 通过 (OTP 29 + Elixir 1.20)，`acceptance` 单跑 12/12 全过
-- *Full suite 282–284/287 passing, acceptance 12/12 green in isolation.*
+快速回归与架构验收分开运行，避免长评测任务阻塞普通反馈；完整套件的总时长取决于评测 deadline。
 
 ---
 

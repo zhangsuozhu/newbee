@@ -13,8 +13,6 @@ defmodule Newbee.CommandsMoreTest do
     {fn line -> send(parent, {:said, line}) end, parent}
   end
 
-  defp said(parent), do: parent
-
   test "/permissions 显示档位" do
     {say, _parent} = say_collector()
     assert :handled = Commands.handle("/permissions", %{say: say})

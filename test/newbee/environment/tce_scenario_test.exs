@@ -7,7 +7,7 @@ defmodule Newbee.Environment.TceScenarioTest do
 
   use Newbee.EnvironmentCase, async: false
 
-  alias Newbee.Environment.{PatternStore, PatternStats, Jit, Sequential}
+  alias Newbee.Environment.{PatternStore, PatternStats, Sequential}
   alias Newbee.Agent.Adapter
 
   @tag :scenario

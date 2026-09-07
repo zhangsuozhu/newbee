@@ -9,6 +9,8 @@ defmodule Newbee.Web.Session do
   """
   use GenServer
 
+  @max_queue_items 128
+
   defstruct kernel: nil,
             sid: nil,
             busy: false,
@@ -23,6 +25,7 @@ defmodule Newbee.Web.Session do
             runtime_id: nil,
             completed_deliveries: MapSet.new(),
             queue: :queue.new(),
+            queue_ids: MapSet.new(),
             # 等待队列 ID 化（方案A）：内存队列 + 自增 seq + 最近事件环，供刷新重建与单条取消。
             queue_seq: 0,
             queue_events: [],
@@ -560,20 +563,38 @@ defmodule Newbee.Web.Session do
     |> MapSet.new()
   end
 
+  defp queue_index(%{queue_ids: %MapSet{} = ids}), do: ids
+  defp queue_index(%{queue: queue}), do: queue_ids(queue)
+
+  defp set_queue(st, queue) do
+    %{st | queue: queue, queue_ids: queue_ids(queue)}
+  end
+
   defp enqueue_item(st, item) do
     id = item_delivery_id(item)
-    queued? = MapSet.member?(queue_ids(st.queue), item.id)
+    queued? = MapSet.member?(queue_index(st), item.id)
     current? = id != nil and item_delivery_id(Map.get(st, :current)) == id
     completed? = id != nil and MapSet.member?(Map.get(st, :completed_deliveries, MapSet.new()), id)
 
-    if queued? or current? or completed? do
-      {st, item, false}
-    else
-      q = :queue.in(item, st.queue)
-      st1 = %{st | queue: q}
-      {st2, ev} = push_queue_event(st1, "enqueued", %{id: item.id, kind: item.kind, preview: item.preview})
-      broadcast_queue(st.sid, st2, ev)
-      {st2, item, true}
+    cond do
+      queued? or current? or completed? ->
+        {st, item, false}
+
+      :queue.len(st.queue) >= @max_queue_items ->
+        broadcast(st.sid, :queue_full, %{
+          queued: :queue.len(st.queue),
+          limit: @max_queue_items,
+          preview: Map.get(item, :preview, "")
+        })
+
+        {st, item, false}
+
+      true ->
+        q = :queue.in(item, st.queue)
+        st1 = set_queue(st, q)
+        {st2, ev} = push_queue_event(st1, "enqueued", %{id: item.id, kind: item.kind, preview: item.preview})
+        broadcast_queue(st.sid, st2, ev)
+        {st2, item, true}
     end
   end
 
@@ -1082,7 +1103,8 @@ defmodule Newbee.Web.Session do
     current = current_delivery(st.current)
     queued = :queue.to_list(st.queue)
     {kept, cleared} = Enum.split_with(queued, &collaboration_item?/1)
-    st1 = %{st | queue: :queue.from_list(kept), current: nil}
+    st1 = set_queue(st, :queue.from_list(kept))
+    st1 = %{st1 | current: nil}
 
     st1 =
       if is_map(current),
@@ -1236,7 +1258,7 @@ defmodule Newbee.Web.Session do
     case :queue.out(st.queue) do
       {{:value, item}, rest} ->
         if steerable_item?(item, st) do
-          st1 = %{st | queue: rest}
+          st1 = set_queue(st, rest)
           input = public_queue_item(item)
 
           {st2, ev} =
@@ -1270,7 +1292,7 @@ defmodule Newbee.Web.Session do
 
     case found do
       [item] ->
-        st1 = %{st | queue: rest}
+        st1 = set_queue(st, rest)
 
         {st2, ev} =
           push_queue_event(st1, "cancelled", %{
@@ -1300,7 +1322,7 @@ defmodule Newbee.Web.Session do
     if n == 0 do
       {:reply, {:ok, %{cleared: 0, queued: 0, queue: []}}, st}
     else
-      st1 = %{st | queue: :queue.new()}
+      st1 = set_queue(st, :queue.new())
       {st2, ev} = push_queue_event(st1, "cleared", %{count: n, reason: "clear_queue"})
       broadcast_queue(st.sid, st2, ev)
       broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
@@ -1597,7 +1619,6 @@ defmodule Newbee.Web.Session do
   end
 
   def handle_info({:turn_finished, _id, _result}, st), do: {:noreply, st}
-  def handle_info({:turn_finished, _legacy_result}, st), do: {:noreply, st}
 
   def handle_info({kind, _ref, {:ok, kernel}}, st)
       when kind in [:kernel_booted, :kernel_restarted] do
@@ -1702,15 +1723,7 @@ defmodule Newbee.Web.Session do
 
   defp enqueue_pending_delivery(st, _), do: st
 
-  defp pending_delivery_capacity?(st) do
-    queued =
-      st.queue
-      |> :queue.to_list()
-      |> Enum.count(&collaboration_item?/1)
-
-    current = if collaboration_item?(Map.get(st, :current)), do: 1, else: 0
-    queued + current < 128
-  end
+  defp pending_delivery_capacity?(st), do: :queue.len(st.queue) < @max_queue_items
 
   @impl true
   def terminate(_reason, st) do
@@ -1825,7 +1838,7 @@ defmodule Newbee.Web.Session do
 
     case :queue.out(q) do
       {{:value, %{id: id} = item}, rest} ->
-        st1 = %{st | queue: rest}
+        st1 = set_queue(st, rest)
 
         if collaboration_item?(item) do
           case claim_queued_item(st1, item) do
@@ -1848,7 +1861,7 @@ defmodule Newbee.Web.Session do
                   st_ev
 
                 true ->
-                  %{st1 | queue: :queue.in_r(item, rest)}
+                  set_queue(st1, :queue.in_r(item, rest))
               end
 
             {:skip, skipped} ->
@@ -1857,7 +1870,7 @@ defmodule Newbee.Web.Session do
               dispatch_pending(st_ev)
 
             {:defer, deferred} ->
-              %{deferred | queue: :queue.in_r(item, rest)}
+              set_queue(deferred, :queue.in_r(item, rest))
           end
         else
           st2 = dispatch_item(st1, item, true)
@@ -1865,7 +1878,7 @@ defmodule Newbee.Web.Session do
         end
 
       {{:value, {:text, t}}, q2} ->
-        st2 = %{st | queue: q2} |> dispatch_input(t)
+        st2 = set_queue(st, q2) |> dispatch_input(t)
 
         if st2.busy do
           {st_ev, ev} = push_queue_event(st2, "started", %{id: "legacy", kind: "text"})
@@ -1877,26 +1890,26 @@ defmodule Newbee.Web.Session do
 
       {{:value, {:collab_message, m}}, q2} ->
         item = make_collab_message_item(m)
-        st1 = %{st | queue: q2}
+        st1 = set_queue(st, q2)
 
         case claim_queued_item(st1, item) do
           {:deliver, claimed_item} ->
             st2 = dispatch_queued_item(st1, claimed_item)
-            if st2.busy, do: st2, else: %{st1 | queue: :queue.in_r(item, q2)}
+            if st2.busy, do: st2, else: set_queue(st1, :queue.in_r(item, q2))
 
           {:skip, skipped} ->
             dispatch_pending(skipped)
 
           {:defer, deferred} ->
-            %{deferred | queue: :queue.in_r(item, q2)}
+            set_queue(deferred, :queue.in_r(item, q2))
         end
 
       {{:value, {:images, urls, t}}, q2} ->
-        st2 = %{st | queue: q2} |> dispatch_images(urls, t)
+        st2 = set_queue(st, q2) |> dispatch_images(urls, t)
         if st2.busy, do: st2, else: dispatch_pending(st2)
 
       {{:value, other}, q2} ->
-        st2 = %{st | queue: q2} |> do_submit(other)
+        st2 = set_queue(st, q2) |> do_submit(other)
         if st2.busy, do: st2, else: dispatch_pending(st2)
 
       {:empty, _} ->
@@ -2027,7 +2040,8 @@ defmodule Newbee.Web.Session do
   defp fail_pending(%{queue: q} = st) do
     {kept, discarded} = :queue.to_list(q) |> Enum.split_with(&collaboration_item?/1)
     count = length(discarded)
-    st1 = %{st | queue: :queue.from_list(kept), current: nil}
+    st1 = set_queue(st, :queue.from_list(kept))
+    st1 = %{st1 | current: nil}
 
     st2 =
       if count > 0 do
@@ -2228,6 +2242,7 @@ defmodule Newbee.Web.Session do
         booting: true,
         busy: false,
         queue: :queue.new(),
+        queue_ids: MapSet.new(),
         current: nil,
         boot_client: client,
         boot_worker: worker,

@@ -53,12 +53,6 @@ defmodule Newbee.Agent.LoopCompactTest do
       ]
     }
 
-  defp text_msg(text),
-    do: fn _m, on_text ->
-      on_text.(text)
-      {:ok, %{"role" => "assistant", "content" => text}, %{}}
-    end
-
   test "压缩后 transcript 字节不变；恢复的会话即压缩视图", %{id: id, ev: ev} do
     script =
       Enum.map(1..6, fn i -> fn _m, _t -> {:ok, tool_msg("x = #{i}", "c#{i}"), %{}} end end) ++

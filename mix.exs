@@ -13,6 +13,8 @@ defmodule Newbee.MixProject do
     ]
   end
 
+  def cli, do: [preferred_envs: ["test.fast": :test, "test.acceptance": :test, "test.all": :test]]
+
   def application do
     [
       extra_applications: [:logger],
@@ -37,6 +39,9 @@ defmodule Newbee.MixProject do
   defp aliases do
     [
       "deps.patch": ["cmd bash bin/patch-deps.sh"],
+      "test.fast": ["newbee.test_fast"],
+      "test.all": ["newbee.test_fast", "test test/newbee/acceptance_test.exs --warnings-as-errors --seed 1"],
+      "test.acceptance": ["test test/newbee/acceptance_test.exs --warnings-as-errors --seed 1"],
       setup: ["deps.get", "deps.patch", "compile"]
     ]
   end

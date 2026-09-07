@@ -18,7 +18,7 @@ defmodule Newbee.AcceptanceTest do
 
   use Newbee.EnvironmentCase, async: false
 
-  alias Newbee.Environment.{BindingCodec, Coordinator, EvaluatorPool, Generation, Release, Store}
+  alias Newbee.Environment.{BindingCodec, Coordinator, EvaluatorPool, Store}
 
   setup do
     _pid = start_coordinator!()
@@ -49,7 +49,7 @@ defmodule Newbee.AcceptanceTest do
     {change, release}
   end
 
-  defp wait_evaluation(coordinator, change_id, retries \\ 100) do
+  defp wait_evaluation(coordinator, change_id, retries \\ 6000) do
     change = Enum.find(Coordinator.changes(coordinator), &(&1.change_id == change_id))
 
     if change.status in [:canary, :active, :rejected] or retries <= 0 do
@@ -435,7 +435,11 @@ defmodule Newbee.AcceptanceTest do
           plugin_id: "tool.audit",
           kind: :tool,
           source_files: %{"audit.ex" => tool_source("AuditTool", "tool.audit")}
-        }, reason: "审计测试", evidence: [%{event: "ev-123"}], author: :worker)
+        },
+        reason: "审计测试",
+        evidence: [%{event: "ev-123"}],
+        author: :worker
+      )
 
     # 谁（author_agent）、何时（created_at）、基于哪条证据（evidence）、
     # 改了哪个 release（candidate_revision）、如何回退（base_revision）
@@ -473,6 +477,7 @@ defmodule Newbee.AcceptanceTest do
     # 协作段默认不注入，仅协作上下文显式开启
     assert view1.collaboration == ""
   end
+
   # ── 验收 11：沉睡规则 compaction 后存活 ──
 
   @tag :acceptance

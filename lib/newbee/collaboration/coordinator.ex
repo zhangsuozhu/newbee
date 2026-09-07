@@ -28,8 +28,9 @@ defmodule Newbee.Collaboration.Coordinator do
   @default_max_depth 3
   @default_wait_timeout_ms 30_000
   @max_wait_timeout_ms 120_000
+  @max_activity_cache 512
 
-  defstruct store: nil, path: nil, groups: %{}, commands: MapSet.new(), waiters: []
+  defstruct store: nil, path: nil, groups: %{}, commands: MapSet.new(), waiters: [], activity_cache: %{}
 
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
@@ -577,18 +578,24 @@ defmodule Newbee.Collaboration.Coordinator do
       limit = Keyword.get(opts, :limit, 100) |> max(1) |> min(500)
 
       activity =
-        state.path
-        |> EventStore.replay(since)
-        |> Enum.filter(&(to_string(&1.data["group_id"]) == group_id))
-        |> Enum.take(-limit)
-        |> Enum.map(fn event ->
-          %{
-            "event_id" => event.id,
-            "topic" => to_string(event.topic),
-            "payload" => public_payload(event.data["payload"]),
-            "at" => event.at
-          }
-        end)
+        case cached_activity(state, group_id, since, limit) do
+          {:ok, cached} ->
+            cached
+
+          :miss ->
+            state.path
+            |> EventStore.replay(since)
+            |> Enum.filter(&(to_string(&1.data["group_id"]) == group_id))
+            |> Enum.take(-limit)
+            |> Enum.map(fn event ->
+              %{
+                "event_id" => event.id,
+                "topic" => to_string(event.topic),
+                "payload" => public_payload(event.data["payload"]),
+                "at" => event.at
+              }
+            end)
+        end
 
       {:reply, {:ok, activity}, state}
     else
@@ -1159,7 +1166,66 @@ defmodule Newbee.Collaboration.Coordinator do
     end
   end
 
-  defp apply_event(
+  defp cached_activity(state, group_id, since, limit) do
+    case Map.fetch(state.activity_cache, group_id) do
+      :error ->
+        :miss
+
+      {:ok, entries} ->
+        entries = Enum.reverse(entries)
+
+        case entries do
+          [] ->
+            {:ok, []}
+
+          [%{id: first_id} | _] when is_integer(first_id) and since >= first_id - 1 ->
+            {:ok,
+             entries
+             |> Enum.filter(&(&1.id > since))
+             |> Enum.take(-limit)
+             |> Enum.map(&public_cached_activity/1)}
+
+          _ ->
+            :miss
+        end
+    end
+  end
+
+  defp public_cached_activity(entry) do
+    %{
+      "event_id" => entry.id,
+      "topic" => entry.topic,
+      "payload" => public_payload(entry.payload),
+      "at" => entry.at
+    }
+  end
+
+  defp remember_activity(state, %{"group_id" => group_id, "event_id" => event_id} = event)
+       when is_binary(group_id) and is_integer(event_id) do
+    entry = %{
+      id: event_id,
+      topic: event["topic"],
+      payload: event["payload"],
+      at: event["at"]
+    }
+
+    cache =
+      Map.update(state.activity_cache, group_id, [entry], fn entries ->
+        [entry | entries] |> Enum.take(@max_activity_cache)
+      end)
+
+    %{state | activity_cache: cache}
+  end
+
+  defp remember_activity(state, _event), do: state
+
+  defp apply_event(state, event) do
+    state
+    |> remember_activity(event)
+    |> apply_event_state(event)
+  end
+
+  defp apply_event_state(
          state,
          %{"topic" => "collab_group_created", "payload" => %{"group" => group}} = event
        ) do
@@ -1168,7 +1234,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(
+  defp apply_event_state(
          state,
          %{
            "topic" => "collab_member_added",
@@ -1184,7 +1250,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(
+  defp apply_event_state(
          state,
          %{
            "topic" => "collab_delegated",
@@ -1207,7 +1273,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(
+  defp apply_event_state(
          state,
          %{
            "topic" => "collab_member_removed",
@@ -1224,7 +1290,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(
+  defp apply_event_state(
          state,
          %{
            "topic" => "collab_message_created",
@@ -1246,7 +1312,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(
+  defp apply_event_state(
          state,
          %{
            "topic" => topic,
@@ -1273,7 +1339,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(
+  defp apply_event_state(
          state,
          %{
            "topic" => "collab_task_claimed",
@@ -1299,7 +1365,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(
+  defp apply_event_state(
          state,
          %{
            "topic" => topic,
@@ -1317,7 +1383,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(
+  defp apply_event_state(
          state,
          %{
            "topic" => "collab_group_status_changed",
@@ -1332,7 +1398,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(
+  defp apply_event_state(
          state,
          %{
            "topic" => "collab_task_lease_renewed",
@@ -1354,7 +1420,7 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
-  defp apply_event(state, %{"topic" => "collab_group_deleted", "group_id" => group_id} = event) do
+  defp apply_event_state(state, %{"topic" => "collab_group_deleted", "group_id" => group_id} = event) do
     state
     |> notify_deleted_waiters(group_id)
     |> Map.update!(:groups, &Map.delete(&1, group_id))
@@ -2686,13 +2752,16 @@ defmodule Newbee.Collaboration.Coordinator do
   defp append_deliveries(existing, _), do: existing
 
   defp upsert_delivery(deliveries, delivery) do
-    if Enum.any?(deliveries, &(&1["delivery_id"] == delivery["delivery_id"])) do
-      Enum.map(deliveries, fn current ->
-        if current["delivery_id"] == delivery["delivery_id"], do: delivery, else: current
+    {updated, replaced?} =
+      Enum.map_reduce(deliveries, false, fn current, replaced? ->
+        if current["delivery_id"] == delivery["delivery_id"] do
+          {delivery, true}
+        else
+          {current, replaced?}
+        end
       end)
-    else
-      deliveries ++ [delivery]
-    end
+
+    if replaced?, do: updated, else: updated ++ [delivery]
   end
 
   defp public_event(event), do: Map.update(event, "payload", nil, &public_payload/1)

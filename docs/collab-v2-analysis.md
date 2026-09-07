@@ -3,6 +3,7 @@
 > 审计日期：2026-09-03
 > 对比源码：OpenAI Codex `94311d447587411789533c47601fd8bc9d81eb48`；DeepSeek Harness `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`。
 > 本文区分四类陈述：**源码事实**、**外部实证**、**设计推论**、**待验证假说**。设计推论不伪装成论文结论。
+> **当前实现边界**：本文记录迁移审计与历史故障复现；示例中的旧 `Newbee.Tools.Collaboration` / `Process.put` 仅是旧路径证据，当前调用入口是 `Newbee.Tools.Hive`。
 
 ## 结论先行
 
