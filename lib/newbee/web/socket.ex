@@ -183,11 +183,12 @@ defmodule Newbee.Web.Socket do
 
   @impl true
   def terminate(_reason, st) do
-    Newbee.Web.Terminal.close(st.sid)
+    # 终端是 session 级资源，不归 WebSocket 管。WS 断开（切会话/刷新/网络抖动）
+    # 只退订总线，PTY 保留——重连时重新 open/订阅即可恢复，历史不丢。
+    # 真正的终端清理由 WSession 终止或显式 terminal_close 负责。
     Newbee.Bus.unsubscribe()
     {:ok, st}
   end
-
   defp terminal_open(st) do
     cwd = Newbee.Session.cwd(st.sid) || File.cwd!()
 
@@ -198,9 +199,21 @@ defmodule Newbee.Web.Socket do
   end
 
   defp terminal_ready(st, payload) when is_map(payload) do
-    {:push, [{:text, terminal_frame("ready", payload)}], st}
-  end
+    {scrollback, ready} = Map.pop(payload, :scrollback)
 
+    frames =
+      case scrollback do
+        # 重连/重开：先把滚动历史作为一帧 output 回放，再发 ready，
+        # 让人能看到断开期间 AI 在终端里干了啥。
+        data when is_binary(data) and data != "" ->
+          [{:text, terminal_frame("output", %{data: data, replay: true})}, {:text, terminal_frame("ready", ready)}]
+
+        _ ->
+          [{:text, terminal_frame("ready", ready)}]
+      end
+
+    {:push, frames, st}
+  end
   defp terminal_input(st, data) when byte_size(data) > @max_terminal_input_bytes do
     terminal_error(st, "单次输入不能超过 #{@max_terminal_input_bytes} 字节")
   end
