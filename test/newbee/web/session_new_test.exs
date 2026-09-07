@@ -2,6 +2,21 @@ defmodule Newbee.Web.SessionNewTest do
   use ExUnit.Case, async: false
 
   # /new：异步重启，不阻塞 session.state；广播 session_cleared 并清空 transcript
+
+  test "ensure persists an empty session before its first message" do
+    sid = "test_empty_#{System.unique_integer([:positive])}"
+
+    session = Newbee.Session.open(sid)
+    on_exit(fn -> Newbee.Web.Session.destroy(sid) end)
+
+    refute File.regular?(session.transcript)
+    assert {:ok, pid, ^sid} = Newbee.Web.Session.ensure(sid, File.cwd!())
+    assert is_pid(pid)
+    assert File.regular?(session.transcript)
+    assert Newbee.Session.messages(session) == []
+    assert Enum.any?(Newbee.Session.list_with_meta(10), &(&1.id == sid))
+  end
+
   test "/new async restart does not block state and clears transcript" do
     root = Path.join(System.tmp_dir!(), "newbee-session-new-#{System.unique_integer([:positive])}")
     config_path = Path.join(root, "model.json")
@@ -149,6 +164,10 @@ defmodule Newbee.Web.SessionNewTest do
     end)
 
     assert {:ok, session, ^sid} = Newbee.Web.Session.ensure(sid, File.cwd!())
+
+    assert File.regular?(Newbee.Session.open(sid).transcript)
+
+    assert Enum.any?(Newbee.Session.list_with_meta(10), &(&1.id == sid))
 
     state =
       Enum.reduce_while(1..600, nil, fn _, _ ->
