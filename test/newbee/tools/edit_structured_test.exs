@@ -71,6 +71,16 @@ defmodule Newbee.Tools.EditStructuredTest do
     assert File.read!(path) == "a\nB\nc\n"
   end
 
+  test "structured empty text inserts one blank line", %{path: path} do
+    w!(path, "a\nc\n")
+    s = Edit.show(path)
+
+    result = Edit.patch(%{path: path, tag: s.tag, op: :after, line: 1, text: ""})
+
+    assert result.status == :applied
+    assert File.read!(path) == "a\n\nc\n"
+  end
+
   test "键名宽容：file/snapshot/ops/changes", %{path: path} do
     w!(path, "a\nb\n")
     s = Edit.show(path)
