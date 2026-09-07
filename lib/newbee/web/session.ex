@@ -1508,7 +1508,11 @@ defmodule Newbee.Web.Session do
 
     case coordinator_call(:pending_deliveries, [st.sid]) do
       {:ok, deliveries} when is_list(deliveries) ->
-        st = Enum.reduce(Enum.take(deliveries, 128), st, &enqueue_pending_delivery/2)
+        st =
+          Enum.reduce(Enum.take(deliveries, 128), st, fn envelope, acc ->
+            enqueue_pending_delivery(acc, envelope)
+          end)
+
         st = if st.busy or st.booting, do: st, else: dispatch_pending(st)
         {:noreply, st}
 
