@@ -420,4 +420,31 @@ defmodule Newbee.Web.SessionQueueTest do
     assert item.delivery_id == delivery["delivery_id"]
     assert item.payload["task_id"] == task["task_id"]
   end
+
+  test "web render target does not retain a reloadable closure" do
+    sid = "render-reload-" <> Integer.to_string(System.unique_integer([:positive]))
+    Newbee.Bus.subscribe()
+    {:ok, evaluator} = Newbee.DEE.Evaluator.start(mode: :local)
+
+    {:ok, kernel} =
+      Newbee.Agent.Loop.start_link(
+        client: %{},
+        evaluator: evaluator,
+        session: false,
+        render: {:web_session, sid},
+        client_fun: fn _messages, on_text ->
+          on_text.("ok")
+          {:ok, %{"role" => "assistant", "content" => "ok", "tool_calls" => []}, %{}}
+        end
+      )
+
+    on_exit(fn ->
+      Newbee.Bus.unsubscribe()
+      if Process.alive?(kernel), do: GenServer.stop(kernel)
+      if Process.alive?(evaluator), do: GenServer.stop(evaluator)
+    end)
+
+    assert {:text, "ok"} = Newbee.Agent.Loop.submit(kernel, "hello")
+    assert_receive {:newbee_event, :web_event, {:web_event, ^sid, :text, %{delta: "ok"}}}, 500
+  end
 end
