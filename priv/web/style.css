@@ -150,7 +150,8 @@ body {
 .session-item:hover .menu-btn { opacity: 1; }
 .session-item .menu-btn:hover { background: var(--nb-border); color: var(--nb-label-1); }
  /* ── 微信式左滑删除：外层裁剪槽 + 内层平移 + 右侧红色操作区 ── */
- .swipe-cell { position: relative; overflow: hidden; border-radius: 8px; }
+ /* Keep scrollable rows at their content height instead of clipping them to zero. */
+ .swipe-cell { position: relative; flex-shrink: 0; overflow: hidden; border-radius: 8px; }
  .swipe-cell .session-item {
    position: relative; z-index: 1; margin: 0;
    background: var(--nb-bg-panel);
