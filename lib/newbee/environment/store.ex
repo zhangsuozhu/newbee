@@ -29,6 +29,10 @@ defmodule Newbee.Environment.Store do
   @schema_version 1
 
   @subdirs [:plugins, :changes, :evaluations, :projections, :bindings, :locks]
+  @legacy_builtin_aliases %{
+    # `tool.collaboration` was replaced by Hive; keep old project snapshots bootable.
+    "tool.collaboration" => "tool.hive"
+  }
 
   # ── 路径 ──
 
@@ -266,8 +270,8 @@ defmodule Newbee.Environment.Store do
 
   def migrate(env), do: {:ok, env}
 
-  # 旧快照可能引用已被重新编译的 builtin release。项目 release 不可变，
-  # 但 builtin 由当前 BEAM 的 module md5 内容寻址，因此只迁移缺失的 builtin 指针。
+  # 旧快照可能引用已被重新编译的 builtin release，或引用已经重命名的 builtin。
+  # 项目 release 不可变；明确的 builtin 身份迁移在启动时更新 active 指针。
   defp reconcile_missing_builtin_releases! do
     case File.read(path(:environment)) do
       {:ok, body} ->
@@ -275,9 +279,24 @@ defmodule Newbee.Environment.Store do
              active when is_map(active) <- env["active"] do
           builtin = Newbee.Plugins.builtins() |> Map.new(&{&1.plugin_id, &1.release_id})
 
-          # 1. 已有 plugin_id 但 release 指针过期/缺失 → 迁移到当前 builtin release
+          # 1. 已删除/重命名的 builtin 身份 → 当前 builtin release。
+          #    仅迁移明确登记的身份，未知插件仍保留，避免静默丢失项目数据。
           migrated =
-            Enum.reduce(active, active, fn {plugin_id, release_id}, acc ->
+            Enum.reduce(@legacy_builtin_aliases, active, fn {legacy_id, current_id}, acc ->
+              case {Map.fetch(acc, legacy_id), Map.fetch(builtin, current_id)} do
+                {{:ok, _legacy_release}, {:ok, current_release}} ->
+                  acc
+                  |> Map.delete(legacy_id)
+                  |> Map.put_new(current_id, current_release)
+
+                _ ->
+                  acc
+              end
+            end)
+
+          # 2. 已有 plugin_id 但 release 指针过期/缺失 → 当前 builtin release。
+          migrated =
+            Enum.reduce(migrated, migrated, fn {plugin_id, release_id}, acc ->
               current = Map.get(builtin, plugin_id)
               release_path = Path.join(release_dir(plugin_id, release_id), "release.json")
 
@@ -288,9 +307,8 @@ defmodule Newbee.Environment.Store do
               end
             end)
 
-          # 2. 新增内置插件（当前 BEAM 新增的 builtin，active 图缺失）
-          #    —— 内置能力从首启就在 active 图（§3.1/§5），新加内置同样应自动呈现，
-          #      避免 CapabilityGate 拒绝"未激活的 builtin 工具"（P0 活锁同源）。
+          # 3. 新增内置插件（当前 BEAM 新增的 builtin，active 图缺失）。
+          #    内置能力从首启就在 active 图，避免 CapabilityGate 拒绝内置工具。
           migrated =
             Enum.reduce(builtin, migrated, fn {plugin_id, release_id}, acc ->
               if Map.has_key?(acc, plugin_id), do: acc, else: Map.put(acc, plugin_id, release_id)

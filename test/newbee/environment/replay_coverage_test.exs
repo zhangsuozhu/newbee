@@ -45,6 +45,45 @@ defmodule Newbee.Environment.ReplayCoverageTest do
     assert Coordinator.current(coordinator).autonomy == :autonomous
   end
 
+  test "migrates the removed collaboration builtin to Hive on store recovery" do
+    Store.ensure!()
+
+    legacy_active =
+      Newbee.Plugins.builtin_active_map()
+      |> Map.delete("tool.hive")
+      |> Map.put("tool.collaboration", "tool.collaboration@d58e9a462bfc")
+
+    environment = %{
+      "schema" => Store.schema_version(),
+      "revision" => 3,
+      "active" => legacy_active,
+      "checkpoint" => 7,
+      "manifest" => %{
+        "revision" => 3,
+        "active" => legacy_active,
+        "revisions" => [],
+        "checkpoint" => 7,
+        "degraded" => []
+      }
+    }
+
+    Store.write_atomic!(
+      Store.path(:environment),
+      Jason.encode_to_iodata!(environment, pretty: true)
+    )
+
+    assert :ok = Store.ensure!()
+    assert {:ok, restored} = Store.load_environment()
+    assert restored["active"]["tool.hive"] == Newbee.Plugins.builtin("tool.hive").release_id
+    refute Map.has_key?(restored["active"], "tool.collaboration")
+    assert restored["manifest"]["active"] == restored["active"]
+
+    assert {:ok, _release} =
+             Newbee.Environment.PluginManager.fetch_or_builtin(restored["active"]["tool.hive"])
+
+    assert :ok = Newbee.Environment.Generation.load_active_into(Node.self())
+  end
+
   defp change(id, evaluation_result) do
     %Change{
       change_id: "chg_#{id}",
