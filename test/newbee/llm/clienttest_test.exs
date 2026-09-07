@@ -164,6 +164,36 @@ defmodule Newbee.LLM.ClientTest do
     refute Map.has_key?(body2, "prompt_cache_key")
   end
 
+  test "OpenCode 请求自动带会话头和版本 UA" do
+    test_pid = self()
+
+    plug = fn conn ->
+      send(test_pid, {
+        :request_headers,
+        Plug.Conn.get_req_header(conn, "x-opencode-session"),
+        Plug.Conn.get_req_header(conn, "user-agent")
+      })
+
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"role" => "assistant", "content" => "ok"}}]})
+    end
+
+    client =
+      Client.new(
+        provider: "opencode",
+        model: "ox-alpha-free",
+        api_key: "test",
+        base_url: "http://localhost",
+        cache_key: "newbee-session-abc",
+        req_options: [plug: plug, retry: false]
+      )
+
+    assert client.session_id == "session-abc"
+    assert {:ok, "ok", _} = Client.complete(client, [%{"role" => "user", "content" => "hi"}])
+    assert_received {:request_headers, ["session-abc"], [ua]}
+    assert ua == Client.user_agent()
+    assert String.starts_with?(ua, "newbee/")
+  end
+
   test "normalize_usage：prompt_tokens_details.cached_tokens 透传（Sub2API 命中形态）" do
     u = Client.normalize_usage(%{"prompt_tokens" => 100, "prompt_tokens_details" => %{"cached_tokens" => 80}})
     assert u["cache_read_tokens"] == 80
@@ -318,21 +348,36 @@ defmodule Newbee.LLM.ClientTest do
       assert client1.responses_mode == client2.responses_mode
     end
   end
+
   describe "sensenova tool_calls id 缺失根治" do
     test "normalize 缺 id 补合成，无名丢掉" do
-      [one] = Client.normalize_tool_calls([%{"type" => "function", "function" => %{"name" => "run_elixir", "arguments" => "{}"}}])
+      [one] =
+        Client.normalize_tool_calls([
+          %{"type" => "function", "function" => %{"name" => "run_elixir", "arguments" => "{}"}}
+        ])
+
       assert is_binary(one["id"])
       assert one["id"] != ""
       assert one["function"]["name"] == "run_elixir"
-      assert Client.normalize_tool_calls([%{"id" => nil, "type" => "function", "function" => %{"name" => "", "arguments" => ""}}]) == []
+
+      assert Client.normalize_tool_calls([
+               %{"id" => nil, "type" => "function", "function" => %{"name" => "", "arguments" => ""}}
+             ]) == []
     end
 
     test "sanitize 两侧 nil id 按位置配对，外发一定有 id" do
       msgs = [
         %{"role" => "user", "content" => "hi"},
-        %{"role" => "assistant", "content" => "", "tool_calls" => [%{"id" => nil, "type" => "function", "function" => %{"name" => "run_elixir", "arguments" => "{}"}}]},
+        %{
+          "role" => "assistant",
+          "content" => "",
+          "tool_calls" => [
+            %{"id" => nil, "type" => "function", "function" => %{"name" => "run_elixir", "arguments" => "{}"}}
+          ]
+        },
         %{"role" => "tool", "content" => "ok"}
       ]
+
       san = Client.sanitize_messages(msgs)
       assistant = Enum.find(san, fn m -> m["role"] == "assistant" end)
       tool = Enum.find(san, fn m -> m["role"] == "tool" end)
@@ -347,13 +392,20 @@ defmodule Newbee.LLM.ClientTest do
     test "sanitize 丢空与非法角色，悬空补占位" do
       msgs = [%{"role" => "user", "content" => "hi"}, %{"role" => "assistant", "content" => "   "}]
       assert Client.sanitize_messages(msgs) == [%{"role" => "user", "content" => "hi"}]
+
       dangling = [
         %{"role" => "user", "content" => "hi"},
-        %{"role" => "assistant", "content" => "", "tool_calls" => [%{"id" => "call_orphan", "type" => "function", "function" => %{"name" => "run_elixir", "arguments" => "{}"}}]}
+        %{
+          "role" => "assistant",
+          "content" => "",
+          "tool_calls" => [
+            %{"id" => "call_orphan", "type" => "function", "function" => %{"name" => "run_elixir", "arguments" => "{}"}}
+          ]
+        }
       ]
+
       san = Client.sanitize_messages(dangling)
       assert Enum.any?(san, fn m -> m["role"] == "tool" and m["tool_call_id"] == "call_orphan" end)
     end
   end
-
 end

@@ -14,7 +14,11 @@ defmodule Newbee.LLM.ResponsesTest do
 
     plug = fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
-      send(test_pid, {:request, conn.request_path, Jason.decode!(body)})
+
+      send(
+        test_pid,
+        {:request, conn.request_path, Jason.decode!(body), Plug.Conn.get_req_header(conn, "x-opencode-session")}
+      )
 
       Req.Test.json(conn, %{
         "output" => [
@@ -40,6 +44,7 @@ defmodule Newbee.LLM.ResponsesTest do
 
     client =
       Client.new(
+        provider: "opencode",
         api: "openai-responses",
         model: "muse-spark-1.2-contributor",
         api_key: "test",
@@ -54,7 +59,8 @@ defmodule Newbee.LLM.ResponsesTest do
                send(test_pid, {:text, text})
              end)
 
-    assert_received {:request, "/responses", body}
+    assert_received {:request, "/responses", body, ["responses-session"]}
+
     assert_received {:text, "working"}
     assert body["input"] == [%{"role" => "user", "content" => "hi"}]
     assert body["reasoning"] == %{"effort" => "max"}
@@ -620,12 +626,17 @@ defmodule Newbee.LLM.ResponsesTest do
       )
 
     assert {:ok, %{"content" => "side answer"} = message, _} =
-             Client.stream_chat(client, [%{"role" => "user", "content" => "question"}], fn _ -> :ok end, fn _ -> :ok end, tools: [])
-    assert Map.get(message, "tool_calls", []) == []
+             Client.stream_chat(
+               client,
+               [%{"role" => "user", "content" => "question"}],
+               fn _ -> :ok end,
+               fn _ -> :ok end,
+               tools: []
+             )
 
+    assert Map.get(message, "tool_calls", []) == []
 
     assert_received {:btw_request, body}
     assert body["tools"] == []
   end
-
 end

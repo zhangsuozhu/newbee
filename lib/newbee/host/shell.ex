@@ -51,7 +51,7 @@ defmodule Newbee.Host.Shell do
         # 插件不得自带 authorization/user-agent——凭证与来源注入都是 Host 的事
         |> Enum.reject(fn {k, _} -> String.downcase(k) in ["authorization", "user-agent"] end)
         |> Kernel.++(credential_headers(uri))
-        |> Kernel.++([{"user-agent", "newbee"}])
+        |> Kernel.++([{"user-agent", Newbee.LLM.Client.user_agent()}])
 
       req =
         Req.new(
