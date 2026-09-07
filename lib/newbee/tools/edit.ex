@@ -363,7 +363,7 @@ defmodule Newbee.Tools.Edit do
   end
 
   defp content_lines(nil), do: nil
-  defp content_lines(""), do: nil
+  defp content_lines(""), do: [""]
   defp content_lines(body), do: String.split(body, "\n")
 
   defp require_body!(op, nil), do: raise(ParseError, message: "op #{inspect(op)} is missing its text/content body")
