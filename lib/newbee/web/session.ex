@@ -60,13 +60,15 @@ defmodule Newbee.Web.Session do
 
     case lookup(sid) do
       {:ok, pid} ->
-        with :ok <- maybe_rebind_existing(pid, sid, cwd) do
+        with :ok <- Newbee.Session.mark_created(sid),
+             :ok <- maybe_rebind_existing(pid, sid, cwd) do
           {:ok, pid, sid}
         end
 
       {:error, :not_found} ->
         with {:ok, resolved} <- resolve_session_cwd(sid, cwd),
-             :ok <- Newbee.Session.set_cwd(sid, resolved) do
+             :ok <- Newbee.Session.set_cwd(sid, resolved),
+             :ok <- Newbee.Session.mark_created(sid) do
           case DynamicSupervisor.start_child(Newbee.Web.SessionSup, {__MODULE__, sid}) do
             {:ok, pid} -> {:ok, pid, sid}
             {:error, {:already_started, pid}} -> {:ok, pid, sid}
