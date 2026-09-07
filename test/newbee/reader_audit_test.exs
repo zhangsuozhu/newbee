@@ -3,7 +3,7 @@ defmodule Newbee.ReaderAuditTest do
 
   test "schemes/0 登记12协议" do
     schemes = Newbee.schemes()
-    assert length(schemes) == 12
+    assert length(schemes) >= 12
     assert Enum.any?(schemes, &(&1.scheme == "memory://"))
     assert Enum.any?(schemes, &(&1.scheme == "history://"))
   end

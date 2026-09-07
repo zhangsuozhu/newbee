@@ -456,4 +456,18 @@ defmodule Newbee.Web.SessionQueueTest do
     assert {:text, "ok"} = Newbee.Agent.Loop.submit(kernel, "hello")
     assert_receive {:newbee_event, :web_event, {:web_event, ^sid, :text, %{delta: "ok"}}}, 500
   end
-end
+
+  test "bounds queued user input and reports backpressure" do
+    st = base_state("qfull_45402", busy: true)
+
+    st =
+      Enum.reduce(1..128, st, fn n, acc ->
+        {:noreply, next} = Session.handle_cast({:prompt, "item #{n}", "id_#{n}"}, acc)
+        next
+      end)
+
+    {:noreply, full} = Session.handle_cast({:prompt, "overflow", "overflow"}, st)
+
+    assert :queue.len(full.queue) == 128
+    assert MapSet.size(full.queue_ids) == 128
+  end

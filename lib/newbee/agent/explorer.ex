@@ -33,8 +33,14 @@ defmodule Newbee.Agent.Explorer do
   @doc "读取子代理结果（agent:// 统一寻址的底层）。"
   def read(id) do
     case File.read(Path.join([@root, id, "result.json"])) do
-      {:ok, body} -> {:ok, Jason.decode!(body)}
-      _ -> {:error, :agent_not_found}
+      {:ok, body} ->
+        case Jason.decode(body) do
+          {:ok, value} -> {:ok, value}
+          {:error, reason} -> {:error, {:bad_json, reason}}
+        end
+
+      _ ->
+        {:error, :agent_not_found}
     end
   end
 

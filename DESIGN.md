@@ -382,7 +382,7 @@ ledger compactions.jsonl（append-only；tail_sha 锚自校验；尾行损坏整
 与既有机制的相容：视图构建后照常 `repair_history` 修补悬空 tool_calls；J-Space 恢复
 提醒照常注入；无账本旧会话逐字节兼容；TUI/CLI 回放仍读全量 transcript（UI 永远看得
 见完整历史）；provider 前缀缓存语义不变（摘要固定在消息位 2，两次压缩之间仍只追加）。
-`Session.rewrite` 标记废弃保留。`session: false` 的 ephemeral 模式走旧内存路径。
+旧 `Session.rewrite/2` 兼容入口已移除；`session: false` 的 ephemeral 模式仍走旧内存路径。
 
 **档案召回（查询感知 rehydration，零检索基础设施的 mini-RAG）**：用户提交新输入时，
 宿主对已压缩段做确定性词元打分（latin/digit ≥3 去停用词 + CJK 二元组，命中 distinct

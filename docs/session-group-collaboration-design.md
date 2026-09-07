@@ -1,5 +1,7 @@
 # 会话群协作设计：跨会话消息与派生会话共同工作
 
+> **当前实现说明（2026-09）**：本文保留部分历史提案用于追溯；当前协作入口是 `Newbee.Tools.Hive` 与 `Newbee.Collaboration.Coordinator`。文中的 `Newbee.Tools.Collaboration`、`Newbee.ExecutionContext` 仅代表历史概念，不是当前可调用模块。
+
 > **状态**：核心已落地。已实现：群/成员/消息/任务事件溯源（含重启恢复）、notify/queue/wake 三种消息投递（queue/wake 经会话队列驱动一轮模型工作，忙时排队去重，不打断当前工具调用）、让另一个 AI 帮忙（会话创建+分派）、任务报告与结果回收、成员移除保护、WebUI 左侧分组 + Mission Control 协作/工作项面板、投递方式选择与徽标。未实现：跨会话权限审批卡、任务结果卡/文件归因、独立 worktree 与按子会话审查集成。
 > **2026-09-03 WebUI 展示审计补记（已实现，证据见下）**：好的部分——三栏信息架构（会话归属/当前过程/协作态势分离）、事件先落盘再下行、投递语义显式可选、高风险操作 confirm、工作区四步审查链、权限审批条、请求代次防覆盖；已修正的问题——MC 成员在线状态恒绿（后端 member.state 恒为 idle，lib 无 working 写入，现改以后端运行时 busy/running 为准并显示其进行中任务）、消息 8 种 kind 无徽标（现全量徽标）、无未读（现按组事件水位计未读，MC 标题/任务角标/侧栏组头三处徽标）、动态只看后 8 条（现可展开全部）、任务无筛选排序（现四档筛选 + 受阻/失败/待审查置顶）、任务卡缺验收/依赖/验证表达（现只读渲染，后端字段本就透出）、群状态机无入口（现状态徽标 + 协调者暂停/恢复/取消）、委派按钮对非协调者静默隐藏（现置灰解释）、刷新丢接收者选择（现保留）、submitted 无中文（现“已提交待验”）、模态框无 Esc/role（现补齐）、建任务无成功标准输入（现结构化三类编辑器，老协议透存并诚实标注“需人工核对”，不是机器验收）。**已知缺口（未动）**：WebUI 全走 v2 之前的老协议（lease 任务 + 自由文本验收），Hive v2 Board 的 revision 冲突、DAG 自动阻塞、verify 机检在界面上无表达、无入口；跨会话错误只写当前会话流，无全局错误箱。依据：Nielsen 10 启发式（NN/g，1994，2024 修订）、Endsley 三层次 + 团队/共享 SA、Cognitive load 内外负荷分类、Amershi 等 CHI'19 人机交互指南（MSR 出版页已验）、MAST（arXiv:2503.13657 摘要已验）、Anthropic 多智能体研究报告（lead + 并行 subagents 段落已验）。证据：bun 构建通过、HTML 解析通过、CSS 括号配平、双环境 warnings-as-errors 通过、协作接口 + 通道 11 passed、shipped 源码纯函数 18 项断言全过、真实服务 RPC 播种验证（结构化验收数组/4 种 kind/群 running 双成员均落盘可读）。**未做**：隔离浏览器启动超时（chromium old-headless launch 30s 超时，两次），页面截图与点击走查缺失，浏览器端证明以函数断言 + 构建代替。
 
@@ -232,7 +234,7 @@ created_at / delivered_at / processed_at
 
 复用现有 `Newbee.ArtifactRef` 的内容寻址思路。Artifact 引用不能自动授予读取项目外路径的权限。
 
-### 3.8 ExecutionContext（执行上下文）
+### 3.8 ExecutionContext（历史概念模型）
 
 并行会话必须显式携带以下身份：
 
@@ -585,11 +587,11 @@ Loop 处理时追加带来源的内部消息视图，例如：
 
 ---
 
-## 7. ExecutionContext：并行会话的身份隔离前提
+## 7. ExecutionContext（历史概念模型）：并行会话的身份隔离前提
 
 ### 7.1 结构与不变量
 
-新增 `Newbee.ExecutionContext`（名称可调整，语义必须保留）：
+历史提案中的 `Newbee.ExecutionContext`（当前实现不提供该模块，身份由 Hive v2 envelope 承载）：
 
 ```elixir
 %Newbee.ExecutionContext{
@@ -897,7 +899,9 @@ collab.message.ack({groupId, messageId, stage: "delivered" | "read" | "processed
 
 首版建议保留 `group.message.send` 作为别名，最终统一到 `collab.message.*`，避免未来把 group 管理和消息语义混在一起。
 
-### 9.4 会话兼容接口
+### 9.4 会话兼容接口（历史提案，已移除）
+
+> 以下 API 从未作为当前工具注册；当前实现请使用 `Newbee.Tools.Hive`。代码块仅用于记录迁移前的设计，不可直接调用。
 
 为满足“从一个会话启动其它会话”，可提供受控的内部工具 API：
 
@@ -1222,7 +1226,7 @@ state.groupSubscriptions = new Set();
 - Dispatcher 的 notify/queue/wake 基础语义。
 - Web.Session 接收协作 envelope；只读 notify 不启动模型。
 - WebSocket 多 group subscription、sinceSeq、补发和去重。
-- 内部 `Newbee.Tools.Collaboration.send/messages`。
+- 当前由 `Newbee.Tools.Hive` 的受治理消息能力承载（旧 `Newbee.Tools.Collaboration` 仅为历史提案）。
 
 完成标准：A → B、B → A、群广播、离线重连、重复投递均可验证；不会把消息混入普通 transcript。
 
@@ -1447,11 +1451,11 @@ collaboration.workspaces = "dedicated"
 
 - P0/P1：群组、成员、消息的单写者 Coordinator；EventStore 持久化与重放；HTTP RPC；WebSocket 群事件；WebUI 群组工作台；父会话 spawn 子会话。
 - P2 基础：Task 创建、分派成员、状态更新（accepted/running/blocked/succeeded/failed/cancelled）、进度/结果字段、任务事件重放和 WebUI 任务栏。
-- P2 完整闭环：指派后自动投递结构化任务到目标会话；`Newbee.Tools.Collaboration` 提供 report/send_message/tasks；终态结果一次性回收通知创建者。
+- P2 完整闭环：指派后自动投递结构化任务到目标会话；当前由 Hive v2 的 Board、submission、delivery 链路承载，终态结果一次性回收通知创建者。
 - P3 基础：任务 lease/claim 防重复领取；群组 running/paused/cancelled 状态控制；WebUI 提供暂停/恢复和未分配任务领取。
 - P3 协作安全闭环：只有协调会话可修改群状态；claim 会绑定 lease_owner/lease_until/attempt 并投递到领取者；owner 可在 30-3600 秒范围续租；任务终态向创建者会话一次性回收结构化结果。
 - 自动分派：任务创建并指定成员时，Coordinator 立即把结构化任务提示投递到目标 Web.Session 队列（忙时排队、空闲直接执行）；任务提示带来源标记与 group/task/session id。
-- 模型工具：`Newbee.Tools.Collaboration`（已注册内置插件）供子会话调用——report 更新任务状态/进度/结果，send_message 发群消息，tasks 查询列表。
+- 模型工具：当前由 `Newbee.Tools.Hive`（受治理内置入口）供协作者读取 Board、提交结果和发送消息；旧 `Newbee.Tools.Collaboration` 注册描述已废弃。
 - 当前仍未落地：显式 wake/queue 分档调参和更丰富的集成策略；文件系统副本隔离、基线快照、审查、冲突检测、显式应用与清理已落地。
 
 

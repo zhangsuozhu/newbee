@@ -6,6 +6,27 @@ defmodule Newbee.Web.EvolutionExplainTest do
   @opts Newbee.Web.Router.init([])
 
   setup do
+    model_path = Path.join(System.tmp_dir!(), "newbee_no_llm_#{System.unique_integer([:positive])}.json")
+    previous_model_path = System.get_env("NEWBEE_MODEL_JSON")
+
+    File.write!(
+      model_path,
+      Jason.encode!(%{
+        "providers" => %{},
+        "roles" => %{"default" => %{"provider" => "missing", "model" => "test"}}
+      })
+    )
+
+    System.put_env("NEWBEE_MODEL_JSON", model_path)
+
+    on_exit(fn ->
+      if previous_model_path,
+        do: System.put_env("NEWBEE_MODEL_JSON", previous_model_path),
+        else: System.delete_env("NEWBEE_MODEL_JSON")
+
+      File.rm(model_path)
+    end)
+
     coordinator = start_coordinator!()
     {:ok, coordinator: coordinator}
   end

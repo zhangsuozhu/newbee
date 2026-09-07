@@ -8,7 +8,7 @@ defmodule Newbee.Environment.TceIntegrationTest do
 
   use Newbee.EnvironmentCase, async: false
 
-  alias Newbee.Environment.{PatternStore, PatternStats, Jit}
+  alias Newbee.Environment.{PatternStore, PatternStats}
   alias Newbee.Agent.Adapter
 
   @tag :tce_wiring

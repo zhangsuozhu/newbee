@@ -210,17 +210,6 @@ defmodule Newbee.Session do
     )
   end
 
-  @doc """
-  重写整个 transcript。**已废弃**：/compact 自 Archive 落地后走 append-only 账本
-  （Newbee.Archive），transcript 永不覆写——本函数仅为兼容保留，勿在新代码使用
-  （覆写即销毁日志，违反 §4.6 "压缩改视图不动日志"）。
-  """
-  @deprecated "用 Newbee.Archive.compact/2（append-only，永不覆写 transcript）"
-  def rewrite(%__MODULE__{transcript: t}, messages) do
-    body = Enum.map_join(messages, "\n", &Jason.encode!/1)
-    File.write!(t, body <> "\n")
-  end
-
   @doc "读取全部历史消息。坏行（崩溃写了一半的）跳过而非崩 init。"
   def messages(%__MODULE__{transcript: t}) do
     fallback = legacy_iso(t)

@@ -27,12 +27,12 @@ defmodule Newbee.Tools.HotReloadTest do
 
   test "replace/2 源码字符串热替换并即时生效" do
     assert %{ok: true, modules: [%{module: HotReloadDemo}]} = HotReload.replace(@demo_v1)
-    assert HotReloadDemo.version() == "v1"
-    assert HotReloadDemo.add(1, 2) == 3
+    assert apply(HotReloadDemo, :version, []) == "v1"
+    assert apply(HotReloadDemo, :add, [1, 2]) == 3
 
     assert %{ok: true, modules: [%{new_md5: md5}]} = HotReload.replace(@demo_v2)
-    assert HotReloadDemo.version() == "v2"
-    assert HotReloadDemo.add(1, 2) == 103
+    assert apply(HotReloadDemo, :version, []) == "v2"
+    assert apply(HotReloadDemo, :add, [1, 2]) == 103
     assert is_binary(md5) and byte_size(md5) == 32
   end
 
@@ -41,11 +41,11 @@ defmodule Newbee.Tools.HotReloadTest do
     File.write!(path, @demo_v1)
 
     assert %{ok: true} = HotReload.load_file(path)
-    assert HotReloadDemo.version() == "v1"
+    assert apply(HotReloadDemo, :version, []) == "v1"
 
     File.write!(path, @demo_v2)
     assert %{ok: true} = HotReload.load_file(path)
-    assert HotReloadDemo.version() == "v2"
+    assert apply(HotReloadDemo, :version, []) == "v2"
 
     File.rm(path)
   end
@@ -62,7 +62,7 @@ defmodule Newbee.Tools.HotReloadTest do
 
   test "unload/1 卸载模块" do
     HotReload.replace(@demo_v1)
-    assert HotReloadDemo.version() == "v1"
+    assert apply(HotReloadDemo, :version, []) == "v1"
 
     %{ok: true} = HotReload.unload(HotReloadDemo)
     assert :code.is_loaded(HotReloadDemo) == false
