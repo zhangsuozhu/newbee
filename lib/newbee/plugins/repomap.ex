@@ -32,6 +32,8 @@ defmodule Newbee.Plugins.RepoMap do
   @sigs_per_module 15
   # moduledoc 截断长度
   @doc_bytes 80
+  # 引用图预算: 超过此文件数跳过引用打分 (DEE reductions 守卫, 见 elixir_map)。
+  @max_files_for_refs 800
 
   @cache_dir Path.join(System.user_home!(), ".newbee/cache")
 
@@ -68,14 +70,22 @@ defmodule Newbee.Plugins.RepoMap do
   # ── Elixir 工程：解析 → 引用图打分 → 双层渲染 ─────────────────────────
 
   defp elixir_map(dir, opts) do
-    parsed =
-      dir
-      |> source_files()
-      |> parse_files(dir)
+    files = source_files(dir)
+    # 预算守卫: 超大工程跳过引用图 (O(N*M) 在 DEE reductions 预算内必爆, 进化 deopt 根因),
+    # 降级为路径排序索引, 仍可定位再读目标。
+    parsed = parse_files(files, dir)
 
-    known = module_names(parsed)
-    refs = reference_counts(parsed, known)
-    ranked = rank(parsed, refs)
+    ranked =
+      if length(parsed) > @max_files_for_refs do
+        parsed
+        |> Enum.flat_map(fn f -> Enum.map(f.modules, &{f.path, &1}) end)
+        |> Enum.map(fn {path, m} -> %{name: canonical(m.name), doc: m.doc, defs: m.defs, path: path, refs: 0} end)
+        |> Enum.sort_by(fn m -> {m.path, m.name} end)
+      else
+        known = module_names(parsed)
+        refs = reference_counts(parsed, known)
+        rank(parsed, refs)
+      end
 
     case Keyword.get(opts, :format, :full) do
       :slim -> render_slim(ranked)
@@ -83,16 +93,29 @@ defmodule Newbee.Plugins.RepoMap do
     end
   end
 
-  # 参与建图的源文件：跳过厂商/产物/环境目录，test 文件保留（引用数低自然落 Tier2）
+  # 参与建图的源文件: Elixir 工程只扫源码目录 (避免 _build*/deps/.git/.newbee 全树 wildcard 在 DEE 预算内爆炸),
+  # test 保留 (引用数低自然落 Tier2)。非 Elixir 工程走 tree_map。
   defp source_files(dir) do
-    vendor = MapSet.new(~w(_build deps .git node_modules .newbee .newbee-tmp cover))
+    if File.exists?(Path.join(dir, "mix.exs")) do
+      ~w(lib test priv bench tool_stress_test)
+      |> Enum.flat_map(fn sub -> Path.wildcard(Path.join(dir, sub <> "/**/*.{ex,exs}")) end)
+      |> Enum.reject(&excluded?/1)
+    else
+      dir
+      |> Path.join("**/*.{ex,exs}")
+      |> Path.wildcard()
+      |> Enum.reject(&excluded?/1)
+    end
+  end
 
-    dir
-    |> Path.join("**/*.{ex,exs}")
-    |> Path.wildcard()
-    |> Enum.reject(fn path ->
-      path |> Path.split() |> MapSet.new() |> MapSet.disjoint?(vendor) |> Kernel.not()
-    end)
+  defp excluded?(path), do: Path.split(path) |> Enum.any?(&excluded_segment?/1)
+
+  # 精确名 + _build* 前缀 (覆盖 _build-codex-calls 等变体) + 常见产物目录。
+  # 注意: 不排除 "tmp"——系统临时目录 /tmp 下的单测工程会被误杀;
+  # Elixir 工程只扫 lib/test/priv/bench, 项目 tmp/ 本来就扫不到。
+  defp excluded_segment?(seg) do
+    seg in ~w(deps .git node_modules .newbee .newbee-tmp cover dist .elixir_ls _build) or
+      String.starts_with?(seg, "_build")
   end
 
   # 文件级解析：相对路径 + 全部 defmodule（含嵌套）+ 引用节点 + alias 展开表
@@ -199,8 +222,8 @@ defmodule Newbee.Plugins.RepoMap do
   defp hd_member([h | _]), do: h
   defp hd_member(other) when is_atom(other), do: other
 
-  # 解析一个引用节点到本工程完整模块名；唯一后缀命中也算（容相对引用）
-  defp resolve_ref(segs, alias_map, known) do
+  # 解析一个引用节点到本工程完整模块名; 唯一后缀命中也算 (容相对引用)
+  defp resolve_ref(segs, alias_map, known, index) do
     expanded =
       case alias_map[hd(segs)] do
         nil -> segs
@@ -212,32 +235,39 @@ defmodule Newbee.Plugins.RepoMap do
     if MapSet.member?(known, full) do
       full
     else
-      unique_suffix(full, known)
+      unique_suffix_indexed(full, index)
     end
   end
 
-  defp unique_suffix(full_name, known) do
-    wanted = String.split(full_name, ".")
-    len = length(wanted)
+  # 后缀索引: 每个已知模块的所有真后缀 -> 命中名单, 查询 O(1)。
+  # 旧实现每次引用全表 Enum.filter + String.split, 在 143 文件 x 数千引用下直接打爆 DEE reductions。
+  defp suffix_index(known) do
+    Enum.reduce(known, %{}, fn name, acc ->
+      parts = String.split(name, ".")
 
-    hits =
-      Enum.filter(known, fn name ->
-        parts = String.split(name, ".")
-        length(parts) > len and Enum.take(parts, -len) == wanted
+      1..(length(parts) - 1)//1
+      |> Enum.reduce(acc, fn i, a ->
+        suffix = parts |> Enum.take(-i) |> Enum.join(".")
+        Map.update(a, suffix, [name], &[name | &1])
       end)
+    end)
+  end
 
-    case hits do
+  defp unique_suffix_indexed(full_name, index) do
+    case Map.get(index, full_name) do
       [only] -> only
       _ -> nil
     end
   end
 
-  # 文件级引用图：每文件的引用目标集合（扣除同文件自定义），目标计数 +1
+  # 文件级引用图: 每文件的引用目标集合 (扣除同文件自定义), 目标计数 +1
   defp reference_counts(files, known) do
+    index = suffix_index(known)
+
     Enum.reduce(files, %{}, fn f, acc ->
       targets =
         f.ref_segs
-        |> Enum.map(&resolve_ref(&1, f.alias_map, known))
+        |> Enum.map(&resolve_ref(&1, f.alias_map, known, index))
         |> Enum.reject(&is_nil/1)
         |> MapSet.new()
         |> MapSet.difference(local_names(f))
@@ -346,6 +376,7 @@ defmodule Newbee.Plugins.RepoMap do
   # ── 缓存 ──────────────────────────────────────────────────────────────
 
   # 工程指纹：实际参与解析的文件集合的 mtime 汇总（未变更即缓存命中）
+  # 工程指纹: 实际参与解析的文件集合的 mtime 汇总 (未变更即缓存命中)
   defp fingerprint(dir) do
     files =
       if File.exists?(Path.join(dir, "mix.exs")) do
@@ -354,7 +385,8 @@ defmodule Newbee.Plugins.RepoMap do
         dir
         |> Path.join("**/*")
         |> Path.wildcard()
-        |> Enum.reject(&String.contains?(&1, ~w(_build deps .git node_modules)))
+        |> Enum.reject(&excluded?/1)
+        |> Enum.take(2000)
       end
 
     sig =
@@ -404,7 +436,7 @@ defmodule Newbee.Plugins.RepoMap do
     dir
     |> Path.join("**/*")
     |> Path.wildcard()
-    |> Enum.reject(&String.contains?(&1, ~w(_build deps .git node_modules)))
+    |> Enum.reject(&excluded?/1)
     |> Enum.take(200)
     |> Enum.sort()
     |> Enum.join("\n")
