@@ -505,6 +505,51 @@ const flow = $("flow");
         };
   }
 
+  function terminalPickFontSize(availableWidth) {
+    const w = Number(availableWidth) || window.innerWidth || 0;
+    if (w > 0 && w <= 360) return 11.5;
+    if (w > 0 && w <= 768) return 12;
+    return 13;
+  }
+
+  function terminalMeasureCell(screen, term, fontSize, fontFamily) {
+    const measure = term.element && term.element.querySelector(".xterm-char-measure-element");
+    if (measure) {
+      const r = measure.getBoundingClientRect();
+      if (r && r.width > 0 && r.width < 50 && r.height > 0 && r.height < 100) {
+        const cw = screen.clientWidth || 0;
+        if (!(cw > 0 && Math.abs(r.width - cw) < 2)) return { width: r.width, height: r.height };
+      }
+    }
+    try {
+      const probe = document.createElement("span");
+      probe.textContent = "WWWWWWWWWW";
+      probe.style.cssText = "position:absolute;visibility:hidden;top:0;left:-9999em;white-space:pre;padding:0;margin:0;border:0;";
+      probe.style.fontFamily = fontFamily;
+      probe.style.fontSize = fontSize + "px";
+      probe.style.lineHeight = "normal";
+      probe.style.letterSpacing = "0";
+      screen.appendChild(probe);
+      const rect = probe.getBoundingClientRect();
+      const w10 = rect.width / 10;
+      const h = rect.height;
+      probe.remove();
+      if (w10 > 0 && w10 < 50) {
+        return { width: w10, height: (h > 0 && h < 100) ? h : fontSize * (Number(term.options.lineHeight) || 1) };
+      }
+    } catch (_probeError) { }
+    try {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      if (context) {
+        context.font = fontSize + "px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+        const w = context.measureText("W").width;
+        if (w > 0 && w < 50) return { width: w, height: fontSize * (Number(term.options.lineHeight) || 1) };
+      }
+    } catch (_canvasError) { }
+    return { width: 0, height: 0 };
+  }
+
   function terminalFit() {
     const screen = $("terminal-screen");
     const term = state.terminal.term;
@@ -513,35 +558,21 @@ const flow = $("flow");
       term.element.style.width = "100%";
       term.element.style.height = "100%";
     }
-
+    const wantSize = terminalPickFontSize(screen.clientWidth || window.innerWidth);
+    if (Number(term.options.fontSize) !== wantSize) {
+      try { term.options.fontSize = wantSize; } catch (_sizeError) { }
+      window.requestAnimationFrame(terminalFit);
+      return;
+    }
+    const fontSize = wantSize;
+    const fontFamily = (term.options && term.options.fontFamily) || "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace";
+    const cell = terminalMeasureCell(screen, term, fontSize, fontFamily);
+    if (!(cell.width > 0 && cell.height > 0)) return;
     const screenStyle = window.getComputedStyle(screen);
-    const xtermStyle = term.element ? window.getComputedStyle(term.element) : screenStyle;
-    const measure = term.element && term.element.querySelector(".xterm-char-measure-element");
-    const measured = measure ? measure.getBoundingClientRect() : { width: 0, height: 0 };
-    let cellWidth = measured.width;
-    let cellHeight = measured.height;
-    const fontSize = parseFloat(xtermStyle.fontSize) || Number(term.options.fontSize) || 13;
-
-    // Some layouts report the hidden xterm measuring span with the container width.
-    // Fall back to a canvas glyph measurement so the terminal cannot collapse to a few columns.
-    if (!(cellWidth > 0 && cellWidth < 50)) {
-      const canvas = document.createElement("canvas");
-      const context = canvas.getContext("2d");
-      if (context) {
-        context.font = `${fontSize}px ${xtermStyle.fontFamily || "monospace"}`;
-        cellWidth = context.measureText("W").width;
-      }
-    }
-    if (!(cellHeight > 0 && cellHeight < 100)) {
-      cellHeight = fontSize * (Number(term.options.lineHeight) || 1);
-    }
-    if (!(cellWidth > 0 && cellHeight > 0)) return;
-
     const paddingX = (parseFloat(screenStyle.paddingLeft) || 0) + (parseFloat(screenStyle.paddingRight) || 0);
     const paddingY = (parseFloat(screenStyle.paddingTop) || 0) + (parseFloat(screenStyle.paddingBottom) || 0);
-    const cols = Math.max(2, Math.floor(Math.max(1, screen.clientWidth - paddingX) / cellWidth));
-    const rows = Math.max(2, Math.floor(Math.max(1, screen.clientHeight - paddingY) / cellHeight));
-
+    const cols = Math.max(2, Math.floor(Math.max(1, screen.clientWidth - paddingX) / cell.width));
+    const rows = Math.max(2, Math.floor(Math.max(1, screen.clientHeight - paddingY) / cell.height));
     if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
   }
 
@@ -570,7 +601,7 @@ const flow = $("flow");
         convertEol: false,
         scrollback: 10000,
         tabStopWidth: 8,
-        fontSize: 13,
+        fontSize: terminalPickFontSize((window && window.innerWidth) || 0),
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace",
         theme: terminalTheme(),
         allowTransparency: false,
@@ -944,6 +975,12 @@ const flow = $("flow");
     const output = $("terminal-output");
     if (output) output.addEventListener("click", () => $("terminal-input").focus());
     document.addEventListener("fullscreenchange", terminalUpdateFullscreenButton);
+    if (!state.terminal.viewportBound) {
+      state.terminal.viewportBound = true;
+      window.addEventListener("resize", () => window.requestAnimationFrame(terminalFit));
+      if (window.visualViewport) window.visualViewport.addEventListener("resize", () => window.requestAnimationFrame(terminalFit));
+      window.addEventListener("orientationchange", () => window.requestAnimationFrame(terminalFit));
+    }
     terminalEnsureEmulator();
   }
 
