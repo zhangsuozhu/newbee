@@ -6012,7 +6012,7 @@ case "goal_round": break;
     } catch (e) {
       if (MC.debugItems.length === 0) {
         const list = $("mc-debug-list");
-        if (list) list.innerHTML = "<div style=\"color:var(--fg2);font-size:12px;padding:16px;text-align:center\">加载失败: " + escapeHtml(e.message) + "</div>";
+        if (list) list.innerHTML = "<div style=\"color:var(--nb-label-3);font-size:12px;padding:16px;text-align:center\">加载失败: " + escapeHtml(e.message) + "</div>";
       }
     }
   }
@@ -6042,11 +6042,11 @@ case "goal_round": break;
     const list = $("mc-debug-list");
     if (!list) return;
     if (!MC.debugOn && MC.debugItems.length === 0) {
-      list.innerHTML = "<div style=\"color:var(--fg2);font-size:12px;padding:16px;text-align:center\">未开始<br>点上面的开始按钮后，这里实时显示与大模型的 HTTP 交互</div>";
+      list.innerHTML = "<div style=\"color:var(--nb-label-3);font-size:12px;padding:16px;text-align:center\">未开始<br>点上面的开始按钮后，这里实时显示与大模型的 HTTP 交互</div>";
       return;
     }
     if (MC.debugItems.length === 0) {
-      list.innerHTML = "<div style=\"color:var(--fg2);font-size:12px;padding:16px;text-align:center\">暂无记录<br>发一条消息后自动出现</div>";
+      list.innerHTML = "<div style=\"color:var(--nb-label-3);font-size:12px;padding:16px;text-align:center\">暂无记录<br>发一条消息后自动出现</div>";
       return;
     }
     const rows = MC.debugItems.slice().reverse().map((it) => {
@@ -6155,7 +6155,7 @@ case "goal_round": break;
     count.textContent = n === 0 ? "无文件变更" : `${n} 个文件变更`;
 
     if (n === 0) {
-      list.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:20px;text-align:center">工作区干净<br>暂无变更</div>';
+      list.innerHTML = '<div style="color:var(--nb-label-3);font-size:12px;padding:20px;text-align:center">工作区干净<br>暂无变更</div>';
       return;
     }
 
@@ -6181,7 +6181,7 @@ case "goal_round": break;
   async function showFileDiff(path) {
     switchMCTab("diff");
     const content = $("mc-diff-content");
-    content.innerHTML = '<div style="color:var(--fg2);padding:20px;text-align:center">加载中…</div>';
+    content.innerHTML = '<div style="color:var(--nb-label-3);padding:20px;text-align:center">加载中…</div>';
     try {
       const res = await rpc("git.diff", { path });
       renderDiff(content, res.diff || "(无 diff)");
@@ -6246,7 +6246,7 @@ case "goal_round": break;
     count.textContent = n === 0 ? "无步骤" : `${n} 个步骤`;
 
     if (n === 0) {
-      list.innerHTML = '<div style="color:var(--fg2);font-size:12px;padding:20px;text-align:center">等待 AI 执行…</div>';
+      list.innerHTML = '<div style="color:var(--nb-label-3);font-size:12px;padding:20px;text-align:center">等待 AI 执行…</div>';
       return;
     }
 
@@ -6273,7 +6273,7 @@ case "goal_round": break;
   // ── 全量 Diff ──
   async function refreshMCDiff() {
     const content = $("mc-diff-content");
-    content.innerHTML = '<div style="color:var(--fg2);padding:20px;text-align:center">加载中…</div>';
+    content.innerHTML = '<div style="color:var(--nb-label-3);padding:20px;text-align:center">加载中…</div>';
     try {
       // 先取影响分析
       const impact = await rpc("git.impact", {}).catch(() => null);
@@ -6288,18 +6288,18 @@ case "goal_round": break;
             ${s.has_tests ? ' · ✓ 含测试' : ' · ⚠ 无测试'}
           </div>
           ${(impact.files || []).slice(0, 10).map(f => {
-            const rc = f.risk === "high" ? "#f44336" : f.risk === "medium" ? "#ff9800" : "var(--fg2)";
+            const rc = f.risk === "high" ? "#f44336" : f.risk === "medium" ? "#ff9800" : "var(--nb-label-3)";
             return `<div class="mc-impact-file" title="${f.dependent_files ? '被依赖: ' + escapeHtml(f.dependent_files.join(", ")) : ''}">
               <span style="color:${rc}">●</span> ${escapeHtml(f.path)}
               <span class="mc-impact-meta">+${f.added} -${f.deleted}${f.dependents > 0 ? ' · ' + f.dependents + ' 依赖' : ''}${f.is_test ? ' 🧪' : ''}</span>
             </div>`;
           }).join("")}
-        </div><hr style="border-color:var(--border);margin:8px 0">`;
+        </div><hr style="border-color:var(--nb-border);margin:8px 0">`;
       }
       // 再取 diff
       const res = await rpc("git.diff", {});
       if (!res.diff || res.diff.trim() === "") {
-        content.innerHTML = impactHtml || '<div style="color:var(--fg2);padding:20px;text-align:center">工作区干净<br>无 diff</div>';
+        content.innerHTML = impactHtml || '<div style="color:var(--nb-label-3);padding:20px;text-align:center">工作区干净<br>无 diff</div>';
       } else {
         renderDiff(content, res.diff);
         if (impactHtml) content.innerHTML = impactHtml + content.innerHTML;
@@ -6330,7 +6330,7 @@ case "goal_round": break;
   // ── 会话概览 ──
   async function refreshMCOverview() {
     const content = $("mc-overview-content");
-    if (!state.sid) { content.innerHTML = '<div style="color:var(--fg2);padding:20px;text-align:center">无活跃会话</div>'; return; }
+    if (!state.sid) { content.innerHTML = '<div style="color:var(--nb-label-3);padding:20px;text-align:center">无活跃会话</div>'; return; }
     try {
       const sid = state.sid;
       const st = await rpc("session.state", { sessionId: sid });
@@ -6650,7 +6650,7 @@ case "goal_round": break;
     const list = $("cmd-list");
     const cmds = filteredCmds();
     if (cmds.length === 0) {
-      list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--fg2)">无匹配命令</div>';
+      list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--nb-label-3)">无匹配命令</div>';
       return;
     }
     list.innerHTML = cmds.map((c, i) =>

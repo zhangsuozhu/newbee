@@ -9,6 +9,9 @@ defmodule Newbee.Host.Command do
 
   @env_deny_prefixes ~w(OPENROUTER_ DEEPSEEK_ ANTHROPIC_ OPENAI_)
   @env_deny_suffixes ~w(_KEY _TOKEN _SECRET)
+  # NEWBEE_CWD 是启动器注入的 launch-dir, 子进程必须用显式 cd cwd 运行,
+  # 继承它会导致 worktree/DEE 会话漂回主仓 (进化提案根因: 子进程目录漂移)。
+  @env_deny_exact ~w(NEWBEE_CWD)
   @output_head_bytes 16_000
   @term_grace_ms 200
   @pidfile_attempts 20
@@ -109,7 +112,8 @@ defmodule Newbee.Host.Command do
   end
 
   defp sensitive_env?(name) do
-    Enum.any?(@env_deny_prefixes, &String.starts_with?(name, &1)) or
+    name in @env_deny_exact or
+      Enum.any?(@env_deny_prefixes, &String.starts_with?(name, &1)) or
       Enum.any?(@env_deny_suffixes, &String.ends_with?(name, &1))
   end
 

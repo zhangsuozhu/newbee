@@ -40,6 +40,9 @@ defmodule Newbee.DEE.Evaluator do
 
   @env_deny_prefixes ~w(OPENROUTER_ DEEPSEEK_ ANTHROPIC_ OPENAI_)
   @env_deny_suffixes ~w(_KEY _TOKEN _SECRET)
+  # NEWBEE_CWD 是启动器注入的 launch-dir, peer 节点必须用显式 cwd (state.cwd) 运行,
+  # 继承它会导致 worktree 会话漂回主仓; NEWBEE_MAIN_NODE 由 boot 显式注入, 不受影响。
+  @env_deny_exact ~w(NEWBEE_CWD)
 
   @peer_boot_timeout 60_000
   @rpc_boot_timeout 60_000
@@ -982,7 +985,8 @@ defmodule Newbee.DEE.Evaluator do
     System.get_env()
     |> Map.keys()
     |> Enum.filter(fn k ->
-      Enum.any?(prefixes, &String.starts_with?(k, &1)) or
+      k in @env_deny_exact or
+        Enum.any?(prefixes, &String.starts_with?(k, &1)) or
         Enum.any?(suffixes, &String.ends_with?(k, &1))
     end)
     |> Enum.each(&:os.unsetenv(String.to_charlist(&1)))

@@ -124,10 +124,7 @@ defmodule Newbee.Web.Terminal do
 
   @impl true
   def handle_call(:open, _from, st),
-    do:
-      {:reply,
-       {:ok,
-        %{cwd: st.cwd, pty: st.pty?, resize: st.pty_driver == :script, scrollback: st.scrollback}}, st}
+    do: {:reply, {:ok, %{cwd: st.cwd, pty: st.pty?, resize: st.pty_driver == :script, scrollback: st.scrollback}}, st}
 
   def handle_call(:take_context, _from, st) do
     st = materialize_manual_input(st)
@@ -659,11 +656,20 @@ defmodule Newbee.Web.Terminal do
     term = if pty?, do: ~c"xterm-256color", else: ~c"dumb"
 
     inherited ++
-      [{~c"BASH_ENV", false}, {~c"ENV", false}, {~c"CDPATH", false}, {~c"TERM", term}, {~c"HISTFILE", ~c"/dev/null"}]
+      [
+        {~c"BASH_ENV", false},
+        {~c"ENV", false},
+        {~c"CDPATH", false},
+        {~c"NEWBEE_CWD", false},
+        {~c"TERM", term},
+        {~c"HISTFILE", ~c"/dev/null"}
+      ]
   end
 
+  # NEWBEE_CWD 是启动器注入的 launch-dir, 终端子进程必须用显式 cwd 运行, 不继承。
   defp terminal_sensitive_env?(name) do
-    Enum.any?(["OPENROUTER_", "DEEPSEEK_", "ANTHROPIC_", "OPENAI_"], &String.starts_with?(name, &1)) or
+    name == "NEWBEE_CWD" or
+      Enum.any?(["OPENROUTER_", "DEEPSEEK_", "ANTHROPIC_", "OPENAI_"], &String.starts_with?(name, &1)) or
       Enum.any?(["_KEY", "_TOKEN", "_SECRET"], &String.ends_with?(name, &1))
   end
 
