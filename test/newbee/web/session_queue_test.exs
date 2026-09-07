@@ -365,4 +365,59 @@ defmodule Newbee.Web.SessionQueueTest do
     {:noreply, st2} = Session.handle_cast({:collaboration_message, progress}, st)
     assert :queue.len(st2.queue) == 0
   end
+
+  test "pending task deliveries are recovered after session restart" do
+    suffix = Integer.to_string(System.unique_integer([:positive]))
+    root = Path.join(System.tmp_dir!(), "session-delivery-recovery-" <> suffix)
+    File.mkdir_p!(root)
+    path = Path.join(root, "events.jsonl")
+    lead = "delivery-lead-" <> suffix
+    worker = "delivery-worker-" <> suffix
+
+    {:ok, coordinator} =
+      Newbee.Collaboration.Coordinator.start_link(path: path, durability: :event)
+
+    on_exit(fn ->
+      if Process.alive?(coordinator), do: GenServer.stop(coordinator)
+      File.rm_rf!(root)
+    end)
+
+    {:ok, group} =
+      Newbee.Collaboration.Coordinator.create_group(%{
+        "session_id" => lead,
+        "title" => "delivery recovery",
+        "project_root" => root,
+        "command_id" => "delivery-group-" <> suffix
+      })
+
+    {:ok, _member} =
+      Newbee.Collaboration.Coordinator.add_member(group["group_id"], %{
+        "session_id" => worker,
+        "role" => "worker",
+        "command_id" => "delivery-member-" <> suffix
+      })
+
+    {:ok, board} = Newbee.Collaboration.Coordinator.board(group["group_id"], lead)
+
+    {:ok, %{"task" => task}} =
+      Newbee.Collaboration.Coordinator.board_create_task(group["group_id"], %{
+        "session_id" => lead,
+        "assigned_session_id" => worker,
+        "title" => "recover task",
+        "acceptance" => [%{"kind" => "file_exists", "path" => "proof.txt"}],
+        "expected_revision" => board["revision"],
+        "command_id" => "delivery-task-" <> suffix
+      })
+
+    {:ok, [delivery]} = Newbee.Collaboration.Coordinator.pending_deliveries(worker)
+    assert delivery["kind"] == "task"
+
+    {:noreply, recovered} =
+      Session.handle_info(:pull_pending_deliveries, base_state(worker, busy: true))
+
+    [item] = :queue.to_list(recovered.queue)
+    assert item.kind == "collab_task"
+    assert item.delivery_id == delivery["delivery_id"]
+    assert item.payload["task_id"] == task["task_id"]
+  end
 end
