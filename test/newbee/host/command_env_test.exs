@@ -29,4 +29,15 @@ defmodule Newbee.Host.CommandEnvTest do
     {:ok, src} = File.read("lib/newbee/web/terminal.ex")
     assert src =~ "NEWBEE_CWD"
   end
+
+  test "child runs in requested worktree dir when NEWBEE_CWD points elsewhere" do
+    System.put_env("NEWBEE_CWD", "/tmp/newbee-cwd-decoy")
+    on_exit(fn -> System.delete_env("NEWBEE_CWD") end)
+    dir = Path.join(System.tmp_dir!(), "newbee-wt-probe")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+    result = Newbee.Host.Command.run(self(), "pwd", 5_000, dir)
+    assert result.exit == 0
+    assert Path.expand(String.trim(result.output)) == Path.expand(dir)
+  end
 end
