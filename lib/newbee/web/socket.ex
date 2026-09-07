@@ -8,7 +8,7 @@ defmodule Newbee.Web.Socket do
            {"type": "terminal", "event": "output", "data": "..."}
   上行帧： {"type": "interrupt"} | {"type": "permission", "ok": true} |
            {"type": "prompt", "text": "..."} | {"type": "btw", "question": "..."} |
-           {"type": "terminal_open"} | {"type": "terminal_input", "data": "..."} | {"type": "terminal_interrupt"} | {"type": "terminal_resize", "cols": 120, "rows": 40}
+           {"type": "terminal_open"} | {"type": "terminal_input", "data": "..."} | {"type": "terminal_interrupt"} | {"type": "terminal_wake"} | {"type": "terminal_resize", "cols": 120, "rows": 40}
 
 
   """
@@ -39,6 +39,9 @@ defmodule Newbee.Web.Socket do
 
       {:ok, %{"type" => "terminal_interrupt"}} ->
         terminal_interrupt(st)
+
+      {:ok, %{"type" => "terminal_wake"}} ->
+        terminal_wake(st)
 
       {:ok, %{"type" => "terminal_close"}} ->
         {:ok, close_terminal(st)}
@@ -237,6 +240,31 @@ defmodule Newbee.Web.Socket do
       :ok -> {:ok, st}
       {:error, reason} -> terminal_error(st, "中断终端失败: " <> inspect(reason))
     end
+  end
+
+  # 终端唤醒：AI 一轮结束后人在终端里继续操作，点工具栏「让 AI 跟进」即走这里。
+  # take_context 先收割未落袋的手动输入，再复用 prompt 路径：空闲直达 do_submit 起新一轮，
+  # 正忙或 boot 中则排队，不丢不插队。
+  defp terminal_wake(st) do
+    content =
+      case Newbee.Web.Terminal.take_context(st.sid) do
+        {:ok, text} when is_binary(text) -> text
+        _ -> ""
+      end
+
+    cast_session(st.sid, &WSession.prompt(&1, wake_prompt(content)))
+    {:ok, st}
+  end
+
+  defp wake_prompt(content) do
+    context =
+      if String.trim(content) == "",
+        do: "（终端暂无新的手动操作记录，请结合对话中已有的[手动终端上下文]判断）",
+        else: content
+
+    context <>
+      "\n\n用户在终端工具栏点了「让 AI 跟进」。请结合以上终端上下文继续；" <>
+      "若没有相关上下文，请简要说明需要用户先在终端里操作或直接描述需求，不要编造执行结果。"
   end
 
   defp close_terminal(st) do
