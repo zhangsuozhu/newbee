@@ -216,14 +216,15 @@ defmodule Newbee.Tools.Fs do
   def tree(root \\ ".") do
     root = normalize_path(root)
 
-    root
-    |> Path.join("**/*")
-    |> Path.wildcard()
+    # 有界漫步：裸 "**" 在根目录下会把全量结果装进内存（2026-09-08 事故）。
+    Newbee.FsWalk.files(root, include_dirs: true, prune_dir: &skip_tree_segment?/1)
     |> Enum.reject(fn p ->
       p =~ ~r{/(_build|deps|\.git|node_modules|cover)/}
     end)
     |> Enum.map(&Path.relative_to(&1, root))
   end
+
+  defp skip_tree_segment?(seg), do: seg in ~w(_build deps .git node_modules cover)
 
   @doc "File size in bytes."
   def size(path) do

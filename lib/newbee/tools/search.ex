@@ -91,10 +91,12 @@ defmodule Newbee.Tools.Search do
         |> Enum.reject(&Regex.match?(@skip, "/" <> &1 <> "/"))
 
       _ ->
-        dir
-        |> Path.join("**/*")
-        |> Path.wildcard()
-        |> Enum.reject(&(File.dir?(&1) or Regex.match?(@skip, &1)))
+        # 有界漫步：git 不可用时的回退原来是裸 "**"（根目录下内存爆炸，2026-09-08 事故）。
+        Newbee.FsWalk.files(dir, prune_dir: &skip_search_segment?/1)
+        |> Enum.filter(&File.regular?/1)
+        |> Enum.reject(&Regex.match?(@skip, &1))
     end
   end
+
+  defp skip_search_segment?(seg), do: seg in ~w(_build deps .git node_modules cover)
 end

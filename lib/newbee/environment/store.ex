@@ -345,13 +345,29 @@ defmodule Newbee.Environment.Store do
 
   # ── internal ──
 
+  # 崩溃残留 tmp 只删"旧"的：write_atomic! 的 tmp 存活毫秒级，无条件全删会和
+  # 并发写入竞态——删掉正要 rename 的 tmp，下一步 rename 即 enoent，直接把
+  # Coordinator 干掉（2026-09-08 事故）。阈值内侧的 tmp 视为在途写入，一律保留。
+  @tmp_stale_seconds 600
+
   defp cleanup_temp_files(dir) do
-    for f <- Path.wildcard(Path.join(dir, "**/*.tmp.*")) do
+    now = System.system_time(:second)
+
+    for f <- Path.wildcard(Path.join(dir, "**/*.tmp.*")),
+        stale_tmp?(f, now) do
       Logger.info("cleaning crash temp file #{f}")
       File.rm(f)
     end
 
     :ok
+  end
+
+  defp stale_tmp?(path, now) do
+    case File.stat(path, time: :posix) do
+      {:ok, %{mtime: mtime}} -> now - mtime > @tmp_stale_seconds
+      # stat 失败即文件已消失，rm 幂等，允许尝试删除
+      _ -> true
+    end
   end
 
   defp fsync_file!(path) do
