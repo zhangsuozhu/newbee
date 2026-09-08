@@ -878,4 +878,87 @@ defmodule Newbee.Web.SessionQueueTest do
     Process.cancel_timer(st5.turn_timer)
     Process.demonitor(st5.turn_ref, [:flush])
   end
+
+  test "clear_queue discards collab and ignores later redelivery" do
+    sid = "qclear_collab_" <> Integer.to_string(System.unique_integer([:positive]))
+    st = base_state(sid, busy: true)
+
+    m1 = %{"delivery_id" => "d-clear-1", "message_id" => "m-clear-1", "group_id" => "g", "body" => "one"}
+    m2 = %{"delivery_id" => "d-clear-2", "message_id" => "m-clear-2", "group_id" => "g", "body" => "two"}
+    {:noreply, st2} = Session.handle_cast({:collaboration_message, m1}, st)
+    {:noreply, st3} = Session.handle_cast({:collaboration_message, m2}, st2)
+    assert :queue.len(st3.queue) == 2
+
+    assert {:reply, {:ok, %{cleared: 2}}, st4} = Session.handle_call(:clear_queue, self(), st3)
+    assert :queue.is_empty(st4.queue)
+    assert MapSet.member?(st4.completed_deliveries, "d-clear-1")
+    assert MapSet.member?(st4.completed_deliveries, "d-clear-2")
+
+    {:noreply, st5} = Session.handle_cast({:collaboration_message, m1}, st4)
+    assert :queue.is_empty(st5.queue)
+  end
+
+  test "cancel_queued discards single collab" do
+    sid = "qcancel_collab_" <> Integer.to_string(System.unique_integer([:positive]))
+    st = base_state(sid, busy: true)
+    m1 = %{"delivery_id" => "d-cancel-1", "message_id" => "m-cancel-1", "group_id" => "g", "body" => "one"}
+    m2 = %{"delivery_id" => "d-cancel-2", "message_id" => "m-cancel-2", "group_id" => "g", "body" => "two"}
+    {:noreply, st2} = Session.handle_cast({:collaboration_message, m1}, st)
+    {:noreply, st3} = Session.handle_cast({:collaboration_message, m2}, st2)
+    [first, second] = :queue.to_list(st3.queue)
+
+    assert {:reply, {:ok, %{cancelled: _}}, st4} =
+             Session.handle_call({:cancel_queued, first.id}, self(), st3)
+
+    assert :queue.len(st4.queue) == 1
+    assert MapSet.member?(st4.completed_deliveries, first.delivery_id)
+    refute MapSet.member?(st4.completed_deliveries, second.delivery_id)
+  end
+
+  test "three consecutive collab failures park auto dispatch" do
+    sid = "qpark_" <> Integer.to_string(System.unique_integer([:positive]))
+    Newbee.Bus.subscribe()
+    on_exit(fn -> Newbee.Bus.unsubscribe() end)
+
+    payload = %{"group_id" => "g", "message_id" => "m-park", "body" => "hi"}
+
+    item = %{
+      id: "delivery-park",
+      kind: "collab_message",
+      preview: "hi",
+      delivery_kind: "message",
+      delivery_id: "delivery-park",
+      payload: payload
+    }
+
+    current = %{id: "delivery-park", delivery_item: item}
+    tid = make_ref()
+    ref = make_ref()
+
+    st = %{
+      base_state(sid, busy: true)
+      | kernel: nil,
+        runtime_id: "rt-park",
+        current: current,
+        turn_id: tid,
+        turn_ref: ref,
+        turn_task: self(),
+        collab_fail_streak: 2
+    }
+
+    assert {:noreply, st2} = Session.handle_info({:turn_finished, tid, {:error, "daily limit"}}, st)
+    assert Map.get(st2, :collab_fail_streak) == 3
+    refute st2.busy
+    assert :queue.len(st2.queue) == 1
+    refute_received :pull_pending_deliveries
+    assert_receive {:newbee_event, :web_event, {:web_event, ^sid, :notice, %{text: text}}}, 500
+    assert text =~ "已暂停自动重试"
+  end
+
+  test "idle user prompt resets park" do
+    sid = "qunpark_" <> Integer.to_string(System.unique_integer([:positive]))
+    st = %{base_state(sid, busy: false) | kernel: nil, collab_fail_streak: 3}
+    {:noreply, st2} = Session.handle_cast({:prompt, "hi"}, st)
+    assert Map.get(st2, :collab_fail_streak) == 0
+  end
 end
