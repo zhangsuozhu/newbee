@@ -102,6 +102,33 @@ defmodule Newbee.LLM.Responses do
     end
   end
 
+  # Tool output must not travel alone: delta with function_call_output but no matching function_call means pairing was split by previous_response_id. Some gateways reject with 400. Use full in that case. Text deltas still save tokens.
+  defp tool_output_orphaned_in_delta?(delta) when is_list(delta) do
+    call_ids =
+      delta
+      |> Enum.filter(&(&1["type"] == "function_call"))
+      |> Enum.map(& &1["call_id"])
+      |> MapSet.new()
+
+    Enum.any?(delta, fn
+      %{"type" => "function_call_output", "call_id" => id} when is_binary(id) and id != "" ->
+        not MapSet.member?(call_ids, id)
+
+      _ ->
+        false
+    end)
+  end
+
+  defp tool_output_orphaned_in_delta?(_), do: false
+
+  defp tool_output_missing_error?(body) when is_binary(body) do
+    body |> String.downcase() |> String.contains?("no tool call found for tool output")
+  end
+
+  defp tool_output_missing_error?({:http_error, _, body}), do: tool_output_missing_error?(body)
+  defp tool_output_missing_error?({:response_error, body}), do: tool_output_missing_error?(body)
+  defp tool_output_missing_error?(_), do: false
+
   defp run_request(client, logical_input, wire_tools, opts, state) do
     caps = capabilities(client)
     full_body = full_body(client, logical_input, wire_tools, opts, caps)
@@ -110,8 +137,17 @@ defmodule Newbee.LLM.Responses do
     {plan, plan_reason} =
       if client.responses_continuation and caps.continuation and not state.force_full do
         case Continuation.plan_with_reason(client.responses_checkpoint, envelope, logical_input) do
-          {:continue, _response_id, _delta} = continuation_plan ->
-            {continuation_plan, :continue}
+          {:continue, _response_id, delta} = continuation_plan ->
+            if tool_output_orphaned_in_delta?(delta) do
+              Newbee.DebugLog.log(
+                :llm,
+                "responses continuation skipped: tool output without call in delta, using full"
+              )
+
+              {:full, :tool_output_without_call_in_delta}
+            else
+              {continuation_plan, :continue}
+            end
 
           {:full, reason} ->
             {:full, reason}
@@ -202,6 +238,16 @@ defmodule Newbee.LLM.Responses do
         # 持久化，本会话后续 turn 与重启后都不再白试续接（否则每个 turn 都先失败一次
         # 再全量重放，等于每步白付一个全 prompt）。
         put_capability(client, :continuation, false)
+
+        run_request(client, logical_input, wire_tools, opts, %{
+          state
+          | force_full: true,
+            replayed_previous: true
+        })
+
+      continued? and not state.replayed_previous and tool_output_missing_error?(error) ->
+        Newbee.DebugLog.log(:llm, "responses tool output orphaned in delta; retrying full request")
+        Continuation.clear(client.responses_checkpoint)
 
         run_request(client, logical_input, wire_tools, opts, %{
           state
