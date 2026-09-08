@@ -378,6 +378,21 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("group.create", _p),
     do: {:error, "bad_request", "需要 sessionId 字段"}
 
+  defp dispatch_rpc("group.rename", %{"groupId" => group_id, "sessionId" => sid} = p) do
+    attrs = %{
+      "title" => blank_to_nil(p["title"]),
+      "goal" => blank_to_nil(p["goal"])
+    }
+
+    case Newbee.Collaboration.Coordinator.rename_group(group_id, attrs, sid) do
+      {:ok, group} -> {:ok, json_safe(group)}
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("group.rename", _p),
+    do: {:error, "bad_request", "需要 groupId 和 sessionId 字段"}
+
   defp dispatch_rpc("group.get", %{"groupId" => group_id, "sessionId" => sid}) do
     with :ok <- require_group_member(group_id, sid),
          {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id) do
@@ -395,23 +410,37 @@ defmodule Newbee.Web.Api do
          } = p
        ) do
     with :ok <- require_group_member(group_id, parent_sid),
-         {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id),
-         child_sid = blank_to_nil(p["sessionId"]) || Newbee.Web.Session.gen_session_id(),
-         cwd = group["project_root"] || Newbee.Session.cwd(parent_sid),
-         {:ok, _pid, ^child_sid} <- Newbee.Web.Session.ensure(child_sid, cwd),
-         :ok <- Newbee.Session.mark_created(child_sid),
-         {:ok, member} <-
-           Newbee.Collaboration.Coordinator.add_member(group_id, %{
-             "session_id" => child_sid,
-             "role" => blank_to_nil(p["role"]) || "worker",
-             "parent_session_id" => parent_sid,
-             "command_id" => rpc_command_id(p, "member-spawn")
-           }) do
-      {:ok, %{sessionId: child_sid, member: json_safe(member), cwd: Newbee.Session.cwd(child_sid)}}
+         {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id) do
+      explicit_sid = blank_to_nil(p["sessionId"])
+      child_sid = explicit_sid || Newbee.Web.Session.gen_session_id()
+      cwd = group["project_root"] || Newbee.Session.cwd(parent_sid)
+      pre_existing? = is_binary(explicit_sid) and session_exists?(explicit_sid)
+
+      with {:ok, _pid, ^child_sid} <- Newbee.Web.Session.ensure(child_sid, cwd),
+           :ok <- Newbee.Session.mark_created(child_sid),
+           {:ok, member} <-
+             Newbee.Collaboration.Coordinator.add_member(group_id, %{
+               "session_id" => child_sid,
+               "role" => blank_to_nil(p["role"]) || "worker",
+               "parent_session_id" => parent_sid,
+               "command_id" => rpc_command_id(p, "member-spawn")
+             }) do
+        {:ok, %{sessionId: child_sid, member: json_safe(member), cwd: Newbee.Session.cwd(child_sid)}}
+      else
+        {:error, _, _} = err ->
+          unless pre_existing?, do: Newbee.Web.Session.destroy(child_sid)
+          err
+
+        {:error, reason} ->
+          unless pre_existing?, do: Newbee.Web.Session.destroy(child_sid)
+          {:error, "session_error", inspect(reason)}
+
+        other ->
+          unless pre_existing?, do: Newbee.Web.Session.destroy(child_sid)
+          {:error, "session_error", inspect(other)}
+      end
     else
       {:error, code, message} -> {:error, code, message}
-      {:error, reason} -> {:error, "session_error", inspect(reason)}
-      other -> {:error, "session_error", inspect(other)}
     end
   end
 
@@ -2138,12 +2167,18 @@ defmodule Newbee.Web.Api do
   end
 
   defp require_existing_session(session_id) do
-    if session_id in Newbee.Session.list() or match?({:ok, _}, Newbee.Web.Session.lookup(session_id)) do
+    if session_exists?(session_id) do
       :ok
     else
       {:error, "session_not_found", "会话不存在"}
     end
   end
+
+  defp session_exists?(session_id) when is_binary(session_id) do
+    session_id in Newbee.Session.list() or match?({:ok, _}, Newbee.Web.Session.lookup(session_id))
+  end
+
+  defp session_exists?(_), do: false
 
   defp require_new_session(session_id) do
     case require_existing_session(session_id) do

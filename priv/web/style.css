@@ -2399,21 +2399,26 @@ svg.ico {
 .session-group-label:first-child{border-top:0;margin-top:0}.session-group-label.other{margin-top:10px}
 .session-group-label.current{color:var(--nb-accent);}/* 会话组折叠 & 删除 */
 .session-group{margin:4px 0;border-radius:8px;overflow:visible}
-.session-group-header{display:flex;align-items:center;gap:6px;padding:7px 8px 7px 6px;background:var(--nb-bg-elev);border:1px solid var(--nb-border);border-radius:8px;cursor:pointer;user-select:none}
+.session-group-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;row-gap:4px;padding:7px 8px 7px 6px;background:var(--nb-bg-elev);border:1px solid var(--nb-border);border-radius:8px;cursor:pointer;user-select:none}
 .session-group-header:hover{border-color:var(--nb-accent);background:var(--nb-bg)}
 .session-group-header.current{border-left:2px solid var(--nb-accent)}
-.session-group-toggle{border:0;background:transparent;color:var(--nb-label-2);width:18px;height:18px;display:grid;place-items:center;border-radius:4px;cursor:pointer;font-size:12px}
+.session-group-toggle{border:0;background:transparent;color:var(--nb-label-2);width:18px;height:18px;flex:0 0 auto;display:grid;place-items:center;border-radius:4px;cursor:pointer;font-size:12px}
 .session-group-toggle:hover{background:var(--nb-border);color:var(--nb-label-1)}
-.session-group-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--nb-label-1);font-size:12px;font-weight:600}
-.session-group-count{color:var(--nb-label-caption);font:10px var(--nb-mono);background:var(--nb-border);padding:1px 5px;border-radius:8px}
-.session-group-busy{color:var(--nb-accent);font-size:10px;margin-left:2px}
-.session-group-delete{border:0;background:transparent;color:var(--nb-label-caption);padding:3px 8px;display:inline-flex;align-items:center;gap:4px;border-radius:6px;cursor:pointer;font-size:11px;border:1px solid transparent}
+.session-group-title{flex:1 1 60px;min-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--nb-label-1);font-size:12px;font-weight:600}
+.session-group-count{flex:0 0 auto;color:var(--nb-label-caption);font:10px var(--nb-mono);background:var(--nb-border);padding:1px 5px;border-radius:8px;white-space:nowrap}
+.session-group-busy{flex:0 0 auto;color:var(--nb-accent);font-size:10px;margin-left:2px;white-space:nowrap}
+.session-group-spacer{flex:1 1 auto;min-width:4px}
+.session-group-rename{flex:0 0 auto;border:0;background:transparent;color:var(--nb-label-caption);padding:3px 6px;border-radius:6px;cursor:pointer;font-size:12px}
+.session-group-rename:hover{background:var(--nb-border);color:var(--nb-label-1)}
+.session-group-rename.hidden{display:none}
+.session-group-delete{flex:0 0 auto;border:0;background:transparent;color:var(--nb-label-caption);padding:3px 8px;display:inline-flex;align-items:center;gap:4px;border-radius:6px;cursor:pointer;font-size:11px;border:1px solid transparent;white-space:nowrap}
 .session-group-delete:hover{background:var(--nb-red);color:#fff;border-color:var(--nb-red)}
 .session-group-delete:disabled{opacity:.35;cursor:not-allowed}
 .session-group-delete.hidden{display:none}
 .session-group-body{display:flex;flex-direction:column;gap:0;padding:4px 0 2px}
 .session-group.collapsed .session-group-body{display:none}
 .session-group.collapsed .session-group-header{opacity:.85}
+
 
 .group-current-badge{display:inline-block;margin-left:6px;padding:0 5px;font-size:10px;line-height:14px;border-radius:7px;background:var(--nb-accent);color:#fff;vertical-align:middle;}
 .session-child{margin-left:22px!important;width:calc(100% - 22px)!important;border-left:2px solid var(--nb-border);border-radius:0 8px 8px 0;position:relative}

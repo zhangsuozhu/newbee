@@ -2295,7 +2295,10 @@ case "goal_round": break;
       const scope = Array.isArray(scopes) && scopes.length ? `<div class="collab-task-scope">写入：${escapeHtml(scopes.join(", "))}</div>` : "";
       const attempt = Number.isInteger(task.attempt) ? `<span class="collab-task-attempt">第 ${task.attempt + 1} 次执行</span>` : "";
       const retry = group.coordinator_session_id === state.sid && ["blocked", "failed", "cancelled"].includes(status) ? `<button class="btn-ghost" data-retry-task="${escapeHtml(task.task_id)}">重试</button>` : "";
-      return `<article class="collab-task ${escapeHtml(status)}${attention ? " attention-" + attention : ""}" data-task-anchor="${escapeHtml(task.task_id)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}${proto}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))} · ${attempt} · ${updated}</div>${progress}${result}${renderAcceptance(task)}${renderDepends(task)}${scope}${renderSubmission(task)}${verification}${claim}${verify}${retry}${actions}${workspaceControls(task, group)}</article>`;
+      const canCancel = ["pending", "assigned", "accepted", "running", "blocked", "submitted"].includes(status) && (group.coordinator_session_id === state.sid || task.assigned_session_id === state.sid);
+      const cancelBtn = canCancel ? `<button class="btn-ghost" data-cancel-task="${escapeHtml(task.task_id)}">取消</button>` : "";
+      return `<article class="collab-task ${escapeHtml(status)}${attention ? " attention-" + attention : ""}" data-task-anchor="${escapeHtml(task.task_id)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}${proto}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))} · ${attempt} · ${updated}</div>${progress}${result}${renderAcceptance(task)}${renderDepends(task)}${scope}${renderSubmission(task)}${verification}${claim}${verify}${retry}${cancelBtn}${actions}${workspaceControls(task, group)}</article>`;
+
     }).join("") + (hiddenCount ? `<div class="collab-empty">已按筛选隐藏 ${hiddenCount} 项（点“全部”查看）</div>` : "")) : '<div class="collab-empty">暂无工作项</div>';
     bindTaskActions(group, list);
     updateCollabBadges();
@@ -2350,6 +2353,11 @@ case "goal_round": break;
   async function retryCollaborationTask(taskId) {
     return hiveTaskMutation("hive.task.retry", taskId, { reason: "从 Hive Board 重新执行" }, "重试工作项");
   }
+  async function cancelCollaborationTask(taskId) {
+    if (!window.confirm("取消该工作项？取消后组内无进行中任务即可删除整组，子会话历史仍保留。")) return;
+    return hiveTaskMutation("hive.task.update", taskId, { status: "cancelled" }, "取消工作项");
+  }
+
   function renderSubmission(task) {
     const submission = task && task.submission;
     if (!submission || typeof submission !== "object") return "";
@@ -2383,12 +2391,19 @@ case "goal_round": break;
       button.onclick = async () => { await hiveTaskMutation("hive.task.claim", button.dataset.claim, {}, "领取工作项"); };
     });
     list.querySelectorAll("[data-verify-task]").forEach((button) => {
+    list.querySelectorAll("[data-retry-task]").forEach((button) => {
       button.onclick = async () => {
         button.disabled = true;
-        try { await verifyCollaborationTask(button.dataset.verifyTask); } finally { button.disabled = false; }
+        try { await retryCollaborationTask(button.dataset.retryTask); } finally { button.disabled = false; }
       };
     });
-    list.querySelectorAll("[data-retry-task]").forEach((button) => {
+    list.querySelectorAll("[data-cancel-task]").forEach((button) => {
+      button.onclick = async () => {
+        button.disabled = true;
+        try { await cancelCollaborationTask(button.dataset.cancelTask); } finally { button.disabled = false; }
+      };
+    });
+
       button.onclick = async () => {
         button.disabled = true;
         try { await retryCollaborationTask(button.dataset.retryTask); } finally { button.disabled = false; }
@@ -2473,6 +2488,8 @@ case "goal_round": break;
     if (!title && !goal) { $("group-goal-input").focus(); return; }
     const button = $("group-modal-confirm");
     button.disabled = true;
+    // 本次调用是否新建了组：新建且后续加人不完整时，主动删掉半成品，避免重试又建新组导致重复组。
+    let createdFresh = false;
     try {
       if (!state.pendingGroupCommandId) state.pendingGroupCommandId = `group-create-${Date.now()}-${Math.floor(Math.random() * 65535)}`;
       if (!state.pendingGroupId) state.pendingGroupId = `grp-web-${Date.now()}-${Math.floor(Math.random() * 65535).toString(16)}`;
@@ -2480,12 +2497,14 @@ case "goal_round": break;
       if (!group) {
         try {
           group = await rpc("group.create", { sessionId: state.sid, title, goal, groupId: state.pendingGroupId, commandId: state.pendingGroupCommandId });
+          createdFresh = true;
         } catch (e) {
           const msg = (e && e.message) || "";
           if (/已处理|duplicate/i.test(msg)) {
             const groups = await rpc("group.list", { sessionId: state.sid });
             group = (groups || []).find((g) => g.group_id === state.pendingGroupId) || null;
             if (!group) throw e;
+            createdFresh = false;
           } else throw e;
         }
         state.pendingGroupResult = group;
@@ -2508,11 +2527,24 @@ case "goal_round": break;
       switchMCTab("collaboration");
       setMCOpen(true);
     } catch (e) {
-      line("error", "组成工作组失败: " + e.message + "（已保留本次建组进度，重试不会重复建组）");
+      const failedGroup = state.pendingGroupResult;
+      if (createdFresh && failedGroup && failedGroup.group_id) {
+        try {
+          await rpc("group.delete", { groupId: failedGroup.group_id, sessionId: state.sid });
+        } catch (_cleanupErr) {}
+        state.pendingGroupCommandId = null;
+        state.pendingGroupId = null;
+        state.pendingGroupResult = null;
+        await Promise.all([loadSessions(), loadGroups()]);
+        line("error", "组成工作组失败，已清理半成品组，请重试一次: " + e.message);
+      } else {
+        line("error", "组成工作组失败: " + e.message + "（已保留本次建组进度，重试不会重复建组）");
+      }
     } finally {
       button.disabled = false;
     }
   }
+
 
 
   function openDelegateModal() {
@@ -2929,6 +2961,27 @@ case "goal_round": break;
       }
     }, { confirmLabel: "删除整组", confirmClass: "btn-deny" });
   }
+  async function renameGroup(group) {
+    const groupId = group.group_id;
+    if (group.coordinator_session_id !== state.sid) {
+      line("error", "只有组创建者可以重命名工作组");
+      return;
+    }
+    const cur = group.title || group.goal || "";
+    const t = prompt("重命名工作组：", cur);
+    if (t === null) return;
+    const title = t.trim().slice(0, 80);
+    if (!title || title === cur) return;
+    try {
+      await rpc("group.rename", { groupId, sessionId: state.sid, title });
+      await loadGroups();
+      line("notice", "已重命名工作组为「" + title + "」");
+    } catch (e) {
+      line("error", "重命名工作组失败: " + (e && e.message ? e.message : String(e)));
+    }
+  }
+
+
 
 
   // ── 微信式左滑（移动触摸 + 桌面鼠标拖拽共用）：同一时间只展开一条 ──
@@ -3140,14 +3193,15 @@ case "goal_round": break;
       header.className = "session-group-header" + (group.current_session_member ? " current" : "");
       const toggleIcon = collapsed ? "▸" : "▾";
       const busyCount = members.filter((m) => { const s = findSession(m.session_id); return s.busy; }).length;
-      const busyHint = busyCount ? ` <span class="session-group-busy">● ${busyCount} 运行中</span>` : "";
-      const canDelete = group.coordinator_session_id === state.sid;
+      const busyHint = busyCount ? `<span class="session-group-busy">● ${busyCount} 运行中</span>` : "";
+      const canEdit = group.coordinator_session_id === state.sid;
       const unread = collabUnreadCount(group.group_id);
       const unreadHint = unread ? `<span class="session-group-unread" title="${unread} 条未读协作动态">${unread > 99 ? "99+" : unread} 未读</span>` : "";
-      header.innerHTML = `<button class="session-group-toggle" title="${collapsed ? "展开" : "收起"}">${toggleIcon}</button><span class="session-group-title">${escapeHtml(group.title || group.goal || "会话组")}</span><span class="session-group-count">${members.length} 成员</span>${busyHint}${unreadHint}${group.current_session_member ? '<span class="group-current-badge">当前</span>' : ""}<button class="session-group-delete ${canDelete ? "" : "hidden"}" title="${busyCount ? "组内有运行中会话，无法删除整组" : "删除整组及组内全部会话（不可恢复）"}">🗑 删除整组</button>`;
+      const groupName = group.title || group.goal || "会话组";
+      header.innerHTML = `<button class="session-group-toggle" title="${collapsed ? "展开" : "收起"}">${toggleIcon}</button><span class="session-group-title" title="${escapeHtml(groupName)}">${escapeHtml(groupName)}</span><span class="session-group-count">${members.length} 成员</span>${busyHint}${unreadHint}${group.current_session_member ? '<span class="group-current-badge">当前</span>' : ""}<span class="session-group-spacer"></span><button class="session-group-rename ${canEdit ? "" : "hidden"}" title="重命名工作组">✏️</button><button class="session-group-delete ${canEdit ? "" : "hidden"}" title="${busyCount ? "组内有运行中会话，无法删除整组" : "删除整组及组内全部会话（不可恢复）"}">🗑 删除</button>`;
 
       header.onclick = (e) => {
-        if (e.target.closest(".session-group-delete")) return;
+        if (e.target.closest(".session-group-delete") || e.target.closest(".session-group-rename")) return;
         toggleGroupCollapse(group.group_id);
       };
       const delBtn = header.querySelector(".session-group-delete");
@@ -3155,9 +3209,14 @@ case "goal_round": break;
         if (busyCount) delBtn.disabled = true;
         delBtn.onclick = (e) => { e.stopPropagation(); deleteGroup(group); };
       }
+      const renameBtn = header.querySelector(".session-group-rename");
+      if (renameBtn) {
+        renameBtn.onclick = (e) => { e.stopPropagation(); renameGroup(group); };
+      }
       const toggleBtn = header.querySelector(".session-group-toggle");
       if (toggleBtn) toggleBtn.onclick = (e) => { e.stopPropagation(); toggleGroupCollapse(group.group_id); };
       groupWrap.appendChild(header);
+
       const body = document.createElement("div");
       body.className = "session-group-body";
       const headItem = addItem(findSession(head.session_id), false, head);

@@ -30,8 +30,17 @@ defmodule Newbee.Web.HiveUiTest do
     assert js =~ "expectedRevision"
     assert js =~ "data-verify-task"
     assert js =~ "data-retry-task"
+    assert js =~ "data-cancel-task"
+    assert js =~ "cancelCollaborationTask"
+    assert js =~ "session-group-rename"
+    assert js =~ "renameGroup"
+    assert js =~ "group.rename"
+    assert js =~ "createdFresh"
+    assert js =~ "已清理半成品组"
     assert js =~ "renderSubmission"
     assert js =~ "collab_task_updated"
+
+
     assert html =~ ~s|id="mc-task-conflicts"|
     assert html =~ ~s|id="delegate-acceptance-list"|
     assert html =~ ~s|id="delegate-persona"|
