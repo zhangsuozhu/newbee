@@ -12,7 +12,6 @@ defmodule Newbee.Agent.LoopTest do
     def handle_call(:take_steering, _from, []), do: {:reply, :none, []}
   end
 
-
   defp tool_msg(code, id \\ "call_1") do
     %{
       "role" => "assistant",
@@ -129,7 +128,6 @@ defmodule Newbee.Agent.LoopTest do
     assert {:text, "已转向"} = Loop.submit(kernel, "开始")
   end
 
-
   test "done 工具调用也回填 tool 响应（历史不留悬空 tool_calls）" do
     {:ok, ev} = Evaluator.start(mode: :local)
     script = [fn _m, _t -> {:ok, done_msg("完"), %{}} end]
@@ -139,9 +137,17 @@ defmodule Newbee.Agent.LoopTest do
 
     assert {:done, "完"} = Loop.submit(kernel, "x")
 
-    last = :sys.get_state(kernel).messages |> List.last()
-    assert last["role"] == "tool"
-    assert last["tool_call_id"] == "call_done"
+    msgs = :sys.get_state(kernel).messages
+    # 新顺序：tool 紧跟 tool_calls，UI done 排在 tool 之后（2026-09-08 stall 调查）
+    assert Enum.count(msgs) >= 3
+    tool = Enum.at(msgs, -2)
+    last = List.last(msgs)
+    assert tool["role"] == "tool"
+    assert tool["tool_call_id"] == "call_done"
+    assert tool["content"] == "✓ done"
+    assert last["role"] == "assistant"
+    assert last["done"] == true
+    assert last["content"] == "完"
   end
 
   test "恢复含悬空 tool_calls 的 transcript：载入时补占位（DeepSeek 400 根因）" do
@@ -398,6 +404,7 @@ defmodule Newbee.Agent.LoopTest do
     assert {:text, "ok"} = Loop.submit(kernel, "继续")
     Newbee.Session.delete(sid)
   end
+
   test "切换会话根会同步 evaluator、元数据和 system prompt" do
     original = File.cwd!()
     base = Path.join(System.tmp_dir!(), "newbee-loop-root-#{System.unique_integer([:positive])}")
@@ -503,7 +510,6 @@ defmodule Newbee.Agent.LoopTest do
     assert %{status: :ok, value: cwd_value, cwd: ^worktree} = Evaluator.eval(ev, "File.cwd!()")
     assert cwd_value == inspect(worktree)
   end
-
 end
 
 :ok

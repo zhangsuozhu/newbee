@@ -193,14 +193,22 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
   end
 
   # 多个隔离 evaluator 会共享这份快照索引；短暂竞争不应让合法 patch 失败。
+  # 正常持锁 <100ms；持锁超 stale 即视为崩溃遗留（hard-kill 不执行 after/File.rm），
+  # 竞争者在 timeout 内轮询抢占。stale 必须 < timeout，否则一次等待无法完成自愈。
   @lock_timeout_ms 30_000
-  @lock_stale_ms 120_000
+  @lock_stale_ms 15_000
 
-  # 简单文件锁：O_EXCL 原子创建 + 过期抢占（持锁进程崩溃后 30s 自动可抢）。
+  # 测试可通过 Application.put_env(:newbee, :snapshot_lock_timeout_ms | :snapshot_lock_stale_ms) 覆盖，便于快测超时诊断而不等 30s。
+  defp lock_timeout_ms, do: Application.get_env(:newbee, :snapshot_lock_timeout_ms, @lock_timeout_ms)
+  defp lock_stale_ms, do: Application.get_env(:newbee, :snapshot_lock_stale_ms, @lock_stale_ms)
+
+  # 简单文件锁：O_EXCL 原子创建 + 过期抢占（持锁进程被硬杀后 15s 可抢，30s 等待内自愈）。
+  # 硬杀（Process.exit(_, :kill)）不执行 Elixir after，File.rm 无法依赖——见 2026-09-08 stall 调查。
   defp with_file_lock(path, fun) do
     File.mkdir_p!(Path.dirname(path))
-    deadline = System.monotonic_time(:millisecond) + @lock_timeout_ms
-    :locked = do_acquire_lock(path, deadline)
+    timeout = lock_timeout_ms()
+    deadline = System.monotonic_time(:millisecond) + timeout
+    :locked = do_acquire_lock(path, deadline, System.monotonic_time(:millisecond), timeout)
 
     try do
       fun.()
@@ -209,31 +217,62 @@ defmodule Newbee.Tools.Edit.SnapshotStore do
     end
   end
 
-  defp do_acquire_lock(path, deadline) do
+  defp do_acquire_lock(path, deadline, start_ms, timeout) do
+    timeout = timeout || lock_timeout_ms()
+    stale_ms = lock_stale_ms()
+
     case File.open(path, [:exclusive, :write]) do
       {:ok, io} ->
-        IO.write(io, inspect(self()))
+        IO.write(io, inspect(%{pid: inspect(self()), node: Node.self(), at_ms: System.system_time(:millisecond)}))
         File.close(io)
         :locked
 
       {:error, _} ->
-        stale? =
-          case File.stat(path, time: :posix) do
-            {:ok, %File.Stat{mtime: mtime}} ->
-              System.os_time(:millisecond) - mtime_to_milliseconds(mtime) > @lock_stale_ms
-
-            _ ->
-              false
-          end
-
+        {stale?, age_ms, owner} = lock_info(path)
         if stale?, do: File.rm(path)
 
         if System.monotonic_time(:millisecond) >= deadline do
-          raise RuntimeError, "snapshot store lock timeout: " <> path
+          waited = System.monotonic_time(:millisecond) - start_ms
+
+          raise RuntimeError,
+                "snapshot store lock timeout: " <>
+                  path <>
+                  " waited=" <>
+                  Integer.to_string(waited) <>
+                  "ms timeout=" <>
+                  Integer.to_string(timeout) <>
+                  "ms " <>
+                  "stale_ms=" <>
+                  Integer.to_string(stale_ms) <>
+                  " age_ms=" <>
+                  Integer.to_string(age_ms) <>
+                  " owner=" <>
+                  owner <>
+                  " node=" <> Atom.to_string(Node.self()) <> " " <> "(hard-kill 不执行after，stale锁由竞争者抢占；重试show/patch即可)"
         end
 
         Process.sleep(10)
-        do_acquire_lock(path, deadline)
+        do_acquire_lock(path, deadline, start_ms, timeout)
+    end
+  end
+
+  # 锁诊断只读owner/node/mtime，不含请求正文，避免密钥落盘。
+  defp lock_info(path) do
+    stale_ms = lock_stale_ms()
+
+    owner =
+      case File.read(path) do
+        {:ok, bin} -> String.slice(bin, 0, 200)
+        _ -> "unknown"
+      end
+
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime}} ->
+        age = System.os_time(:millisecond) - mtime_to_milliseconds(mtime)
+        {age > stale_ms, age, owner}
+
+      _ ->
+        {false, -1, owner}
     end
   end
 
