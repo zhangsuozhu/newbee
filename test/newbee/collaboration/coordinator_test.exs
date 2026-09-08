@@ -488,8 +488,22 @@ defmodule Newbee.Collaboration.CoordinatorTest do
              })
 
     assert cancelled["status"] == "cancelled"
+    assert cancelled["status"] == "cancelled"
     assert {:ok, %{"group_id" => ^group_id}} = Coordinator.delete_group(group_id, "parent", server)
     assert {:error, "not_found", _} = Coordinator.get(group_id, server)
+  end
+
+  test "rename_group 仅协调者可改名并持久化", %{server: server} do
+    assert {:ok, group} =
+             Coordinator.create_group(%{"session_id" => "lead", "title" => "旧名", "goal" => "g"}, server)
+
+    group_id = group["group_id"]
+    assert {:ok, renamed} = Coordinator.rename_group(group_id, %{"title" => "新名"}, "lead", server)
+    assert renamed["title"] == "新名"
+    assert {:ok, full} = Coordinator.get(group_id, server)
+    assert full["title"] == "新名"
+    assert {:error, "forbidden_role", _} = Coordinator.rename_group(group_id, %{"title" => "hack"}, "other", server)
+    assert {:error, "bad_request", _} = Coordinator.rename_group(group_id, %{}, "lead", server)
   end
 
   test "活跃会话的 Hive 任务仍阻止删除", %{server: server} do

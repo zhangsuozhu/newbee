@@ -150,6 +150,26 @@ defmodule Newbee.Web.CollaborationApiTest do
     on_exit(fn -> Newbee.Web.Session.destroy("spawn-child") end)
   end
 
+  test "spawn 失败不残留空会话" do
+    group =
+      post_rpc("group.create", %{"sessionId" => "spawn-clean-parent", "title" => "清理群"})
+      |> ok!()
+
+    child = "spawn-clean-child"
+
+    resp =
+      post_rpc("group.member.spawn", %{
+        "groupId" => group["group_id"],
+        "parentSessionId" => "spawn-clean-parent",
+        "sessionId" => child,
+        "role" => "not-a-role",
+        "commandId" => "spawn-clean-cmd"
+      })
+
+    assert %{"error" => _} = resp["result"]
+    refute child in Newbee.Session.list()
+  end
+
   test "非成员不能读取消息" do
     group =
       post_rpc("group.create", %{"sessionId" => "session-a", "title" => "私有群"})

@@ -95,6 +95,9 @@ defmodule Newbee.Collaboration.Coordinator do
   def set_group_status(group_id, status, session_id, server \\ __MODULE__),
     do: GenServer.call(server, {:set_group_status, group_id, status, session_id})
 
+  def rename_group(group_id, attrs, session_id, server \\ __MODULE__),
+    do: GenServer.call(server, {:rename_group, group_id, attrs, session_id})
+
   def delete_group(group_id, session_id, server \\ __MODULE__),
     do: GenServer.call(server, {:delete_group, group_id, session_id})
 
@@ -573,6 +576,25 @@ defmodule Newbee.Collaboration.Coordinator do
       {:reply, {:ok, public_group(updated)}, next}
     else
       false -> {:reply, {:error, "bad_request", "未知群组状态"}, state}
+      {:error, code, message} -> {:reply, {:error, code, message}, state}
+    end
+  end
+
+  def handle_call({:rename_group, group_id, raw_attrs, session_id}, _from, state) do
+    with {:ok, group} <- fetch_group(state, group_id),
+         :ok <- ensure_coordinator(group, session_id),
+         {:ok, attrs} <- normalize_group_rename(raw_attrs) do
+      updated =
+        group
+        |> Map.merge(Map.take(attrs, ["title", "goal"]))
+        |> Map.put("updated_at", now_iso())
+
+      event = event("collab_group_renamed", group_id, %{"title" => updated["title"], "goal" => updated["goal"]}, nil)
+      {:ok, persisted} = append(state, event)
+      next = apply_event(state, persisted)
+      broadcast(persisted, next.groups[group_id])
+      {:reply, {:ok, public_group(next.groups[group_id])}, next}
+    else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
   end
@@ -1502,6 +1524,24 @@ defmodule Newbee.Collaboration.Coordinator do
     |> remember_command(event["command_id"])
   end
 
+  defp apply_event_state(
+         state,
+         %{
+           "topic" => "collab_group_renamed",
+           "group_id" => group_id,
+           "payload" => payload
+         } = event
+       ) do
+    group =
+      state.groups[group_id]
+      |> Map.merge(Map.take(payload, ["title", "goal"]))
+      |> Map.put("updated_at", event["at"])
+
+    state
+    |> put_group(group)
+    |> remember_command(event["command_id"])
+  end
+
   defp apply_event_state(state, %{"topic" => "collab_group_deleted", "group_id" => group_id} = event) do
     state
     |> notify_deleted_waiters(group_id)
@@ -1646,6 +1686,28 @@ defmodule Newbee.Collaboration.Coordinator do
 
   defp session_member?(group, session_id) do
     Enum.any?(group["members"], &(&1["session_id"] == session_id))
+  end
+
+  defp normalize_group_rename(attrs) when is_map(attrs) do
+    title = clean(attrs["title"] || attrs[:title])
+    goal = clean(attrs["goal"] || attrs[:goal])
+
+    cond do
+      is_nil(title) and is_nil(goal) ->
+        {:error, "bad_request", "名称或目标至少填写一项"}
+
+      not is_nil(title) and (byte_size(title) < 1 or byte_size(title) > 80) ->
+        {:error, "bad_request", "名称须在 1..80 字符"}
+
+      not is_nil(goal) and (byte_size(goal) < 1 or byte_size(goal) > 2000) ->
+        {:error, "bad_request", "目标须在 1..2000 字符"}
+
+      true ->
+        %{}
+        |> then(fn m -> if title, do: Map.put(m, "title", title), else: m end)
+        |> then(fn m -> if goal, do: Map.put(m, "goal", goal), else: m end)
+        |> then(&{:ok, &1})
+    end
   end
 
   defp normalize_group(attrs) when is_map(attrs) do
