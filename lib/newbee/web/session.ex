@@ -10,6 +10,8 @@ defmodule Newbee.Web.Session do
   use GenServer
 
   @max_queue_items 128
+  # 协作失败熔断：连续失败/中断超过阈值后暂停自动调度，需显式动作恢复（daily limit 空转的刹车）。
+  @collab_fail_threshold 3
 
   defstruct kernel: nil,
             sid: nil,
@@ -44,6 +46,8 @@ defmodule Newbee.Web.Session do
             # 协作调度（docs/collab-scheduling-proposal.md §5）：head 通道连续服务计数（防饿死）
             # 与协作投递统计。只加计数，不改状态机；旧状态无此字段时按 0/空统计处理。
             head_streak: 0,
+            # 协作连续失败计数：成功/显式恢复清零，达阈值后 park，需用户新消息/切模型/清空恢复。
+            collab_fail_streak: 0,
             collab_stats: %{
               enqueued_head: 0,
               enqueued_normal: 0,
@@ -363,6 +367,69 @@ defmodule Newbee.Web.Session do
 
   defp collaboration_item?(%{delivery_id: id}) when is_binary(id) and id != "", do: true
   defp collaboration_item?(_), do: false
+  defp collab_fail_count(st), do: Map.get(st, :collab_fail_streak, 0)
+
+  defp collab_parked?(st), do: collab_fail_count(st) >= @collab_fail_threshold
+
+  defp reset_collab_fail(st), do: Map.put(st, :collab_fail_streak, 0)
+
+  defp collab_delivery?(%{merged: merged}) when is_list(merged), do: true
+  defp collab_delivery?(item), do: collaboration_item?(item)
+
+  defp note_collab_failure(st) do
+    count = collab_fail_count(st) + 1
+    st1 = Map.put(st, :collab_fail_streak, count)
+
+    if count == @collab_fail_threshold do
+      broadcast(st.sid, :notice, %{text: "协作投递连续失败3次已暂停自动重试：请检查模型额度/网络，或手动清空队列；发送新消息/切换模型后会自动恢复"})
+      {st_ev, ev} = push_queue_event(st1, "parked", %{count: count, reason: "collab_fail_threshold"})
+      broadcast_queue(st.sid, st_ev, ev)
+      st_ev
+    else
+      st1
+    end
+  end
+
+  defp update_collab_streak(st, delivery, result) do
+    cond do
+      completed_turn?(result) -> reset_collab_fail(st)
+      collab_delivery?(delivery) -> note_collab_failure(st)
+      true -> st
+    end
+  end
+
+  defp discard_collab_item(st, item) do
+    st1 = mark_delivery_completed(st, item_delivery_id(item))
+    _ = try_discard_delivery(st1, item)
+    st1
+  end
+
+  defp discard_collab_items(st, items) do
+    st1 = ensure_runtime_id(st)
+
+    Enum.reduce(items, st1, fn item, acc ->
+      if collaboration_item?(item), do: discard_collab_item(acc, item), else: acc
+    end)
+  end
+
+  defp try_discard_delivery(st, item) do
+    try do
+      case claim_delivery(st, item) do
+        {:ok, "deliver"} ->
+          case ack_delivery(st, item) do
+            {:ok, _} -> :ok
+            _ -> :ok
+          end
+
+        _ ->
+          :ok
+      end
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
+  end
 
   defp item_delivery_attrs(st, item) do
     payload = Map.get(item, :payload, %{})
@@ -399,7 +466,12 @@ defmodule Newbee.Web.Session do
       end
 
     if fresh, do: broadcast(st.sid, event_kind, Map.merge(fields, %{queued: :queue.len(st3.queue), queueId: item.id}))
-    if st3.busy or st3.booting, do: st3, else: dispatch_pending(ensure_runtime_id(st3))
+
+    cond do
+      st3.busy or st3.booting -> st3
+      collab_parked?(st3) and collaboration_item?(item) -> st3
+      true -> dispatch_pending(ensure_runtime_id(st3))
+    end
   end
 
   # 协作调度分诊（纯函数，无模型调用）：只看结构化头，不看正文情绪。
@@ -1324,19 +1396,19 @@ defmodule Newbee.Web.Session do
   end
 
   def handle_cast({:prompt_images, data_urls, text, queue_id}, st) when is_binary(queue_id) do
-    {:noreply, dispatch_item(st, make_user_images_item(data_urls, text, queue_id), false)}
+    {:noreply, dispatch_item(reset_collab_fail(st), make_user_images_item(data_urls, text, queue_id), false)}
   end
 
   def handle_cast({:prompt_images, data_urls, text}, st) do
-    {:noreply, dispatch_item(st, make_user_images_item(data_urls, text, nil), false)}
+    {:noreply, dispatch_item(reset_collab_fail(st), make_user_images_item(data_urls, text, nil), false)}
   end
 
   def handle_cast({:prompt, text, queue_id}, st) when is_binary(queue_id) do
-    {:noreply, dispatch_item(st, make_user_text_item(text, queue_id), false)}
+    {:noreply, dispatch_item(reset_collab_fail(st), make_user_text_item(text, queue_id), false)}
   end
 
   def handle_cast({:prompt, text}, st) do
-    {:noreply, dispatch_item(st, make_user_text_item(text, nil), false)}
+    {:noreply, dispatch_item(reset_collab_fail(st), make_user_text_item(text, nil), false)}
   end
 
   def handle_cast(:interrupt, st) do
@@ -1445,8 +1517,12 @@ defmodule Newbee.Web.Session do
   @impl true
   def handle_call({:switch_model, provider, model}, _from, st) when is_binary(provider) do
     case switch_session_model(st, provider, model) do
-      {:ok, next} -> {:reply, :ok, next}
-      {:error, reason} -> {:reply, {:error, reason}, st}
+      {:ok, next} ->
+        next = if next.busy or next.booting, do: next, else: dispatch_pending(reset_collab_fail(next))
+        {:reply, :ok, next}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, st}
     end
   end
 
@@ -1462,8 +1538,12 @@ defmodule Newbee.Web.Session do
         Newbee.LLM.Config.load() |> get_in(["roles", "default", "provider"])
 
     case switch_session_model(st, provider, model_id) do
-      {:ok, next} -> {:reply, :ok, next}
-      {:error, reason} -> {:reply, {:error, reason}, st}
+      {:ok, next} ->
+        next = if next.busy or next.booting, do: next, else: dispatch_pending(reset_collab_fail(next))
+        {:reply, :ok, next}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, st}
     end
   end
 
@@ -1543,7 +1623,7 @@ defmodule Newbee.Web.Session do
 
     case found do
       [item] ->
-        st1 = set_queue(st, rest)
+        st1 = set_queue(st, rest) |> discard_collab_items([item])
 
         {st2, ev} =
           push_queue_event(st1, "cancelled", %{
@@ -1573,7 +1653,8 @@ defmodule Newbee.Web.Session do
     if n == 0 do
       {:reply, {:ok, %{cleared: 0, queued: 0, queue: []}}, st}
     else
-      st1 = set_queue(st, :queue.new())
+      removed = :queue.to_list(st.queue)
+      st1 = set_queue(st, :queue.new()) |> discard_collab_items(removed) |> reset_collab_fail()
       {st2, ev} = push_queue_event(st1, "cleared", %{count: n, reason: "clear_queue"})
       broadcast_queue(st.sid, st2, ev)
       broadcast(st.sid, :notice, %{text: "已清空 " <> Integer.to_string(n) <> " 条排队指令"})
@@ -1611,7 +1692,7 @@ defmodule Newbee.Web.Session do
       end
 
       broadcast(st.sid, :effort_changed, %{effort: effort, applied: true})
-      {:reply, {:ok, %{applied: true}}, %{st | client: client}}
+      {:reply, {:ok, %{applied: true}}, dispatch_pending(reset_collab_fail(%{st | client: client}))}
     end
   end
 
@@ -1781,7 +1862,13 @@ defmodule Newbee.Web.Session do
             enqueue_pending_delivery(acc, envelope)
           end)
 
-        st = if st.busy or st.booting, do: st, else: dispatch_pending(st)
+        st =
+          cond do
+            st.busy or st.booting -> st
+            collab_parked?(st) -> st
+            true -> dispatch_pending(st)
+          end
+
         {:noreply, st}
 
       _ ->
@@ -1810,9 +1897,15 @@ defmodule Newbee.Web.Session do
     broadcast_turn_end(st.sid, result)
     st = st |> sync_kernel_effort() |> finish_current(current)
     st = finish_delivery(st, delivery, result)
-    st = dispatch_pending(st)
-    send(self(), :pull_pending_deliveries)
-    {:noreply, st}
+    st = update_collab_streak(st, delivery, result)
+
+    if collab_parked?(st) and collab_delivery?(delivery) and not completed_turn?(result) do
+      {:noreply, st}
+    else
+      st = dispatch_pending(st)
+      send(self(), :pull_pending_deliveries)
+      {:noreply, st}
+    end
   end
 
   def handle_info({:DOWN, ref, :process, pid, reason}, %{turn_ref: ref, turn_task: pid} = st) when is_reference(ref) do
@@ -2214,7 +2307,7 @@ defmodule Newbee.Web.Session do
         dispatch_pending(st_ev)
 
       {:defer, deferred} ->
-        set_queue(deferred, :queue.in_r(item, rest))
+        deferred |> note_collab_failure() |> set_queue(:queue.in_r(item, rest))
     end
   end
 
@@ -2241,7 +2334,7 @@ defmodule Newbee.Web.Session do
 
     case claim_batch(st1, all) do
       {:defer, st_deferred} ->
-        set_queue(st_deferred, :queue.from_list(all ++ :queue.to_list(rest2)))
+        st_deferred |> note_collab_failure() |> set_queue(:queue.from_list(all ++ :queue.to_list(rest2)))
 
       {:skip, st_skipped} ->
         {st_ev, ev} =
