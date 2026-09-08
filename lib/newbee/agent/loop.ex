@@ -1411,6 +1411,37 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
+  # 可观测身份：tool 日志只记 session/root/lock hash/耗时/状态摘要，不记密钥或完整请求正文。
+  # lock hash 与 SnapshotStore.lock_path/1 同算法，便于把 30s 锁超时与会话 workspace 关联。
+  defp tool_log_meta(state) do
+    sid = if state.session, do: state.session.id, else: "nosession"
+    root = state.root || "nocwd"
+
+    lock =
+      try do
+        :crypto.hash(:sha256, to_string(root)) |> binary_part(0, 4) |> Base.encode16(case: :lower)
+      rescue
+        _ -> "unknown"
+      end
+
+    "sid=#{sid} root_lock=#{lock}"
+  end
+
+  defp tool_args_summary(args) when is_map(args) do
+    keys = args |> Map.keys() |> Enum.map(&to_string/1) |> Enum.join(",")
+
+    bytes =
+      try do
+        args |> inspect() |> byte_size()
+      rescue
+        _ -> -1
+      end
+
+    "keys=#{keys} bytes=#{bytes}"
+  end
+
+  defp tool_args_summary(_), do: "keys= bytes=-1"
+
   defp execute_calls(calls, state) do
     Enum.reduce_while(calls, {:cont, state}, fn call, {:cont, state} ->
       if Newbee.LLM.Client.interrupted?(state.client) do
@@ -1418,7 +1449,11 @@ defmodule Newbee.Agent.Loop do
         {:halt, {:halt, {:interrupted, nil}, state}}
       else
         t0 = System.monotonic_time(:millisecond)
-        Newbee.DebugLog.log(:tool, "start #{call.name} id=#{call.id} args=#{String.slice(inspect(call.args), 0, 200)}")
+
+        Newbee.DebugLog.log(
+          :tool,
+          "start #{call.name} id=#{call.id} #{tool_log_meta(state)} #{tool_args_summary(call.args)}"
+        )
 
         result =
           case call.name do
@@ -1494,10 +1529,12 @@ defmodule Newbee.Agent.Loop do
                     %{"role" => "assistant", "content" => summary, "done" => true, "_usage" => state.usage}
                     |> then(fn m -> if next_steps, do: Map.put(m, "next_steps", next_steps), else: m end)
 
+                  # 严格校验：tool 响应必须紧跟 tool_calls，UI 的 usage/done 必须排在 tool 之后；
+                  # 否则 repair 会把 done 当悬空占位并丢弃真实 ✓ done（2026-09-08 stall 调查）。
+                  # push_msg(done) 会拆成 usage 行 + done 行（见 push_msg/2），所以必须后推。
+                  state = push_msg(state, tool_msg)
                   state = push_msg(state, done_msg)
 
-                  # DeepSeek 严格校验：带 tool_calls 的 assistant 后必须跟齐 tool 响应，
-                  # 否则下一回合 400（此前 done/ask 从不回填，历史必然悬空）
                   # done 如带下一步选项，随 halt 一并透传给 after_turn / broadcast
                   halt_payload =
                     if next_steps do
@@ -1506,7 +1543,7 @@ defmodule Newbee.Agent.Loop do
                       {:done, summary}
                     end
 
-                  {:halt, {:halt, halt_payload, push_msg(state, tool_msg)}}
+                  {:halt, {:halt, halt_payload, state}}
 
                 {:retry, state, reminder} ->
                   emit(state, {:final_check_low, state.progress.final_score})
@@ -1556,7 +1593,11 @@ defmodule Newbee.Agent.Loop do
               {:cont, {:cont, push_msg(state, tool_msg)}}
           end
 
-        Newbee.DebugLog.log(:tool, "done #{call.name} in #{System.monotonic_time(:millisecond) - t0}ms")
+        Newbee.DebugLog.log(
+          :tool,
+          "done #{call.name} id=#{call.id} in #{System.monotonic_time(:millisecond) - t0}ms #{tool_log_meta(state)}"
+        )
+
         result
       end
     end)
@@ -1600,28 +1641,63 @@ defmodule Newbee.Agent.Loop do
     messages = Enum.map(messages, &normalize_history_ids/1)
     messages = Enum.reject(messages, &empty_assistant_msg?/1)
 
-    {chunks, pending} =
-      Enum.map_reduce(messages, [], fn msg, pending ->
-        case msg do
-          %{"role" => "assistant", "tool_calls" => calls} when is_list(calls) and calls != [] ->
-            {tool_placeholders(pending) ++ [msg], Enum.map(calls, fn c -> c["id"] end)}
+    {chunks, {pending, deferred}} =
+      Enum.map_reduce(messages, {[], []}, fn msg, {pending, deferred} ->
+        if ui_deferred_message?(msg) do
+          if pending == [] do
+            {deferred ++ [msg], {[], []}}
+          else
+            {[], {pending, deferred ++ [msg]}}
+          end
+        else
+          case msg do
+            %{"role" => "assistant", "tool_calls" => calls} when is_list(calls) and calls != [] ->
+              {tool_placeholders(pending) ++ deferred ++ [msg], {Enum.map(calls, fn c -> c["id"] end), []}}
 
-          %{"role" => "tool", "tool_call_id" => id} when is_binary(id) and id != "" ->
-            if id in pending, do: {[msg], pending -- [id]}, else: {[], pending}
+            %{"role" => "tool", "tool_call_id" => id} when is_binary(id) and id != "" ->
+              if id in pending do
+                rest = pending -- [id]
 
-          %{"role" => "tool"} ->
-            case pending do
-              [first | rest] -> {[Map.put(msg, "tool_call_id", first)], rest}
-              [] -> {[], pending}
-            end
+                if rest == [] do
+                  {[msg] ++ deferred, {rest, []}}
+                else
+                  {[msg], {rest, deferred}}
+                end
+              else
+                {[], {pending, deferred}}
+              end
 
-          _ ->
-            {tool_placeholders(pending) ++ [msg], []}
+            %{"role" => "tool"} ->
+              case pending do
+                [first | rest] ->
+                  fixed = Map.put(msg, "tool_call_id", first)
+
+                  if rest == [] do
+                    {[fixed] ++ deferred, {rest, []}}
+                  else
+                    {[fixed], {rest, deferred}}
+                  end
+
+                [] ->
+                  {[], {pending, deferred}}
+              end
+
+            _ ->
+              {tool_placeholders(pending) ++ deferred ++ [msg], {[], []}}
+          end
         end
       end)
 
-    Enum.concat(chunks) ++ tool_placeholders(pending)
+    Enum.concat(chunks) ++ tool_placeholders(pending) ++ deferred
   end
+
+  # done UI 总结（assistant done=true）只供回放，不占 tool 配对位置；
+  # 旧顺序（done 在 tool 之前）延迟到 pending 清空后重排，否则真实 ✓ done 会被占位丢弃。
+  # 恢复语义保持单一：真实中断仍由 Session.seal_pending_tools 生成 outcome_unknown，
+  # 这里只保证 done/tool 的合法顺序，不产生第二种占位协议。
+  defp ui_deferred_message?(%{"role" => "assistant", "done" => true}), do: true
+  defp ui_deferred_message?(%{"role" => "assistant", done: true}), do: true
+  defp ui_deferred_message?(_), do: false
 
   defp normalize_history_ids(msg) when is_map(msg) do
     calls = msg["tool_calls"]
@@ -1829,7 +1905,11 @@ defmodule Newbee.Agent.Loop do
     audit_dangerous(code)
     emit(state, {:tool_start, "run_elixir", title, code})
     tool_started_at = System.monotonic_time(:millisecond)
-    Newbee.DebugLog.log(:tool, "eval start #{title}")
+
+    Newbee.DebugLog.log(
+      :tool,
+      "eval start #{String.slice(title, 0, 80)} title_bytes=#{byte_size(title)} #{tool_log_meta(state)} code_bytes=#{byte_size(code)}"
+    )
 
     eval_result =
       case set_evaluator_cwd(state.evaluator, state.root) do
@@ -1850,7 +1930,7 @@ defmodule Newbee.Agent.Loop do
             end
           rescue
             e ->
-              Newbee.DebugLog.log(:tool, "eval raised #{inspect(e)}")
+              Newbee.DebugLog.log(:tool, "eval raised #{String.slice(inspect(e), 0, 200)} #{tool_log_meta(state)}")
               %{status: :error, error: inspect(e), output: "", warnings: ""}
           end
 
@@ -1866,11 +1946,15 @@ defmodule Newbee.Agent.Loop do
     {state, eval_result} = reconcile_eval_cwd(state, eval_result)
 
     if Newbee.LLM.Client.interrupted?(state.client) or eval_interrupted?(eval_result) do
-      Newbee.DebugLog.log(:tool, "eval interrupted title=#{title}")
+      Newbee.DebugLog.log(:tool, "eval interrupted title_bytes=#{byte_size(title)} #{tool_log_meta(state)}")
       emit(state, {:interrupted, nil})
       {:halt, {:halt, {:interrupted, nil}, state}}
     else
-      Newbee.DebugLog.log(:tool, "eval done status=#{eval_result.status} title=#{title}")
+      Newbee.DebugLog.log(
+        :tool,
+        "eval done status=#{eval_result.status} title_bytes=#{byte_size(title)} #{tool_log_meta(state)} duration=#{System.monotonic_time(:millisecond) - tool_started_at}ms"
+      )
+
       # warning 单独徽标化：transcript 不刷屏，Bus 另发 :tool_warnings 供 TUI 折叠
       warnings = Map.get(eval_result, :warnings, "")
       if warnings != "" and warnings != nil, do: emit(state, {:tool_warnings, warnings})

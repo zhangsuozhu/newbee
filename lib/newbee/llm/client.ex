@@ -1232,44 +1232,81 @@ defmodule Newbee.LLM.Client do
   end
 
   defp fill_tool_placeholders(messages) do
-    {chunks, pending} =
-      Enum.map_reduce(messages, [], fn msg, pending ->
-        role = msg["role"] || msg[:role]
-        role_s = if is_atom(role), do: Atom.to_string(role), else: role
-        calls = msg["tool_calls"] || msg[:tool_calls]
+    {chunks, {pending, deferred}} =
+      Enum.map_reduce(messages, {[], []}, fn msg, {pending, deferred} ->
+        if sanitize_deferred?(msg) do
+          if pending == [] do
+            {deferred ++ [msg], {[], []}}
+          else
+            {[], {pending, deferred ++ [msg]}}
+          end
+        else
+          role = msg["role"] || msg[:role]
+          role_s = if is_atom(role), do: Atom.to_string(role), else: role
+          calls = msg["tool_calls"] || msg[:tool_calls]
 
-        cond do
-          role_s == "assistant" and is_list(calls) and calls != [] ->
-            {sanitize_placeholders(pending) ++ [msg], Enum.map(calls, fn c -> c["id"] || c[:id] end)}
+          cond do
+            role_s == "assistant" and is_list(calls) and calls != [] ->
+              {sanitize_placeholders(pending) ++ deferred ++ [msg],
+               {Enum.map(calls, fn c -> c["id"] || c[:id] end), []}}
 
-          role_s == "tool" ->
-            raw = msg["tool_call_id"] || msg[:tool_call_id]
-            id = normalize_tool_id(raw)
+            role_s == "tool" ->
+              raw = msg["tool_call_id"] || msg[:tool_call_id]
+              id = normalize_tool_id(raw)
 
-            cond do
-              is_nil(id) ->
-                case pending do
-                  [first | rest] -> {[Map.put(msg, "tool_call_id", first)], rest}
-                  [] -> {[], pending}
-                end
+              cond do
+                is_nil(id) ->
+                  case pending do
+                    [first | rest] ->
+                      fixed = Map.put(msg, "tool_call_id", first)
 
-              id in pending ->
-                {[Map.put(msg, "tool_call_id", id)], pending -- [id]}
+                      if rest == [] do
+                        {[fixed] ++ deferred, {rest, []}}
+                      else
+                        {[fixed], {rest, deferred}}
+                      end
 
-              true ->
-                {[], pending}
-            end
+                    [] ->
+                      {[], {pending, deferred}}
+                  end
 
-          pending != [] ->
-            {sanitize_placeholders(pending) ++ [msg], []}
+                id in pending ->
+                  rest = pending -- [id]
 
-          true ->
-            {[msg], []}
+                  if rest == [] do
+                    {[Map.put(msg, "tool_call_id", id)] ++ deferred, {rest, []}}
+                  else
+                    {[Map.put(msg, "tool_call_id", id)], {rest, deferred}}
+                  end
+
+                true ->
+                  {[], {pending, deferred}}
+              end
+
+            pending != [] ->
+              {sanitize_placeholders(pending) ++ deferred ++ [msg], {[], []}}
+
+            true ->
+              {deferred ++ [msg], {[], []}}
+          end
         end
       end)
 
-    Enum.concat(chunks) ++ sanitize_placeholders(pending)
+    # 注意：尾部 deferred 必须排在占位之后，保持 assistant(tool_calls) -> tool -> done 的合法顺序；
+    # 旧顺序（done 在 tool 之前）会在上面重排为 tool -> done，真实 ✓ done 不再被丢弃。
+    # 真实中断仍由 Session.seal_pending_tools 生成 outcome_unknown，这里不产生第二种协议。
+    Enum.concat(chunks) ++ sanitize_placeholders(pending) ++ deferred
   end
+
+  # done UI 总结只供回放，不占 tool 配对位置；旧历史兼容见 Loop.ui_deferred_message?/1。
+  defp sanitize_deferred?(msg) when is_map(msg) do
+    role = msg["role"] || msg[:role]
+    role_s = if is_atom(role), do: Atom.to_string(role), else: role
+    done = Map.get(msg, "done", Map.get(msg, :done, false))
+    role_s == "assistant" and done == true
+  end
+
+  defp sanitize_deferred?(_), do: false
 
   defp normalize_responses_mode(mode) when mode in [:auto, :responses, :chat], do: mode
   defp normalize_responses_mode("auto"), do: :auto
