@@ -2945,10 +2945,8 @@ case "goal_round": break;
           saveSessionUnread(); saveSessionSeen(); updateSessionTitleBadge();
         } catch (_e) {}
         if (deletedIds.includes(state.sid)) {
-          state.sid = null;
-          localStorage.removeItem("newbee.sid");
           deletedIds.forEach(clearTiming);
-          await newSession();
+          await leaveDeletedCurrentSession(deletedIds);
         } else {
           deletedIds.forEach(clearTiming);
         }
@@ -3096,6 +3094,39 @@ case "goal_round": break;
       window.addEventListener("mouseup", onUp);
     });
   }
+  // 删除后要落到哪个会话：按侧栏当前显示顺序取“下一个”幸存会话
+  // （被删项之后的第一个；没有则取之前的最后一个）。找不到才返回 null。
+  function nextSurvivingSessionId(deletedIds) {
+    const del = new Set((deletedIds || []).filter(Boolean));
+    if (!del.size) return null;
+    const ids = Array.from(document.querySelectorAll("#session-list .swipe-cell"))
+      .map((el) => el.dataset.sid)
+      .filter(Boolean);
+    const first = ids.findIndex((id) => del.has(id));
+    const start = first < 0 ? 0 : first;
+    for (let i = start; i < ids.length; i++) if (!del.has(ids[i])) return ids[i];
+    for (let i = start - 1; i >= 0; i--) if (!del.has(ids[i])) return ids[i];
+    return null;
+  }
+
+  // 当前会话被删除后的落点：跳到列表里的相邻会话，留在会话界面；
+  // 侧栏一个会话都不剩时才新建。deletedIds 是本次删除的全部会话 id。
+  async function leaveDeletedCurrentSession(deletedIds) {
+    const next = nextSurvivingSessionId(deletedIds);
+    if (next) {
+      try {
+        await resume(next);
+        return;
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        line("error", "切换到下一个会话失败，已新建会话: " + msg);
+      }
+    }
+    state.sid = null;
+    localStorage.removeItem("newbee.sid");
+    await newSession();
+  }
+
   // 左滑删除与 ⋯ 菜单删除共用同一确认 + RPC 流程，保证两端行为一致。
   function requestDeleteSession(s) {
     if (!s || !s.id) return;
@@ -3106,6 +3137,7 @@ case "goal_round": break;
     const title = String(s.title || s.id).slice(0, 40);
     confirmDialog("删除会话「" + title + "」？此操作不可恢复。", async () => {
       try {
+        const wasCurrent = s.id === state.sid;
         const res = await rpc("session.delete", { sessionId: s.id });
         clearTiming(s.id);
         try {
@@ -3113,11 +3145,7 @@ case "goal_round": break;
           if (state.sessionSeen) delete state.sessionSeen[s.id];
           saveSessionUnread(); saveSessionSeen(); updateSessionTitleBadge();
         } catch (_e) {}
-        if (s.id === state.sid) {
-          state.sid = null;
-          localStorage.removeItem("newbee.sid");
-          await newSession();
-        }
+        if (wasCurrent) await leaveDeletedCurrentSession([s.id]);
         await loadSessions();
         if (res && Array.isArray(res.notices)) {
           for (const n of res.notices) line("notice", n);
@@ -3599,6 +3627,9 @@ case "goal_round": break;
     if (state.sid && state.sid !== sid) closeTerminal(true);
 
     state.sid = sid;
+    // 切会话写回 localStorage：否则删除当前会话跳到下一个后刷新，
+    // 旧 sid 会被 session.resume 重新 ensure 出来。
+    try { localStorage.setItem("newbee.sid", sid); } catch (_e) {}
     // 切会话即视为已读（仿微信点开清红点）：立即清当前未读并收起左滑，保证秒反馈。
     try { closeAllSwipeCells(); clearSessionUnread(sid); updateSessionTitleBadge(); } catch (_e) {}
     groupLoadSeq++;
