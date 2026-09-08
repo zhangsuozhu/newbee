@@ -21,7 +21,8 @@ defmodule Newbee.Application do
         {Registry, keys: :unique, name: Newbee.Web.SessionRegistry},
         {Registry, keys: :unique, name: Newbee.Web.TerminalRegistry},
         {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Web.SessionSup},
-        Newbee.Collaboration.Capability
+        Newbee.Collaboration.Capability,
+        Newbee.Browser
       ] ++
         if Mix.env() == :test do
           []
@@ -65,3 +66,4 @@ defmodule Newbee.Application do
     end
   end
 end
+
