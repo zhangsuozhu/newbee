@@ -78,4 +78,23 @@ defmodule Newbee.Tools.BrowserTest do
     assert {:error, %{reason: :invalid_idle_timeout}} =
              Browser.run(%{session: "new", idle_timeout: "60000"})
   end
+
+  test "captcha requires an existing session and explicit bounded selectors" do
+    for request <- [
+          %{captcha: %{}},
+          %{session: "new", captcha: %{image: "img", input: "input"}},
+          %{session: "existing", captcha: false},
+          %{session: "existing", captcha: %{image: "", input: "input"}},
+          %{session: "existing", captcha: %{image: "img", input: "input", length: 0}},
+          %{session: "existing", captcha: %{image: "img", input: "input", length: 33}},
+          %{session: "existing", actions: [], captcha: %{image: "img", input: "input"}}
+        ] do
+      assert {:error, %{reason: :invalid_captcha}} = Browser.run(request)
+    end
+  end
+
+  test "captcha never calls the model when browser ownership fails" do
+    assert {:error, %{reason: :invalid_context}} =
+             Browser.run(%{session: "existing", captcha: %{image: "img", input: "input"}})
+  end
 end

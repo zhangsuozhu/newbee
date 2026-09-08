@@ -7,6 +7,94 @@ defmodule Newbee.Browser.IntegrationTest do
   @moduletag timeout: 60_000
 
   @html ~S|<title>Browser regression</title><label>Query<input id="query"></label><label>Password<input type="password" value="never-return-this"></label><label>Enabled<input id="flag" type="checkbox" checked></label><button onclick="setTimeout(() => document.getElementById('status').textContent = document.getElementById('query').value, 30)">Apply</button><div id="status"></div>|
+  defmodule VisionStub do
+    def init(opts), do: opts
+
+    def call(conn, {owner, responses}) do
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      send(owner, {:vision_request, Jason.decode!(body)})
+      text = Agent.get(responses, & &1)
+      chunk = Jason.encode!(%{choices: [%{delta: %{content: text}, finish_reason: "stop"}]})
+
+      conn
+      |> Plug.Conn.put_resp_content_type("text/event-stream")
+      |> Plug.Conn.send_resp(200, "data: " <> chunk <> "\n\ndata: [DONE]\n\n")
+    end
+  end
+
+  test "vision crop, strict output checks, input events, and cleanup with a local model" do
+    responses = start_supervised!({Agent, fn -> "Ab12" end})
+    server = start_supervised!({Bandit, plug: {VisionStub, {self(), responses}}, ip: {127, 0, 0, 1}, port: 0})
+    {:ok, {_, port}} = ThousandIsland.listener_info(server)
+
+    config_path =
+      Path.expand(".newbee/captcha-model-" <> Integer.to_string(System.unique_integer([:positive])) <> ".json")
+
+    previous = System.get_env("NEWBEE_MODEL_JSON")
+
+    config = %{
+      providers: %{local: %{baseUrl: "http://127.0.0.1:" <> Integer.to_string(port), apiKey: "test", vision: true}},
+      roles: %{default: %{provider: "local", model: "test", vision: true}}
+    }
+
+    File.mkdir_p!(Path.dirname(config_path))
+    File.write!(config_path, Jason.encode!(config))
+    System.put_env("NEWBEE_MODEL_JSON", config_path)
+
+    on_exit(fn ->
+      if previous, do: System.put_env("NEWBEE_MODEL_JSON", previous), else: System.delete_env("NEWBEE_MODEL_JSON")
+      File.rm(config_path)
+    end)
+
+    with_page(fn opened ->
+      session = opened["session"]
+
+      assert {:ok, _} =
+               Browser.run(%{
+                 session: session,
+                 actions: [
+                   %{
+                     action: "set_content",
+                     html:
+                       "<div id='captcha' style='width:120px;height:40px;background:white'>Ab12</div><input id='code' oninput='window.inputSeen=true'><button onclick='window.submitted=true'>Submit</button>"
+                   }
+                 ]
+               })
+
+      before_files = Path.wildcard(".newbee/browser/captcha-*.png")
+      request = %{session: session, captcha: %{image: "#captcha", input: "#code", length: 4}}
+      assert {:ok, result} = Browser.run(request)
+      assert result["captcha"] == %{"text" => "Ab12", "filled" => true}
+      assert_received {:vision_request, body}
+      [_, %{"content" => [%{"image_url" => %{"url" => url}}]}] = body["messages"]
+      assert String.starts_with?(url, "data:image/png;base64,")
+      assert Map.get(body, "tools", []) == []
+
+      assert {:ok, checked} =
+               Browser.run(%{
+                 session: session,
+                 actions: [
+                   %{
+                     action: "evaluate",
+                     expression: "[document.querySelector('#code').value,window.inputSeen,!!window.submitted]"
+                   }
+                 ]
+               })
+
+      assert List.last(checked["results"])["result"] == ["Ab12", true, false]
+
+      for invalid <- ["UNKNOWN", "Code: Ab12", "Ab1", "AB-2", "", "验证码"] do
+        Agent.update(responses, fn _ -> invalid end)
+        assert {:error, %{reason: :captcha_unreadable}} = Browser.run(request)
+        assert {:ok, value} = Browser.run(%{session: session, actions: [%{action: "value", selector: "#code"}]})
+        assert List.last(value["results"])["result"] == "Ab12"
+      end
+
+      File.write!(config_path, Jason.encode!(put_in(config, [:roles, :default, :vision], false)))
+      assert {:error, %{reason: :captcha_vision_required}} = Browser.run(request)
+      assert Path.wildcard(".newbee/browser/captcha-*.png") == before_files
+    end)
+  end
 
   setup do
     :ok =
@@ -254,6 +342,54 @@ defmodule Newbee.Browser.IntegrationTest do
     after
       Browser.run(%{session: opened["session"], timeout: 5_000, actions: [%{action: "close"}]})
       File.rm(shot)
+    end
+  end
+
+  @tag skip: System.get_env("NEWBEE_CAPTCHA_LIVE") != "1"
+  @tag timeout: 240_000
+  test "vision model fills an authorized live CAPTCHA without submitting" do
+    url = System.fetch_env!("NEWBEE_CAPTCHA_URL")
+    image = System.fetch_env!("NEWBEE_CAPTCHA_IMAGE")
+    input = System.fetch_env!("NEWBEE_CAPTCHA_INPUT")
+    frame = System.get_env("NEWBEE_CAPTCHA_FRAME")
+
+    prepare =
+      case System.get_env("NEWBEE_CAPTCHA_PREPARE") do
+        nil -> []
+        selector -> [%{action: "click", selector: selector}]
+      end
+
+    assert {:ok, opened} =
+             Browser.run(%{
+               session: "new",
+               url: url,
+               idle_timeout: 600_000,
+               ignore_https_errors: true,
+               actions: prepare
+             })
+
+    session = opened["session"]
+
+    try do
+      assert {:ok, result} =
+               Browser.run(%{
+                 session: session,
+                 captcha: %{image: image, input: input, frame: frame}
+               })
+
+      assert result["captcha"]["filled"]
+      text = result["captcha"]["text"]
+
+      assert {:ok, checked} =
+               Browser.run(%{
+                 session: session,
+                 actions: [%{action: "value", selector: input, frame: frame}]
+               })
+
+      assert List.last(checked["results"])["result"] == text
+      assert checked["url"] == opened["url"]
+    after
+      Browser.run(%{session: session, actions: [%{action: "close"}]})
     end
   end
 end
