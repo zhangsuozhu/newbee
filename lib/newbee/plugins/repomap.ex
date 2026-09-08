@@ -101,9 +101,9 @@ defmodule Newbee.Plugins.RepoMap do
       |> Enum.flat_map(fn sub -> Path.wildcard(Path.join(dir, sub <> "/**/*.{ex,exs}")) end)
       |> Enum.reject(&excluded?/1)
     else
-      dir
-      |> Path.join("**/*.{ex,exs}")
-      |> Path.wildcard()
+      # 有界漫步：根为 / 时裸星号展开会把全量结果装进内存，在 eval 堆上限下被杀
+      # （2026-09-08 事故）；剪枝 + 伪文件系统跳过 + 条数上限，事后过滤保留。
+      Newbee.FsWalk.files(dir, exts: [".ex", ".exs"], prune_dir: &excluded_segment?/1)
       |> Enum.reject(&excluded?/1)
     end
   end
@@ -382,9 +382,8 @@ defmodule Newbee.Plugins.RepoMap do
       if File.exists?(Path.join(dir, "mix.exs")) do
         source_files(dir) ++ [Path.join(dir, "mix.exs")]
       else
-        dir
-        |> Path.join("**/*")
-        |> Path.wildcard()
+        # 有界漫步（同 source_files 的根为 / 防护）；先截断再过滤，内存有界。
+        Newbee.FsWalk.files(dir, include_dirs: true, max_entries: 5_000, prune_dir: &excluded_segment?/1)
         |> Enum.reject(&excluded?/1)
         |> Enum.take(2000)
       end
@@ -433,9 +432,8 @@ defmodule Newbee.Plugins.RepoMap do
   defp cache_id, do: File.cwd!() |> then(&:crypto.hash(:md5, &1)) |> Base.encode16(case: :lower)
 
   defp tree_map(dir) do
-    dir
-    |> Path.join("**/*")
-    |> Path.wildcard()
+    # 有界漫步：裸 "**" 在根目录下会把全量结果装进内存（2026-09-08 事故）。
+    Newbee.FsWalk.files(dir, include_dirs: true, max_entries: 2_000, prune_dir: &excluded_segment?/1)
     |> Enum.reject(&excluded?/1)
     |> Enum.take(200)
     |> Enum.sort()
