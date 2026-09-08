@@ -639,4 +639,118 @@ defmodule Newbee.LLM.ResponsesTest do
     assert_received {:btw_request, body}
     assert body["tools"] == []
   end
+
+  test "tool output alone in delta forces full request" do
+    test_pid = self()
+
+    checkpoint =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee-responses-tool-delta-" <> to_string(System.unique_integer([:positive])) <> ".json"
+      )
+
+    on_exit(fn -> File.rm(checkpoint) end)
+
+    plug = fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+      send(test_pid, {:tool_delta_request, body})
+
+      if length(body["input"] || []) == 1 do
+        Req.Test.json(conn, %{
+          "id" => "resp-1",
+          "output" => [
+            %{"type" => "function_call", "call_id" => "call-0910", "name" => "run_elixir", "arguments" => "{}"}
+          ],
+          "usage" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
+        })
+      else
+        Req.Test.json(conn, response("resp-2", "two"))
+      end
+    end
+
+    client_opts = [
+      api: "openai-responses",
+      model: "test/tool-delta-" <> to_string(System.unique_integer([:positive])),
+      api_key: "test",
+      base_url: "http://localhost",
+      responses_continuation: true,
+      responses_checkpoint: checkpoint,
+      req_options: [plug: plug, retry: false]
+    ]
+
+    client = Client.new(client_opts)
+    assert {:ok, first, _} = Client.stream_chat(client, [user("hi")])
+    assert first["tool_calls"] != []
+
+    history = [user("hi"), first, %{"role" => "tool", "tool_call_id" => "call-0910", "content" => "2"}]
+    assert {:ok, %{"content" => "two"}, _} = Client.stream_chat(Client.new(client_opts), history)
+
+    assert_received {:tool_delta_request, _first_body}
+    assert_received {:tool_delta_request, second_body}
+    refute Map.has_key?(second_body, "previous_response_id")
+    types = Enum.map(second_body["input"], &(&1["type"] || &1["role"]))
+    assert "function_call" in types
+    assert "function_call_output" in types
+  end
+
+  test "orphaned tool output error retries once with full" do
+    test_pid = self()
+
+    checkpoint =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee-responses-tool-retry-" <> to_string(System.unique_integer([:positive])) <> ".json"
+      )
+
+    on_exit(fn -> File.rm(checkpoint) end)
+
+    plug = fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+      send(test_pid, {:tool_retry_request, body})
+
+      cond do
+        body["previous_response_id"] ->
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.send_resp(
+            400,
+            Jason.encode!(%{
+              "error" => %{
+                "message" => "No tool call found for tool output with call_id call-0910.",
+                "type" => "invalid_request_error"
+              }
+            })
+          )
+
+        map_size(body) > 0 and body["input"] == [%{"role" => "user", "content" => "hi"}] ->
+          Req.Test.json(conn, response("resp-1", "one"))
+
+        true ->
+          Req.Test.json(conn, response("resp-3", "three"))
+      end
+    end
+
+    client_opts = [
+      api: "openai-responses",
+      model: "test/tool-retry-" <> to_string(System.unique_integer([:positive])),
+      api_key: "test",
+      base_url: "http://localhost",
+      responses_continuation: true,
+      responses_checkpoint: checkpoint,
+      req_options: [plug: plug, retry: false]
+    ]
+
+    assert {:ok, %{"content" => "one"}, _} = Client.stream_chat(Client.new(client_opts), [user("hi")])
+    history = [user("hi"), assistant("one"), user("continue")]
+    assert {:ok, %{"content" => "three"}, _} = Client.stream_chat(Client.new(client_opts), history)
+
+    assert_received {:tool_retry_request, _first}
+    assert_received {:tool_retry_request, incremental}
+    assert incremental["previous_response_id"] == "resp-1"
+    assert_received {:tool_retry_request, full}
+    refute Map.has_key?(full, "previous_response_id")
+    assert full["input"] == history
+  end
 end
