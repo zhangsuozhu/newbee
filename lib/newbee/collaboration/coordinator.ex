@@ -1552,10 +1552,17 @@ defmodule Newbee.Collaboration.Coordinator do
 
   defp apply_event_state(state, %{"topic" => "collab_group_renamed", "group_id" => group_id} = event) do
     payload = event["payload"] || %{}
+
     case get_in(state.groups, [group_id]) do
-      nil -> state
+      nil ->
+        state
+
       group ->
-        renamed = group |> Map.put("title", payload["title"] || group["title"]) |> Map.put("goal", payload["goal"] || group["goal"])
+        renamed =
+          group
+          |> Map.put("title", payload["title"] || group["title"])
+          |> Map.put("goal", payload["goal"] || group["goal"])
+
         put_group(state, renamed)
     end
   end
@@ -1681,9 +1688,10 @@ defmodule Newbee.Collaboration.Coordinator do
       Enum.any?(group["members"], &(&1["parent_session_id"] == session_id)) ->
         {:error, "member_has_children", "请先移出该会话创建的协作会话"}
 
-      Enum.any?(group["tasks"] || [], fn task ->
-        task["assigned_session_id"] == session_id and task["status"] not in terminal
-      end) ->
+      group["status"] != "cancelled" and
+          Enum.any?(group["tasks"] || [], fn task ->
+            task["assigned_session_id"] == session_id and task["status"] not in terminal
+          end) ->
         {:error, "member_has_active_tasks", "请先完成或取消该会话的进行中任务"}
 
       true ->
