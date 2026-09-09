@@ -17,6 +17,7 @@ defmodule Newbee do
     - `agent://<id>/<path>` → subagent result field at path (missing segment returns :path_not_found)
     - `conflict://` → git merge-conflict list; `conflict://<file>` conflict-hunk view (bad hunks skipped, never crashes)
     - `prompt://<section>` → lazy prompt sections (collaboration/capabilities/project-memory/notices/bindings; routed to host)
+    - `shared://` → authorized project-scoped collaboration context (board/messages/knowledge/history/capabilities)
     - `http(s)://`  → web pages (credentialless public GET via Newbee.Tools.Http; private nets blocked against SSRF)
 
   Discoverability: `schemes/0` returns a machine-readable list; new protocols must register plus carry contract tests.
@@ -55,6 +56,14 @@ defmodule Newbee do
       # history:// 经 Host.call 回主节点执行：peer 求值节点上的模型代码同样可用。
       # 多会话下不能依赖全局 current：先从本进程 capability 解析会话（peer 侧），
       # 再回主节点读该会话档案；无 capability 才回退全局 current（CLI/TUI 兼容）。
+      # shared:// 与 history://shared 都经同一成员授权读取；不把个人本地
+      # bindings/events/memory 自动暴露给协作群。
+      path == "history://shared" or String.starts_with?(path, "history://shared/") ->
+        read_shared_scoped(String.replace_prefix(path, "history://shared", "history"))
+
+      String.starts_with?(path, "shared://") ->
+        read_shared_scoped(String.replace_prefix(path, "shared://", ""))
+
       path == "history://" or String.starts_with?(path, "history://") ->
         read_history_scoped(String.replace_prefix(path, "history://", ""))
 
@@ -85,6 +94,26 @@ defmodule Newbee do
       :error -> Newbee.Host.call(Newbee.Archive, :read_history, [query])
     end
   end
+  defp read_shared_scoped(query) do
+    case history_session_id() do
+      {:ok, sid} ->
+        case Newbee.Host.call(Newbee.Collaboration.SharedContext, :read, [sid, query]) do
+          {:ok, body} when is_binary(body) ->
+            origin = "shared:" <> if(query == "", do: "index", else: query)
+            {:ok, Newbee.Trust.envelope(body, origin) |> Newbee.Trust.render()}
+
+          {:error, _, _} = error ->
+            error
+
+          other ->
+            {:error, :shared_context_unavailable, inspect(other)}
+        end
+
+      :error ->
+        {:error, :no_collaboration_context}
+    end
+  end
+
 
   defp history_session_id do
     with :error <- collaboration_session_id(),
@@ -145,6 +174,7 @@ defmodule Newbee do
         example: "prompt://collaboration",
         reads: "lazy prompt sections: collaboration/capabilities/project-memory/notices/bindings"
       },
+      %{scheme: "shared://", example: "shared://<group_id>/board", reads: "authorized project-scoped collaboration context"},
       %{scheme: "https://", example: "https://example.com", reads: "public pages, private nets blocked"}
     ]
   end

@@ -52,6 +52,9 @@ defmodule Newbee.Agent.Loop do
   def append_external_context(kernel, text) when is_binary(text),
     do: GenServer.cast(kernel, {:external_context, text})
 
+  @doc "Refresh the system prompt after a session joins or leaves a collaboration scope."
+  def refresh_shared_context(kernel), do: GenServer.cast(kernel, :refresh_shared_context)
+
   @doc "提交多张 data URL 图片 + 文本给视觉模型分析（WebUI 多模态入口）。"
   def submit_images(kernel, data_urls, text \\ ""),
     do: GenServer.call(kernel, {:submit_images, data_urls, text}, :infinity)
@@ -322,6 +325,14 @@ defmodule Newbee.Agent.Loop do
   end
 
   @impl true
+  def handle_cast(:refresh_shared_context, state) do
+    prompt = system_prompt_for_session(state.session, state.root)
+    if state.session, do: Newbee.Session.save_system_prompt(state.session, prompt)
+    {:noreply, %{state | messages: replace_system_prompt(state.messages, prompt)}}
+  end
+
+  @impl true
+
   def handle_call({:submit_image, _path, _prompt}, _from, %{client: %{vision: false}} = state) do
     {:reply, {:error, {:image, :vision_not_supported}}, state}
   end
@@ -2752,9 +2763,10 @@ defmodule Newbee.Agent.Loop do
 
     case Newbee.Session.system_prompt(session) do
       prompt when is_binary(prompt) ->
-        if prompt_for_root?(prompt, root) and prompt_for_profile?(prompt, profile),
-          do: prompt,
-          else: Newbee.Session.save_system_prompt(session, system_prompt_for_session(session, root))
+        if prompt_for_root?(prompt, root) and prompt_for_profile?(prompt, profile) and
+             prompt_for_shared?(prompt, session.id),
+           do: prompt,
+           else: Newbee.Session.save_system_prompt(session, system_prompt_for_session(session, root))
 
       _ ->
         Newbee.Session.save_system_prompt(session, system_prompt_for_session(session, root))
@@ -2764,7 +2776,7 @@ defmodule Newbee.Agent.Loop do
   defp system_prompt_for_session(nil, root), do: system_prompt(root)
 
   defp system_prompt_for_session(session, root) do
-    base = system_prompt(root)
+    base = system_prompt(root) <> Newbee.Collaboration.SharedContext.system_prompt(session.id)
 
     case Newbee.Session.collaboration_profile(session.id) do
       %{"instructions" => instructions} = profile when is_binary(instructions) ->
@@ -2785,6 +2797,15 @@ defmodule Newbee.Agent.Loop do
 
   defp prompt_for_profile?(prompt, profile) do
     String.contains?(prompt, "profile_sha256=#{collaboration_profile_digest(profile)}")
+  end
+
+  defp prompt_for_shared?(prompt, session_id) do
+    case Newbee.Collaboration.SharedContext.prompt_marker(session_id) do
+      nil -> not String.contains?(prompt, "[NEWBEE_SHARED_CONTEXT_V1]")
+      marker -> String.contains?(prompt, marker)
+    end
+  rescue
+    _ -> false
   end
 
   defp collaboration_profile_digest(profile) do

@@ -94,6 +94,7 @@ defmodule Newbee.Web.Router do
 
   # 运行时解析（_build/.../priv 是相对符号链接）：仓库目录改名/移动后
   # 不重编译也能找对位置；编译期 Path.expand(__DIR__) 会把旧绝对路径焊死在 beam 里。
+
   defp priv_web, do: Path.join(:code.priv_dir(:newbee), "web")
   defp index_html, do: Path.join(priv_web(), "index.html")
 
@@ -102,6 +103,7 @@ defmodule Newbee.Web.Router do
   @auth_free_prefixes [
     "/api/auth.",
     "/api/health",
+    "/api/xgroup.bridge.",
     "/api/webauthn.has_credentials",
     "/api/webauthn.login_challenge",
     "/api/webauthn.login",

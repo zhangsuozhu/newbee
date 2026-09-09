@@ -15,7 +15,7 @@ defmodule Newbee.Collaboration.Coordinator do
 
   @default_root Path.join(System.user_home!(), ".newbee/collaboration")
   @roles ~w(coordinator worker reviewer observer tester)
-  @message_kinds ~w(chat question task_assign task_progress task_result artifact system error)
+  @message_kinds ~w(chat question task_assign task_progress task_result artifact knowledge system error)
   @deliveries ~w(notify queue wake)
   @max_attempt_history 16
   @max_members 12
@@ -1548,6 +1548,18 @@ defmodule Newbee.Collaboration.Coordinator do
     |> Map.update!(:groups, &Map.delete(&1, group_id))
     |> remember_command(event["command_id"])
   end
+
+  defp apply_event_state(state, %{"topic" => "collab_group_renamed", "group_id" => group_id} = event) do
+    payload = event["payload"] || %{}
+    case get_in(state.groups, [group_id]) do
+      nil -> state
+      group ->
+        renamed = group |> Map.put("title", payload["title"] || group["title"]) |> Map.put("goal", payload["goal"] || group["goal"])
+        put_group(state, renamed)
+    end
+  end
+
+  defp apply_event_state(state, _event), do: state
 
   defp put_group(state, group) do
     group_id = group["group_id"]

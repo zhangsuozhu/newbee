@@ -21,6 +21,9 @@ defmodule Newbee.Tools.Hive do
       {:ok, _} = Newbee.Tools.Hive.wait(gid, since_revision: rev)
       {:ok, _} = Newbee.Tools.Hive.send(gid, sid, "Review")
       {:ok, _} = Newbee.Tools.Hive.inbox(gid)
+       {:ok, _} = Newbee.Tools.Hive.shared(gid, "board")
+       {:ok, _} = Newbee.Tools.Hive.share(gid, "Decision", "Use the shared project contract")
+       {:ok, _} = Newbee.Tools.Hive.dispatch(gid, "Run integration", description: "build and test on a group machine")
       {:ok, _} = Newbee.Tools.Hive.roster(gid)
       {:ok, _} = Newbee.Tools.Hive.interrupt(gid, sid)
       {:ok, _} = Newbee.Tools.Hive.request_preempt(gid, sid, "dependency failed, please re-plan")
@@ -263,6 +266,58 @@ defmodule Newbee.Tools.Hive do
   end
 
   def send(_, _, _, _), do: {:error, "bad_request", "invalid message arg types"}
+
+  @doc "Let the model hand a request to the appropriate local Hive or cross-host group backend. No UI click is required."
+  def dispatch(group_id, title, opts \\ [])
+
+  def dispatch(group_id, title, opts) when is_binary(group_id) and is_binary(title) and is_list(opts) do
+    with {:ok, identity} <- identity() do
+      case host_call(Newbee.Collaboration.CrossHost.Store, :get_group, [group_id]) do
+        {:ok, _cross_host_group} ->
+          description = Keyword.get(opts, :description, title)
+
+          host_call(Newbee.Collaboration.SharedContext, :dispatch_task, [
+            identity.session_id,
+            group_id,
+            title,
+            description,
+            opts
+          ])
+
+        {:error, "not_found", _} ->
+          delegate(group_id, title, opts)
+
+        other ->
+          other
+      end
+    end
+  end
+
+  def dispatch(_, _, _), do: {:error, "bad_request", "group_id/title must be texts and opts a keyword list"}
+
+  @doc "Read the authorized shared collaboration context. Path may be empty, a resource, or resource/session path."
+  def shared(group_id, path \\ "")
+
+  def shared(group_id, path) when is_binary(group_id) and is_binary(path) do
+    with {:ok, identity} <- identity() do
+      query = group_id <> if(String.trim(path) == "", do: "", else: "/" <> String.trim_leading(path, "/"))
+      host_call(Newbee.Collaboration.SharedContext, :read, [identity.session_id, query])
+    end
+  end
+
+  def shared(_, _), do: {:error, "bad_request", "group_id and path must be texts"}
+
+  @doc "Publish a project-scoped knowledge note to the group; credentials and local bindings are never included automatically."
+  def share(group_id, title, body, opts \\ [])
+
+  def share(group_id, title, body, opts)
+      when is_binary(group_id) and is_binary(title) and is_binary(body) and is_list(opts) do
+    with {:ok, identity} <- identity() do
+      host_call(Newbee.Collaboration.SharedContext, :publish, [identity.session_id, group_id, title, body, opts])
+    end
+  end
+
+  def share(_, _, _, _), do: {:error, "bad_request", "invalid shared knowledge arguments"}
 
   @doc "Read messages to the current session or broadcasts; opts: since_seq."
   def inbox(group_id, opts \\ [])
