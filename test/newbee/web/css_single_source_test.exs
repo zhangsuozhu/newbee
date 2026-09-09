@@ -38,4 +38,18 @@ defmodule Newbee.Web.CssSingleSourceTest do
     assert foreground =~ "position: relative;"
   end
 
+  test "terminal and scrollbars follow the active color theme" do
+    css = File.read!("priv/web/style.css")
+    js = File.read!("priv/web/app.js")
+
+    assert css =~ "--terminal-bg: #0b0f14;"
+    assert css =~ ~r/\[data-theme="light"\] \.terminal-panel \{[^}]*--terminal-bg: #ffffff;/s
+    assert css =~ "*::-webkit-scrollbar-thumb"
+    assert css =~ "background: var(--nb-scrollbar-thumb) content-box;"
+    assert css =~ "scrollbar-color: var(--nb-scrollbar-thumb) var(--terminal-scrollbar-track);"
+    assert js =~ "getPropertyValue(name)"
+    assert js =~ "terminal.term.options.theme = terminalTheme()"
+    assert js =~ "const ansi = light"
+  end
+
 end

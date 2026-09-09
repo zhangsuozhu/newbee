@@ -236,6 +236,7 @@ const flow = $("flow");
   // ── 主题（黑/白切换，持久 localStorage，默认跟随系统）──
   function applyTheme(t, persist) {
     document.documentElement.setAttribute("data-theme", t);
+    if (state.terminal.term) state.terminal.term.options.theme = terminalTheme();
     const btn = $("theme-toggle");
     if (btn) { btn.innerHTML = t === "light" ? "<svg class=\"ico\" viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z\"/></svg>" : "<svg class=\"ico\" viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg>"; btn.title = t === "light" ? "切换到暗色" : "切换到亮色"; }
     if (persist) localStorage.setItem("newbee.theme", t);
@@ -482,55 +483,36 @@ const flow = $("flow");
     return false;
   }
 
+  function terminalCssColor(name, fallback) {
+    const panel = $("terminal-panel");
+    const value = panel ? window.getComputedStyle(panel).getPropertyValue(name).trim() : "";
+    return value || fallback;
+  }
+
   function terminalTheme() {
     const light = document.documentElement.dataset.theme === "light";
-    return light
+    const background = terminalCssColor("--terminal-bg", light ? "#ffffff" : "#0b0f14");
+    const foreground = terminalCssColor("--terminal-fg", light ? "#1c2330" : "#d7e0ec");
+    const accent = terminalCssColor("--nb-accent-soft", light ? "#2f5fc4" : "#a5bffc");
+    const ansi = light
       ? {
-          background: "#f6f8fa",
-          foreground: "#1f2328",
-          cursor: "#0969da",
-          cursorAccent: "#f6f8fa",
-          selectionBackground: "rgba(9, 105, 218, 0.24)",
-          black: "#24292f",
-          red: "#cf222e",
-          green: "#116329",
-          yellow: "#4d2d00",
-          blue: "#0969da",
-          magenta: "#8250df",
-          cyan: "#1b7c83",
-          white: "#6e7781",
-          brightBlack: "#57606a",
-          brightRed: "#a40e26",
-          brightGreen: "#1a7f37",
-          brightYellow: "#633c01",
-          brightBlue: "#218bff",
-          brightMagenta: "#a475f9",
-          brightCyan: "#3192aa",
-          brightWhite: "#8c959f"
+          black: "#24292f", red: "#cf222e", green: "#116329", yellow: "#6f4b00",
+          blue: "#0969da", magenta: "#8250df", cyan: "#1b7c83", white: "#6e7781",
+          brightBlack: "#57606a", brightRed: "#a40e26", brightGreen: "#1a7f37", brightYellow: "#825800",
+          brightBlue: "#218bff", brightMagenta: "#a475f9", brightCyan: "#3192aa", brightWhite: "#8c959f"
         }
       : {
-          background: "#0b0e12",
-          foreground: "#e6edf3",
-          cursor: "#58a6ff",
-          cursorAccent: "#0b0e12",
-          selectionBackground: "rgba(88, 166, 255, 0.28)",
-          black: "#0b0e12",
-          red: "#ff7b72",
-          green: "#7ee787",
-          yellow: "#d29922",
-          blue: "#79c0ff",
-          magenta: "#d2a8ff",
-          cyan: "#56d4dd",
-          white: "#b1bac4",
-          brightBlack: "#6e7681",
-          brightRed: "#ffa198",
-          brightGreen: "#a5d6ff",
-          brightYellow: "#e3b341",
-          brightBlue: "#a5d6ff",
-          brightMagenta: "#d2a8ff",
-          brightCyan: "#a5d6ff",
-          brightWhite: "#f0f6fc"
+          black: background, red: "#ff7b72", green: "#7ee787", yellow: "#d29922",
+          blue: "#79c0ff", magenta: "#d2a8ff", cyan: "#56d4dd", white: "#b1bac4",
+          brightBlack: "#6e7681", brightRed: "#ffa198", brightGreen: "#a7f3b5", brightYellow: "#e3b341",
+          brightBlue: "#a5d6ff", brightMagenta: "#e2c5ff", brightCyan: "#8be9f0", brightWhite: "#f0f6fc"
         };
+
+    return {
+      background, foreground, cursor: accent, cursorAccent: background,
+      selectionBackground: light ? "rgba(59, 111, 224, 0.22)" : "rgba(108, 140, 255, 0.28)",
+      ...ansi
+    };
   }
 
   function terminalPickFontSize(availableWidth) {
