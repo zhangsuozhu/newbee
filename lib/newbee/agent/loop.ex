@@ -1322,11 +1322,28 @@ defmodule Newbee.Agent.Loop do
     state = %{state | rule_streak: %{ids: [], count: 0}}
 
     result =
-      Enum.reduce_while(blocks, {:cont, state, []}, fn code, {:cont, st, acc} ->
+      blocks
+      |> Enum.with_index(1)
+      |> Enum.reduce_while({state, []}, fn {code, index}, {st, acc} ->
         if Newbee.LLM.Client.interrupted?(st.client) do
           emit(st, {:interrupted, nil})
           {:halt, {:halt, {:interrupted, nil}, st}}
         else
+          call_id = "fallback-#{step}-#{index}"
+
+          fallback_call = %{
+            "role" => "assistant",
+            "content" => "",
+            "tool_calls" => [
+              %{
+                "id" => call_id,
+                "type" => "function",
+                "function" => %{"name" => "run_elixir", "arguments" => Jason.encode!(%{"code" => code})}
+              }
+            ]
+          }
+
+          st = push_msg(st, fallback_call)
           emit(st, {:tool_start, "run_elixir(fallback)", "", code})
           tool_started_at = System.monotonic_time(:millisecond)
           eval_result = eval_fallback(st, code)
@@ -1338,8 +1355,8 @@ defmodule Newbee.Agent.Loop do
             rendered = Newbee.DEE.Result.render(eval_result)
             duration_ms = System.monotonic_time(:millisecond) - tool_started_at
             emit(st, {:tool_result, "run_elixir", rendered, duration_ms})
-            tool_msg = %{"role" => "tool", "tool_call_id" => "fallback-#{step}", "content" => rendered}
-            {:cont, push_msg(st, tool_msg), acc ++ [eval_result]}
+            tool_msg = %{"role" => "tool", "tool_call_id" => call_id, "content" => rendered}
+            {:cont, {push_msg(st, tool_msg), [eval_result | acc]}}
           end
         end
       end)
@@ -1348,7 +1365,7 @@ defmodule Newbee.Agent.Loop do
       {:halt, reply, state} ->
         {reply, state}
 
-      {:cont, state, results} ->
+      {state, results} ->
         all_ok? = Enum.all?(results, &(&1.status == :ok))
 
         # 温和纠偏：提示模型用 run_elixir 工具（DESIGN §4.2）
