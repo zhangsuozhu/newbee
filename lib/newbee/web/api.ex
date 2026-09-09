@@ -43,6 +43,12 @@ defmodule Newbee.Web.Api do
         _ -> payload
       end
 
+    payload =
+      case get_req_header(conn, "x-newbee-device-token") do
+        [token | _] -> Map.put(payload, "__device_token__", String.trim(token))
+        _ -> payload
+      end
+
     # 注入 User-Agent 供扫码授权页展示"请求设备"摘要
     payload =
       case get_req_header(conn, "user-agent") do
@@ -1968,10 +1974,396 @@ defmodule Newbee.Web.Api do
     end
   end
 
+  defp dispatch_rpc("collab.shared.read", %{"sessionId" => sid} = p) when is_binary(sid) do
+    path =
+      case blank_to_nil(p["path"]) do
+        nil ->
+          case {blank_to_nil(p["groupId"]), blank_to_nil(p["resource"])} do
+            {gid, resource} when is_binary(gid) and is_binary(resource) -> gid <> "/" <> resource
+            _ -> ""
+          end
+
+        value ->
+          value
+      end
+
+    with :ok <- require_existing_session(sid),
+         {:ok, context} <- Newbee.Collaboration.SharedContext.fetch(sid, path) do
+      {:ok, context}
+    end
+  end
+
+  defp dispatch_rpc("collab.shared.read", _p),
+    do: {:error, "bad_request", "需要 sessionId 和 path（或 groupId/resource）字段"}
+
+  defp dispatch_rpc("collab.shared.publish", %{"sessionId" => sid, "groupId" => gid} = p)
+       when is_binary(sid) and is_binary(gid) do
+    opts =
+      [
+        command_id: blank_to_nil(p["commandId"]),
+        message_id: blank_to_nil(p["messageId"])
+      ]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+    with :ok <- require_existing_session(sid),
+         {:ok, entry} <- Newbee.Collaboration.SharedContext.publish(sid, gid, p["title"], p["body"], opts) do
+      {:ok, entry}
+    end
+  end
+
+  defp dispatch_rpc("collab.shared.publish", _p),
+    do: {:error, "bad_request", "需要 sessionId、groupId、title 和 body 字段"}
+
+  # Worker bridge RPCs are authenticated by an enrolled device credential, not the WebUI bearer token.
+  defp dispatch_rpc("xgroup.bridge.join", %{"groupId" => gid} = p) do
+    Newbee.Collaboration.CrossHost.Bridge.join(%{
+      "group_id" => gid,
+      "password" => blank_to_nil(p["password"]) || "",
+      "fingerprint" => blank_to_nil(p["fingerprint"]) || blank_to_nil(p["presentedFp"]) || "",
+      "display" => blank_to_nil(p["display"]) || "worker"
+    })
+  end
+
+  defp dispatch_rpc("xgroup.bridge.poll", p) do
+    Newbee.Collaboration.CrossHost.Bridge.poll(%{
+      "device_id" => p["deviceId"] || p["device_id"],
+      "token" => p["__device_token__"],
+      "limit" => p["limit"]
+    })
+  end
+
+  defp dispatch_rpc("xgroup.bridge.ack", p) do
+    Newbee.Collaboration.CrossHost.Bridge.ack(%{
+      "device_id" => p["deviceId"] || p["device_id"],
+      "token" => p["__device_token__"],
+      "delivery_id" => p["deliveryId"] || p["delivery_id"],
+      "status" => p["status"],
+      "result" => p["result"]
+    })
+  end
+
+  defp dispatch_rpc("xgroup.bridge.sync", p) do
+    Newbee.Collaboration.CrossHost.Bridge.sync(%{
+      "device_id" => p["deviceId"] || p["device_id"],
+      "token" => p["__device_token__"]
+    })
+  end
+
+  defp dispatch_rpc("xgroup.bridge.heartbeat", p) do
+    Newbee.Collaboration.CrossHost.Bridge.heartbeat(%{
+      "device_id" => p["deviceId"] || p["device_id"],
+      "token" => p["__device_token__"]
+    })
+  end
+
+  defp dispatch_rpc("xgroup.task.create", %{"groupId" => gid} = p) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, group} ->
+        attrs = %{
+          "group_id" => gid,
+          "project_id" => Map.get(group, "project_id", ""),
+          "creator" => blank_to_nil(p["creator"]) || "",
+          "assignee" => blank_to_nil(p["assignee"]) || "auto",
+          "title" => p["title"],
+          "description" => p["description"],
+          "requires" => Map.get(p, "requires", %{}),
+          "budget" => Map.get(p, "budget", %{}),
+          "idempotency_key" => blank_to_nil(p["idempotencyKey"]) || blank_to_nil(p["idempotency_key"]) || "",
+          "source_digest" => blank_to_nil(p["sourceDigest"]) || ""
+        }
+
+        case Newbee.Collaboration.CrossHost.Task.new(attrs) do
+          {:ok, task} ->
+            :ok = Newbee.Collaboration.CrossHost.Store.put_task(task)
+            {:ok, json_safe(public_xgroup_task(task))}
+
+          {:error, code, message} ->
+            {:error, code, message}
+        end
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.task.list", %{"groupId" => gid}) do
+    {:ok, %{tasks: json_safe(Enum.map(Newbee.Collaboration.CrossHost.Store.list_tasks(gid), &public_xgroup_task/1))}}
+  end
+
+  defp dispatch_rpc("xgroup.task.transition", %{"taskId" => tid, "event" => ev}) do
+    found = Newbee.Collaboration.CrossHost.Store.list_tasks("") ++ []
+    _ = found
+    all = :ets.tab2list(:xh_tasks) |> Enum.map(fn {_, t} -> t end) |> Enum.find(fn t -> Map.get(t, "id") == tid end)
+
+    case all do
+      nil ->
+        {:error, "not_found", "task not found"}
+
+      task ->
+        case Newbee.Collaboration.CrossHost.Task.transition(task, ev) do
+          {:ok, nt} ->
+            :ok = Newbee.Collaboration.CrossHost.Store.put_task(nt)
+            _ = if ev == "cancel", do: cancel_cleanup(nt)
+            {:ok, json_safe(public_xgroup_task(nt))}
+
+          {:error, code, message} ->
+            {:error, code, message}
+        end
+    end
+  end
+
+  defp dispatch_rpc("xgroup.preview.attach", %{"bind" => bind, "port" => port}) do
+    case Newbee.Collaboration.CrossHost.Firewall.preview_bind_ok?(bind || "") do
+      true -> {:ok, %{preview: %{bind: bind, port: port}}}
+      false -> {:error, "preview_exposed", "preview loopback only"}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.firewall.plan", %{"hubIp" => hip} = p) do
+    lan = Map.get(p, "lan", true)
+    flag = if lan == false, do: false, else: true
+    {:ok, json_safe(Newbee.Collaboration.CrossHost.Firewall.plan(hip || "", lan: flag))}
+  end
+
+  defp dispatch_rpc("xgroup.firewall.plan", _p), do: {:error, "bad_request", "need hubIp"}
+
+  defp dispatch_rpc("xgroup.join", %{"groupId" => gid} = p) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, group} ->
+        params = %{
+          "expected_fp" => Map.get(group, "server_fp", ""),
+          "presented_fp" => blank_to_nil(p["fingerprint"]) || blank_to_nil(p["presentedFp"]) || "",
+          "password" => blank_to_nil(p["password"]) || "",
+          "member_id" =>
+            blank_to_nil(p["memberId"]) || blank_to_nil(p["member_id"]) ||
+              "m_" <> Base.url_encode64(:crypto.strong_rand_bytes(6), padding: false),
+          "display" => blank_to_nil(p["display"]) || "device"
+        }
+
+        case Newbee.Collaboration.CrossHost.Join.join(group, params) do
+          {:ok, g2, out} ->
+            :ok = Newbee.Collaboration.CrossHost.Store.put_group(g2)
+            {:ok, json_safe(out)}
+
+          {:error, code, message} ->
+            {:error, code, message}
+        end
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.join", _p), do: {:error, "bad_request", "need groupId password fingerprint"}
+
+  defp dispatch_rpc("xgroup.password.change", %{"groupId" => gid, "password" => npw}) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, group} ->
+        case Newbee.Collaboration.CrossHost.Group.change_password(group, npw || "") do
+          {:ok, g2} ->
+            :ok = Newbee.Collaboration.CrossHost.Store.put_group(g2)
+            {:ok, %{updated: true}}
+
+          {:error, code, message} ->
+            {:error, code, message}
+        end
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.device.pause", %{"groupId" => gid, "deviceId" => did, "paused" => paused}) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, group} ->
+        flag = if paused == true, do: true, else: false
+        g2 = Newbee.Collaboration.CrossHost.Auth.pause_device(group, did, flag)
+        :ok = Newbee.Collaboration.CrossHost.Store.put_group(g2)
+        {:ok, %{paused: flag}}
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.device.status", %{"groupId" => gid}) do
+    now = System.system_time(:millisecond)
+    {:ok, %{devices: Newbee.Collaboration.CrossHost.Store.group_device_statuses(gid, now)}}
+  end
+
+  defp dispatch_rpc("xgroup.device.status", _p), do: {:error, "bad_request", "need groupId"}
+
+  defp dispatch_rpc("xgroup.device.heartbeat", %{"groupId" => gid, "deviceId" => did}) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, group} ->
+        g2 = Newbee.Collaboration.CrossHost.Auth.touch_device(group, did)
+        :ok = Newbee.Collaboration.CrossHost.Store.put_group(g2)
+        {:ok, %{ts: System.system_time(:millisecond)}}
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.device.remove", %{"groupId" => gid, "deviceId" => did}) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, group} ->
+        g2 = Newbee.Collaboration.CrossHost.Auth.remove_device(group, did)
+        :ok = Newbee.Collaboration.CrossHost.Store.put_group(g2)
+        {:ok, %{removed: true}}
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.member.remove", %{"groupId" => gid, "memberId" => mid}) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, group} ->
+        g2 = Newbee.Collaboration.CrossHost.Auth.remove_member(group, mid)
+        :ok = Newbee.Collaboration.CrossHost.Store.put_group(g2)
+        {:ok, %{removed: true}}
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.create", p) do
+    name = blank_to_nil(p["name"]) || "协作群-" <> Base.url_encode64(:crypto.strong_rand_bytes(3), padding: false)
+    project = blank_to_nil(p["projectId"]) || blank_to_nil(p["project_id"]) || "default"
+
+    with {:ok, fp} <- Newbee.Web.Cert.fingerprint(),
+         {:ok, group, plain} <- Newbee.Collaboration.CrossHost.Group.create(name, project, []) do
+      group = group |> Map.put("server_fp", fp) |> Map.put("devices", %{}) |> Map.put("members", %{})
+      :ok = Newbee.Collaboration.CrossHost.Store.put_group(group)
+
+      {:ok,
+       %{
+         group: Newbee.Collaboration.CrossHost.Store.public_group(group),
+         serverFp: fp,
+         code: Newbee.Collaboration.CrossHost.Join.join_code(group, plain),
+         invite: %{address: Map.get(group, "id"), fingerprint: fp}
+       }}
+    else
+      {:error, :certificate_unavailable} ->
+        {:error, "server_identity_unavailable", "无法读取本机 Web 服务器证书指纹"}
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.list", _p) do
+    {:ok, %{groups: Newbee.Collaboration.CrossHost.Store.list_public()}}
+  end
+
+  defp dispatch_rpc("xgroup.get", %{"groupId" => gid}) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, group} ->
+        tasks = Newbee.Collaboration.CrossHost.Store.list_tasks(gid)
+
+        {:ok,
+         %{
+           group: Newbee.Collaboration.CrossHost.Store.public_group(group),
+           tasks: json_safe(Enum.map(tasks, &public_xgroup_task/1))
+         }}
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.get", _p), do: {:error, "bad_request", "need groupId"}
+
   # Keep malformed or newly introduced RPCs inside the JSON protocol. Without
+  defp dispatch_rpc("xgroup.session.bind", %{"groupId" => gid, "sessionId" => sid} = p) do
+    with {:ok, group} <- Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      did = p["deviceId"]
+      devs = Map.get(group, "devices", %{})
+
+      cond do
+        not is_binary(sid) or sid == "" ->
+          {:error, "bad_request", "need sessionId"}
+
+        did != nil and not Map.has_key?(devs, did) ->
+          {:error, "not_found", "设备不在群中"}
+
+        true ->
+          mid = if did == nil, do: nil, else: get_in(devs, [did, "member_id"])
+
+          b = %{
+            "session_id" => sid,
+            "group_id" => gid,
+            "member_id" => mid,
+            "device_id" => did,
+            "bound_at" => System.system_time(:millisecond)
+          }
+
+          :ok = Newbee.Collaboration.CrossHost.Store.bind_session(b)
+          refresh_shared_session(sid)
+          {:ok, %{binding: b}}
+      end
+    end
+  end
+
+  defp dispatch_rpc("xgroup.session.list", %{"groupId" => gid}) do
+    {:ok, %{sessions: Newbee.Collaboration.CrossHost.Store.sessions_for_group(gid)}}
+  end
+
+  defp dispatch_rpc("xgroup.session.unbind", %{"groupId" => gid, "sessionId" => sid}) do
+    bs = Newbee.Collaboration.CrossHost.Store.sessions_for_group(gid)
+
+    if Enum.any?(bs, fn b -> Map.get(b, "session_id") == sid end) do
+      :ok = Newbee.Collaboration.CrossHost.Store.unbind_session(sid)
+      refresh_shared_session(sid)
+      {:ok, %{}}
+    else
+      {:error, "not_found", "会话不在群中"}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.code", %{"groupId" => gid}) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, group} -> {:ok, %{code: Newbee.Collaboration.CrossHost.Join.join_code(group)}}
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.code.parse", %{"code" => code}) do
+    case Newbee.Collaboration.CrossHost.Join.parse_code(code || "") do
+      {:ok, %{"gid" => gid, "fp" => fp} = m} -> {:ok, %{groupId: gid, fingerprint: fp, password: Map.get(m, "pw")}}
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
+
+  defp dispatch_rpc("xgroup.delete", %{"groupId" => gid}) do
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, _} ->
+        :ok = Newbee.Collaboration.CrossHost.Store.delete_group(gid)
+        {:ok, %{}}
+
+      {:error, code, message} ->
+        {:error, code, message}
+    end
+  end
+
   # this boundary an unknown method raises FunctionClauseError and Plug returns
   # an HTML 500 page, which makes client retries and diagnostics unreliable.
   defp dispatch_rpc(method, _p), do: {:error, "unknown_method", "未知 RPC 方法: #{method}"}
+
+  defp cancel_cleanup(task) do
+    {:ok, dropped} = Newbee.Collaboration.CrossHost.Store.drop_deliveries_for_task(task["id"] || "")
+
+    _ =
+      Newbee.Collaboration.CrossHost.Store.add_activity(task["group_id"] || "", %{
+        "event" => "task_cancelled",
+        "task_id" => task["id"],
+        "dropped_deliveries" => dropped
+      })
+
+    :ok
+  end
 
   # 删除会话前自动解除工作组归属：逐个移出（级联移出其子协作成员）；
   # 目标会话是协调者则先取消整组再移出所有成员。
@@ -2446,6 +2838,13 @@ defmodule Newbee.Web.Api do
 
       _ ->
         ""
+    end
+  end
+
+  defp refresh_shared_session(sid) do
+    case Newbee.Web.Session.lookup(sid) do
+      {:ok, pid} -> Newbee.Web.Session.refresh_shared_context(pid)
+      _ -> :ok
     end
   end
 
@@ -2996,6 +3395,51 @@ defmodule Newbee.Web.Api do
     :ok
   rescue
     _ -> :ok
+  end
+
+  defp public_xgroup_task(task) when is_map(task), do: task |> public_xgroup_value() |> Map.drop(["source_digest"])
+  defp public_xgroup_task(other), do: other
+
+  defp public_xgroup_value(map) when is_map(map) do
+    map
+    |> Enum.reject(fn {key, _value} -> xgroup_sensitive_key?(key) end)
+    |> Map.new(fn {key, value} -> {to_string(key), public_xgroup_value(value)} end)
+  end
+
+  defp public_xgroup_value(list) when is_list(list), do: Enum.map(list, &public_xgroup_value/1)
+  defp public_xgroup_value(value) when is_binary(value), do: redact_xgroup_text(value)
+  defp public_xgroup_value(value) when is_number(value) or is_boolean(value) or is_nil(value), do: value
+  defp public_xgroup_value(value), do: redact_xgroup_text(inspect(value))
+
+  defp redact_xgroup_text(value) do
+    value = String.slice(value, 0, 16_384)
+
+    Regex.replace(
+      ~r/(sk-[A-Za-z0-9_-]{8,}|Bearer[[:space:]]+[^[:space:]]+|gh[opusr]_[A-Za-z0-9]{20,}|[A-Z][A-Z0-9_]{2,}(KEY|TOKEN|SECRET)[[:space:]]*=[[:space:]]*[^[:space:]]+)/i,
+      value,
+      "[REDACTED]"
+    )
+  end
+
+  defp xgroup_sensitive_key?(key) do
+    key = key |> to_string() |> String.downcase()
+
+    Enum.any?(
+      [
+        "password",
+        "token",
+        "secret",
+        "api_key",
+        "private_key",
+        "credential",
+        "authorization",
+        "project_root",
+        "work_root",
+        "candidate_path",
+        "cwd"
+      ],
+      &String.contains?(key, &1)
+    )
   end
 
   defp json_safe(%{__struct__: _} = v), do: v |> Map.from_struct() |> json_safe()

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="stylesheet" href="/style.css?v=1788806402" />
+  <link rel="stylesheet" href="/style.css?v=1788907918" />
   <link rel="stylesheet" href="/vendor/xterm.css?v=5.6.0" />
 
 </head>
@@ -28,7 +28,6 @@
       <span id="selected-session-count">0 个已选</span>
       <button id="new-group" class="btn-ghost" title="把选中的会话组成工作组">组成工作组</button>
     </div>
-
 
 
     <div class="sidebar-foot">
@@ -120,18 +119,18 @@
         <div id="queue-list" class="queue-list"></div>
       </div>
       <div class="composer-card">
-        <div class="composer-effort" id="effort-ctl" title="思考强度：模型推理深度（auto=跟随模型默认）">
-          <span class="effort-label"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.9.8A3.5 3.5 0 0 0 4 9.5c0 .9.3 1.7.9 2.3A3.5 3.5 0 0 0 6 18h1"/><path d="M12 5a3 3 0 1 1 5.9.8A3.5 3.5 0 0 1 20 9.5c0 .9-.3 1.7-.9 2.3A3.5 3.5 0 0 1 18 18h-1"/><path d="M9 18v2a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2"/><path d="M12 5v17"/></svg><span class="effort-text">思考强度</span></span>
-          <div id="effort-segments" class="effort-segments"></div>
-        </div>
+
 
 
         <div id="drop-overlay" class="drop-overlay hidden">松开以添加文件到输入框</div>
         <div class="composer-row">
         <div class="composer-attach">
           <button id="attach-btn" class="icon-btn" title="上传文件（图片也可直接粘贴）" aria-label="上传文件"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+          <div class="effort-pick">
+            <button id="effort-btn" class="icon-btn effort-btn" title="思考强度：模型推理深度" aria-label="思考强度" aria-haspopup="true" aria-expanded="false"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.9.8A3.5 3.5 0 0 0 4 9.5c0 .9.3 1.7.9 2.3A3.5 3.5 0 0 0 6 18h1"/><path d="M12 5a3 3 0 1 1 5.9.8A3.5 3.5 0 0 1 20 9.5c0 .9-.3 1.7-.9 2.3A3.5 3.5 0 0 1 18 18h-1"/><path d="M9 18v2a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2"/><path d="M12 5v17"/></svg><span id="effort-btn-text" class="effort-btn-text">中</span></button>
+            <div id="effort-segments" class="effort-segments hidden" role="menu" aria-label="思考强度"></div>
+          </div>
           <input type="file" id="file-input" multiple hidden />
-
         </div>        <textarea id="input" rows="1" placeholder="输入消息…"></textarea>
         <div class="composer-actions">
           <button id="interrupt" class="btn-icon-round hidden" title="中断当前并清空排队" aria-label="中断并清空排队"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
@@ -388,6 +387,45 @@
   </div>
 </div>
 
+
+ <div id="xcreate-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="建协作群">
+  <div class="modal-box">
+    <div class="modal-title">建协作群</div>
+    <div class="modal-body">起个群名，点"创建"生成一串加群码，把码发给对方即可。</div>
+    <div class="group-modal-fields">
+      <label>群名<input id="xc_name" type="text" placeholder="例如：订单系统开发组" maxlength="80" /></label>
+      <div id="xc_result" class="modal-body"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="xc_cancel">关闭</button>
+      <button class="btn-primary" id="xc_confirm">创建</button>
+    </div>
+  </div>
+</div>
+<div id="xjoin-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="加入协作群">
+  <div class="modal-box">
+    <div class="modal-title">加入协作群</div>
+    <div class="modal-body">粘贴加群码，给本机起个名，一次加入。</div>
+    <div class="group-modal-fields">
+      <label>加群码<input id="xj_code" type="text" placeholder="粘贴加群码，如 XG1.…" /></label>
+      <label>本机名<input id="xj_disp" type="text" placeholder="例如：我的开发机" maxlength="40" /></label>
+      <div id="xj_found" class="modal-body"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="xj_cancel">取消</button>
+      <button class="btn-primary" id="xj_confirm">加入</button>
+    </div>
+  </div>
+</div>
+<div id="xmanage-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="群管理">
+  <div class="modal-box">
+    <div class="modal-title" id="xm_title">群管理</div>
+    <div id="xm_body" class="group-modal-fields"></div>
+    <div class="modal-actions">
+      <button class="btn-ghost" id="xm_close">关闭</button>
+    </div>
+  </div>
+</div>
 
 <div id="cmd-palette" class="modal hidden">
   <div class="modal-box cmd-box">
@@ -648,7 +686,7 @@
 <script src="/vendor/qrcodegen.js"></script>
 <script src="/vendor/xterm.js?v=5.6.0"></script>
 
-<script src="/app.js?v=1788806400"></script>
+<script src="/app.js?v=1788907918"></script>
 <!-- 手机扫码免登录弹窗 -->
 <div id="qa-overlay" class="qa-overlay hidden">
   <div class="qa-box">

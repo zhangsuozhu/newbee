@@ -1742,6 +1742,7 @@ case "goal_round": break;
       renderSessionList();
       renderCollaborationPane();
       renderCollaborationTasks();
+      loadXGroups();
       return;
     }
     try {
@@ -1761,6 +1762,7 @@ case "goal_round": break;
       state.writeScopeOverlaps = [];
     }
     if (seq !== groupLoadSeq || state.sid !== sid) return;
+    loadXGroups();
     rebuildGroupIndex();
     renderSessionList();
     await loadActiveGroup(sid, seq);
@@ -2776,8 +2778,11 @@ case "goal_round": break;
     const hiveTask = /^hive[._]task[._]/.test(topic || "");
     const boardEvent = topic === "hive_board_updated" || topic === "hive.board.updated" || topic === "collab_board_updated";
     const taskEvent = topic === "collab_task_created" || topic === "collab_task_updated" || topic === "collab_task_claimed" || hiveTask;
+    const crossHostEvent = /^cross_host_/.test(topic || "");
     if (eventGroupId) bumpCollabUnread(eventGroupId, frame.eventId);
-    if (topic === "collab_permission_ask" && payload.request_session_id !== state.sid && (payload.approver_session_ids || []).includes(state.sid)) {
+    if (crossHostEvent) {
+      line("notice", "共享协作内容已更新");
+    } else if (topic === "collab_permission_ask" && payload.request_session_id !== state.sid && (payload.approver_session_ids || []).includes(state.sid)) {
       showPermission(payload.preview, payload.request_session_id);
       line("notice", `协作会话 ${sessionDisplayName(payload.request_session_id)} 请求权限，请审批`);
     } else if ((topic === "collab_delegated" || topic === "hive_delegated") && payload.member && payload.task) {
@@ -2803,7 +2808,9 @@ case "goal_round": break;
       line("notice", `子代理变更：${workspaceStatusLabel(wsStatus)}`);
     }
     try {
-      if (boardEvent || taskEvent || topic === "collab_delegated" || topic === "hive_delegated" || topic === "collab_member_added" || topic === "collab_member_removed" || topic === "collab_workspace_updated") {
+      if (crossHostEvent) {
+        await loadXGroups();
+      } else if (boardEvent || taskEvent || topic === "collab_delegated" || topic === "hive_delegated" || topic === "collab_member_added" || topic === "collab_member_removed" || topic === "collab_workspace_updated") {
         if (eventGroupId && eventGroupId === state.activeGroupId && state.sid === expectedSid) {
           await loadActiveGroup(expectedSid, groupLoadSeq);
         } else {
@@ -2816,6 +2823,7 @@ case "goal_round": break;
       if (state.sid === expectedSid) line("error", "刷新协作 Board 失败: " + boardErrorMessage(e));
     }
   }
+
 
 
   function exitGroupMode() {
@@ -3181,6 +3189,457 @@ case "goal_round": break;
   }
 
 
+  let xgroupLoadSeq = 0;
+  function xCollapsed(gid) { try { return localStorage.getItem("xgroup.collapsed." + gid) === "1"; } catch (e) { return false; } }
+  function xToggle(gid) { try { localStorage.setItem("xgroup.collapsed." + gid, xCollapsed(gid) ? "0" : "1"); } catch (e) {} renderSessionList(); }
+  function xMy(gid) { try { return JSON.parse(localStorage.getItem("xgroup.me." + gid) || "null"); } catch (e) { return null; } }
+  function xRemember(gid, mid, did) {
+    try {
+      const cur = xMy(gid) || { member_id: null, devices: [] };
+      if (mid) cur.member_id = mid;
+      cur.devices = cur.devices || [];
+      if (did && cur.devices.indexOf(did) < 0) cur.devices.push(did);
+      localStorage.setItem("xgroup.me." + gid, JSON.stringify(cur));
+    } catch (e) {}
+  }
+  function xIsMine(gid, did) { const m = xMy(gid); return !!(m && m.devices && m.devices.indexOf(did) >= 0); }
+  // 在线判定：有心跳且 90 秒内；无心跳字段时未暂停即视为在线（兼容旧数据）
+  function xOnline(d) {
+    if (!d) return false;
+    if (d.paused) return false;
+    if (d.last_seen) return (Date.now() - d.last_seen) < 90000;
+    return true;
+  }
+  function xIsRemote(d) { return !!(d && (d.remote || d.bridge)); }
+  function xAgeText(d) {
+    if (!d || d.last_seen == null) return "从未上报";
+    const ms = Date.now() - d.last_seen;
+    if (ms < 5000) return "刚刚活跃";
+    if (ms < 60000) return Math.floor(ms / 1000) + " 秒前活跃";
+    return Math.floor(ms / 60000) + " 分钟前活跃";
+  }
+  function xLocalHint(d) {
+    if (!d) return "";
+    if (d.paused) return "已暂停接收新任务；点恢复可继续接单";
+    if (xOnline(d)) return xIsRemote(d) ? "远端 Worker 连接正常" : "本机设备在线";
+    if (d.last_seen == null) return "尚未上报心跳：检查 Worker 是否已用加群码加入并启动轮询";
+    return "心跳超时：检查 Worker 进程、到 Hub 的网络、Hub 地址/指纹是否变化；任务保留待投递，重连后自动继续";
+  }
+
+
+  // 本机设备周期上报心跳，供其它主机看到在线状态
+  let xHbTimer = 0;
+  function xHeartbeat(groups) {
+    if (xHbTimer) clearTimeout(xHbTimer);
+    (groups || []).forEach((g) => {
+      const me = xMy(g.id);
+      if (me && me.devices) me.devices.forEach((did) => { rpc("xgroup.device.heartbeat", { groupId: g.id, deviceId: did }).catch(() => {}); });
+    });
+    xHbTimer = setTimeout(() => { loadXGroups(); }, 30000);
+  }
+  function xSharedSession(bound) {
+    const ids = (bound || []).map((b) => b && b.session_id).filter(Boolean);
+    if (state.sid && ids.indexOf(state.sid) >= 0) return state.sid;
+    return ids[0] || null;
+  }
+  async function xBindCurrent(gid, did) {
+    if (!state.sid || !did) return;
+    try { await rpc("xgroup.session.bind", { groupId: gid, sessionId: state.sid, deviceId: did }); } catch (e) {}
+  }
+
+  async function xReadShared(gid, bound, resource) {
+    const candidates = (bound || []).map((b) => b && b.session_id).filter(Boolean);
+    if (state.sid && candidates.indexOf(state.sid) >= 0) candidates.unshift(state.sid);
+    let last = "暂无可用群会话";
+    for (const sid of [...new Set(candidates)]) {
+      try {
+        return { sessionId: sid, value: await rpc("collab.shared.read", { sessionId: sid, groupId: gid, resource }) };
+      } catch (e) { last = e.message || last; }
+    }
+    return { sessionId: null, error: last };
+  }
+
+  async function loadXGroups() {
+    const seq = ++xgroupLoadSeq;
+    let groups = [];
+    try { const r = await rpc("xgroup.list", {}); groups = (r && r.groups) || []; } catch (e) { groups = []; }
+    if (seq !== xgroupLoadSeq) return;
+    state.xgroups = groups;
+    state.xgroupDetail = state.xgroupDetail || {};
+    for (const g of groups) {
+      try {
+        const d = await rpc("xgroup.get", { groupId: g.id });
+        if (seq !== xgroupLoadSeq) return;
+        let sess = [];
+        try { const s = await rpc("xgroup.session.list", { groupId: g.id }); sess = (s && s.sessions) || []; } catch (e2) {}
+        if (d) { d.boundSessions = sess; state.xgroupDetail[g.id] = d; }
+        try {
+          const st = await rpc("xgroup.device.status", { groupId: g.id });
+          if (seq !== xgroupLoadSeq) return;
+          state.xgroupDeviceStatus = state.xgroupDeviceStatus || {};
+          const m = {};
+          ((st && st.devices) || []).forEach((x) => { if (x && x.id) m[x.id] = x; });
+          state.xgroupDeviceStatus[g.id] = m;
+        } catch (e3) {}
+        if (seq !== xgroupLoadSeq) return;
+      } catch (e) {}
+    }
+
+
+    if (seq !== xgroupLoadSeq) return;
+    if (seq !== xgroupLoadSeq) return;
+    renderSessionList();
+    xHeartbeat(groups);
+  }
+  function xOpen(id) { const el = document.getElementById(id); if (el) el.classList.remove("hidden"); }
+  function xClose(id) { const el = document.getElementById(id); if (el) el.classList.add("hidden"); }
+  function xCopy(text, btn) {
+    const done = () => { if (btn) { const o = btn.textContent; btn.textContent = "已复制"; setTimeout(() => { btn.textContent = o; }, 1200); } };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
+    else { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); } catch (e) {} ta.remove(); done(); }
+  }
+  function renderXGroups(box, kw, ctx) {
+    const gs = state.xgroups || [];
+    const list = gs.filter((g) => !kw || String(g.name || "").toLowerCase().includes(kw) || String(g.project_id || "").toLowerCase().includes(kw));
+    const label = document.createElement("div");
+    label.className = "session-group-label xzone-head";
+    const ztitle = document.createElement("span");
+    ztitle.className = "xzone-title";
+    ztitle.textContent = list.length ? "项目协作群 · " + list.length : "项目协作群";
+    label.appendChild(ztitle);
+    const mkZone = (txt, tip, fn) => { const b = document.createElement("button"); b.className = "xg-btn"; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; label.appendChild(b); };
+    mkZone("建群", "建一个项目协作群", openXCreate);
+    mkZone("加群", "用加群码加入协作群", openXJoin);
+    box.appendChild(label);
+    if (!list.length) { const em = document.createElement("div"); em.className = "session-empty"; em.textContent = "还没有协作群，点上面建一个，或找对方要加群码"; box.appendChild(em); return; }
+    list.forEach((g) => {
+      const det = (state.xgroupDetail || {})[g.id] || {};
+      const devs = det.group ? det.group.devices || {} : {};
+      const members = det.group ? det.group.members || {} : {};
+      const tasks = det.tasks || [];
+      const bound = det.boundSessions || [];
+      const devIds = Object.keys(devs);
+      const running = tasks.filter((t) => t.status === "running" || t.status === "queued" || t.status === "waiting_input").length;
+      const collapsed = xCollapsed(g.id);
+      const wrap = document.createElement("div");
+      wrap.className = "session-group xgroup" + (collapsed ? " collapsed" : "");
+      const header = document.createElement("div");
+      header.className = "session-group-header";
+      // 两行头：第一行标题+管理，第二行元信息；标题不再被计数挤扁
+      const metaBits = [`${devIds.length} 台机器`, `${bound.length} 会话`];
+      if (tasks.length) metaBits.push(`${tasks.length} 任务`);
+      header.innerHTML = `<div class="sg-line"><button class="session-group-toggle" title="${collapsed ? "展开" : "收起"}">${collapsed ? "▸" : "▾"}</button><span class="session-group-title">${escapeHtml(g.name || "协作群")}</span><button class="xg-btn" title="群管理">管理</button></div><div class="session-group-meta">${metaBits.map(escapeHtml).join('<span class="sg-sep">·</span>')}${running ? ` <span class="session-group-busy">● ${running} 进行中</span>` : ""}</div>`;
+      header.onclick = (e) => { if (e.target.closest(".xg-btn") || e.target.closest(".session-group-toggle")) return; xToggle(g.id); };
+      header.querySelector(".xg-btn").onclick = (e) => { e.stopPropagation(); openXManage(g.id); };
+      header.querySelector(".session-group-toggle").onclick = (e) => { e.stopPropagation(); xToggle(g.id); };
+      wrap.appendChild(header);
+      if (!collapsed) {
+        const body = document.createElement("div");
+        body.className = "session-group-body";
+        devIds.forEach((did) => {
+          const d = devs[did] || {};
+          const mem = members[d.member_id] || {};
+          const mine = xIsMine(g.id, did);
+          const st = ((state.xgroupDeviceStatus || {})[g.id] || {})[did] || null;
+          const online = st ? st.state === "online" : xOnline(d);
+          const paused = st ? !!st.paused : !!d.paused;
+          const remote = st ? !!st.remote : xIsRemote(d);
+          const drow = document.createElement("div");
+          drow.className = "xg-dev" + (mine ? " mine" : "");
+          const stateTxt = paused ? "已暂停" : (online ? "在线" : "离线");
+          const stateCls = paused ? "paused" : (online ? "online" : "offline");
+          const memTxt = mem.display && mem.display !== (d.display || did) ? mem.display + " · " : "";
+          const ageTxt = st && st.age_text ? " · " + st.age_text : (d.last_seen ? " · " + xAgeText(d) : "");
+          const remoteBadge = remote ? '<span class="xg-badge">远端</span>' : "";
+          drow.innerHTML = `<span class="sess-dot ${stateCls}"></span><span class="xg-dev-name">${escapeHtml(d.display || did)}${mine ? '<span class="xg-badge">本机</span>' : ""}${remoteBadge}</span><span class="xg-dev-state">${escapeHtml(memTxt + stateTxt + ageTxt)}</span>`;
+          const hintTxt = st && st.hint ? st.hint : xLocalHint(d);
+          if (hintTxt && (!online || paused)) {
+            const h = document.createElement("div");
+            h.className = "session-empty";
+            h.textContent = hintTxt;
+            h.title = hintTxt;
+            body.appendChild(drow);
+            body.appendChild(h);
+          } else {
+            body.appendChild(drow);
+          }
+          const mkBtn = (txt, title, fn, accent) => { const b = document.createElement("button"); b.className = "xg-btn" + (accent ? " accent" : ""); b.textContent = txt; b.title = title; b.onclick = (ev) => { ev.stopPropagation(); fn(); }; drow.appendChild(b); };
+
+          bound.filter((b) => b.device_id === did).forEach((b) => {
+            const it = ctx.addItem(ctx.findSession(b.session_id), true, { role: "群会话" });
+            if (it) body.appendChild(it);
+          });
+        });
+        bound.filter((b) => !b.device_id || !devs[b.device_id]).forEach((b) => {
+          const it = ctx.addItem(ctx.findSession(b.session_id), true, { role: "群会话" });
+          if (it) body.appendChild(it);
+        });
+        if (!devIds.length && !bound.length) { const em = document.createElement("div"); em.className = "session-empty"; em.textContent = "还没有机器加入，点管理把加群码发出去"; body.appendChild(em); }
+        const statusCn2 = (s) => ({ queued: "待开始", running: "进行中", waiting_input: "等输入", done: "已完成", failed: "失败" }[s] || s || "任务");
+        tasks.slice(0, 5).forEach((t) => {
+          const row = document.createElement("div");
+          row.className = "xg-dev";
+          row.innerHTML = `<span class="sess-dot ${t.status === "done" ? "offline" : (t.status === "failed" ? "paused" : "online")}"></span><span class="xg-dev-name">${escapeHtml(String(t.title || t.id).slice(0, 24))}</span><span class="xg-dev-state">${escapeHtml(statusCn2(t.status))}</span>`;
+          row.onclick = () => openXManage(g.id);
+          body.appendChild(row);
+        });
+        const hint = document.createElement("div");
+        hint.className = "session-empty";
+        hint.textContent = "任务由协作模型自动调度";
+        body.appendChild(hint);
+        wrap.appendChild(body);
+      }
+      box.appendChild(wrap);
+    });
+  }
+  async function xNewSession(gid, did) {
+    const sid = genSessionId();
+    try { await rpc("session.create", { sessionId: sid }); }
+    catch (e) { await rpc("session.create", { sessionId: sid }); }
+    try { await rpc("xgroup.session.bind", { groupId: gid, sessionId: sid, deviceId: did }); }
+    catch (e) { try { await resume(sid); } catch (e2) {} return; }
+    loadSessions();
+    loadXGroups();
+    try { await resume(sid); } catch (e) {}
+  }
+  function openXCreate() {
+    document.getElementById("xc_name").value = "";
+    document.getElementById("xc_result").innerHTML = "";
+    xOpen("xcreate-modal");
+  }
+  async function xDoCreate(btn) {
+    const res = document.getElementById("xc_result");
+    btn.disabled = true;
+    try {
+      const name = (document.getElementById("xc_name").value || "").trim();
+      const j = await rpc("xgroup.create", { name: name || null });
+      const o = j.ok || j;
+      const gid = o.group && o.group.id;
+      const code = o.code || "";
+      // 建群设备自动入群：口令就嵌在加群码里，本地解析复用，无需再输入
+      let joined = "";
+      try {
+        const pp = await rpc("xgroup.code.parse", { code: code });
+        const jj = await rpc("xgroup.join", { groupId: gid, password: pp.password || "", fingerprint: o.serverFp, display: "本机" });
+        const oo = jj.ok || jj;
+        const did = oo.device && oo.device.id;
+        xRemember(gid, oo.member_id, did);
+        await xBindCurrent(gid, did);
+        joined = "本机已入群，可建会话。";
+      } catch (e) { joined = "本机入群失败，请用下面加群码加一次。"; }
+      res.innerHTML = "";
+      const p1 = document.createElement("div"); p1.className = "modal-body"; p1.textContent = "群已建好（" + ((o.group && o.group.name) || gid) + "）。把下面这串加群码发给对方，对方粘贴即入群："; res.appendChild(p1);
+      const p2 = document.createElement("div"); p2.className = "modal-body";
+      const codeEl = document.createElement("code"); codeEl.textContent = code; p2.appendChild(codeEl); p2.appendChild(document.createTextNode(" "));
+      const cb = document.createElement("button"); cb.className = "xg-btn"; cb.textContent = "复制加群码"; cb.onclick = () => xCopy(code, cb); p2.appendChild(cb); res.appendChild(p2);
+      const p3 = document.createElement("div"); p3.className = "modal-body"; p3.textContent = "注意：这串码即入群凭证，只发给信任的人。" + joined; res.appendChild(p3);
+      loadXGroups();
+    } catch (e) { res.innerHTML = '<div class="modal-body">建群失败：' + escapeHtml(e.message || "未知错误") + "</div>"; }
+    btn.disabled = false;
+  }
+  function openXJoin() {
+    document.getElementById("xj_code").value = "";
+    document.getElementById("xj_disp").value = "";
+    document.getElementById("xj_found").innerHTML = "";
+    xOpen("xjoin-modal");
+  }
+  async function xDoJoin(btn) {
+    const found = document.getElementById("xj_found");
+    btn.disabled = true;
+    try {
+      const disp = (document.getElementById("xj_disp").value || "").trim() || "本机";
+      const p = await rpc("xgroup.code.parse", { code: document.getElementById("xj_code").value });
+      const gid = p.groupId;
+      let nm = gid;
+      try { const g = await rpc("xgroup.get", { groupId: gid }); nm = (g.group && g.group.name) || gid; } catch (e) {}
+      const jj = await rpc("xgroup.join", { groupId: gid, password: p.password || "", fingerprint: p.fingerprint, display: disp });
+      const oo = jj.ok || jj;
+      const did = oo.device && oo.device.id;
+      xRemember(gid, oo.member_id, did);
+      await xBindCurrent(gid, did);
+      found.innerHTML = '<div class="modal-body">已加入「' + escapeHtml(nm) + '」，本机（' + escapeHtml(disp) + '）可建会话。</div>';
+      loadXGroups();
+      setTimeout(() => xClose("xjoin-modal"), 900);
+    } catch (e) { found.innerHTML = '<div class="modal-body">加不进去：' + escapeHtml(e.message || "未知错误") + "</div>"; }
+    btn.disabled = false;
+  }
+  let xManageGid = null;
+  async function openXManage(gid) {
+    xManageGid = gid;
+    const body = document.getElementById("xm_body");
+    body.innerHTML = '<div class="modal-body">加载中…</div>';
+    document.getElementById("xm_title").textContent = "群管理";
+    xOpen("xmanage-modal");
+    try {
+      const d = await rpc("xgroup.get", { groupId: gid });
+      let sess = [];
+      try { const s = await rpc("xgroup.session.list", { groupId: gid }); sess = (s && s.sessions) || []; } catch (e2) {}
+      let code = "";
+      try { const c = await rpc("xgroup.code", { groupId: gid }); code = (c && c.code) || ""; } catch (e3) {}
+      const sharedNames = ["messages", "activity", "history", "knowledge", "capabilities"];
+      const sharedPairs = await Promise.all(sharedNames.map(async (resource) => [resource, await xReadShared(gid, sess, resource)]));
+      const shared = Object.fromEntries(sharedPairs);
+      renderXManage(body, gid, d.group || {}, d.tasks || [], sess, code, shared, xSharedSession(sess));
+
+    } catch (e) { body.innerHTML = '<div class="modal-body">打不开：' + escapeHtml(e.message || "未知错误") + "</div>"; }
+  }
+  function xArm(btn, label, fn) {
+    if (btn.dataset.armed === "1") { delete btn.dataset.armed; btn.textContent = label; fn(); return; }
+    btn.dataset.armed = "1"; btn.textContent = "再点确认";
+    setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = label; } }, 3000);
+  }
+  function renderXManage(body, gid, group, tasks, bound, code, shared, sharedSessionId) {
+    document.getElementById("xm_title").textContent = "群管理 · " + (group.name || gid);
+    const devs = group.devices || {};
+    const members = group.members || {};
+    const titles = {};
+    (state.allSessions || []).forEach((s) => { titles[s.id] = s.title || s.id; });
+    const me = xMy(gid) || {};
+    const statusCn = (s) => ({ queued: "待开始", running: "进行中", waiting_input: "等输入", done: "已完成", failed: "失败" }[s] || s || "");
+    let h = "";
+    // 加群码
+    h += '<div class="xm-sec"><div class="xm-sec-t">加群码<span class="xm-n">建群时已生成完整入群码；这里这串仅供找回群号用</span></div>';
+    h += '<div class="xm-code"><code>' + escapeHtml(code) + '</code><button class="xg-btn" data-x="copy-code">复制</button></div></div>';
+    // 成员
+    const mIds = Object.keys(members);
+    h += '<div class="xm-sec"><div class="xm-sec-t">成员<span class="xm-n">' + mIds.length + '</span></div>';
+    if (!mIds.length) h += '<div class="xm-empty">还没有成员</div>';
+    mIds.forEach((mid) => {
+      const m = members[mid] || {};
+      h += '<div class="xm-row"><span class="xm-name">' + escapeHtml(m.display || mid) + (mid === me.member_id ? '<span class="xg-badge">我</span>' : "") + '</span><button class="xg-btn" data-x="rm-m:' + escapeHtml(mid) + '">移除</button></div>';
+    });
+    h += "</div>";
+    // 机器
+    const dIds = Object.keys(devs);
+    h += '<div class="xm-sec"><div class="xm-sec-t">机器<span class="xm-n">' + dIds.length + '</span></div>';
+    if (!dIds.length) h += '<div class="xm-empty">还没有机器加入</div>';
+    dIds.forEach((did) => {
+      const d = devs[did] || {};
+      const st = ((state.xgroupDeviceStatus || {})[gid] || {})[did] || null;
+      const online = st ? st.state === "online" : xOnline(d);
+      const paused = st ? !!st.paused : !!d.paused;
+      const remote = st ? !!st.remote : xIsRemote(d);
+      const mine = xIsMine(gid, did);
+      const stateTxt = paused ? "已暂停" : (online ? "在线" : "离线");
+      const stateCls = paused ? "paused" : (online ? "online" : "offline");
+      const ageTxt = st && st.age_text ? " · " + st.age_text : (d.last_seen ? " · " + xAgeText(d) : "");
+      h += '<div class="xm-row"><span class="sess-dot ' + stateCls + '"></span><span class="xm-name">' + escapeHtml(d.display || did) + (mine ? '<span class="xg-badge">本机</span>' : "") + (remote ? '<span class="xg-badge">远端</span>' : "") + '</span><span class="xm-tag">' + escapeHtml(stateTxt + ageTxt) + '</span>' +
+        '<button class="xg-btn" data-x="' + (paused ? "resume-d:" : "pause-d:") + escapeHtml(did) + '">' + (paused ? "恢复" : "暂停") + '</button>' +
+        '<button class="xg-btn danger" data-x="rm-d:' + escapeHtml(did) + '">移除</button></div>';
+      const hintTxt = st && st.hint ? st.hint : xLocalHint(d);
+      if (hintTxt && (!online || paused)) h += '<div class="xm-empty">' + escapeHtml(hintTxt) + '</div>';
+    });
+
+    h += "</div>";
+    // 群会话
+    h += '<div class="xm-sec"><div class="xm-sec-t">群会话<span class="xm-n">' + bound.length + '</span></div>';
+    if (!bound.length) h += '<div class="xm-empty">还没有群会话</div>';
+    bound.forEach((b) => {
+      h += '<div class="xm-row"><span class="xm-name">' + escapeHtml(titles[b.session_id] || b.session_id) + '</span><button class="xg-btn" data-x="go-s:' + escapeHtml(b.session_id) + '">打开</button>' +
+        '<button class="xg-btn danger" data-x="unbind-s:' + escapeHtml(b.session_id) + '">移出群</button></div>';
+    });
+    h += "</div>";
+    // 任务
+    h += '<div class="xm-sec"><div class="xm-sec-t">任务<span class="xm-n">' + tasks.length + '</span></div>';
+    if (!tasks.length) h += '<div class="xm-empty">还没有任务</div>';
+    tasks.forEach((t) => {
+      h += '<div class="xm-row"><span class="xm-name">' + escapeHtml(String(t.title || t.id).slice(0, 30)) + '</span><span class="xm-tag">' + escapeHtml(statusCn(t.status)) + '</span>' +
+        (t.status === "queued" ? '<button class="xg-btn accent" data-x="task-start:' + escapeHtml(t.id) + '">开始</button>' : "") +
+        ((t.status === "running" || t.status === "waiting_input") ? '<button class="xg-btn accent" data-x="task-done:' + escapeHtml(t.id) + '">完成</button>' : "") +
+        ((t.status === "queued" || t.status === "waiting_input") ? '<button class="xg-btn danger" data-x="task-cancel:' + escapeHtml(t.id) + '">取消</button>' : "") + "</div>";
+        ((t.status === "queued" || t.status === "running" || t.status === "waiting_input") ? '<button class="xg-btn danger" data-x="task-cancel:' + escapeHtml(t.id) + '">取消</button>' : "") + "</div>";
+    });
+    h += "</div>";
+    shared = shared || {};
+    const sharedValue = (name) => (shared[name] && shared[name].value) || null;
+    const sharedError = (name) => shared[name] && shared[name].error;
+    const sharedRows = (items, render) => Array.isArray(items) && items.length ? items.slice(0, 8).map(render).join("") : '<div class="xm-empty">暂无</div>';
+    h += '<div class="xm-sec xm-shared-sec"><div class="xm-sec-t">共享上下文<span class="xm-n">' + escapeHtml(sharedSessionId ? "已连接" : "未绑定会话") + '</span></div>';
+    if (!sharedSessionId) {
+      h += '<div class="xm-empty">先在本群打开或新建一个会话，才能读取共享内容</div>';
+    } else {
+      const messages = sharedValue("messages");
+      const messageItems = messages && Array.isArray(messages.messages) ? messages.messages : [];
+      h += '<div class="xm-shared-sub"><span>消息</span><span class="xm-n">' + messageItems.length + '</span></div>';
+      h += sharedRows(messageItems, (m) => '<div class="xm-shared-row"><span>' + escapeHtml(m.kind || m.role || "消息") + '</span><span>' + escapeHtml(String(m.body || m.content || "").slice(0, 180)) + '</span></div>');
+
+      const knowledge = sharedValue("knowledge");
+      const entries = knowledge && Array.isArray(knowledge.entries) ? knowledge.entries : [];
+      h += '<div class="xm-shared-sub"><span>知识</span><span class="xm-n">' + entries.length + '</span></div>';
+      h += sharedRows(entries, (entry) => '<div class="xm-shared-row xm-knowledge-row"><strong>' + escapeHtml(entry.title || "未命名") + '</strong><span>' + escapeHtml(String(entry.body || "").slice(0, 220)) + '</span></div>');
+
+      const history = sharedValue("history");
+      const historyGroup = history && history.group ? history.group : {};
+      const historySessions = Array.isArray(historyGroup.sessions) ? historyGroup.sessions : [];
+      h += '<div class="xm-shared-sub"><span>历史</span><span class="xm-n">' + historySessions.length + ' 个会话</span></div>';
+      h += sharedRows(historySessions, (item) => '<div class="xm-shared-row"><span>' + escapeHtml(item.title || item.session_id || "会话") + '</span><span>' + escapeHtml(String(item.message_count || 0) + " 条消息") + '</span></div>');
+
+      const capabilities = sharedValue("capabilities");
+      const devices = capabilities && Array.isArray(capabilities.devices) ? capabilities.devices : [];
+      h += '<div class="xm-shared-sub"><span>能力</span><span class="xm-n">' + devices.length + ' 台设备</span></div>';
+      h += sharedRows(devices, (device) => '<div class="xm-shared-row"><span>' + escapeHtml(device.display || device.id || "设备") + '</span><span>' + escapeHtml(device.paused ? "已暂停" : "可用") + '</span></div>');
+
+      const failures = Object.keys(shared).filter((name) => sharedError(name));
+      if (failures.length) h += '<div class="xm-empty">部分资源暂不可读：' + escapeHtml(failures.join("、")) + '</div>';
+      h += '<div class="xm-share-compose"><input data-x="knowledge-title" type="text" maxlength="120" placeholder="知识标题" /><textarea data-x="knowledge-body" rows="2" maxlength="8000" placeholder="记录一条可复用的决定或交接"></textarea><button class="xg-btn accent" data-x="publish-knowledge">发布知识</button></div>';
+    }
+    h += '</div>';
+
+    // 危险操作
+    h += '<div class="xm-danger"><button class="xg-btn" data-x="leave">退出群</button><button class="xg-btn danger" data-x="dissolve">解散群</button></div>';
+    body.innerHTML = h;
+    body.querySelector('[data-x="copy-code"]').onclick = (e) => xCopy(code, e.target);
+    body.querySelectorAll("button[data-x]").forEach((btn) => {
+      const k = btn.dataset.x;
+      if (k === "copy-code" || k === "leave" || k === "dissolve") return;
+      btn.onclick = async () => {
+        const [op, arg] = k.split(/:(.+)/);
+        try {
+          if (k === "publish-knowledge") {
+            if (!sharedSessionId) throw new Error("没有可用群会话");
+            const title = (body.querySelector('[data-x="knowledge-title"]').value || "").trim() || "群共享知识";
+            const note = (body.querySelector('[data-x="knowledge-body"]').value || "").trim();
+            if (!note) throw new Error("请输入知识内容");
+            await rpc("collab.shared.publish", { sessionId: sharedSessionId, groupId: gid, title, body: note, commandId: "web-knowledge-" + Date.now() });
+            line("notice", "共享知识已发布");
+            await openXManage(gid);
+            return;
+          }
+          if (op === "pause-d") await rpc("xgroup.device.pause", { groupId: gid, deviceId: arg, paused: true });
+          else if (op === "resume-d") await rpc("xgroup.device.pause", { groupId: gid, deviceId: arg, paused: false });
+          else if (op === "rm-d") await rpc("xgroup.device.remove", { groupId: gid, deviceId: arg });
+          else if (op === "rm-m") await rpc("xgroup.member.remove", { groupId: gid, memberId: arg });
+          else if (op === "unbind-s") await rpc("xgroup.session.unbind", { groupId: gid, sessionId: arg });
+          else if (op === "go-s") { xClose("xmanage-modal"); try { await resume(arg); } catch (e) {} return; }
+          else if (op === "task-start") await rpc("xgroup.task.transition", { taskId: arg, event: "start" });
+          else if (op === "task-done") await rpc("xgroup.task.transition", { taskId: arg, event: "ok" });
+          else if (op === "task-cancel") { if (confirm("确定取消该任务吗？未执行的投递将一并撤回。")) await rpc("xgroup.task.transition", { taskId: arg, event: "cancel" }); else return; }
+          loadXGroups();
+          openXManage(gid);
+        } catch (e) { line("error", e.message || "协作操作失败"); }
+
+      };
+    });
+    const lv = body.querySelector('[data-x="leave"]');
+    if (lv) lv.onclick = () => xArm(lv, "退出群", async () => {
+      try { if (me.member_id) await rpc("xgroup.member.remove", { groupId: gid, memberId: me.member_id }); } catch (e) {}
+      try { localStorage.removeItem("xgroup.me." + gid); } catch (e) {}
+      xClose("xmanage-modal");
+      loadXGroups();
+    });
+    const ds = body.querySelector('[data-x="dissolve"]');
+    if (ds) ds.onclick = () => xArm(ds, "解散群", async () => {
+      try { await rpc("xgroup.delete", { groupId: gid }); } catch (e) {}
+      xClose("xmanage-modal");
+      loadXGroups();
+    });
+  }
+  if (document.getElementById("xc_cancel")) document.getElementById("xc_cancel").onclick = () => xClose("xcreate-modal");
+  if (document.getElementById("xc_confirm")) document.getElementById("xc_confirm").onclick = (e) => xDoCreate(e.target);
+  if (document.getElementById("xj_cancel")) document.getElementById("xj_cancel").onclick = () => xClose("xjoin-modal");
+  if (document.getElementById("xj_confirm")) document.getElementById("xj_confirm").onclick = (e) => xDoJoin(e.target);
+  if (document.getElementById("xm_close")) document.getElementById("xm_close").onclick = () => xClose("xmanage-modal");
+
   function renderSessionList() {
     const box = $("session-list");
     openSwipeWrap = null;
@@ -3212,6 +3671,13 @@ case "goal_round": break;
         if (item.dataset.dragged === "1") { delete item.dataset.dragged; return; }
         if (e.target.closest(".session-select") || e.target.classList.contains("menu-btn")) return;
         if (!state.creatingSession && state.sid !== s.id) resume(s.id);
+        // 手机端：点会话后收起侧栏（含点击当前会话的情况）
+        if (window.matchMedia("(max-width: 768px)").matches) {
+          try {
+            document.getElementById("app").classList.add("sidebar-collapsed");
+            var _ex = document.getElementById("sidebar-expand"); if (_ex) _ex.classList.remove("hidden");
+          } catch (_e) {}
+        }
       };
       const checkbox = item.querySelector("[data-select-session]");
       checkbox.onchange = () => { if (!state.selectedSessions) state.selectedSessions = new Set(); checkbox.checked ? state.selectedSessions.add(s.id) : state.selectedSessions.delete(s.id); updateSelectedSessionCount(); };
@@ -3230,7 +3696,8 @@ case "goal_round": break;
       return wrap;
     };
     const findSession = (id) => all.find((s) => s.id === id) || { id, title: id, messages: 0, running: false, busy: false };
-    (state.groups || []).forEach((group) => {
+  try { renderXGroups(box, kw, { addItem, findSession }); } catch (e) {}
+  (state.groups || []).forEach((group) => {
       const members = group.members || [];
       if (!members.length) return;
       const head = members.find((m) => m.session_id === group.coordinator_session_id) || members[0];
@@ -3598,6 +4065,8 @@ case "goal_round": break;
     if (persist) localStorage.setItem("newbee.sidebar", collapsed ? "1" : "0");
   }
   function initSidebar() {
+    // 手机端默认收起侧栏，让聊天区可见；桌面端沿用记忆值
+    if (window.matchMedia("(max-width: 768px)").matches) { applySidebar(true, false); return; }
     applySidebar(localStorage.getItem("newbee.sidebar") === "1", false);
   }
   const sidebarToggleBtn = $("sidebar-toggle");
@@ -3654,6 +4123,13 @@ case "goal_round": break;
     // 切会话写回 localStorage：否则删除当前会话跳到下一个后刷新，
     // 旧 sid 会被 session.resume 重新 ensure 出来。
     try { localStorage.setItem("newbee.sid", sid); } catch (_e) {}
+    // 手机端选会话后自动收起侧栏，让聊天区可见
+    if (window.matchMedia("(max-width: 768px)").matches) {
+      try {
+        document.getElementById("app").classList.add("sidebar-collapsed");
+        var _sx = document.getElementById("sidebar-expand"); if (_sx) _sx.classList.remove("hidden");
+      } catch (_e) {}
+    }
     // 切会话即视为已读（仿微信点开清红点）：立即清当前未读并收起左滑，保证秒反馈。
     try { closeAllSwipeCells(); clearSessionUnread(sid); updateSessionTitleBadge(); } catch (_e) {}
     groupLoadSeq++;
@@ -5154,11 +5630,18 @@ case "goal_round": break;
     applyTheme(cur === "light" ? "dark" : "light", true);
   };
 
-  // ── 思考强度段选器（8 档，输入框旁，对齐 codex ReasoningEffort）──
+  // ── 思考强度：收起为按钮，点开选择档位（对齐 codex ReasoningEffort）──
    const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
-   const EFFORT_LABELS = {none:"None", minimal:"Minimal", low:"Low", medium:"Medium", high:"High", xhigh:"XHigh", max:"Max", ultra:"Ultra"};
+   const EFFORT_LABELS = {none:"关闭", minimal:"极低", low:"低", medium:"中", high:"高", xhigh:"极高", max:"最高", ultra:"极限"};
+   const EFFORT_SHORT = {none:"关", minimal:"极低", low:"低", medium:"中", high:"高", xhigh:"极高", max:"最高", ultra:"极限"};
    const effortWrap = $("effort-segments");
-   if (effortWrap) {
+   const effortBtn = $("effort-btn");
+   const effortBtnText = $("effort-btn-text");
+   if (effortWrap && effortBtn) {
+     const closeEffort = () => {
+       effortWrap.classList.add("hidden");
+       effortBtn.setAttribute("aria-expanded", "false");
+     };
      const renderSegs = (active) => {
        effortWrap.innerHTML = "";
        EFFORT_LEVELS.forEach((lv) => {
@@ -5168,8 +5651,11 @@ case "goal_round": break;
          b.textContent = EFFORT_LABELS[lv] || lv;
          b.title = lv;
          b.dataset.level = lv;
-         b.onclick = async () => {
+         b.setAttribute("role", "menuitem");
+         b.onclick = async (e) => {
+           e.stopPropagation();
            renderSegs(lv);
+           closeEffort();
            if (!state.sid) return;
            try {
              await rpc("session.setEffort", { sessionId: state.sid, effort: lv });
@@ -5179,11 +5665,23 @@ case "goal_round": break;
          };
          effortWrap.appendChild(b);
        });
+       // 按钮上只显示当前档位的短标签，不占横向空间
+       if (effortBtnText) effortBtnText.textContent = EFFORT_SHORT[active] || active;
+       effortBtn.title = "思考强度：" + (EFFORT_LABELS[active] || active);
+       effortBtn.classList.toggle("on", active !== "none");
      };
+     effortBtn.onclick = (e) => {
+       e.stopPropagation();
+       const willOpen = effortWrap.classList.contains("hidden");
+       if (willOpen) { effortWrap.classList.remove("hidden"); effortBtn.setAttribute("aria-expanded", "true"); }
+       else closeEffort();
+     };
+     document.addEventListener("click", (e) => { if (!e.target.closest(".effort-pick")) closeEffort(); });
+     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEffort(); });
      // resume 时按会话恢复选中档（nil → medium，兼容旧 auto/off）
      window.__restoreEffort = (effort) => renderSegs(effort === "off" ? "none" : (effort === "auto" ? "medium" : (effort || "medium")));
      renderSegs("medium");
-    }
+   }
 
   $("send").onclick = crackWhip;
   $("attach-btn").onclick = () => $("file-input").click();

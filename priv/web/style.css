@@ -35,6 +35,9 @@
   --fg2: var(--nb-label-3);
   --accent: var(--nb-accent);
   --border: var(--nb-border);
+  --ui-h-lg: 34px; --ui-h-md: 30px; --ui-h-sm: 26px; --ui-h-xs: 22px;
+  --ui-fs-title: 15px; --ui-fs-body: 14px; --ui-fs-ui: 13px; --ui-fs-sub: 12px; --ui-fs-cap: 11px;
+  --ui-r-xs: 6px; --ui-r-sm: 8px; --ui-r-md: 10px; --ui-r-lg: 12px; --ui-r-xl: 14px;
 }
 
 [data-theme="light"] {
@@ -142,9 +145,9 @@ body {
 }
 .session-item .menu-btn {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
-  width: 22px; height: 22px; border: none; border-radius: 5px;
+  width: 24px; height: 24px; border: none; border-radius: 6px;
   background: transparent; color: var(--nb-label-3); cursor: pointer;
-  font-size: 14px; line-height: 1; padding: 0;
+  font-size: 13px; line-height: 1; padding: 0;
   opacity: 0; transition: opacity var(--nb-dur), background var(--nb-dur);
 }
 .session-item:hover .menu-btn { opacity: 1; }
@@ -1211,9 +1214,9 @@ body {
 }
 .session-item .menu-btn {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
-  width: 22px; height: 22px; border: none; border-radius: 5px;
+  width: 24px; height: 24px; border: none; border-radius: 6px;
   background: transparent; color: var(--nb-label-3); cursor: pointer;
-  font-size: 14px; line-height: 1; padding: 0;
+  font-size: 13px; line-height: 1; padding: 0;
   opacity: 0; transition: opacity var(--nb-dur), background var(--nb-dur);
 }
 .session-item:hover .menu-btn { opacity: 1; }
@@ -1697,22 +1700,30 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 .dir-show-hidden { display: flex; align-items: center; gap: 4px; color: var(--nb-label-3); font-size: 12px;
   white-space: nowrap; cursor: pointer; }
 
-/* ── 思考强度滑块（composer 输入框旁）── */
-.composer-effort {
-  max-width: var(--nb-content-w); margin: 0 auto 6px;
-  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
-  padding: 0 8px;
+/* ── 思考强度：收起为按钮，点开选择档位（不占输入区横向空间）── */
+.effort-pick { position: relative; display: inline-flex; }
+.effort-btn {
+  width: auto; min-width: 28px; height: 28px; padding: 0 8px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  border: 1px solid transparent;
 }
-
-.effort-label { display: inline-flex; align-items: center; color: var(--nb-label-3); }
-.effort-segments { display: inline-flex; gap: 2px; background: var(--nb-bg-panel); border: 1px solid var(--nb-border); border-radius: 8px; padding: 2px; overflow-x: auto; max-width: 100%; }
-.effort-seg { border: 0; background: transparent; color: var(--nb-label-3); font: inherit; font-size: 11px; line-height: 1; padding: 4px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
-.effort-seg:hover { color: var(--nb-label-1); background: rgba(128,128,128,.12); }
-.effort-seg.active { background: var(--nb-accent); color: #fff; font-weight: 600; }
-
-.effort-label { display: inline-flex; align-items: center; color: var(--nb-label-3); font-size: 12px; }
-.effort-label svg.ico { width: 12px; height: 12px; }
-.effort-label .effort-text { margin-left: 4px; font-size: 12px; }
+.effort-btn-text { font-size: 12px; line-height: 1; color: var(--nb-label-2); }
+.effort-btn.on { border-color: var(--nb-border); }
+.effort-btn[aria-expanded="true"] { background: var(--nb-bg-elev); color: var(--nb-label-1); }
+.effort-segments {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 80;
+  display: grid; grid-template-columns: repeat(4, minmax(58px, 1fr)); gap: 4px;
+  padding: 6px; background: var(--nb-bg-panel); border: 1px solid var(--nb-border);
+  border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.28);
+}
+.effort-seg {
+  border: 1px solid transparent; background: transparent; color: var(--nb-label-2);
+  font: inherit; font-size: 12px; line-height: 1; padding: 0 10px; min-height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px; cursor: pointer; white-space: nowrap;
+}
+.effort-seg:hover { color: var(--nb-label-1); background: var(--nb-bg-elev); }
+.effort-seg.active { background: var(--nb-accent); color: #fff; font-weight: 600; border-color: var(--nb-accent); }
 /* ── SVG 图标对齐 ── */
 svg.ico {
   vertical-align: -0.2em;
@@ -1953,36 +1964,17 @@ svg.ico {
   #to-bottom { width: 40px; height: 40px; font-size: 18px; }
   .modal-box, .modal-box-wide { min-width: 0; width: 94vw; max-width: 94vw; padding: 16px; max-height: 85vh; overflow-y: auto; }
   .wc-grid { grid-template-columns: 1fr 1fr; }
-}/* 手机端：思考强度控件可发现 + 紧凑可滚动 */
+}
+/* 手机端：思考强度按钮与弹层（触摸目标放大） */
 @media (max-width: 768px) {
-  /* 思考强度控件：可发现 + 紧凑可滚动 + 触控友好 */
-  .composer-effort {
-    gap: 8px; padding: 2px 10px; margin-bottom: 6px;
-    align-items: center; justify-content: flex-start;
+  .effort-btn { height: 34px; min-width: 34px; padding: 0 8px; }
+  .effort-btn-text { font-size: 12px; }
+  .effort-segments {
+    grid-template-columns: repeat(2, minmax(84px, 1fr)); gap: 6px; padding: 8px;
+    left: 0; bottom: calc(100% + 10px);
   }
-  .composer-effort .effort-label {
-    font-size: 12px; color: var(--nb-label-2); white-space: nowrap;
-    flex: none;
-  }
-  .composer-effort .effort-label svg { margin-right: 4px; }
-  .effort-text { margin-left: 4px; font-size: 12px; white-space: nowrap; }
-  /* 档位横向滚动，触控友好 */
-   .effort-segments {
-     flex: 1; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch;
-     scrollbar-width: none; padding: 0; gap: 6px;
-     background: transparent; border: none; border-radius: 0;
-   }
-  .effort-segments::-webkit-scrollbar { display: none; }
-  .effort-label { flex: none; }
-  /* 按钮放大，44px 触控标准，圆角药丸 */
-  .effort-seg {
-    font-size: 13px; font-weight: 600; padding: 8px 14px; min-height: 36px; min-width: 44px;
-    display: inline-flex; align-items: center; justify-content: center;
-    flex: none; touch-action: manipulation; border-radius: 10px;
-    border: 1px solid transparent;
-  }
-  .effort-seg.active { border-color: var(--nb-accent); }
-  .effort-seg:active { transform: scale(0.94); transition: transform 0.1s; }
+  .effort-seg { min-height: 40px; font-size: 13px; font-weight: 600; padding: 0 14px; touch-action: manipulation; }
+  .effort-seg:active { transform: scale(0.96); transition: transform 0.1s; }
 }
 /* 手机端：顶栏状态栏不挤压、不截断 */
 /* 手机端：输出框复制按钮常显 + 触控放大 */
@@ -2191,27 +2183,9 @@ svg.ico {
 }
 @media (prefers-reduced-motion: reduce) { #send.whip-cracking { animation: none; } }
 
-/* ── 思考强度：收纳进 composer-card 顶部一行 ── */
-#composer .composer-card > .composer-effort {
-  margin: -2px -4px 2px;
-  padding: 0 2px 6px;
-  border-bottom: 1px solid var(--nb-border);
-  justify-content: flex-start;
-}
-
 @media (max-width: 768px) {
   .btn-icon-round { width: 44px; height: 44px; }
   .btn-icon-round svg { width: 20px; height: 20px; }
-  /* 思考强度始终显示， composer-card 内的第一行 */
-  #composer .composer-card > .composer-effort {
-    display: flex !important;
-    margin: 0 -2px 4px;
-    padding: 0 2px 8px;
-    gap: 6px;
-  }
-  /* 标签收缩只留 icon，给档位列留空间 */
-  #composer .composer-card > .composer-effort .effort-text { display: none; }
-  #composer .composer-card > .composer-effort .effort-label svg { margin-right: 0; }
   .composer-actions { gap: 6px; }
 }
 
@@ -2402,7 +2376,7 @@ svg.ico {
 .session-group-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;row-gap:4px;padding:7px 8px 7px 6px;background:var(--nb-bg-elev);border:1px solid var(--nb-border);border-radius:8px;cursor:pointer;user-select:none}
 .session-group-header:hover{border-color:var(--nb-accent);background:var(--nb-bg)}
 .session-group-header.current{border-left:2px solid var(--nb-accent)}
-.session-group-toggle{border:0;background:transparent;color:var(--nb-label-2);width:18px;height:18px;flex:0 0 auto;display:grid;place-items:center;border-radius:4px;cursor:pointer;font-size:12px}
+.session-group-toggle{border:0;background:transparent;color:var(--nb-label-2);width:22px;height:22px;flex:0 0 auto;display:grid;place-items:center;border-radius:6px;cursor:pointer;font-size:12px}
 .session-group-toggle:hover{background:var(--nb-border);color:var(--nb-label-1)}
 .session-group-title{flex:1 1 60px;min-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--nb-label-1);font-size:12px;font-weight:600}
 .session-group-count{flex:0 0 auto;color:var(--nb-label-caption);font:10px var(--nb-mono);background:var(--nb-border);padding:1px 5px;border-radius:8px;white-space:nowrap}
@@ -2607,7 +2581,8 @@ svg.ico {
 .model-row { display: flex; align-items: center; gap: 4px; }
 .model-row .model-label { flex: 1; min-width: 0; }
 .model-config-btn {
-  background: none; border: none; cursor: pointer; padding: 4px 6px;
+  background: none; border: none; cursor: pointer; padding: 0;
+  width: 24px; height: 24px; display: inline-grid; place-items: center;
   color: var(--nb-label-3); border-radius: 6px; flex: 0 0 auto;
   transition: background var(--nb-dur), color var(--nb-dur);
 }
@@ -3104,4 +3079,178 @@ svg.ico {
 #terminal-interrupt { color: var(--nb-warn); }
 #terminal-interrupt:not(:disabled):hover { color: var(--nb-red); background: rgba(248,81,73,0.12); }
 .terminal-actions .icon-btn:disabled { opacity: .35; cursor: default; }
-.terminal-actions .icon-btn:disabled:hover { background: transparent; color: var(--terminal-muted); }
+.terminal-actions .icon-btn:disabled:hover { background: transparent; color: var(--terminal-muted); }/* ═══════════════════════════════════════════════════════════════
+   协作群组件：统一尺度体系
+   —— 按钮只两档：小档 26px（行内操作）／标准档沿用 .btn-primary/.btn-ghost
+   —— 圆角只三档：8px（控件）／12px（按钮/输入）／14px（弹窗）
+   —— 字号只三档：13px（正文）／12px（次要）／11px（标注）
+   ═══════════════════════════════════════════════════════════════ */
+
+/* —— 小按钮：侧栏与管理弹窗内的所有行内操作 —— */
+.xg-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 26px; padding: 0 10px; flex: none;
+  border: 1px solid var(--nb-border); border-radius: 8px;
+  background: transparent; color: var(--nb-label-2);
+  font-family: var(--nb-font); font-size: 12px; font-weight: 500; line-height: 1;
+  cursor: pointer; white-space: nowrap;
+  transition: background var(--nb-dur) var(--nb-ease), color var(--nb-dur), border-color var(--nb-dur);
+}
+.xg-btn:hover { background: var(--nb-bg-elev); color: var(--nb-label-1); border-color: var(--nb-label-caption); }
+.xg-btn.accent { border-color: var(--nb-accent); color: var(--nb-accent); }
+.xg-btn.accent:hover { background: var(--nb-accent); border-color: var(--nb-accent); color: #fff; }
+.xg-btn.danger { color: var(--nb-label-3); }
+.xg-btn.danger:hover { background: var(--nb-red); border-color: var(--nb-red); color: #fff; }
+.xg-btn:disabled { opacity: .4; cursor: default; }
+
+/* —— 分区头：项目协作群 —— */
+.xzone-head { display: flex; align-items: center; gap: 8px; padding: 10px 8px 6px; border-top: 1px solid var(--nb-border); margin-top: 6px; }
+.xzone-head:first-child { border-top: 0; margin-top: 0; }
+.xzone-head .xzone-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; font-weight: 650; letter-spacing: .3px; color: var(--nb-label-caption); }
+
+/* —— 群卡片：两行头，标题独占一行不再被计数挤扁 —— */
+.xgroup .session-group-header { flex-wrap: wrap; row-gap: 3px; padding: 8px 8px 8px 6px; }
+.xgroup .session-group-header .sg-line { display: flex; align-items: center; gap: 6px; width: 100%; }
+.xgroup .session-group-title { font-size: 13px; font-weight: 600; }
+.xgroup .session-group-meta { flex: 1 1 100%; display: flex; align-items: center; gap: 5px;
+  padding-left: 24px; font-size: 11px; font-weight: 400; color: var(--nb-label-caption); }
+.xgroup .session-group-meta .sg-sep { opacity: .45; }
+.xgroup .session-group-meta .session-group-busy { color: var(--nb-accent); }
+
+/* —— 群内设备行 —— */
+.xg-dev { display: flex; align-items: center; gap: 7px; padding: 6px 10px 6px 24px; border-radius: 8px;
+  font-size: 13px; color: var(--nb-label-2); }
+.xg-dev:hover { background: var(--nb-bg-elev); }
+.xg-dev .xg-dev-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--nb-label-1); }
+.xg-dev .xg-dev-state { flex: none; font-size: 11px; color: var(--nb-label-caption); }
+.xg-badge { display: inline-block; margin-left: 5px; padding: 0 6px; font-size: 11px; font-weight: 500;
+  line-height: 16px; border-radius: 8px; background: var(--nb-accent); color: #fff; vertical-align: 1px; }
+.xg-dev.mine { box-shadow: inset 2px 0 0 var(--nb-accent); }
+.session-item .sess-dot.offline { background: var(--nb-label-caption); opacity: .45; }
+.session-item .sess-dot.paused { background: var(--nb-red); opacity: .6; }
+
+/* —— 群管理弹窗 —— */
+.xm-sec { margin-bottom: 18px; }
+.xm-sec-t { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600;
+  color: var(--nb-label-2); margin-bottom: 8px; }
+.xm-sec-t .xm-n { font-size: 11px; font-weight: 400; color: var(--nb-label-caption); }
+.xm-row { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 3px 0;
+  font-size: 13px; color: var(--nb-label-2); border-bottom: 1px solid var(--nb-border); }
+.xm-row:last-child { border-bottom: 0; }
+.xm-row .sess-dot { flex: none; }
+.xm-row .xm-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--nb-label-1); }
+.xm-row .xm-tag { flex: none; font-size: 11px; color: var(--nb-label-caption); }
+.xm-empty { padding: 6px 0; font-size: 12px; color: var(--nb-label-caption); }
+.xm-code { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  background: var(--nb-bg-elev); border: 1px solid var(--nb-border); border-radius: 10px; }
+.xm-code code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--nb-mono); font-size: 12px; color: var(--nb-label-1); }
+.xm-danger { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--nb-border); display: flex; gap: 8px; }
+.xm-shared-sec { padding-top: 4px; border-top: 1px solid var(--nb-border); }
+.xm-shared-sub { display: flex; align-items: center; justify-content: space-between; margin: 10px 0 4px; font-size: 11px; color: var(--nb-label-caption); }
+.xm-shared-row { display: flex; gap: 8px; min-width: 0; padding: 5px 0; border-bottom: 1px solid var(--nb-border); font-size: 11px; color: var(--nb-label-caption); }
+.xm-shared-row span:last-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--nb-label-2); }
+.xm-knowledge-row { display: block; }
+.xm-knowledge-row strong { display: block; margin-bottom: 2px; color: var(--nb-label-1); font-size: 12px; font-weight: 600; }
+.xm-knowledge-row span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xm-share-compose { display: grid; gap: 6px; margin-top: 10px; }
+.xm-share-compose input, .xm-share-compose textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--nb-border); border-radius: 8px; background: var(--nb-bg-elev); color: var(--nb-label-1); font: inherit; padding: 7px 8px; resize: vertical; }
+.xm-share-compose input:focus, .xm-share-compose textarea:focus { outline: 1px solid var(--nb-accent); border-color: var(--nb-accent); }
+
+
+/* 协作弹窗：输入框圆角对齐侧栏搜索框 */
+#xcreate-modal .group-modal-fields input, #xjoin-modal .group-modal-fields input { border-radius: 8px; }
+#xcreate-modal .modal-body code, #xjoin-modal .modal-body code {
+  display: block; padding: 8px 10px; margin: 6px 0; border-radius: 10px;
+  background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
+  font-family: var(--nb-mono); font-size: 12px; color: var(--nb-label-1);
+  word-break: break-all; line-height: 1.5;
+}
+
+/* 群管理弹窗：避免继承 group-modal-fields 的 gap 造成过大间距 */
+#xm_body { gap: 0; }
+
+/* 协作弹窗固定宽度：避免长加群码把弹窗撑到满屏 */
+#xcreate-modal .modal-box, #xjoin-modal .modal-box { width: 460px; max-width: 90vw; }
+#xmanage-modal .modal-box { width: 540px; max-width: 90vw; }
+/* ═══════════════════════════════════════════════════════════════════════
+   全站统一设计系统（2026-09）
+   层级：标题15 / 正文14 / 界面13 / 次要12 / 标注11
+   按钮：lg34（弹窗主操作）· md30（工具栏）· sm26（行内）· xs22（图标）
+   圆角：6（小标签）· 8（控件）· 10（面板）· 12（按钮）· 14（弹窗）
+   目标：桌面与手机同一套尺度；手机上触摸目标≥32px、字号≥12px
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. 原生控件不再落到浏览器默认 13.33px ── */
+button, input, select, textarea { font-family: var(--nb-font); }
+button { font-size: var(--ui-fs-ui); }
+
+/* ── 2. 10px 标注统一升到 11px（信息密度不变，可读性提升） ── */
+.evo-health-pill, .evo-layer span, .evo-signal-head span, .evo-release-kind,
+.evo-release-stats, .evo-event .evo-body, .evo-event .evo-time, .evo-event-raw,
+.mc-impact-meta, #topbar .usage, #cwd-label, .group-list-meta, .session-group-count,
+.session-group-busy, .group-current-badge, .session-role, .collab-message-head,
+.collab-task-meta, .collab-task-progress, .session-item .session-role { font-size: var(--ui-fs-cap); }
+
+/* ── 3. 按钮四档统一高度 ── */
+.btn-primary, .btn-ghost { min-height: var(--ui-h-lg); }
+.btn-allow, .btn-deny { min-height: var(--ui-h-md); padding: 0 14px; }
+.btn-tool-copy, .collab-task button { min-height: var(--ui-h-sm); padding: 0 10px; font-size: var(--ui-fs-sub); }
+.icon-btn { width: 28px; height: 28px; }
+.menu-btn { width: 24px; height: 24px; }
+.session-group-toggle { width: 22px; height: 22px; }
+.attach-remove { width: 22px; height: 22px; }
+.model-label { min-height: var(--ui-h-sm); display: inline-flex; align-items: center; }
+
+/* ── 4. 控件圆角统一 8px ── */
+.group-modal-fields input, .group-modal-fields textarea, .session-search input { border-radius: var(--ui-r-sm); }
+
+/* ── 5. 手机端：触摸目标与可读性 ── */
+@media (max-width: 768px) {
+  /* 触摸目标放大到 ≥32px */
+  .icon-btn { width: 34px; height: 34px; }
+  .menu-btn { width: 32px; height: 32px; }
+  .session-group-toggle { width: 28px; height: 28px; }
+  .xg-btn { height: 32px; padding: 0 12px; }
+  .btn-tool-copy, .collab-task button { min-height: 30px; padding: 0 12px; }
+  .btn-primary, .btn-ghost { min-height: 38px; }
+  .attach-remove { width: 28px; height: 28px; }
+  /* 标注不再小于 12px */
+  .session-group-count, .session-group-busy, .group-current-badge, .session-role,
+  .collab-message-head, .collab-task-meta, .collab-task-progress, .group-list-meta,
+  .session-item .session-role, #topbar .usage, #cwd-label { font-size: var(--ui-fs-sub); }
+  /* 弹窗贴近屏幕边缘 */
+  .modal-box { min-width: 0; max-width: calc(100vw - 24px); }
+  #xcreate-modal .modal-box, #xjoin-modal .modal-box, #xmanage-modal .modal-box { width: auto; }
+}
+/* ── 6. 消息时间戳全局 10px → 11px ── */
+.msg-time { font-size: var(--ui-fs-cap); }
+
+/* ── 7. 手机端补充：特异性修正与字号底线 ── */
+@media (max-width: 768px) {
+  /* 会话菜单按钮：原规则特异性更高，这里显式覆盖 */
+  .session-item .menu-btn { width: 32px; height: 32px; border-radius: 8px; }
+  /* 手机端标注统一 12px 底线 */
+  .session-item .meta, .session-item .session-role, .xzone-title, .session-group-meta,
+  .session-group-meta .sg-sep, .xg-dev-state, .session-group-label, .session-group-actions,
+  .model-label, .st-ok, .msg-time, .group-list-meta, .collab-message-head,
+  .collab-task-meta, .collab-task-progress, .session-group-count, .session-group-busy,
+  .group-current-badge, #topbar .usage, #cwd-label { font-size: var(--ui-fs-sub); }
+}
+/* ── 8. 手机端字号底线（高特异性覆盖） ── */
+@media (max-width: 768px) {
+  #app .xzone-head .xzone-title,
+  #app .xgroup .session-group-meta,
+  #app .xgroup .session-group-meta .sg-sep,
+  #app .xgroup .xg-dev .xg-dev-state,
+  #app .welcome-card .wc-item span,
+  #app #statsbar span,
+  #app .sidebar-foot .model-label,
+  #app .session-item .meta,
+  #app .session-item .session-role,
+  #app .session-group-label,
+  #app .session-group-actions { font-size: 12px; }
+}

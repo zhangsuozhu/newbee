@@ -49,6 +49,19 @@ defmodule Newbee.Web.Cert do
     end
   end
 
+  @doc "返回当前 Web 服务器证书的 SHA-256 指纹，供协作群首次接入时钉选。"
+  def fingerprint do
+    with {:ok, %{cert: path}} <- ensure(),
+         {:ok, pem} <- File.read(path),
+         [{:Certificate, der, _} | _] <- :public_key.pem_decode(pem) do
+      {:ok, "sha256:" <> Base.encode16(:crypto.hash(:sha256, der), case: :lower)}
+    else
+      _ -> {:error, :certificate_unavailable}
+    end
+  rescue
+    _ -> {:error, :certificate_unavailable}
+  end
+
   defp decode_rsa_key(pem) do
     case :public_key.pem_decode(pem) do
       [{:RSAPrivateKey, der, :not_encrypted} | _] -> {:ok, der}

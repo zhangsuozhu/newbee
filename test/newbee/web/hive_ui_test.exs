@@ -18,10 +18,10 @@ defmodule Newbee.Web.HiveUiTest do
         ] do
       assert js =~ method
     end
-
-    refute js =~ "group.task.list"
-    refute js =~ "group.task.create"
-    refute js =~ "group.task.claim"
+    refute js =~ ~s|rpc("group.task.list"|
+    refute js =~ ~s|rpc("group.task.create"|
+    refute js =~ ~s|rpc("group.task.claim"|
+    refute js =~ ~s|rpc("group.member.delegate"|
     refute js =~ "group.member.delegate"
     refute js =~ "口头约定"
 

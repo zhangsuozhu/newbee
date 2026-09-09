@@ -40,5 +40,6 @@ defmodule Newbee.ReaderSchemeTest do
 
   test "schemes 注册 prompt://" do
     assert Enum.any?(Newbee.schemes(), &(&1.scheme == "prompt://"))
+    assert Enum.any?(Newbee.schemes(), &(&1.scheme == "shared://"))
   end
 end
