@@ -2150,7 +2150,11 @@ defmodule Newbee.Web.Api do
         end
 
       {:error, code, message} ->
-        {:error, code, message}
+        presented = blank_to_nil(p["fingerprint"]) || blank_to_nil(p["presentedFp"]) || ""
+
+        if code == "not_found",
+          do: Newbee.Collaboration.CrossHost.Join.missing_group_error(presented),
+          else: {:error, code, message}
     end
   end
 

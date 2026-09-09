@@ -9,12 +9,14 @@ defmodule Newbee.Collaboration.CrossHost.Store do
   @rt :xh_remote_resources
   @max_outbox 10_000
   @max_delivery_batch 64
+  @persist_cap_per_group 200
+  @persist_cap_per_group 200
 
   @spec put_group(map()) :: :ok
   def put_group(g) when is_map(g) do
     ensure()
     :ets.insert(@gt, {Map.get(g, "id"), g})
-    :ok
+    persist()
   end
 
   @spec get_group(binary()) :: {:ok, map()} | {:error, term(), term()}
@@ -62,6 +64,8 @@ defmodule Newbee.Collaboration.CrossHost.Store do
       topic = if previous, do: "cross_host_task_updated", else: "cross_host_task_created"
       emit_group_event(task["group_id"], topic, Map.take(task, ["id", "title", "status", "created_at", "attempts"]))
     end
+
+    persist()
 
     :ok
   end
@@ -135,6 +139,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
         :ets.insert(@mt, {stored["id"], stored})
         emit_group_event(gid, "cross_host_message_added", Map.take(stored, ["id", "message_id", "kind", "created_at"]))
 
+        _ = persist()
         {:ok, stored}
       end
     end
@@ -159,6 +164,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
       :ets.insert(@at, {stored["id"], stored})
       emit_group_event(gid, "cross_host_activity_added", Map.take(stored, ["id", "event", "created_at"]))
 
+      _ = persist()
       {:ok, stored}
     end
   end
@@ -190,6 +196,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
             |> Map.put_new("created_at", System.system_time(:millisecond))
 
           :ets.insert(@kt, {stored["id"], stored})
+          _ = persist()
           {:ok, stored}
         end
     end
@@ -250,6 +257,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
           }
 
           :ets.insert(@ot, {entry["id"], entry})
+          persist()
           {:ok, entry}
       end
     else
@@ -290,6 +298,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
           else
             next = Map.merge(entry, %{"status" => "acked", "acked_at" => System.system_time(:millisecond)})
             :ets.insert(@ot, {delivery_id, next})
+            persist()
             {:ok, next}
           end
         else
@@ -325,6 +334,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
       |> Enum.map(fn {id, _} -> :ets.delete(@ot, id) end)
       |> length()
 
+    persist()
     {:ok, dropped}
   end
 
@@ -393,6 +403,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
   def bind_session(b) when is_map(b) do
     ensure()
     :ets.insert(@st, {Map.get(b, "session_id"), b})
+    persist()
     :ok
   end
 
@@ -406,6 +417,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
   def unbind_session(sid) when is_binary(sid) do
     ensure()
     :ets.delete(@st, sid)
+    persist()
     :ok
   end
 
@@ -504,6 +516,12 @@ defmodule Newbee.Collaboration.CrossHost.Store do
     ensure_owned(@kt)
     ensure_owned(@ot)
     ensure_owned(@rt)
+
+    # 测试环境不自动恢复（各用例 setup clear 后保持隔离）；正式/开发环境重启后自动恢复。
+    if :ets.info(@gt, :size) == 0 and persist_env() != :test do
+      restore()
+    end
+
     :ok
   end
 
@@ -578,7 +596,119 @@ defmodule Newbee.Collaboration.CrossHost.Store do
       if group_id == gid, do: :ets.delete(@rt, {group_id, resource})
     end)
 
+    persist()
     :ok
+  end
+
+  @doc "快照持久化路径（按 MIX_ENV 隔离，测试不污染正式数据）。"
+  @spec persist_path() :: String.t()
+  def persist_path do
+    Path.join([Newbee.GlobalStore.root(), "xgroups", "store-" <> Atom.to_string(persist_env()) <> ".json"])
+  end
+
+  defp persist_env do
+    try do
+      Mix.env()
+    rescue
+      _ -> :dev
+    end
+  end
+
+  @doc "导出可持久化的全量快照：设备一次性明文令牌永不落盘，口令/令牌哈希保留以便重启后继续鉴权。"
+  @spec dump() :: map()
+  def dump do
+    ensure()
+    groups = :ets.tab2list(@gt) |> Enum.map(fn {_, g} -> strip_persist_secrets(g) end)
+
+    %{
+      "version" => 1,
+      "saved_at" => System.system_time(:millisecond),
+      "groups" => groups,
+      "tasks" => all_values(@tt),
+      "knowledge" => all_values(@kt),
+      "messages" => capped_values(@mt, @persist_cap_per_group),
+      "activity" => capped_values(@at, @persist_cap_per_group),
+      "sessions" => all_values(@st),
+      "outbox" => pending_outbox_values()
+    }
+  end
+
+  @doc "从磁盘快照恢复（服务启动且内存表为空时自动调用；测试可直接调用）。"
+  @spec restore() :: :ok
+  def restore do
+    # 注意：不能调 ensure()（空表时 ensure 会反调 restore，导致互递归卡死）；这里只建表。
+    ensure_owned(@gt)
+    ensure_owned(@tt)
+    ensure_owned(@kt)
+    ensure_owned(@mt)
+    ensure_owned(@at)
+    ensure_owned(@st)
+    ensure_owned(@ot)
+
+    with path <- persist_path(),
+         true <- File.regular?(path),
+         {:ok, bin} <- File.read(path),
+         {:ok, snap} <- Jason.decode(bin),
+         true <- is_map(snap) do
+      Enum.each(Map.get(snap, "groups", []), fn g -> if is_map(g), do: :ets.insert(@gt, {g["id"], g}) end)
+      Enum.each(Map.get(snap, "tasks", []), fn t -> if is_map(t), do: :ets.insert(@tt, {t["id"], t}) end)
+      Enum.each(Map.get(snap, "knowledge", []), fn e -> if is_map(e), do: :ets.insert(@kt, {e["id"], e}) end)
+      Enum.each(Map.get(snap, "messages", []), fn m -> if is_map(m), do: :ets.insert(@mt, {m["id"], m}) end)
+      Enum.each(Map.get(snap, "activity", []), fn a -> if is_map(a), do: :ets.insert(@at, {a["id"], a}) end)
+      Enum.each(Map.get(snap, "sessions", []), fn b -> if is_map(b), do: :ets.insert(@st, {b["session_id"], b}) end)
+      Enum.each(Map.get(snap, "outbox", []), fn e -> if is_map(e), do: :ets.insert(@ot, {e["id"], e}) end)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  # 每次变更直写：快照只有几 KB，写开销可忽略；节流反而会在崩溃前丢尾巴。
+  # 失败只记日志路径（返回 :ok），绝不让持久化拖垮正常请求。
+  defp persist do
+    write_snapshot()
+  rescue
+    _ -> :ok
+    _ -> 0
+  end
+
+  defp write_snapshot do
+    path = persist_path()
+    tmp = path <> ".tmp." <> Integer.to_string(System.unique_integer([:positive]))
+    :ok = File.mkdir_p(Path.dirname(path))
+    :ok = File.write(tmp, Jason.encode!(dump()))
+    :ok = File.chmod(tmp, 0o600)
+    :ok = File.rename(tmp, path)
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp strip_persist_secrets(group) when is_map(group) do
+    devices = Map.get(group, "devices", %{}) |> Map.new(fn {id, device} -> {id, Map.drop(device, ["plain"])} end)
+    Map.put(group, "devices", devices)
+  end
+
+  defp strip_persist_secrets(other), do: other
+
+  defp all_values(table) do
+    :ets.tab2list(table) |> Enum.map(fn {_, v} -> v end) |> Enum.filter(&is_map/1)
+  end
+
+  defp capped_values(table, per_group) do
+    table
+    |> all_values()
+    |> Enum.group_by(&Map.get(&1, "group_id"))
+    |> Enum.flat_map(fn {_, items} ->
+      items |> Enum.sort_by(&Map.get(&1, "created_at", 0), :desc) |> Enum.take(per_group)
+    end)
+  end
+
+  defp pending_outbox_values do
+    :ets.tab2list(@ot)
+    |> Enum.map(fn {_, entry} -> entry end)
+    |> Enum.filter(fn entry -> is_map(entry) and entry["status"] == "pending" end)
   end
 
   defp emit_group_event(gid, topic, payload) do

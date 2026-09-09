@@ -3405,9 +3405,14 @@ case "goal_round": break;
   function openXCreate() {
     document.getElementById("xc_name").value = "";
     document.getElementById("xc_result").innerHTML = "";
+    const cb = document.getElementById("xc_confirm");
+    if (cb) { cb.disabled = false; cb.textContent = "创建"; }
+    window.__xCreating = false;
     xOpen("xcreate-modal");
   }
   async function xDoCreate(btn) {
+    if (window.__xCreating) return;
+    window.__xCreating = true;
     const res = document.getElementById("xc_result");
     btn.disabled = true;
     try {
@@ -3433,10 +3438,14 @@ case "goal_round": break;
       const codeEl = document.createElement("code"); codeEl.textContent = code; p2.appendChild(codeEl); p2.appendChild(document.createTextNode(" "));
       const cb = document.createElement("button"); cb.className = "xg-btn"; cb.textContent = "复制加群码"; cb.onclick = () => xCopy(code, cb); p2.appendChild(cb); res.appendChild(p2);
       const p3 = document.createElement("div"); p3.className = "modal-body"; p3.textContent = "注意：这串码即入群凭证，只发给信任的人。" + joined; res.appendChild(p3);
+      // 成功后锁定创建键：同一弹窗不再接受第二次创建，防重复建群。
+      btn.disabled = true;
+      btn.textContent = "已创建";
       loadXGroups();
-    } catch (e) { res.innerHTML = '<div class="modal-body">建群失败：' + escapeHtml(e.message || "未知错误") + "</div>"; }
-    btn.disabled = false;
+    } catch (e) { res.innerHTML = '<div class="modal-body">建群失败：' + escapeHtml(e.message || "未知错误") + "</div>"; btn.disabled = false; }
+    window.__xCreating = false;
   }
+
   function openXJoin() {
     document.getElementById("xj_code").value = "";
     document.getElementById("xj_disp").value = "";
