@@ -1,3 +1,4 @@
+<<<data origin="file:/home/alanx/data/git/newbee/.newbee/worktrees/theme-menu-icon/priv/web/style.css" hash="e7ffb545e3e1948e" trust="untrusted" bytes="200268">>
 /* ── newbee WebUI · 视觉参考 deepseek-harness (dsh) ──
  * 设计元素取自 dsh ui-conversation/ui-theme：右对齐用户气泡(r22)、
  * reasoning 扫光、shimmer turn 状态、宽内容列、回到底部悬浮钮、
@@ -3385,6 +3386,43 @@ button { font-size: var(--ui-fs-ui); }
   font-size: 12px; cursor: pointer;
 }
 .login-theme { display: flex; justify-content: flex-end; }
+.theme-menu-wrap { position: relative; display: flex; flex: none; }
+.theme-icon-btn { position: relative; flex: none; }
+.theme-icon-btn::after {
+  content: ""; position: absolute; right: 3px; bottom: 3px; width: 5px; height: 5px;
+  border: 1px solid var(--nb-bg-panel); border-radius: 50%; background: var(--nb-accent);
+  pointer-events: none;
+}
+.theme-menu {
+  position: fixed; z-index: 1200; width: 168px; padding: 6px;
+  border: 1px solid var(--nb-border); border-radius: 10px;
+  background: var(--nb-bg-panel); color: var(--nb-label-1); color-scheme: inherit;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.24);
+}
+.theme-menu-item {
+  appearance: none; display: grid; grid-template-columns: 20px 1fr 16px;
+  align-items: center; gap: 9px; width: 100%; min-height: 36px; padding: 5px 8px;
+  border: 1px solid transparent; border-radius: 7px; background: transparent;
+  color: var(--nb-label-2); font: inherit; font-size: 12px; text-align: left; cursor: pointer;
+}
+.theme-menu-item:hover, .theme-menu-item:focus-visible {
+  background: var(--nb-bg-elev); color: var(--nb-label-1);
+}
+.theme-menu-item[aria-checked="true"] {
+  border-color: color-mix(in srgb, var(--nb-accent) 28%, transparent);
+  background: color-mix(in srgb, var(--nb-accent) 11%, var(--nb-bg-panel));
+  color: var(--nb-label-1); font-weight: 600;
+}
+.theme-menu-check { visibility: hidden; color: var(--nb-accent-soft); font-size: 13px; text-align: center; }
+.theme-menu-item[aria-checked="true"] .theme-menu-check { visibility: visible; }
+.theme-swatch {
+  width: 18px; height: 18px; border: 1px solid rgb(127 127 127 / 0.34); border-radius: 50%;
+  box-shadow: inset 1px 1px 2px rgb(255 255 255 / 0.32), inset -1px -1px 2px rgb(0 0 0 / 0.22);
+}
+.theme-swatch-dark { background: #17191f; }
+.theme-swatch-light { background: #f6f7f9; }
+.theme-swatch-neumorphic { background: linear-gradient(135deg, #fff 0 45%, #caced7 55% 100%); }
+.theme-swatch-neumorphic-dark { background: linear-gradient(135deg, #343943 0 45%, #15171b 55% 100%); }
 [data-theme="neumorphic"] {
   color-scheme: light;
   --nb-bg: #e9eaee; --nb-bg-panel: #f0f1f5; --nb-bg-elev: #e3e5ea;
@@ -3425,9 +3463,12 @@ button { font-size: var(--ui-fs-ui); }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #sidebar { background: var(--nb-bg); box-shadow: 3px 0 12px color-mix(in srgb, var(--nb-neu-shadow) 55%, transparent); }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(#topbar, #mission-control, .group-workspace, .login-overlay) { background: var(--nb-bg); }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.welcome-card, .modal-box, .login-box, .qa-box, .webauthn-modal, .pair-card, .file-viewer-box,
-  .ctx-menu, .effort-segments, .at-dropdown) {
+  .ctx-menu, .theme-menu, .effort-segments, .at-dropdown) {
   background: var(--nb-bg-panel); border-color: var(--nb-neu-edge);
   border-radius: 22px; box-shadow: var(--nb-neu-raised);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .theme-menu {
+  border-radius: 10px; box-shadow: var(--nb-neu-small), 0 12px 30px rgb(0 0 0 / 0.24);
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.msg-user, .msg-boxed, .msg-tool, .msg-media, .msg-archive, .msg-btw,
   .msg-ask, .msg-prompt-injection, .queue-bar, .permission-bar, .group-member, .group-message,
@@ -3587,3 +3628,5 @@ button { font-size: var(--ui-fs-ui); }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *, :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *::before, :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *::after { animation: none !important; transition: none !important; }
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #model-modal .modal-actions .btn-allow { background: var(--nb-neu-plate); color: var(--nb-green); border: 1px solid color-mix(in srgb, var(--nb-green) 45%, transparent); }
+
+<<<end e7ffb545e3e1948e>>>

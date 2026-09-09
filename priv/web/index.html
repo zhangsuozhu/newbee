@@ -1,3 +1,4 @@
+<<<data origin="file:/home/alanx/data/git/newbee/.newbee/worktrees/theme-menu-icon/priv/web/index.html" hash="1b6910c7d3ddf7d8" trust="untrusted" bytes="49175">>
 <!doctype html>
 <html lang="zh">
 <head>
@@ -5,10 +6,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-<link rel="stylesheet" href="/style.css?v=20260909-neumorphic-20" />
+<link rel="stylesheet" href="/style.css?v=20260910-theme-menu-1" />
   <link rel="stylesheet" href="/vendor/xterm.css?v=5.6.0" />
 
-<script src="/theme.js?v=20260909-neumorphic-20"></script>
+<script src="/theme.js?v=20260910-theme-menu-1"></script>
 </head>
 <body>
 <div id="app">
@@ -62,12 +63,17 @@
       <button id="terminal-toggle" class="icon-btn" title="打开终端" aria-label="打开终端" aria-expanded="false"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 4-4-4-4"/><path d="M12 19h8"/></svg></button>
 
       <button id="mc-expand" class="icon-btn" title="打开 Mission Control"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M15 3v18"/><path d="m13 9-3 3 3 3"/></svg></button>
-      <select id="theme-toggle" data-theme-picker class="theme-picker" title="选择界面风格" aria-label="界面风格">
-        <option value="dark">深色</option>
-        <option value="light">浅色</option>
-        <option value="neumorphic">浅色拟物</option>
-        <option value="neumorphic-dark">深色拟物</option>
-      </select>
+      <div class="theme-menu-wrap">
+        <button id="theme-toggle" class="icon-btn theme-icon-btn" data-theme-button title="选择界面风格" aria-label="选择界面风格" aria-haspopup="menu" aria-controls="theme-menu" aria-expanded="false">
+          <svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a10 10 0 0 0 0 20c1.1 0 2-.9 2-2 0-.5-.2-1-.6-1.4-.4-.4-.6-.9-.6-1.4a2 2 0 0 1 2-2h1.8A5.4 5.4 0 0 0 22 9.8C22 5.5 17.5 2 12 2z"/><circle cx="8.5" cy="7.5" r=".7" fill="currentColor" stroke="none"/><circle cx="13.5" cy="6.5" r=".7" fill="currentColor" stroke="none"/><circle cx="17.5" cy="10.5" r=".7" fill="currentColor" stroke="none"/><circle cx="6.5" cy="12.5" r=".7" fill="currentColor" stroke="none"/></svg>
+        </button>
+        <div id="theme-menu" class="theme-menu hidden" role="menu" aria-label="界面风格">
+          <button type="button" class="theme-menu-item" data-theme-value="dark" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-dark"></span><span>深色</span><span class="theme-menu-check" aria-hidden="true">✓</span></button>
+          <button type="button" class="theme-menu-item" data-theme-value="light" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-light"></span><span>浅色</span><span class="theme-menu-check" aria-hidden="true">✓</span></button>
+          <button type="button" class="theme-menu-item" data-theme-value="neumorphic" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-neumorphic"></span><span>浅色拟物</span><span class="theme-menu-check" aria-hidden="true">✓</span></button>
+          <button type="button" class="theme-menu-item" data-theme-value="neumorphic-dark" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-neumorphic-dark"></span><span>深色拟物</span><span class="theme-menu-check" aria-hidden="true">✓</span></button>
+        </div>
+      </div>
       <button id="sound-toggle" class="icon-btn" title="关闭提示音"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg></button>
     </header>
 
@@ -696,7 +702,7 @@
 <script src="/vendor/qrcodegen.js"></script>
 <script src="/vendor/xterm.js?v=5.6.0"></script>
 
-<script src="/app.js?v=20260909-neumorphic-20"></script>
+<script src="/app.js?v=20260910-theme-menu-1"></script>
 <!-- 手机扫码免登录弹窗 -->
 <div id="qa-overlay" class="qa-overlay hidden">
   <div class="qa-box">
@@ -714,3 +720,5 @@
 </body>
 
 </html>
+
+<<<end 1b6910c7d3ddf7d8>>>

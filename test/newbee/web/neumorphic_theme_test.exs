@@ -1,3 +1,4 @@
+<<<data origin="file:/home/alanx/data/git/newbee/.newbee/worktrees/theme-menu-icon/test/newbee/web/neumorphic_theme_test.exs" hash="f946f831b7a015cd" trust="untrusted" bytes="5092">>
 defmodule Newbee.Web.NeumorphicThemeTest do
   @moduledoc """
   Regression for the optional neumorphic themes.
@@ -26,7 +27,7 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     .evo-change .evo-intro .mc-step .debug-item .webauthn-cred-item
     .btn-primary .btn-ghost .icon-btn .xg-btn .ask-btn .ask-send .terminal-send .btn-retry
     .btn-steer .btn-tool-copy .pair-refresh .pair-deny .collab-dep-chip .evo-explain
-    .group-task-claim .mc-action-btn .theme-picker .mcfg-box .mcfg-pitem .mcfg-model-row
+    .group-task-claim .mc-action-btn .theme-picker .theme-menu .mcfg-box .mcfg-pitem .mcfg-model-row
     .file-viewer-box .file-viewer-mode.current .terminal-panel .ctx-menu .at-dropdown
     .effort-segments .model-opt.current .model-provider.current .xg-dev.mine
   )
@@ -76,12 +77,22 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     end
   end
 
+  test "the topbar uses a compact accessible icon menu instead of a native select", %{index: index} do
+    assert index =~ ~s(id="theme-toggle" class="icon-btn theme-icon-btn")
+    assert index =~ ~s(data-theme-button)
+    assert index =~ ~s(aria-haspopup="menu")
+    assert index =~ ~s(id="theme-menu")
+    refute index =~ ~r/<select id="theme-toggle"/
+  end
+
   test "theme.js owns persistence, pre-paint apply and unknown-value fallback" do
     js = File.read!(@theme_js)
     assert js =~ "newbee.theme"
     assert js =~ "neumorphic-dark"
     assert js =~ "prefers-color-scheme"
     assert js =~ "document.documentElement.dataset.theme"
+    assert js =~ "aria-checked"
+    assert js =~ "placeMenu"
   end
 
   test "required component families carry the neumorphic material", %{scope: scope} do
@@ -114,3 +125,5 @@ defmodule Newbee.Web.NeumorphicThemeTest do
              ~r/\.(mc-file-added|mc-file-deleted|login-error|pair-msg)[^{]*\{[^}]*#[0-9a-fA-F]{3,6}/
   end
 end
+
+<<<end f946f831b7a015cd>>>
