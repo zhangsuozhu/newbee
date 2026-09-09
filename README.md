@@ -247,6 +247,7 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 - **可恢复错误是值**：工具返回 `{:error, %{reason: atom(), hint: String.t(), ...}}`；带 `!` 的函数保留 Elixir 的抛异常语义。
 - **简单 GET 优先统一读取**：只要正文时用 `Newbee.read("https://...")`；需要 POST、headers、status 或网络错误分类时用 `Newbee.Tools.Http`。
 - **浏览器自动化**：需要真实渲染、点击/输入、DOM 查询、下载、PDF 或截图时用 `Newbee.Tools.Browser.run/1`；默认使用隔离 Playwright，只有明确授权才使用 `backend: "screen"` 操作现有 Chrome。交互式操作可用 `session: "new"` 复用同一页面（最多 4 会话/4 标签页，闲置两分钟回收）；快照默认截断，超时或异常绝不静默重放写入。
+- **媒体上屏**：用 `Newbee.Tools.Media.show(path, caption: "...")` 在 WebUI 会话流内联展示图片、音频、视频、文本和 Markdown；文本/代码有 256 KiB 上限，超限或非 UTF-8 自动退化为下载。
 
 - **避免重复入口**：Scaffold 只做工程创建/依赖；编译测试用 Run。长命令使用 `Run.sh(..., timeout: ms)`，没有 `sh_long` 或项目专用 Django helper。
 - **按需说明不重复**：`Newbee.read("tool://模块名")` 展示用途/示例和编译器真实签名。

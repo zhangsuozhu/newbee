@@ -567,7 +567,7 @@ body {
   color: var(--nb-label-2); font: 12px/1.3 var(--nb-mono);
 }
 
-/* ── 媒体上屏卡片（图片/音频/视频）── */
+/* ── 媒体上屏卡片（图片/音频/视频/文本）── */
 .msg-media {
   display: flex; flex-direction: column; gap: 8px;
   margin: 8px 0; padding: 10px 12px;
@@ -609,6 +609,20 @@ body {
   padding: 6px 12px; border-radius: 8px; width: fit-content;
 }
 .msg-media .media-download:hover { border-color: var(--nb-accent); }
+/* 文本/Markdown 媒体：复用文件查看器的预览与源码布局 */
+.msg-media .media-body.media-text-markdown {
+  max-height: 560px; overflow: auto;
+  border: 1px solid var(--nb-border); border-radius: 8px;
+}
+.msg-media .media-body.media-text-source {
+  max-height: 560px; overflow: auto;
+  border: 1px solid var(--nb-border); border-radius: 8px;
+  background: var(--nb-bg);
+}
+.msg-media .media-text-state {
+  padding: 18px; color: var(--nb-label-3); font-size: 12px;
+}
+
 /* 图片点击放大 */
 .nb-zoomable { cursor: zoom-in; }
 .nb-lightbox {

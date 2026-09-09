@@ -71,4 +71,51 @@ defmodule Newbee.MediaTest do
     assert {:ok, [first | _]} = Newbee.Media.list(tool_sid)
     assert first["media_id"] == p.media_id
   end
+
+  test "文本和 Markdown 上屏时携带正文，持久化只保留元数据", %{tmp: tmp, sid: sid} do
+    markdown = "# 设计文档\n\n- 第一项\n- 第二项\n"
+    markdown_path = Path.join(tmp, "design.md")
+    code = "defmodule Demo do\n  def run, do: :ok\nend\n"
+    code_path = Path.join(tmp, "demo.ex")
+    File.write!(markdown_path, markdown)
+    File.write!(code_path, code)
+
+    assert {:ok, md} = Newbee.Media.show(sid, markdown_path, caption: "Markdown 预览")
+    assert md.kind == "text"
+    assert md.markdown == true
+    assert md.language == "markdown"
+    assert md.content == markdown
+
+    assert {:ok, source} = Newbee.Media.show(sid, code_path)
+    assert source.kind == "text"
+    assert source.markdown == false
+    assert source.language == "elixir"
+    assert source.content == code
+
+    {:ok, [stored_source, stored_markdown]} = Newbee.Media.list(sid)
+    refute Map.has_key?(stored_source, "content")
+    refute Map.has_key?(stored_markdown, "content")
+
+    media_messages =
+      Newbee.Session.messages(Newbee.Session.open(sid))
+      |> Enum.filter(&(&1["role"] == "media"))
+
+    assert length(media_messages) == 2
+
+    assert Enum.all?(media_messages, fn message ->
+             payload = message["content"] || %{}
+             not Map.has_key?(payload, "content") and not Map.has_key?(payload, :content)
+           end)
+  end
+
+  test "过大的文本退化为下载媒体，不把正文放进 payload", %{tmp: tmp, sid: sid} do
+    path = Path.join(tmp, "large.txt")
+    File.write!(path, :binary.copy("x", 256 * 1024 + 1))
+
+    assert {:ok, p} = Newbee.Media.show(sid, path)
+    assert p.kind == "other"
+    refute Map.has_key?(p, :content)
+    refute Map.has_key?(p, :language)
+    refute Map.has_key?(p, :markdown)
+  end
 end
