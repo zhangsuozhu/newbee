@@ -17,6 +17,119 @@ defmodule Newbee.Web.SessionQueueTest do
     }
   end
 
+  test "watchdog wait decision is accepted and bounded to thirty minutes" do
+    id = make_ref()
+    review_id = make_ref()
+    review_task = spawn(fn -> Process.sleep(60_000) end)
+    old_timer = Process.send_after(self(), {:turn_watchdog, id}, 60_000)
+
+    st = %{
+      base_state("watchdog_wait", [])
+      | busy: true,
+        turn_id: id,
+        watchdog_review_id: review_id,
+        watchdog_review_task: review_task,
+        turn_timer: old_timer,
+        current: %{id: "active"}
+    }
+
+    on_exit(fn -> if Process.alive?(review_task), do: Process.exit(review_task, :kill) end)
+
+    result = {:ok, %{"content" => Jason.encode!(%{"decision" => "wait", "minutes" => 7, "reason" => "命令仍在执行"})}, %{}}
+    {:noreply, updated} = Session.handle_info({:watchdog_review_finished, id, review_id, result}, st)
+    assert updated.watchdog_review_id == nil
+    assert updated.watchdog_review_task == nil
+    assert Process.read_timer(updated.turn_timer) > 6 * 60_000
+    Process.cancel_timer(updated.turn_timer)
+
+    for minutes <- [0, 31, "7"] do
+      bad = {:ok, %{"content" => Jason.encode!(%{"decision" => "wait", "minutes" => minutes})}, %{}}
+      retry_state = %{updated | turn_timer: nil, watchdog_review_id: review_id, watchdog_review_task: nil}
+      {:noreply, retried} = Session.handle_info({:watchdog_review_finished, id, review_id, bad}, retry_state)
+      assert Process.read_timer(retried.turn_timer) > 4 * 60_000
+      Process.cancel_timer(retried.turn_timer)
+    end
+  end
+
+  test "watchdog stop kills the current worker and queues system recovery" do
+    id = make_ref()
+    review_id = make_ref()
+    worker = spawn(fn -> Process.sleep(60_000) end)
+    worker_ref = Process.monitor(worker)
+    review_task = spawn(fn -> Process.sleep(60_000) end)
+
+    st = %{
+      base_state("watchdog_stop", [])
+      | busy: true,
+        turn_id: id,
+        turn_task: worker,
+        turn_ref: worker_ref,
+        watchdog_review_id: review_id,
+        watchdog_review_task: review_task,
+        current: %{id: "active"}
+    }
+
+    on_exit(fn -> if Process.alive?(review_task), do: Process.exit(review_task, :kill) end)
+
+    result = {:ok, %{"content" => Jason.encode!(%{"decision" => "stop", "reason" => "重复失败"})}, %{}}
+    {:noreply, stopped} = Session.handle_info({:watchdog_review_finished, id, review_id, result}, st)
+    assert_receive {:DOWN, ^worker_ref, :process, ^worker, :killed}, 1000
+    [recovery | _] = :queue.to_list(stopped.queue)
+    assert recovery.kind == "watchdog_recovery"
+    assert recovery.origin == "system"
+    assert stopped.turn_id == nil
+
+    # A late completion from the killed turn must not override the stop decision.
+    assert {:noreply, ^stopped} = Session.handle_info({:turn_finished, id, :late_result}, stopped)
+  end
+
+  test "watchdog expiry starts an independent review without killing current work" do
+    worker =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn -> if Process.alive?(worker), do: send(worker, :stop) end)
+    id = make_ref()
+
+    st = %{
+      base_state("watchdog_review", [])
+      | client: %{},
+        turn_id: id,
+        turn_task: worker,
+        turn_ref: make_ref(),
+        current: %{id: "active", text: "长时间运行的任务"}
+    }
+
+    {:noreply, reviewing} = Session.handle_info({:turn_watchdog, id}, st)
+    assert Process.alive?(worker)
+    assert reviewing.busy
+    assert reviewing.turn_id == id
+    assert is_reference(reviewing.watchdog_review_id)
+    assert is_pid(reviewing.watchdog_review_task)
+    assert Process.read_timer(reviewing.turn_timer) > 100_000
+    Process.cancel_timer(reviewing.turn_timer)
+    if Process.alive?(reviewing.watchdog_review_task), do: Process.exit(reviewing.watchdog_review_task, :kill)
+  end
+
+  test "watchdog interval remains configurable while wait decisions cap at thirty minutes" do
+    id = make_ref()
+    old_timer = Process.send_after(self(), {:turn_watchdog, id}, 60_000)
+    st = %{base_state("watchdog_config", []) | turn_id: id, turn_timer: old_timer}
+    assert {:reply, :ok, updated} = Session.handle_call({:set_watchdog_minutes, 90}, self(), st)
+    assert updated.watchdog_minutes == 90
+    assert Process.read_timer(old_timer) == false
+    assert Process.read_timer(updated.turn_timer) > 5_390_000
+    Process.cancel_timer(updated.turn_timer)
+
+    for invalid <- [0, 1441, "90"] do
+      assert {:reply, {:error, :invalid_minutes}, ^updated} =
+               Session.handle_call({:set_watchdog_minutes, invalid}, self(), updated)
+    end
+  end
+
   test "busy prompt enqueues with client queueId and state exposes queue" do
     sid = "qtest_44994"
     st = base_state(sid, busy: true)

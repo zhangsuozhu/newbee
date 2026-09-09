@@ -128,6 +128,25 @@ defmodule Newbee.Agent.LoopTest do
     assert {:text, "已转向"} = Loop.submit(kernel, "开始")
   end
 
+  test "internal system recovery submit uses a system message" do
+    {:ok, ev} = Evaluator.start(mode: :local)
+
+    script = [
+      fn messages, _on_text ->
+        assert Enum.any?(messages, fn message ->
+                 message["role"] == "system" and message["content"] == "恢复原任务并检查工作区"
+               end)
+
+        {:ok, %{"role" => "assistant", "content" => "继续执行", "tool_calls" => []}, %{}}
+      end
+    ]
+
+    {:ok, kernel} =
+      Loop.start_link(client: %{}, evaluator: ev, session: false, client_fun: scripted(script))
+
+    assert {:text, "继续执行"} = Loop.submit_system(kernel, "恢复原任务并检查工作区")
+  end
+
   test "done 工具调用也回填 tool 响应（历史不留悬空 tool_calls）" do
     {:ok, ev} = Evaluator.start(mode: :local)
     script = [fn _m, _t -> {:ok, done_msg("完"), %{}} end]

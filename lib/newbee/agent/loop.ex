@@ -48,6 +48,8 @@ defmodule Newbee.Agent.Loop do
 
   @doc "提交一段用户输入，同步执行整个 turn，返回 {:done, summary} | {:ask, q} | {:text, body} | {:error, e}"
   def submit(kernel, text), do: GenServer.call(kernel, {:submit, text}, :infinity)
+  @doc "提交内部 system 控制消息并同步执行新 turn。"
+  def submit_system(kernel, text), do: GenServer.call(kernel, {:submit_system, text}, :infinity)
   @doc "异步追加外部上下文；不触发新的模型 turn，但会进入当前 Loop 与 transcript。"
   def append_external_context(kernel, text) when is_binary(text),
     do: GenServer.cast(kernel, {:external_context, text})
@@ -363,6 +365,10 @@ defmodule Newbee.Agent.Loop do
 
   def handle_call({:submit, text}, _from, state) do
     submit_message(state, %{"role" => "user", "content" => text})
+  end
+
+  def handle_call({:submit_system, text}, _from, state) do
+    submit_message(state, %{"role" => "system", "content" => text})
   end
 
   def handle_call(:usage, _from, state), do: {:reply, state.usage, state}
