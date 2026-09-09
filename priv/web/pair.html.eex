@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>扫码登录授权 · newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-<link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/style.css?v=20260909-neumorphic-8" />
 <style>
   body { display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
   .pair-card { max-width:420px; width:100%; margin:16px; padding:28px 24px; border-radius:18px;
@@ -28,10 +28,12 @@
   .pair-hint { text-align:center; color:var(--muted,#8b93a3); font-size:12px; margin-top:18px; }
   .hidden { display:none !important; }
 </style>
+<script src="/theme.js?v=20260909-neumorphic-8"></script>
 </head>
 <body>
 <script>window.AUTH_REQUIRED = <%= auth_required %>;</script>
 <div class="pair-card">
+  <div class="login-theme"><select class="theme-picker" data-theme-picker aria-label="界面风格"><option value="dark">深色</option><option value="light">浅色</option><option value="neumorphic">浅色拟物</option><option value="neumorphic-dark">深色拟物</option></select></div>
   <div class="pair-brand">
     <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8.5 5v8L12 21l-8.5-5V8L12 3z"/><path d="M8.5 10.5h7M8.5 13.5h7"/></svg>
     <span>newbee</span>

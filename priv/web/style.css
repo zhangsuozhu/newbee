@@ -51,6 +51,7 @@
   --nb-accent-hover: #5a7cff;
 }
 
+[data-theme="neumorphic"] ,
 [data-theme="light"] {
   --nb-bg: #f6f7f9;
   --nb-bg-panel: #ffffff;
@@ -70,9 +71,13 @@
   --nb-scrollbar-thumb-hover: #929eae;
   --nb-scrollbar-thumb-active: #3b6fe0;
 }
+[data-theme="neumorphic"] .btn-allow ,
 [data-theme="light"] .btn-allow { color: #fff; }
+[data-theme="neumorphic"] .btn-deny ,
 [data-theme="light"] .btn-deny { color: #fff; }
+[data-theme="neumorphic"] .md-code code ,
 [data-theme="light"] .md-code code { color: #2c3542; }
+[data-theme="neumorphic"] .msg-user ,
 [data-theme="light"] .msg-user { box-shadow: 0 1px 2px rgba(20,40,80,0.08); }
 
 * {
@@ -1124,22 +1129,44 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 .file-viewer-source .hljs-meta, .file-viewer-source .hljs-punctuation { color: #c9d1d9; }
 .file-viewer-source .hljs-emphasis { font-style: italic; }
 .file-viewer-source .hljs-strong { font-weight: 600; }
+[data-theme="neumorphic"] .file-viewer-source ,
 [data-theme="light"] .file-viewer-source { background: #fff; }
+[data-theme="neumorphic"] .file-source-gutter ,
 [data-theme="light"] .file-source-gutter { background: #f6f8fa; }
+[data-theme="neumorphic"] .file-viewer-source .hljs-comment,
+[data-theme="neumorphic"] .file-viewer-source .hljs-quote ,
 [data-theme="light"] .file-viewer-source .hljs-comment,
 [data-theme="light"] .file-viewer-source .hljs-quote { color: #6e7781; }
+[data-theme="neumorphic"] .file-viewer-source .hljs-keyword,
+[data-theme="neumorphic"] .file-viewer-source .hljs-selector-tag,
+[data-theme="neumorphic"] .file-viewer-source .hljs-built_in,
+[data-theme="neumorphic"] .file-viewer-source .hljs-doctag ,
 [data-theme="light"] .file-viewer-source .hljs-keyword,
 [data-theme="light"] .file-viewer-source .hljs-selector-tag,
 [data-theme="light"] .file-viewer-source .hljs-built_in,
 [data-theme="light"] .file-viewer-source .hljs-doctag { color: #cf222e; }
+[data-theme="neumorphic"] .file-viewer-source .hljs-string,
+[data-theme="neumorphic"] .file-viewer-source .hljs-regexp ,
 [data-theme="light"] .file-viewer-source .hljs-string,
 [data-theme="light"] .file-viewer-source .hljs-regexp { color: #0a3069; }
+[data-theme="neumorphic"] .file-viewer-source .hljs-number,
+[data-theme="neumorphic"] .file-viewer-source .hljs-literal,
+[data-theme="neumorphic"] .file-viewer-source .hljs-symbol ,
 [data-theme="light"] .file-viewer-source .hljs-number,
 [data-theme="light"] .file-viewer-source .hljs-literal,
 [data-theme="light"] .file-viewer-source .hljs-symbol { color: #0550ae; }
+[data-theme="neumorphic"] .file-viewer-source .hljs-title,
+[data-theme="neumorphic"] .file-viewer-source .hljs-title.function_,
+[data-theme="neumorphic"] .file-viewer-source .hljs-section ,
 [data-theme="light"] .file-viewer-source .hljs-title,
 [data-theme="light"] .file-viewer-source .hljs-title.function_,
 [data-theme="light"] .file-viewer-source .hljs-section { color: #8250df; }
+[data-theme="neumorphic"] .file-viewer-source .hljs-type,
+[data-theme="neumorphic"] .file-viewer-source .hljs-class .hljs-title,
+[data-theme="neumorphic"] .file-viewer-source .hljs-attr,
+[data-theme="neumorphic"] .file-viewer-source .hljs-attribute,
+[data-theme="neumorphic"] .file-viewer-source .hljs-variable,
+[data-theme="neumorphic"] .file-viewer-source .hljs-template-variable ,
 [data-theme="light"] .file-viewer-source .hljs-type,
 [data-theme="light"] .file-viewer-source .hljs-class .hljs-title,
 [data-theme="light"] .file-viewer-source .hljs-attr,
@@ -1826,16 +1853,27 @@ svg.ico {
 .tool-code-elixir .ex-module,
 .tool-code-elixir .ex-attribute { color: #ffa657; }
 .tool-code-elixir .ex-atom { color: #7ee787; }
+[data-theme="neumorphic"] .tool-code-elixir .ex-comment ,
 [data-theme="light"] .tool-code-elixir .ex-comment { color: #6e7781; }
+[data-theme="neumorphic"] .tool-code-elixir .ex-keyword,
+[data-theme="neumorphic"] .tool-code-elixir .ex-operator ,
 [data-theme="light"] .tool-code-elixir .ex-keyword,
 [data-theme="light"] .tool-code-elixir .ex-operator { color: #cf222e; }
+[data-theme="neumorphic"] .tool-code-elixir .ex-literal,
+[data-theme="neumorphic"] .tool-code-elixir .ex-number ,
 [data-theme="light"] .tool-code-elixir .ex-literal,
 [data-theme="light"] .tool-code-elixir .ex-number { color: #0550ae; }
+[data-theme="neumorphic"] .tool-code-elixir .ex-string,
+[data-theme="neumorphic"] .tool-code-elixir .ex-sigil ,
 [data-theme="light"] .tool-code-elixir .ex-string,
 [data-theme="light"] .tool-code-elixir .ex-sigil { color: #0a3069; }
+[data-theme="neumorphic"] .tool-code-elixir .ex-function ,
 [data-theme="light"] .tool-code-elixir .ex-function { color: #8250df; }
+[data-theme="neumorphic"] .tool-code-elixir .ex-module,
+[data-theme="neumorphic"] .tool-code-elixir .ex-attribute ,
 [data-theme="light"] .tool-code-elixir .ex-module,
 [data-theme="light"] .tool-code-elixir .ex-attribute { color: #953800; }
+[data-theme="neumorphic"] .tool-code-elixir .ex-atom ,
 [data-theme="light"] .tool-code-elixir .ex-atom { color: #116329; }
 
 /* ── 模型弹窗：每模型上下文窗口编辑（chip + 行内编辑器）── */
@@ -2931,6 +2969,7 @@ svg.ico {
   color: var(--terminal-fg);
 }
 .terminal-panel.hidden { display: none; }
+[data-theme="neumorphic"] .terminal-panel ,
 [data-theme="light"] .terminal-panel {
   --terminal-bg: #ffffff;
   --terminal-fg: #1c2330;
@@ -3163,7 +3202,6 @@ svg.ico {
 .xg-btn.danger { color: var(--nb-label-3); }
 .xg-btn.danger:hover { background: var(--nb-red); border-color: var(--nb-red); color: #fff; }
 .xg-btn:disabled { opacity: .4; cursor: default; }
-=======
 /* 实心强调档：仅用于空状态这类唯一的主动作，权重对齐 .btn-primary */
 .xg-btn.solid { background: var(--nb-accent); border-color: var(--nb-accent); color: #fff; font-weight: 600; }
 .xg-btn.solid:hover { background: var(--nb-accent-hover, var(--nb-accent)); border-color: var(--nb-accent-hover, var(--nb-accent)); color: #fff; opacity: .92; }
@@ -3337,3 +3375,215 @@ button { font-size: var(--ui-fs-ui); }
   #app .session-group-label,
   #app .session-group-actions { font-size: 12px; }
 }
+
+
+/* Optional soft surfaces. Shared geometry; separate light/dark materials. */
+.theme-picker {
+  width: 100px; max-width: 100%; min-height: 32px; flex-shrink: 0;
+  padding: 4px 6px; border: 1px solid var(--nb-border); border-radius: 8px;
+  background: var(--nb-bg-panel); color: var(--nb-label-2); font: inherit;
+  font-size: 12px; cursor: pointer;
+}
+.login-theme { display: flex; justify-content: flex-end; }
+[data-theme="neumorphic"] {
+  color-scheme: light;
+  --nb-bg: #e9eaee; --nb-bg-panel: #f0f1f5; --nb-bg-elev: #e3e5ea;
+  --nb-border: #c7cbd3; --nb-label-1: #272c35; --nb-label-2: #454d59;
+  --nb-label-3: #596372; --nb-label-caption: #5b6572; --nb-bubble: #e9eaee;
+  --nb-accent: #3f4a5b; --nb-accent-soft: #4d586a; --nb-warn: #875500; --nb-green: #14702f;
+  --nb-scrollbar-thumb-active: #3f4a5b;
+  --nb-neu-plate: #eef0f4;
+  --nb-neu-warm: #8a5c10; --nb-neu-warm-ink: #ffffff;
+  --nb-neu-shadow: #caced7; --nb-neu-light: #ffffff;
+  --nb-neu-edge: #ffffff70; --nb-neu-hover: #eef0f3;
+}
+[data-theme="neumorphic-dark"] {
+  color-scheme: dark;
+  --nb-bg: #21242a; --nb-bg-panel: #282c33; --nb-bg-elev: #2e323a;
+  --nb-border: #3d434e; --nb-label-1: #eef1f6; --nb-label-2: #c4ccd8;
+  --nb-label-3: #a6b0bf; --nb-label-caption: #9aa4b3; --nb-bubble: #21242a;
+  --nb-accent: #c2ccdb; --nb-accent-soft: #d8e0ea; --nb-warn: #e9b45c;
+  --nb-green: #7ad39a; --nb-red: #ff9a9a;
+  --nb-scrollbar-thumb: #5c6674; --nb-scrollbar-thumb-hover: #7f8b9c;
+  --nb-scrollbar-thumb-active: #c2ccdb;
+  --nb-neu-plate: #2b3038;
+  --nb-neu-warm: #e6bb68; --nb-neu-warm-ink: #23262c;
+  --nb-neu-shadow: #15171b; --nb-neu-light: #2f343d;
+  --nb-neu-edge: #ffffff10; --nb-neu-hover: #2f343d;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) {
+  --nb-radius: 14px;
+  --nb-neu-raised: 6px 6px 16px var(--nb-neu-shadow), -4px -4px 12px var(--nb-neu-light);
+  --nb-neu-small: 2px 3px 6px var(--nb-neu-shadow), -2px -2px 5px var(--nb-neu-light);
+  --nb-neu-inset: inset 2px 2px 5px var(--nb-neu-shadow), inset -2px -2px 5px var(--nb-neu-light);
+  /* Legacy authentication/collaboration views still consume these aliases. */
+  --panel: var(--nb-bg-panel); --panel-2: var(--nb-bg-elev); --card: var(--nb-bg-panel);
+  --fg-dim: var(--nb-label-3); --muted: var(--nb-label-3); --line: var(--nb-border);
+  --bg-elev: var(--nb-bg-elev); --nb-caption: var(--nb-label-caption);
+}
+/* Panel shells, popovers and cards use the same surface as their surroundings. */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #sidebar { background: var(--nb-bg); box-shadow: 3px 0 12px color-mix(in srgb, var(--nb-neu-shadow) 55%, transparent); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(#topbar, #mission-control, .group-workspace, .login-overlay) { background: var(--nb-bg); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.welcome-card, .modal-box, .login-box, .qa-box, .webauthn-modal, .pair-card, .file-viewer-box,
+  .ctx-menu, .effort-segments, .at-dropdown) {
+  background: var(--nb-bg-panel); border-color: var(--nb-neu-edge);
+  border-radius: 22px; box-shadow: var(--nb-neu-raised);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.msg-user, .msg-boxed, .msg-tool, .msg-media, .msg-archive, .msg-btw,
+  .msg-ask, .msg-prompt-injection, .queue-bar, .permission-bar, .group-member, .group-message,
+  .group-task, .collab-task, .collab-message, .evo-change, .evo-signal, .evo-release,
+  .evo-intro, .mc-step, .debug-item, .webauthn-cred-item) {
+  background: var(--nb-bg-panel); border-radius: 14px; box-shadow: var(--nb-neu-small);
+}
+/* 消息层次：用户是凸起卡片，助手是平面内容，避免两者看起来一样。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .msg-user {
+  background: var(--nb-bg-panel); box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .msg-assistant {
+  background: var(--nb-bg); box-shadow: none;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .composer-card {
+  background: var(--nb-bg); border-radius: 24px;
+  border-color: transparent; box-shadow: var(--nb-neu-inset);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .composer-card:focus-within { border-color: var(--nb-accent); }
+/* Form controls keep their boundaries, including when shadows are hard to see. */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+  textarea:not(#input), select:not(.theme-picker), .pair-dev, .xm-code, .collab-task-result) {
+  background: var(--nb-bg); color: var(--nb-label-1); border-color: var(--nb-border);
+  border-radius: 12px; box-shadow: var(--nb-neu-inset);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input, textarea)::placeholder { color: var(--nb-label-caption); opacity: 1; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input[type="checkbox"], input[type="radio"], input[type="range"]) { accent-color: var(--nb-accent); }
+/* 按钮：次级控件抬起，悬停亮一档，按下凹陷；主操作是中性实心。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-ghost, .theme-picker, .sidebar-expand, .mc-expand, .xg-btn,
+  .btn-retry, .btn-steer, .ask-btn, .ask-opt, .qa-refresh, .mc-action-btn, .btn-tool-copy, .msg-copy, .pair-refresh,
+  .pair-deny, .group-task-claim, .collab-dep-chip, .evo-explain,
+  .file-viewer-mode.current) {
+  background: var(--nb-bg); border-color: var(--nb-neu-edge);
+  border-radius: 12px; box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .icon-btn {
+  background: var(--nb-bg); border-color: var(--nb-neu-edge);
+  border-radius: 50%; box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.icon-btn, .btn-ghost, .theme-picker, .xg-btn, .btn-retry, .ask-btn, .ask-opt,
+  .btn-steer, .mc-action-btn, .btn-tool-copy, .pair-refresh, .collab-dep-chip, .evo-explain):hover:not(:disabled) {
+  background: var(--nb-neu-hover); color: var(--nb-label-1);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.icon-btn, .btn-ghost, .xg-btn, .ask-btn, .ask-opt, .btn-steer, .mc-action-btn,
+  .btn-tool-copy, .pair-refresh, .collab-dep-chip, .evo-explain):active:not(:disabled),
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.group-list-item.active, .mcfg-pitem.current, .model-item.active,
+  .model-opt.current, .model-provider.current, .xg-dev.mine) {
+  box-shadow: var(--nb-neu-inset);
+}
+/* 选中行保留浅凹与细标记，减少大面积暖色和重阴影。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.swipe-cell, .session-item) { border-radius: 12px; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item:hover:not(.active) {
+  background: var(--nb-bg-elev); box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item.active {
+  background: color-mix(in srgb, var(--nb-neu-warm) 4%, var(--nb-bg-elev));
+  color: var(--nb-label-1); border-radius: 12px;
+  box-shadow: inset 2px 0 0 var(--nb-neu-warm), inset 0 1px 3px color-mix(in srgb, var(--nb-neu-shadow) 65%, transparent);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item.active .meta { color: var(--nb-label-2); }
+/* 主操作不反色：与面板同色，用暖色描边、顶部高光和柔光做装饰。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-primary, .btn-send, .btn-steer, .pair-approve, .xg-btn.solid, .ask-send, .terminal-send) {
+  background: var(--nb-neu-plate);
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--nb-neu-light) 62%, transparent), transparent 64%);
+  color: var(--nb-accent-soft); border: 1px solid color-mix(in srgb, var(--nb-neu-warm) 40%, transparent);
+  border-radius: 12px; font-weight: 600;
+  box-shadow: var(--nb-neu-small), 0 3px 10px color-mix(in srgb, var(--nb-neu-warm) 16%, transparent);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .btn-icon-round.btn-send { border-radius: 50%; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-primary, .btn-send, .btn-steer, .pair-approve, .xg-btn.solid, .ask-send, .terminal-send):hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--nb-neu-plate) 84%, var(--nb-neu-light));
+  color: var(--nb-label-1);
+  box-shadow: var(--nb-neu-small), 0 4px 14px color-mix(in srgb, var(--nb-neu-warm) 26%, transparent);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-primary, .btn-send, .btn-steer, .pair-approve, .xg-btn.solid, .ask-send, .terminal-send):active:not(:disabled) {
+  background-image: none; box-shadow: var(--nb-neu-inset);
+}
+/* 选中分段与当前项：同色底 + 暖色细线，同样不反色。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.effort-seg.active, .collab-filter-row button.active, .group-current-badge) {
+  background: var(--nb-neu-plate); color: var(--nb-accent-soft);
+  border-color: color-mix(in srgb, var(--nb-neu-warm) 38%, transparent);
+  box-shadow: inset 0 -2px 0 var(--nb-neu-warm), var(--nb-neu-small);
+}
+/* 授权按钮：淡色底 + 语义色文字与描边。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-allow, .btn-deny) {
+  background: var(--nb-neu-plate); border-radius: 12px; box-shadow: var(--nb-neu-small);
+  background-image: linear-gradient(180deg, color-mix(in srgb, var(--nb-neu-light) 62%, transparent), transparent 64%);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .btn-allow { color: var(--nb-green); border: 1px solid color-mix(in srgb, var(--nb-green) 45%, transparent); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .btn-deny { color: var(--nb-red); border: 1px solid color-mix(in srgb, var(--nb-red) 45%, transparent); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-allow, .btn-deny):hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--nb-neu-plate) 84%, var(--nb-neu-light));
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.permission-bar, .collab-write-conflicts) {
+  background: color-mix(in srgb, var(--nb-warn) 10%, var(--nb-bg));
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.collab-kbadge, .collab-proto-badge, .collab-accept-kind) {
+  color: var(--nb-accent-soft); border-color: var(--nb-border);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .collab-dbadge { color: var(--nb-label-3); border-color: var(--nb-border); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.mc-file-added, .mc-diff-content .diff-add, .debug-status.on, .pair-msg.ok) { color: var(--nb-green); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.mc-file-deleted, .mc-diff-content .diff-del, .login-error, .pair-msg.err, .pair-err-card) { color: var(--nb-red); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .mc-diff-content .diff-hunk { color: var(--nb-accent-soft); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.effort-btn[data-level="minimal"], .effort-btn[data-level="low"]) { color: var(--nb-label-3); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.effort-btn[data-level="high"], .effort-btn[data-level="xhigh"]) { color: var(--nb-warn); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.effort-btn[data-level="max"], .effort-btn[data-level="ultra"]) { color: var(--nb-red); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.xg-btn.danger, .ctx-menu button.danger):hover { background: color-mix(in srgb, var(--nb-red) 12%, var(--nb-neu-plate)); color: var(--nb-red); }
+/* 暖色只做点缀：选中条、忙碌点、计数徽标和焦点环。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.session-unread, .collab-unread, .mc-badge, .xg-badge, .session-group-unread) {
+  background: var(--nb-neu-warm); color: var(--nb-neu-warm-ink);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .sess-dot.busy { background: var(--nb-neu-warm); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(button, select, a, input, textarea):focus-visible {
+  outline: 2px solid var(--nb-neu-warm); outline-offset: 3px;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(button, input, select, textarea):disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .terminal-panel {
+  --terminal-bg: var(--nb-bg); --terminal-fg: var(--nb-label-1);
+  --terminal-muted: var(--nb-label-3); --terminal-scrollbar-track: var(--nb-bg-elev);
+}
+/* Short viewports (phone landscape, small windows): keep dialog actions reachable. */
+@media (max-height: 560px) {
+  .modal-box:not(.mcfg-box) { max-height: calc(100dvh - 24px); overflow-y: auto; }
+  .modal-actions { flex-wrap: wrap; }
+}
+/* QR/captcha pixels, images, videos and code syntax retain their own contrast. */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.pair-qr, .qa-qr, .login-captcha-img) { background: #fff; }
+/* Small screens: scroll tall dialogs, keep the composer reachable and controls touchable. */
+@media (max-width: 768px), (max-height: 560px) {
+  .theme-picker { width: 100px; min-height: 44px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) { --nb-neu-raised: 4px 4px 9px var(--nb-neu-shadow), -4px -4px 9px var(--nb-neu-light); }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.modal, .qa-overlay, .webauthn-modal-overlay, .login-overlay) {
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.modal-box, .login-box, .qa-box, .webauthn-modal, .pair-card) {
+    max-width: 100%; min-width: 0; max-height: calc(100dvh - 32px); overflow-y: auto;
+  }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.modal-actions, .group-head-actions, .mcfg-foot) { flex-wrap: wrap; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.login-cols, .login-box.pair-open .login-cols) { flex-direction: column; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .login-box.pair-open .login-col-pair { flex-basis: auto; border-left: 0; padding-left: 0; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-primary, .btn-ghost, .xg-btn, .ask-btn, .ask-send, .pair-refresh, .qa-refresh, .pair-actions button,
+    .modal-box .icon-btn, .webauthn-modal-close, .mcfg-x, .mcfg-add-btn) { min-height: 44px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.modal-box .icon-btn, .webauthn-modal-close, .mcfg-x) { min-width: 44px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select) { font-size: 16px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .theme-picker { font-size: 12px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .task-accept-row { grid-template-columns: minmax(0, 1fr) 44px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .mcfg-model-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .task-accept-row :is(select, input) { grid-column: 1; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .task-accept-row button { grid-column: 2; grid-row: 1 / 4; }
+}
+@media (max-width: 400px) {
+  #topbar .theme-picker { width: 92px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #topbar { gap: 6px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #delegate-session { max-width: 72px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *, :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *::before, :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *::after { animation: none !important; transition: none !important; }
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #model-modal .modal-actions .btn-allow { background: var(--nb-neu-plate); color: var(--nb-green); border: 1px solid color-mix(in srgb, var(--nb-green) 45%, transparent); }

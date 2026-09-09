@@ -233,18 +233,9 @@
 const transcript = $("transcript");
 const flow = $("flow");
   const input = $("input");
-  // ── 主题（黑/白切换，持久 localStorage，默认跟随系统）──
-  function applyTheme(t, persist) {
-    document.documentElement.setAttribute("data-theme", t);
-    if (state.terminal.term) state.terminal.term.options.theme = terminalTheme();
-    const btn = $("theme-toggle");
-    if (btn) { btn.innerHTML = t === "light" ? "<svg class=\"ico\" viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z\"/></svg>" : "<svg class=\"ico\" viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4\"/></svg>"; btn.title = t === "light" ? "切换到暗色" : "切换到亮色"; }
-    if (persist) localStorage.setItem("newbee.theme", t);
-  }
+  // 主题可选，默认跟随系统；保留原有深浅色偏好。
   function initTheme() {
-    const saved = localStorage.getItem("newbee.theme");
-    const sys = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-    applyTheme(saved || sys, false);
+    window.NewbeeTheme.init();
   }
 
   // ── 提示音（回合结束按状态不同声音，WebAudio合成，无需音频文件）──
@@ -490,7 +481,7 @@ const flow = $("flow");
   }
 
   function terminalTheme() {
-    const light = document.documentElement.dataset.theme === "light";
+    const light = ["light", "neumorphic"].includes(document.documentElement.dataset.theme);
     const background = terminalCssColor("--terminal-bg", light ? "#ffffff" : "#0b0f14");
     const foreground = terminalCssColor("--terminal-fg", light ? "#1c2330" : "#d7e0ec");
     const accent = terminalCssColor("--nb-accent-soft", light ? "#2f5fc4" : "#a5bffc");
@@ -5840,10 +5831,9 @@ case "goal_round": break;
 
   // ── 绑定 ──
   // 主题切换
-  $("theme-toggle").onclick = () => {
-    const cur = document.documentElement.getAttribute("data-theme") || "dark";
-    applyTheme(cur === "light" ? "dark" : "light", true);
-  };
+  window.addEventListener("newbee:theme", () => {
+    if (state.terminal.term) state.terminal.term.options.theme = terminalTheme();
+  });
 
   // ── 思考强度：收起为按钮，点开选择档位（对齐 codex ReasoningEffort）──
    const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -7356,7 +7346,7 @@ case "goal_round": break;
       const res = await rpc("git.diff", { path });
       renderDiff(content, res.diff || "(无 diff)");
     } catch (e) {
-      content.innerHTML = `<div style="color:#f44336;padding:20px">加载失败: ${escapeHtml(e.message)}</div>`;
+      content.innerHTML = `<div style="color:var(--nb-red);padding:20px">加载失败: ${escapeHtml(e.message)}</div>`;
     }
   }
 
@@ -7450,7 +7440,7 @@ case "goal_round": break;
       let impactHtml = "";
       if (impact && impact.summary) {
         const s = impact.summary;
-        const riskColor = s.overall_risk === "high" ? "#f44336" : s.overall_risk === "medium" ? "#ff9800" : "#4caf50";
+        const riskColor = s.overall_risk === "high" ? "var(--nb-red)" : s.overall_risk === "medium" ? "var(--nb-warn)" : "var(--nb-green)";
         const riskLabel = s.overall_risk === "high" ? "⚠ 高风险" : s.overall_risk === "medium" ? "◆ 中风险" : "● 低风险";
         impactHtml = `<div class="mc-impact">
           <div class="mc-impact-summary" style="border-left:3px solid ${riskColor}">
@@ -7458,7 +7448,7 @@ case "goal_round": break;
             ${s.has_tests ? ' · ✓ 含测试' : ' · ⚠ 无测试'}
           </div>
           ${(impact.files || []).slice(0, 10).map(f => {
-            const rc = f.risk === "high" ? "#f44336" : f.risk === "medium" ? "#ff9800" : "var(--nb-label-3)";
+            const rc = f.risk === "high" ? "var(--nb-red)" : f.risk === "medium" ? "var(--nb-warn)" : "var(--nb-label-3)";
             return `<div class="mc-impact-file" title="${f.dependent_files ? '被依赖: ' + escapeHtml(f.dependent_files.join(", ")) : ''}">
               <span style="color:${rc}">●</span> ${escapeHtml(f.path)}
               <span class="mc-impact-meta">+${f.added} -${f.deleted}${f.dependents > 0 ? ' · ' + f.dependents + ' 依赖' : ''}${f.is_test ? ' 🧪' : ''}</span>
@@ -7475,7 +7465,7 @@ case "goal_round": break;
         if (impactHtml) content.innerHTML = impactHtml + content.innerHTML;
       }
     } catch (e) {
-      content.innerHTML = `<div style="color:#f44336;padding:20px">加载失败: ${escapeHtml(e.message)}</div>`;
+      content.innerHTML = `<div style="color:var(--nb-red);padding:20px">加载失败: ${escapeHtml(e.message)}</div>`;
     }
   }
 
@@ -7537,7 +7527,7 @@ case "goal_round": break;
         `<div class="mc-ov-row"><span class="k">${k}</span><span class="v">${v}</span></div>`
       ).join("") + bindingsHtml;
     } catch (e) {
-      content.innerHTML = `<div style="color:#f44336;padding:20px">加载失败</div>`;
+      content.innerHTML = `<div style="color:var(--nb-red);padding:20px">加载失败</div>`;
     }
   }
 
