@@ -1,4 +1,3 @@
-<<<data origin="file:/home/alanx/data/git/newbee/.newbee/worktrees/theme-menu-icon/test/newbee/web/neumorphic_theme_test.exs" hash="f946f831b7a015cd" trust="untrusted" bytes="5092">>
 defmodule Newbee.Web.NeumorphicThemeTest do
   @moduledoc """
   Regression for the optional neumorphic themes.
@@ -125,5 +124,3 @@ defmodule Newbee.Web.NeumorphicThemeTest do
              ~r/\.(mc-file-added|mc-file-deleted|login-error|pair-msg)[^{]*\{[^}]*#[0-9a-fA-F]{3,6}/
   end
 end
-
-<<<end f946f831b7a015cd>>>

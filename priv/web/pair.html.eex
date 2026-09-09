@@ -1,4 +1,3 @@
-<<<data origin="file:/home/alanx/data/git/newbee/.newbee/worktrees/theme-menu-icon/priv/web/pair.html.eex" hash="b4e7d83ad11aba55" trust="untrusted" bytes="12023">>
 <!doctype html>
 <html lang="zh">
 <head>
@@ -234,5 +233,3 @@ window.PAIRING_ID = <%= pairing_id_json %>;
 <% end %>
 </body>
 </html>
-
-<<<end b4e7d83ad11aba55>>>

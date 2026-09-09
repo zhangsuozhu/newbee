@@ -1,4 +1,3 @@
-<<<data origin="file:/home/alanx/data/git/newbee/.newbee/worktrees/theme-menu-icon/priv/web/style.css" hash="e7ffb545e3e1948e" trust="untrusted" bytes="200268">>
 /* ── newbee WebUI · 视觉参考 deepseek-harness (dsh) ──
  * 设计元素取自 dsh ui-conversation/ui-theme：右对齐用户气泡(r22)、
  * reasoning 扫光、shimmer turn 状态、宽内容列、回到底部悬浮钮、
@@ -3628,5 +3627,3 @@ button { font-size: var(--ui-fs-ui); }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *, :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *::before, :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *::after { animation: none !important; transition: none !important; }
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #model-modal .modal-actions .btn-allow { background: var(--nb-neu-plate); color: var(--nb-green); border: 1px solid color-mix(in srgb, var(--nb-green) 45%, transparent); }
-
-<<<end e7ffb545e3e1948e>>>

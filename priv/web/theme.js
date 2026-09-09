@@ -1,4 +1,3 @@
-<<<data origin="file:/home/alanx/data/git/newbee/.newbee/worktrees/theme-menu-icon/priv/web/theme.js" hash="b813807682b5892f" trust="untrusted" bytes="5083">>
 /* Shared by the app, login and phone authorization pages, before first paint. */
 (() => {
   const themes = ["dark", "light", "neumorphic", "neumorphic-dark"];
@@ -121,5 +120,3 @@
     document.querySelectorAll("[data-theme-button]").forEach(bindIconMenu);
   });
 })();
-
-<<<end b813807682b5892f>>>
