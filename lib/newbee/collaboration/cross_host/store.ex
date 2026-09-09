@@ -670,7 +670,6 @@ defmodule Newbee.Collaboration.CrossHost.Store do
     write_snapshot()
   rescue
     _ -> :ok
-    _ -> 0
   end
 
   defp write_snapshot do
