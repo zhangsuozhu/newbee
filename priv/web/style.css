@@ -106,7 +106,7 @@ body {
 .sidebar-expand:hover { background: var(--nb-bg-elev); color: var(--nb-label-1); }
 .sidebar-expand.hidden { display: none; }
 
-/* 会话搜索 */
+/* 会话搜索：在 #session-list 之外，列表滚动时本就常驻，无需 sticky */
 .session-search input {
   width: 100%; background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
   border-radius: 8px; padding: 6px 10px; font-size: 13px; color: var(--nb-label-1);
@@ -1175,14 +1175,6 @@ body {
 .sidebar-expand:hover { background: var(--nb-bg-elev); color: var(--nb-label-1); }
 .sidebar-expand.hidden { display: none; }
 
-/* 会话搜索 */
-.session-search input {
-  width: 100%; background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
-  border-radius: 8px; padding: 6px 10px; font-size: 13px; color: var(--nb-label-1);
-  outline: none; transition: border-color var(--nb-dur);
-}
-.session-search input:focus { border-color: var(--nb-accent); }
-.session-search input::placeholder { color: var(--nb-label-caption); }
 
 /* 会话列表：hover 显示 ⋯ 菜单钮 */
 .session-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; margin: 0 -4px; }
@@ -1703,13 +1695,26 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 /* ── 思考强度：收起为按钮，点开选择档位（不占输入区横向空间）── */
 .effort-pick { position: relative; display: inline-flex; }
 .effort-btn {
-  width: auto; min-width: 28px; height: 28px; padding: 0 8px;
-  display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-  border: 1px solid transparent;
+  width: 28px; min-width: 28px; height: 28px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0;
+  border: 1px solid transparent; white-space: nowrap;
 }
-.effort-btn-text { font-size: 12px; line-height: 1; color: var(--nb-label-2); }
-.effort-btn.on { border-color: var(--nb-border); }
+/* 文字留给屏幕阅读器和 title，收起态不让长档位撑开输入栏 */
+.effort-btn-text {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+.effort-btn.on { border-color: color-mix(in srgb, currentColor 38%, transparent); }
+.effort-btn[data-level="none"] { color: var(--nb-label-3); }
+.effort-btn[data-level="minimal"] { color: #7f95a8; }
+.effort-btn[data-level="low"] { color: #5799c9; }
+.effort-btn[data-level="medium"] { color: var(--nb-accent); }
+.effort-btn[data-level="high"] { color: #c18a3d; }
+.effort-btn[data-level="xhigh"] { color: #ce7049; }
+.effort-btn[data-level="max"] { color: #d2555d; }
+.effort-btn[data-level="ultra"] { color: #b94d78; }
 .effort-btn[aria-expanded="true"] { background: var(--nb-bg-elev); color: var(--nb-label-1); }
+
 .effort-segments {
   position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 80;
   display: grid; grid-template-columns: repeat(4, minmax(58px, 1fr)); gap: 4px;
@@ -3102,12 +3107,23 @@ svg.ico {
 .xg-btn.danger { color: var(--nb-label-3); }
 .xg-btn.danger:hover { background: var(--nb-red); border-color: var(--nb-red); color: #fff; }
 .xg-btn:disabled { opacity: .4; cursor: default; }
+/* 实心强调档：仅用于空状态这类唯一的主动作，权重对齐 .btn-primary */
+.xg-btn.solid { background: var(--nb-accent); border-color: var(--nb-accent); color: #fff; font-weight: 600; }
+.xg-btn.solid:hover { background: var(--nb-accent-hover, var(--nb-accent)); border-color: var(--nb-accent-hover, var(--nb-accent)); color: #fff; opacity: .92; }
 
 /* —— 分区头：项目协作群 —— */
-.xzone-head { display: flex; align-items: center; gap: 8px; padding: 10px 8px 6px; border-top: 1px solid var(--nb-border); margin-top: 6px; }
+.xzone-head { display: flex; align-items: center; gap: 8px; padding: 10px 4px 6px; border-top: 1px solid var(--nb-border); margin-top: 6px; }
 .xzone-head:first-child { border-top: 0; margin-top: 0; }
 .xzone-head .xzone-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 11px; font-weight: 650; letter-spacing: .3px; color: var(--nb-label-caption); }
+
+
+/* —— 空群状态：与分区标题同一左轴，不居中漂浮 —— */
+.xgroup-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  padding: 6px 4px 10px; }
+.xgroup-empty-text { font-size: 12px; color: var(--nb-label-caption); }
+.xgroup-empty-actions { display: flex; gap: 8px; width: 100%; }
+.xgroup-empty-actions .xg-btn { flex: 1; }
 
 /* —— 群卡片：两行头，标题独占一行不再被计数挤扁 —— */
 .xgroup .session-group-header { flex-wrap: wrap; row-gap: 3px; padding: 8px 8px 8px 6px; }
