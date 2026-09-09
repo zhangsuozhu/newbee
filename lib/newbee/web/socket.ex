@@ -149,6 +149,7 @@ defmodule Newbee.Web.Socket do
       frame =
         Jason.encode_to_iodata!(%{
           type: "group_event",
+          sessionId: sid,
           groupId: event["group_id"],
           eventId: event["event_id"],
           topic: event["topic"],
@@ -192,6 +193,7 @@ defmodule Newbee.Web.Socket do
     Newbee.Bus.unsubscribe()
     {:ok, st}
   end
+
   defp terminal_open(st) do
     cwd = Newbee.Session.cwd(st.sid) || File.cwd!()
 
@@ -217,6 +219,7 @@ defmodule Newbee.Web.Socket do
 
     {:push, frames, st}
   end
+
   defp terminal_input(st, data) when byte_size(data) > @max_terminal_input_bytes do
     terminal_error(st, "单次输入不能超过 #{@max_terminal_input_bytes} 字节")
   end

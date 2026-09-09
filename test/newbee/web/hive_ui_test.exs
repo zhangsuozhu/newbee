@@ -40,7 +40,6 @@ defmodule Newbee.Web.HiveUiTest do
     assert js =~ "renderSubmission"
     assert js =~ "collab_task_updated"
 
-
     assert html =~ ~s|id="mc-task-conflicts"|
     assert html =~ ~s|id="delegate-acceptance-list"|
     assert html =~ ~s|id="delegate-persona"|
@@ -147,6 +146,130 @@ defmodule Newbee.Web.HiveUiTest do
 
         assert status == 0, output
         assert output =~ "hive ui behavior ok"
+    end
+  end
+
+  test "WebSocket 切会话后丢弃旧连接的事件帧" do
+    case System.find_executable("bun") do
+      nil ->
+        :ok
+
+      bun ->
+        script =
+          ~S'''
+          const fs = require("fs");
+          const js = fs.readFileSync(__APP_PATH__, "utf8");
+          const start = js.indexOf("  let reconnectTimer = 0;");
+          const end = js.indexOf("  // ── 终端 ──", start);
+          if (start < 0 || end < 0) throw new Error("missing WebSocket source");
+          const source = js.slice(start, end);
+          const state = { sid: "session-a", ws: null, token: null, terminal: { open: false } };
+          const sockets = [];
+          class FakeWebSocket {
+            constructor(url) { this.url = url; this.readyState = 1; sockets.push(this); }
+            close() { this.readyState = 3; }
+          }
+          let events = 0;
+          let groupEvents = 0;
+          function assert(condition, message) { if (!condition) throw new Error(message); }
+          function line() {}
+          function onEvent() { events += 1; }
+          function onGroupEvent() { groupEvents += 1; }
+          function onTerminalFrame() {}
+          function pushEvoEvent() {}
+          function terminalRequestOpen() {}
+          function terminalSetInterruptEnabled() {}
+          function terminalStatus() {}
+          const api = new Function(
+            "state", "WebSocket", "location", "line", "onEvent", "onGroupEvent",
+            "onTerminalFrame", "pushEvoEvent", "terminalRequestOpen",
+            "terminalSetInterruptEnabled", "terminalStatus",
+            source + "; return { connect, disconnectSocket };"
+          )(state, FakeWebSocket, { protocol: "http:", host: "example.test" }, line, onEvent, onGroupEvent,
+            onTerminalFrame, pushEvoEvent, terminalRequestOpen, terminalSetInterruptEnabled, terminalStatus);
+
+          api.connect();
+          const first = sockets[0];
+          const staleMessage = first.onmessage;
+          const staleOpen = first.onopen;
+          staleMessage({ data: JSON.stringify({ type: "group_event", sessionId: "session-a" }) });
+          assert(groupEvents === 1, "current connection should deliver its group event");
+
+          state.sid = "session-b";
+          api.connect();
+          staleMessage({ data: JSON.stringify({ type: "group_event", sessionId: "session-a" }) });
+          staleOpen();
+          assert(groupEvents === 1, "stale group events must not reach the new session");
+
+          const second = sockets[1];
+          second.onmessage({ data: JSON.stringify({ type: "group_event", sessionId: "session-a" }) });
+          second.onmessage({ data: JSON.stringify({ type: "group_event", sessionId: "session-b" }) });
+          second.onmessage({ data: JSON.stringify({ type: "event", sessionId: "session-a", kind: "text", payload: {} }) });
+          second.onmessage({ data: JSON.stringify({ type: "event", sessionId: "session-b", kind: "text", payload: {} }) });
+          assert(groupEvents === 2, "only the active session group event should render");
+          assert(events === 1, "only the active session event should render");
+          console.log("session output isolation ok");
+          '''
+          |> String.replace("__APP_PATH__", Jason.encode!(@app_path))
+
+        {output, status} =
+          System.cmd(bun, ["-e", script], cd: File.cwd!(), stderr_to_stdout: true)
+
+        assert status == 0, output
+        assert output =~ "session output isolation ok"
+    end
+  end
+
+  test "历史回放切换会话时重置分页与工具状态" do
+    case System.find_executable("bun") do
+      nil ->
+        :ok
+
+      bun ->
+        script =
+          ~S'''
+          const fs = require("fs");
+          const js = fs.readFileSync(__APP_PATH__, "utf8");
+          const start = js.indexOf("  // 分页加载常量");
+          const end = js.indexOf("  // 回放专用静态工具卡", start);
+          if (start < 0 || end < 0) throw new Error("missing history source");
+          const source = js.slice(start, end);
+          const flow = { innerHTML: "stale" };
+          const MC = { _replaying: false, steps: [] };
+          const rendered = [];
+          function assert(condition, message) { if (!condition) throw new Error(message); }
+          function renderLoadMoreBtn(remaining) { rendered.push("more:" + remaining); }
+          function renderOneMsg(message) { rendered.push(message.id); }
+          function renderMCSteps() {}
+          function initInfiniteHistory() {}
+          function scrollBottom() {}
+          const body = [
+            "let replayToolCards = {};",
+            "let replayPendingUsage = { old: true };",
+            source,
+            "return { renderHistory, state: () => ({ historyOffset, replayPendingUsage, allHistoryMsgs }) };"
+          ].join("\\n");
+          const api = new Function(
+            "flow", "MC", "renderLoadMoreBtn", "renderOneMsg", "renderMCSteps", "initInfiniteHistory", "scrollBottom", body
+          )(flow, MC, renderLoadMoreBtn, renderOneMsg, renderMCSteps, initInfiniteHistory, scrollBottom);
+
+          api.renderHistory(Array.from({ length: 51 }, (_, index) => ({ id: "long-" + index })));
+          assert(api.state().historyOffset === 1, "long history should expose one earlier message");
+          assert(api.state().replayPendingUsage === null, "history replay must clear pending usage");
+          flow.innerHTML = "old session";
+          api.renderHistory([{ id: "short" }]);
+          assert(flow.innerHTML === "", "history replay must replace the old flow");
+          assert(api.state().historyOffset === 0, "short history must reset the old pagination cursor");
+          assert(api.state().allHistoryMsgs.length === 1 && api.state().allHistoryMsgs[0].id === "short", "history cache must belong to the active session");
+          assert(rendered[rendered.length - 1] === "short", "only the active history should render");
+          console.log("history isolation ok");
+          '''
+          |> String.replace("__APP_PATH__", Jason.encode!(@app_path))
+
+        {output, status} =
+          System.cmd(bun, ["-e", script], cd: File.cwd!(), stderr_to_stdout: true)
+
+        assert status == 0, output
     end
   end
 end

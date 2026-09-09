@@ -398,15 +398,20 @@ const flow = $("flow");
   // 同一事件被多条连接各推一份而在前端重复渲染。
   let reconnectTimer = 0;
   let lastUserPrompt = ""; // 错误重试用
+  function disconnectSocket() {
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
+    const ws = state.ws;
+    state.ws = null;
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onclose = null;
+    try { ws.close(); } catch (e) {}
+  }
+
   function connect() {
     if (!state.sid) return;
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
-    if (state.ws) {
-      // 让旧连接的 onclose 失效，避免它再排重连
-      state.ws.onclose = null;
-      try { state.ws.close(); } catch (e) {}
-      state.ws = null;
-    }
+    disconnectSocket();
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const boundSid = state.sid;          // 本连接绑定的会话（闭包固定，防切换后旧帧串入）
     let wsUrl = `${proto}://${location.host}/ws?session=${encodeURIComponent(state.sid)}`;
@@ -414,31 +419,35 @@ const flow = $("flow");
     const ws = new WebSocket(wsUrl);
     state.ws = ws;
     ws.onmessage = (e) => {
-      if (ws !== state.ws) return; // 过期连接的事件直接丢
-      const frame = JSON.parse(e.data);
+      if (ws !== state.ws || boundSid !== state.sid) return;
+      let frame;
+      try { frame = JSON.parse(e.data); } catch (err) { return; }
       if (frame.type === "event") {
-        // 多会话并存：只渲染当前会话的事件；frame.sessionId 由后端 socket 下行携带
-        if (frame.sessionId && frame.sessionId !== state.sid) return;
-        if (boundSid !== state.sid) return; // 连接建立后用户已切到别的会话
+        // Tagged events must agree with both the socket and the active session.
+        if (frame.sessionId && frame.sessionId !== boundSid) return;
         onEvent(frame.kind, frame.payload || {});
       }
       else if (frame.type === "terminal") {
-        if (boundSid !== state.sid) return;
         onTerminalFrame(frame);
       }
 
       else if (frame.type === "system") pushEvoEvent(frame.topic, frame.payload);
-      else if (frame.type === "group_event") onGroupEvent(frame);
+      else if (frame.type === "group_event") {
+        // Group events are delivered to several sessions, but never to a stale view.
+        if (frame.sessionId && frame.sessionId !== boundSid) return;
+        onGroupEvent(frame);
+      }
     };
     ws.onopen = () => {
+      if (ws !== state.ws || boundSid !== state.sid) return;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
       line("notice", "✓ 已连接");
       if (state.terminal.open) terminalRequestOpen();
 
     };
     ws.onclose = () => {
-      if (ws !== state.ws) return; // 过期连接不重连
-      if (state.ws === ws) state.ws = null;
+      if (ws !== state.ws || boundSid !== state.sid) return; // 过期连接不重连
+      state.ws = null;
       line("notice", "⚠ 连接断开，正在重连…");
       if (state.terminal.open) {
         state.terminal.connected = false;
@@ -449,6 +458,7 @@ const flow = $("flow");
       reconnectTimer = setTimeout(connect, 1500);
     };
   }
+
 
   // ── 终端 ──
   function terminalStatus(text) {
@@ -3635,6 +3645,7 @@ case "goal_round": break;
   async function resume(sid) {
     const seq = ++resumeSeq;
     const stale = () => seq !== resumeSeq || state.sid !== sid;
+    disconnectSocket();
     exitGroupMode();
     if (state.sid && state.sid !== sid) discardAttachments(state.sid);
     if (state.sid && state.sid !== sid) closeTerminal(true);
@@ -3743,12 +3754,7 @@ case "goal_round": break;
 
     // 新建会话：不恢复任何草稿（避免旧会话残留文字串台）
     try { localStorage.removeItem("newbee.draft." + sid); } catch (e) {}
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = 0; }
-    if (state.ws) {
-      state.ws.onclose = null;
-      try { state.ws.close(); } catch (e) {}
-      state.ws = null;
-    }
+    disconnectSocket();
     resumeSeq++; // 作废旧会话可能仍在途的 resume()，防止其晚到后覆盖新会话 UI
     state.sid = sid;
     localStorage.setItem("newbee.sid", sid);
@@ -3832,7 +3838,10 @@ case "goal_round": break;
   function renderHistory(msgs) {
     MC._replaying = true;
     replayToolCards = {}; // 新一轮回放前重置，避免跨会话/翻页串卡
-    allHistoryMsgs = msgs.filter(Boolean);
+    replayPendingUsage = null;
+    historyOffset = 0;
+    allHistoryMsgs = Array.isArray(msgs) ? msgs.filter(Boolean) : [];
+    flow.innerHTML = "";
 
     if (allHistoryMsgs.length > HISTORY_PAGE) {
       // 只渲染最近 HISTORY_PAGE 条
@@ -3850,6 +3859,7 @@ case "goal_round": break;
     initInfiniteHistory();
     scrollBottom(true);
   }
+
 
   // 回放专用静态工具卡（不走 toolStart/toolResult 状态机，避免顺序错乱）
   function renderReplayTool(name, title, code, result, ok) {
@@ -7140,7 +7150,7 @@ case "goal_round": break;
   }
   async function doLogout() {
     try { await rpc("auth.logout", {}); } catch (e) { /* 即使失败也本地登出 */ }
-    if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
+    disconnectSocket();
     setToken(null);
     updateLogoutBtn();
     showLogin();
