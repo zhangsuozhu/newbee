@@ -35,7 +35,7 @@ defmodule Newbee.Web.Api do
     Newbee.Web.WebAuthn.set_origin(origin)
 
     rpc_id = get_in(conn.body_params, ["rpcId"]) || "-"
-    payload = get_in(conn.body_params, ["payload"]) || %{}
+    payload = (get_in(conn.body_params, ["payload"]) || %{}) |> Map.put("__origin__", origin)
 
     payload =
       case get_req_header(conn, "authorization") do
@@ -2012,7 +2012,9 @@ defmodule Newbee.Web.Api do
     Newbee.Collaboration.CrossHost.Bridge.poll(%{
       "device_id" => p["deviceId"] || p["device_id"],
       "token" => p["__device_token__"],
-      "limit" => p["limit"]
+      "limit" => p["limit"],
+      "capabilities" => p["capabilities"],
+      "full_control" => p["fullControl"] == true or p["full_control"] == true
     })
   end
 
@@ -2023,6 +2025,27 @@ defmodule Newbee.Web.Api do
       "delivery_id" => p["deliveryId"] || p["delivery_id"],
       "status" => p["status"],
       "result" => p["result"]
+    })
+  end
+
+  defp dispatch_rpc("xgroup.bridge.command", p) do
+    Newbee.Collaboration.CrossHost.Bridge.request_command(%{
+      "device_id" => p["deviceId"] || p["device_id"],
+      "token" => p["__device_token__"],
+      "target_device_id" => p["targetDeviceId"] || p["target_device_id"],
+      "capability" => p["capability"],
+      "args" => p["args"],
+      "command_id" => p["commandId"] || p["command_id"]
+    })
+  end
+
+  defp dispatch_rpc("xgroup.bridge.publish", p) do
+    Newbee.Collaboration.CrossHost.Bridge.publish(%{
+      "device_id" => p["deviceId"] || p["device_id"],
+      "token" => p["__device_token__"],
+      "session_id" => p["sessionId"] || p["session_id"],
+      "title" => p["title"],
+      "messages" => p["messages"]
     })
   end
 
@@ -2039,6 +2062,82 @@ defmodule Newbee.Web.Api do
       "token" => p["__device_token__"]
     })
   end
+
+  defp dispatch_rpc("xgroup.endpoint.info", _p) do
+    {:ok, Newbee.Web.Server.endpoint_info()}
+  end
+
+  defp dispatch_rpc("xgroup.capability.local.install", %{"source" => source, "manifest" => manifest}) do
+    Newbee.Collaboration.CrossHost.Extensions.install(source, manifest)
+  end
+
+  defp dispatch_rpc("xgroup.capability.local.install", _p),
+    do: {:error, "bad_request", "需要 source 和 manifest"}
+
+  defp dispatch_rpc("xgroup.capability.local.list", _p) do
+    {:ok, %{capabilities: Newbee.Collaboration.CrossHost.Extensions.manifests()}}
+  end
+
+  defp dispatch_rpc(
+         "xgroup.capability.invoke",
+         %{"groupId" => gid, "deviceId" => did, "capability" => capability} = p
+       ) do
+    args = List.wrap(p["args"])
+
+    case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
+      {:ok, %{"remote" => true}} ->
+        Newbee.Collaboration.CrossHost.Connections.invoke(gid, did, capability, args,
+          command_id: blank_to_nil(p["commandId"])
+        )
+
+      {:ok, _local_group} ->
+        Newbee.Collaboration.CrossHost.Bridge.dispatch_command(
+          gid,
+          did,
+          "capability_invoke",
+          %{"capability" => capability, "args" => args},
+          idempotency_key: blank_to_nil(p["commandId"]),
+          creator: blank_to_nil(p["creator"]) || "web"
+        )
+
+      {:error, _, _} = error ->
+        error
+    end
+  end
+
+  defp dispatch_rpc("xgroup.capability.invoke", _p),
+    do: {:error, "bad_request", "需要 groupId、deviceId、capability 和 args"}
+
+  defp dispatch_rpc(
+         "xgroup.code.push",
+         %{"groupId" => gid, "deviceId" => did, "source" => source, "manifest" => manifest} = p
+       ) do
+    Newbee.Collaboration.CrossHost.Bridge.dispatch_command(
+      gid,
+      did,
+      "code_update",
+      %{"source" => source, "manifest" => manifest},
+      idempotency_key: blank_to_nil(p["commandId"]),
+      creator: blank_to_nil(p["creator"]) || "web"
+    )
+  end
+
+  defp dispatch_rpc("xgroup.code.push", _p),
+    do: {:error, "bad_request", "需要 groupId、deviceId、source 和 manifest"}
+
+  defp dispatch_rpc("xgroup.control.eval", %{"groupId" => gid, "deviceId" => did, "source" => source} = p) do
+    Newbee.Collaboration.CrossHost.Bridge.dispatch_command(
+      gid,
+      did,
+      "full_control_eval",
+      %{"source" => source},
+      idempotency_key: blank_to_nil(p["commandId"]),
+      creator: blank_to_nil(p["creator"]) || "web"
+    )
+  end
+
+  defp dispatch_rpc("xgroup.control.eval", _p),
+    do: {:error, "bad_request", "需要 groupId、deviceId 和 source"}
 
   defp dispatch_rpc("xgroup.task.create", %{"groupId" => gid} = p) do
     case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
@@ -2110,6 +2209,30 @@ defmodule Newbee.Web.Api do
   end
 
   defp dispatch_rpc("xgroup.firewall.plan", _p), do: {:error, "bad_request", "need hubIp"}
+
+  defp dispatch_rpc("xgroup.connection.control", %{"groupId" => gid, "fullControl" => enabled})
+       when is_boolean(enabled) do
+    Newbee.Collaboration.CrossHost.Connections.set_full_control(gid, enabled)
+  end
+
+  defp dispatch_rpc("xgroup.connection.control", _p),
+    do: {:error, "bad_request", "需要 groupId 和 fullControl 布尔值"}
+
+  defp dispatch_rpc("xgroup.remote.join", %{"groupId" => gid, "baseUrl" => base_url} = p) do
+    connector = Application.get_env(:newbee, :cross_host_connections, Newbee.Collaboration.CrossHost.Connections)
+
+    connector.join(
+      base_url,
+      gid,
+      blank_to_nil(p["password"]) || "",
+      blank_to_nil(p["fingerprint"]) || "",
+      blank_to_nil(p["display"]) || "device",
+      allow_full_control: p["fullControl"] == true or p["full_control"] == true
+    )
+  end
+
+  defp dispatch_rpc("xgroup.remote.join", _p),
+    do: {:error, "bad_request", "need baseUrl groupId password fingerprint"}
 
   defp dispatch_rpc("xgroup.join", %{"groupId" => gid} = p) do
     case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
@@ -2221,9 +2344,16 @@ defmodule Newbee.Web.Api do
     name = blank_to_nil(p["name"]) || "协作群-" <> Base.url_encode64(:crypto.strong_rand_bytes(3), padding: false)
     project = blank_to_nil(p["projectId"]) || blank_to_nil(p["project_id"]) || "default"
 
-    with {:ok, fp} <- Newbee.Web.Cert.fingerprint(),
+    with {:ok, server_url} <- advertised_server_url(p),
+         {:ok, fp} <- Newbee.Web.Cert.fingerprint(),
          {:ok, group, plain} <- Newbee.Collaboration.CrossHost.Group.create(name, project, []) do
-      group = group |> Map.put("server_fp", fp) |> Map.put("devices", %{}) |> Map.put("members", %{})
+      group =
+        group
+        |> Map.put("server_fp", fp)
+        |> Map.put("devices", %{})
+        |> Map.put("members", %{})
+        |> then(fn group -> if server_url, do: Map.put(group, "server_url", server_url), else: group end)
+
       :ok = Newbee.Collaboration.CrossHost.Store.put_group(group)
 
       {:ok,
@@ -2311,23 +2441,36 @@ defmodule Newbee.Web.Api do
     end
   end
 
-  defp dispatch_rpc("xgroup.code", %{"groupId" => gid}) do
+  defp dispatch_rpc("xgroup.code", %{"groupId" => gid} = p) do
     case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
-      {:ok, group} -> {:ok, %{code: Newbee.Collaboration.CrossHost.Join.join_code(group)}}
-      {:error, code, message} -> {:error, code, message}
+      {:ok, group} ->
+        origin = blank_to_nil(p["__origin__"])
+        server_url = Map.get(group, "server_url") || if(origin && String.starts_with?(origin, "https://"), do: origin)
+        group = if server_url, do: Map.put(group, "server_url", server_url), else: group
+        {:ok, %{code: Newbee.Collaboration.CrossHost.Join.join_code(group)}}
+
+      {:error, code, message} ->
+        {:error, code, message}
     end
   end
 
   defp dispatch_rpc("xgroup.code.parse", %{"code" => code}) do
     case Newbee.Collaboration.CrossHost.Join.parse_code(code || "") do
-      {:ok, %{"gid" => gid, "fp" => fp} = m} -> {:ok, %{groupId: gid, fingerprint: fp, password: Map.get(m, "pw")}}
-      {:error, code, message} -> {:error, code, message}
+      {:ok, %{"gid" => gid, "fp" => fp} = m} ->
+        {:ok, %{groupId: gid, fingerprint: fp, password: Map.get(m, "pw"), baseUrl: Map.get(m, "url")}}
+
+      {:error, code, message} ->
+        {:error, code, message}
     end
   end
 
   defp dispatch_rpc("xgroup.delete", %{"groupId" => gid}) do
     case Newbee.Collaboration.CrossHost.Store.get_group(gid) do
-      {:ok, _} ->
+      {:ok, group} ->
+        if Map.get(group, "remote") == true do
+          :ok = Newbee.Collaboration.CrossHost.Connections.disconnect(gid)
+        end
+
         :ok = Newbee.Collaboration.CrossHost.Store.delete_group(gid)
         {:ok, %{}}
 
@@ -2876,6 +3019,17 @@ defmodule Newbee.Web.Api do
 
   # 只放行字符串（trim 后空串归 nil）；其他 JSON 类型（对象/数组/数字等，
   # 如前端误传的事件对象序列化出的 %{}）一律视为 nil，避免下游函数子句崩溃。
+  defp advertised_server_url(p) do
+    explicit = blank_to_nil(p["serverUrl"]) || blank_to_nil(p["server_url"])
+    origin = blank_to_nil(p["__origin__"])
+
+    cond do
+      explicit -> Newbee.Collaboration.CrossHost.Connections.normalize_url(explicit)
+      origin && String.starts_with?(origin, "https://") -> {:ok, origin}
+      true -> {:ok, nil}
+    end
+  end
+
   defp blank_to_nil(s) when is_binary(s) do
     s = String.trim(s)
     if s == "", do: nil, else: s
@@ -3385,7 +3539,9 @@ defmodule Newbee.Web.Api do
     _ -> :ok
   end
 
-  defp public_xgroup_task(task) when is_map(task), do: task |> public_xgroup_value() |> Map.drop(["source_digest"])
+  defp public_xgroup_task(task) when is_map(task),
+    do: task |> Map.drop(["command"]) |> public_xgroup_value() |> Map.drop(["source_digest"])
+
   defp public_xgroup_task(other), do: other
 
   defp public_xgroup_value(map) when is_map(map) do

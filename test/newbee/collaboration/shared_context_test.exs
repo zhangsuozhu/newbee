@@ -98,6 +98,7 @@ defmodule Newbee.Collaboration.SharedContextTest do
                "display" => "build-worker"
              })
 
+    assert is_binary(enrolled["member_id"])
     device = enrolled["device"]
     assert is_binary(device["plain"])
     refute Map.has_key?(device, "token_hash")

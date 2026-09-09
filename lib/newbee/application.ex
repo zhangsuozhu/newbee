@@ -20,7 +20,11 @@ defmodule Newbee.Application do
         Newbee.LLM.HttpDebug,
         {Registry, keys: :unique, name: Newbee.Web.SessionRegistry},
         {Registry, keys: :unique, name: Newbee.Web.TerminalRegistry},
+        {Registry, keys: :unique, name: Newbee.Collaboration.CrossHost.WorkerRegistry},
         {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Web.SessionSup},
+        {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Collaboration.CrossHost.WorkerSupervisor},
+        Newbee.Collaboration.CrossHost.Extensions,
+        Newbee.Collaboration.CrossHost.Connections,
         Newbee.Collaboration.Capability,
         Newbee.Browser
       ] ++
@@ -66,4 +70,3 @@ defmodule Newbee.Application do
     end
   end
 end
-

@@ -73,6 +73,8 @@ defmodule Newbee.Collaboration.CrossHost.Join do
   @spec join_code(map(), String.t() | nil) :: binary()
   def join_code(group, plain \\ nil) when is_map(group) do
     payload = %{"v" => 1, "gid" => Map.get(group, "id"), "fp" => Map.get(group, "server_fp")}
+    server_url = Map.get(group, "server_url")
+    payload = if is_binary(server_url) and server_url != "", do: Map.put(payload, "url", server_url), else: payload
     payload = if is_binary(plain) and plain != "", do: Map.put(payload, "pw", plain), else: payload
     raw = :json.encode(payload) |> IO.iodata_to_binary()
     @code_prefix <> Base.url_encode64(raw, padding: false)
@@ -97,7 +99,7 @@ defmodule Newbee.Collaboration.CrossHost.Join do
             rescue
               _ -> %{}
             end) do
-      {:ok, %{"gid" => gid, "fp" => Map.get(m, "fp"), "pw" => Map.get(m, "pw")}}
+      {:ok, %{"gid" => gid, "fp" => Map.get(m, "fp"), "pw" => Map.get(m, "pw"), "url" => Map.get(m, "url")}}
     else
       _ -> {:error, "bad_code", "加群码看不懂，请检查后重试"}
     end
@@ -110,7 +112,11 @@ defmodule Newbee.Collaboration.CrossHost.Join do
       hq = if uri.fragment, do: URI.decode_query(uri.fragment), else: %{}
       gid = Map.get(q, "gid") || Map.get(hq, "gid")
       fp = Map.get(q, "fp") || Map.get(hq, "fp")
-      if is_binary(gid) and gid != "", do: {:ok, %{"gid" => gid, "fp" => fp}}, else: {:error, "bad_code", "链接里没有群信息"}
+      base_url = URI.to_string(%{uri | path: nil, query: nil, fragment: nil, userinfo: nil})
+
+      if is_binary(gid) and gid != "",
+        do: {:ok, %{"gid" => gid, "fp" => fp, "url" => base_url}},
+        else: {:error, "bad_code", "链接里没有群信息"}
     rescue
       _ -> {:error, "bad_code", "加群码看不懂，请检查后重试"}
     end

@@ -1,13 +1,20 @@
 defmodule Newbee.Web.XGroupApiTest do
   use ExUnit.Case, async: false
   @opts Newbee.Web.Router.init([])
+  defmodule FakeConnections do
+    def join(base_url, group_id, password, fingerprint, display, opts) do
+      send(self(), {:remote_join, base_url, group_id, password, fingerprint, display, opts})
+      {:ok, %{"group" => %{"id" => group_id}, "device" => %{"id" => "remote-device"}}}
+    end
+  end
+
   setup do
     Newbee.Collaboration.CrossHost.Store.clear()
     :ok
   end
 
   test "create join task preview page" do
-    created = post_rpc("xgroup.create", %{}) |> ok!()
+    created = post_rpc("xgroup.create", %{"serverUrl" => "192.168.0.20"}) |> ok!()
     gid = created["group"]["id"]
     fp = created["serverFp"]
     code = created["code"]
@@ -22,6 +29,7 @@ defmodule Newbee.Web.XGroupApiTest do
     plain = parsed["password"]
     assert parsed["groupId"] == gid
     assert is_binary(plain) and plain != ""
+    assert parsed["baseUrl"] == "https://192.168.0.20:4173"
 
     joined =
       post_rpc("xgroup.join", %{"groupId" => gid, "password" => plain, "fingerprint" => fp, "display" => "dev-8"})
@@ -131,6 +139,34 @@ defmodule Newbee.Web.XGroupApiTest do
     _ = post_rpc("xgroup.delete", %{"groupId" => gid}) |> ok!()
     gone = post_rpc("xgroup.get", %{"groupId" => gid})
     assert match?(%{"result" => %{"error" => _}}, gone)
+  end
+
+  test "remote join delegates to the outbound connector" do
+    previous = Application.get_env(:newbee, :cross_host_connections)
+    Application.put_env(:newbee, :cross_host_connections, FakeConnections)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:newbee, :cross_host_connections, previous),
+        else: Application.delete_env(:newbee, :cross_host_connections)
+    end)
+
+    fingerprint = "sha256:" <> String.duplicate("b", 64)
+
+    joined =
+      post_rpc("xgroup.remote.join", %{
+        "baseUrl" => "192.168.0.20",
+        "groupId" => "remote-group",
+        "password" => "join-secret",
+        "fingerprint" => fingerprint,
+        "display" => "dev-8",
+        "fullControl" => true
+      })
+      |> ok!()
+
+    assert get_in(joined, ["device", "id"]) == "remote-device"
+    assert_receive {:remote_join, "192.168.0.20", "remote-group", "join-secret", ^fingerprint, "dev-8", opts}
+    assert opts[:allow_full_control] == true
   end
 
   defp post_rpc(method, payload) do
