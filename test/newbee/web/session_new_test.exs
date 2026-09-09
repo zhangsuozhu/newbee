@@ -192,6 +192,15 @@ defmodule Newbee.Web.SessionNewTest do
     result = Newbee.DEE.Evaluator.eval(evaluator, "File.cwd!()")
     assert result.status == :ok
     assert result.cwd == File.cwd!()
+
+    result =
+      Newbee.DEE.Evaluator.eval(
+        evaluator,
+        "Newbee.Web.Session.set_watchdog_minutes(" <> inspect(sid) <> ", 75)"
+      )
+
+    assert result.status == :ok
+    assert :sys.get_state(session).watchdog_minutes == 75
   end
 
   test "handle_call :state is non-blocking snapshot" do
