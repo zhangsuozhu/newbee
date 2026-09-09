@@ -81,6 +81,7 @@ defmodule Newbee.CLI do
 ") |> hd() |> String.slice(0, 80)
         IO.puts("
 [33m? 允许执行？[y 允许 / 其他拒绝][0m [2m#{first}[0m")
+        Newbee.Sound.play(:ask)
         printer(buf)
 
       {:newbee_event, :advisor_note, {:advisor_note, text}} ->
@@ -319,12 +320,38 @@ defmodule Newbee.CLI do
   end
 
   defp run_submit(kernel, text) do
-    case Newbee.Agent.Loop.submit(kernel, text) do
-      {:done, summary} -> IO.puts("\n\e[1m● \e[0m" <> Newbee.Markdown.render(summary) <> "\n")
-      {:ask, q} -> IO.puts("\n\e[33m? \e[0m" <> Newbee.Markdown.render(q) <> "\n")
-      {:text, _} -> IO.puts("")
-      {:error, e} -> IO.puts("\e[31merror: #{inspect(e)}\e[0m")
-    end
+    result =
+      case Newbee.Agent.Loop.submit(kernel, text) do
+        {:done, summary} ->
+          IO.puts("\n\e[1m● \e[0m" <> Newbee.Markdown.render(summary) <> "\n")
+          :done
+
+        {:ask, q} ->
+          IO.puts("\n\e[33m? \e[0m" <> Newbee.Markdown.render(q) <> "\n")
+          :ask
+
+        {:text, _} ->
+          IO.puts("")
+          :info
+
+        {:error, e} ->
+          IO.puts("\e[31merror: #{inspect(e)}\e[0m")
+          :error
+
+        {:interrupted, _} ->
+          IO.puts("")
+          :interrupted
+
+        {:done, summary, _next} ->
+          IO.puts("\n\e[1m● \e[0m" <> Newbee.Markdown.render(summary) <> "\n")
+          :done
+
+        _other ->
+          IO.puts("")
+          :info
+      end
+
+    Newbee.Sound.play(result)
 
     # 暂存区有改动时提示
     case Newbee.Staging.list() do
@@ -339,12 +366,38 @@ defmodule Newbee.CLI do
   end
 
   defp run_image_submit(kernel, path, prompt) do
-    case Newbee.Agent.Loop.submit_image(kernel, path, prompt) do
-      {:done, summary} -> IO.puts("\n\e[1m● \e[0m" <> Newbee.Markdown.render(summary) <> "\n")
-      {:ask, q} -> IO.puts("\n\e[33m? \e[0m" <> Newbee.Markdown.render(q) <> "\n")
-      {:text, _} -> IO.puts("")
-      {:error, e} -> IO.puts("\e[31m图片错误: #{inspect(e)}\e[0m")
-    end
+    result =
+      case Newbee.Agent.Loop.submit_image(kernel, path, prompt) do
+        {:done, summary} ->
+          IO.puts("\n\e[1m● \e[0m" <> Newbee.Markdown.render(summary) <> "\n")
+          :done
+
+        {:ask, q} ->
+          IO.puts("\n\e[33m? \e[0m" <> Newbee.Markdown.render(q) <> "\n")
+          :ask
+
+        {:text, _} ->
+          IO.puts("")
+          :info
+
+        {:error, e} ->
+          IO.puts("\e[31m图片错误: #{inspect(e)}\e[0m")
+          :error
+
+        {:interrupted, _} ->
+          IO.puts("")
+          :interrupted
+
+        {:done, summary, _next} ->
+          IO.puts("\n\e[1m● \e[0m" <> Newbee.Markdown.render(summary) <> "\n")
+          :done
+
+        _other ->
+          IO.puts("")
+          :info
+      end
+
+    Newbee.Sound.play(result)
   end
 
   defp session_id(kernel) do

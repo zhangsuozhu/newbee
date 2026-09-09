@@ -986,6 +986,8 @@ defmodule Newbee.TUI do
     state =
       push_line(state, "\e[33m? 允许执行以下代码？[y 允许 / 任意键拒绝]\e[0m \e[2m#{first_line}\e[0m")
 
+    # 等用户确认：立即提示音（回合尚未结束，turn_end 覆盖不到）
+    Newbee.Sound.play(:ask)
     %{state | awaiting_permission: true, busy: true}
   end
 
@@ -1083,7 +1085,7 @@ defmodule Newbee.TUI do
     state
   end
 
-  def render_event(%__MODULE__{} = state, :turn_end, _) do
+  def render_event(%__MODULE__{} = state, :turn_end, payload) do
     state = state |> flush_text_buffer() |> finalize_think_block()
     state = refresh_bindings(state)
 
@@ -1096,7 +1098,9 @@ defmodule Newbee.TUI do
       end
 
     state = if dur_str, do: push_line(state, dur_str), else: state
-    notify("newbee", "回合完成")
+    kind = turn_end_kind(payload)
+    Newbee.Sound.play(kind)
+    notify("newbee", turn_end_notice(kind))
     %{state | busy: false, submit_pid: nil, submit_kind: nil, turn_started_at: nil}
   end
 
@@ -1484,6 +1488,19 @@ defmodule Newbee.TUI do
 
     [header | rows]
   end
+
+  # turn_end payload -> 声音种类（与 Newbee.Sound.normalize 对齐，避免重复提示）
+  defp turn_end_kind({:turn_end, kind, _}) when is_atom(kind), do: Newbee.Sound.normalize(kind)
+  defp turn_end_kind({:turn_end, kind}) when is_atom(kind), do: Newbee.Sound.normalize(kind)
+  defp turn_end_kind(kind) when is_atom(kind), do: Newbee.Sound.normalize(kind)
+  defp turn_end_kind(_), do: :info
+
+  # 不同状态桌面通知文案也区分（与声音对应）
+  defp turn_end_notice(:done), do: "任务完成"
+  defp turn_end_notice(:ask), do: "等待输入"
+  defp turn_end_notice(:error), do: "出错了"
+  defp turn_end_notice(:interrupted), do: "已中断"
+  defp turn_end_notice(_), do: "回合完成"
 
   defp notify(title, msg) do
     # 桌面通知（可选）：长任务完成提醒，失败静默
