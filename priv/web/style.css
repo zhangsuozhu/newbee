@@ -3119,12 +3119,12 @@ svg.ico {
   font-size: 11px; font-weight: 650; letter-spacing: .3px; color: var(--nb-label-caption); }
 
 
-/* —— 空群状态：与分区标题同一左轴，不居中漂浮 —— */
+/* —— 空群状态：不渲染分区标题与占位文案，只留建群/加群两个入口 —— */
 .xgroup-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
   padding: 6px 4px 10px; }
-.xgroup-empty-text { font-size: 12px; color: var(--nb-label-caption); }
 .xgroup-empty-actions { display: flex; gap: 8px; width: 100%; }
 .xgroup-empty-actions .xg-btn { flex: 1; }
+
 
 /* —— 群卡片：两行头，标题独占一行不再被计数挤扁 —— */
 .xgroup .session-group-header { flex-wrap: wrap; row-gap: 3px; padding: 8px 8px 8px 6px; }
