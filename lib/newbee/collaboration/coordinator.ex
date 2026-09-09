@@ -603,9 +603,10 @@ defmodule Newbee.Collaboration.Coordinator do
     with {:ok, group} <- fetch_group(state, group_id),
          :ok <- ensure_coordinator(group, session_id) do
       active_task? =
-        Enum.any?(group["tasks"] || [], fn task ->
-          task["status"] not in ["succeeded", "failed", "cancelled"]
-        end)
+        group["status"] != "cancelled" and
+          Enum.any?(group["tasks"] || [], fn task ->
+            task["status"] not in ["succeeded", "failed", "cancelled"]
+          end)
 
       if active_task? do
         {:reply, {:error, "busy", "组内有进行中的任务，无法删除"}, state}

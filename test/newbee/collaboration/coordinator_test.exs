@@ -493,6 +493,32 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     assert {:error, "not_found", _} = Coordinator.get(group_id, server)
   end
 
+  test "已取消的组允许清理遗留任务", %{server: server} do
+    assert {:ok, group} =
+             Coordinator.create_group(%{"session_id" => "parent", "title" => "已取消组"}, server)
+
+    group_id = group["group_id"]
+
+    assert {:ok, _} =
+             Coordinator.add_member(
+               group_id,
+               %{"session_id" => "ghost-worker", "parent_session_id" => "parent"},
+               server
+             )
+
+    assert {:ok, task} =
+             board_create_task(server, group_id, %{
+               "created_by_session_id" => "parent",
+               "assigned_session_id" => "ghost-worker",
+               "title" => "遗留任务"
+             })
+
+    assert task["status"] == "assigned"
+    assert {:ok, _} = Coordinator.set_group_status(group_id, "cancelled", "parent", server)
+    assert {:ok, %{"group_id" => ^group_id}} = Coordinator.delete_group(group_id, "parent", server)
+    assert {:error, "not_found", _} = Coordinator.get(group_id, server)
+  end
+
   test "rename_group 仅协调者可改名并持久化", %{server: server} do
     assert {:ok, group} =
              Coordinator.create_group(%{"session_id" => "lead", "title" => "旧名", "goal" => "g"}, server)
