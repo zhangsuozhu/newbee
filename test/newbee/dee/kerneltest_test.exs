@@ -381,6 +381,45 @@ defmodule Newbee.Agent.LoopTest do
     refute Newbee.LLM.Client.interrupted?(other)
   end
 
+  test "正文 Elixir 代码块 fallback 执行后继续 turn" do
+    {:ok, ev} = Evaluator.start(mode: :local)
+
+    script = [
+      fn _messages, _on_text ->
+        {:ok,
+         %{
+           "role" => "assistant",
+           "content" => "```elixir\nx = 40 + 2\nIO.inspect(x)\n```",
+           "tool_calls" => []
+         }, %{}}
+      end,
+      fn messages, _on_text ->
+        fallback_call =
+          Enum.find(messages, fn message ->
+            message["role"] == "assistant" and
+              Enum.any?(message["tool_calls"] || [], &String.starts_with?(&1["id"], "fallback-"))
+          end)
+
+        [call] = fallback_call["tool_calls"]
+
+        assert Enum.any?(messages, fn message ->
+                 message["role"] == "tool" and message["tool_call_id"] == call["id"] and
+                   message["content"] =~ "42"
+               end)
+
+        assert Enum.any?(messages, &(&1["role"] == "system" and &1["content"] =~ "run_elixir"))
+        {:ok, %{"role" => "assistant", "content" => "fallback complete", "tool_calls" => []}, %{}}
+      end
+    ]
+
+    {:ok, kernel} =
+      Loop.start_link(client: %{}, evaluator: ev, session: false, client_fun: scripted(script))
+
+    assert {:text, "fallback complete"} = Loop.submit(kernel, "run fallback")
+    assert Enum.any?(Evaluator.bindings_summary(ev), &(&1.name == :x))
+    assert Process.alive?(kernel)
+  end
+
   defp scripted(script) do
     {:ok, agent} = Agent.start_link(fn -> script end)
 
