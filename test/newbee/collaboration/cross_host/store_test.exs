@@ -48,6 +48,44 @@ defmodule Newbee.Collaboration.CrossHost.StoreTest do
     assert st["pending"] == 1
   end
 
+  test "restart restores groups tasks and pending outbox without plaintext tokens" do
+    Store.clear()
+    path = Store.persist_path()
+    File.rm(path)
+
+    on_exit(fn -> File.rm(path) end)
+
+    Store.put_group(%{
+      "id" => "g-persist",
+      "name" => "重启恢复",
+      "password" => %{"hash" => "hash-abc"},
+      "devices" => %{"d1" => %{"display" => "w1", "plain" => "ONE-TIME-SECRET", "token_hash" => "th-1"}}
+    })
+
+    Store.put_task(%{"id" => "t1", "group_id" => "g-persist", "status" => "queued"})
+    :ok = Store.bind_session(%{"session_id" => "s1", "group_id" => "g-persist", "device_id" => "d1"})
+    assert {:ok, _} = Store.enqueue_delivery("g-persist", "d1", %{"id" => "t1", "task_id" => "t1"})
+
+    :ok = File.mkdir_p(Path.dirname(path))
+    :ok = File.write!(path, Jason.encode!(Store.dump()))
+    raw = File.read!(path)
+    refute raw =~ "ONE-TIME-SECRET"
+    assert raw =~ "hash-abc"
+    assert raw =~ "th-1"
+
+    # 模拟重启：内存全清后从磁盘恢复
+    Store.clear()
+    assert {:error, "not_found", _} = Store.get_group("g-persist")
+    :ok = Store.restore()
+
+    assert {:ok, group} = Store.get_group("g-persist")
+    assert get_in(group, ["devices", "d1", "token_hash"]) == "th-1"
+    assert get_in(group, ["devices", "d1", "plain"]) == nil
+    assert [%{"id" => "t1"}] = Store.list_tasks("g-persist")
+    assert [%{"session_id" => "s1"}] = Store.sessions_for_group("g-persist")
+    assert [%{"task_id" => "t1"}] = Store.pending_deliveries("d1")
+  end
+
   test "cancel drops only pending deliveries for the task" do
     Store.clear()
 

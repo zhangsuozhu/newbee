@@ -3107,6 +3107,7 @@ svg.ico {
 .xg-btn.danger { color: var(--nb-label-3); }
 .xg-btn.danger:hover { background: var(--nb-red); border-color: var(--nb-red); color: #fff; }
 .xg-btn:disabled { opacity: .4; cursor: default; }
+=======
 /* 实心强调档：仅用于空状态这类唯一的主动作，权重对齐 .btn-primary */
 .xg-btn.solid { background: var(--nb-accent); border-color: var(--nb-accent); color: #fff; font-weight: 600; }
 .xg-btn.solid:hover { background: var(--nb-accent-hover, var(--nb-accent)); border-color: var(--nb-accent-hover, var(--nb-accent)); color: #fff; opacity: .92; }

@@ -135,6 +135,29 @@ defmodule Newbee.Collaboration.SharedContextTest do
     assert updated["result"] == "[REDACTED]"
   end
 
+  test "joining an unknown group tells whether the code belongs to another hub" do
+    {:ok, local_fp} = Newbee.Web.Cert.fingerprint()
+
+    foreign_fp =
+      if String.starts_with?(local_fp, "sha256:f"),
+        do: "sha256:" <> String.duplicate("e", 64),
+        else: "sha256:" <> String.duplicate("f", 64)
+
+    assert {:error, "wrong_hub", _} =
+             Bridge.join(%{
+               "group_id" => "no-such-group",
+               "password" => "whatever-123",
+               "fingerprint" => foreign_fp
+             })
+
+    assert {:error, "not_found", _} =
+             Bridge.join(%{
+               "group_id" => "no-such-group",
+               "password" => "whatever-123",
+               "fingerprint" => ""
+             })
+  end
+
   test "poll reclaims tasks deferred while the worker was unreachable" do
     fingerprint = "sha256:" <> String.duplicate("e", 64)
     {:ok, group, password} = Group.create("断线认领", "orders", password: "reclaim-pass-9")

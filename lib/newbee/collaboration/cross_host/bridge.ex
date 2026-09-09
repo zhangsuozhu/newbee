@@ -14,8 +14,18 @@ defmodule Newbee.Collaboration.CrossHost.Bridge do
     password = text(params, "password")
     display = limit_text(text(params, "display") || "worker", 128)
 
-    with {:ok, group} <- Store.get_group(group_id),
-         {:ok, joined_group, out} <-
+    with {:ok, group} <- Store.get_group(group_id) do
+      join_known(group, fingerprint, password, display)
+    else
+      {:error, "not_found", _} -> Join.missing_group_error(fingerprint)
+      {:error, _, _} = err -> err
+    end
+  end
+
+  def join(_), do: {:error, "bad_request", "远端加入参数无效"}
+
+  defp join_known(group, fingerprint, password, display) do
+    with {:ok, joined_group, out} <-
            Join.join(group, %{
              "expected_fp" => group["server_fp"] || "",
              "presented_fp" => fingerprint,
@@ -41,8 +51,6 @@ defmodule Newbee.Collaboration.CrossHost.Bridge do
        }}
     end
   end
-
-  def join(_), do: {:error, "bad_request", "远端加入参数无效"}
 
   @doc "Poll a Hub outbox using the device credential; pending deliveries remain until acked."
   def poll(params) when is_map(params) do
