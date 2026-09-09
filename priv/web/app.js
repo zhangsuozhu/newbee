@@ -3307,11 +3307,29 @@ case "goal_round": break;
     ztitle.className = "xzone-title";
     ztitle.textContent = list.length ? "项目协作群 · " + list.length : "项目协作群";
     label.appendChild(ztitle);
-    const mkZone = (txt, tip, fn) => { const b = document.createElement("button"); b.className = "xg-btn"; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; label.appendChild(b); };
-    mkZone("建群", "建一个项目协作群", openXCreate);
-    mkZone("加群", "用加群码加入协作群", openXJoin);
+    // 有群时分区头才放操作：空状态卡片已自带同样两个入口，避免同一屏重复出现
+    if (list.length) {
+      const mkZone = (txt, tip, fn) => { const b = document.createElement("button"); b.className = "xg-btn"; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; label.appendChild(b); };
+      mkZone("建群", "建一个项目协作群", openXCreate);
+      mkZone("加群", "用加群码加入协作群", openXJoin);
+    }
     box.appendChild(label);
-    if (!list.length) { const em = document.createElement("div"); em.className = "session-empty"; em.textContent = "还没有协作群，点上面建一个，或找对方要加群码"; box.appendChild(em); return; }
+    if (!list.length) {
+      const em = document.createElement("div");
+      em.className = "xgroup-empty";
+      const t = document.createElement("div");
+      t.className = "xgroup-empty-text";
+      t.textContent = "还没有协作群";
+      em.appendChild(t);
+      const row = document.createElement("div");
+      row.className = "xgroup-empty-actions";
+      const mkEmptyBtn = (txt, tip, cls, fn) => { const b = document.createElement("button"); b.className = "xg-btn " + cls; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; row.appendChild(b); };
+      mkEmptyBtn("建群", "建一个项目协作群", "solid", openXCreate);
+      mkEmptyBtn("加群", "用加群码加入协作群", "", openXJoin);
+      em.appendChild(row);
+      box.appendChild(em);
+      return;
+    }
     list.forEach((g) => {
       const det = (state.xgroupDetail || {})[g.id] || {};
       const devs = det.group ? det.group.devices || {} : {};
@@ -5665,10 +5683,13 @@ case "goal_round": break;
          };
          effortWrap.appendChild(b);
        });
-       // 按钮上只显示当前档位的短标签，不占横向空间
-       if (effortBtnText) effortBtnText.textContent = EFFORT_SHORT[active] || active;
-       effortBtn.title = "思考强度：" + (EFFORT_LABELS[active] || active);
-       effortBtn.classList.toggle("on", active !== "none");
+        // 收起态只显示图标；档位通过图标颜色区分，完整名称仍保留给无障碍和悬停提示
+        if (effortBtnText) effortBtnText.textContent = EFFORT_LABELS[active] || active;
+        effortBtn.dataset.level = active;
+        effortBtn.title = "思考强度：" + (EFFORT_LABELS[active] || active);
+        effortBtn.setAttribute("aria-label", "思考强度：" + (EFFORT_LABELS[active] || active));
+        effortBtn.classList.toggle("on", active !== "none");
+
      };
      effortBtn.onclick = (e) => {
        e.stopPropagation();
