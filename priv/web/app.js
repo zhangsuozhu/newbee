@@ -3304,26 +3304,12 @@ case "goal_round": break;
   function renderXGroups(box, kw, ctx) {
     const gs = state.xgroups || [];
     const list = gs.filter((g) => !kw || String(g.name || "").toLowerCase().includes(kw) || String(g.project_id || "").toLowerCase().includes(kw));
-    const label = document.createElement("div");
-    label.className = "session-group-label xzone-head";
-    const ztitle = document.createElement("span");
-    ztitle.className = "xzone-title";
-    ztitle.textContent = list.length ? "项目协作群 · " + list.length : "项目协作群";
-    label.appendChild(ztitle);
-    // 有群时分区头才放操作：空状态卡片已自带同样两个入口，避免同一屏重复出现
-    if (list.length) {
-      const mkZone = (txt, tip, fn) => { const b = document.createElement("button"); b.className = "xg-btn"; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; label.appendChild(b); };
-      mkZone("建群", "建一个项目协作群", openXCreate);
-      mkZone("加群", "用加群码加入协作群", openXJoin);
-    }
-    box.appendChild(label);
+    // 没群就不占地方：不渲染分区标题与占位文案。
+    // 搜索无匹配时整块跳过（此时建群/加群是无关操作）；平时只保留两个入口按钮。
     if (!list.length) {
+      if (kw) return;
       const em = document.createElement("div");
       em.className = "xgroup-empty";
-      const t = document.createElement("div");
-      t.className = "xgroup-empty-text";
-      t.textContent = "还没有协作群";
-      em.appendChild(t);
       const row = document.createElement("div");
       row.className = "xgroup-empty-actions";
       const mkEmptyBtn = (txt, tip, cls, fn) => { const b = document.createElement("button"); b.className = "xg-btn " + cls; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; row.appendChild(b); };
@@ -3333,6 +3319,17 @@ case "goal_round": break;
       box.appendChild(em);
       return;
     }
+    const label = document.createElement("div");
+    label.className = "session-group-label xzone-head";
+    const ztitle = document.createElement("span");
+    ztitle.className = "xzone-title";
+    ztitle.textContent = "项目协作群 · " + list.length;
+    label.appendChild(ztitle);
+    const mkZone = (txt, tip, fn) => { const b = document.createElement("button"); b.className = "xg-btn"; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; label.appendChild(b); };
+    mkZone("建群", "建一个项目协作群", openXCreate);
+    mkZone("加群", "用加群码加入协作群", openXJoin);
+    box.appendChild(label);
+
     list.forEach((g) => {
       const det = (state.xgroupDetail || {})[g.id] || {};
       const devs = det.group ? det.group.devices || {} : {};
