@@ -7,10 +7,11 @@ defmodule Newbee.Collaboration.CrossHost.Store do
   @at :xh_activity
   @ot :xh_outbox
   @rt :xh_remote_resources
+  @rst :xh_remote_sessions
   @max_outbox 10_000
   @max_delivery_batch 64
   @persist_cap_per_group 200
-  @persist_cap_per_group 200
+  @max_remote_messages 200
 
   @spec put_group(map()) :: :ok
   def put_group(g) when is_map(g) do
@@ -382,6 +383,50 @@ defmodule Newbee.Collaboration.CrossHost.Store do
   end
 
   def put_remote_snapshot(_, _), do: {:error, "bad_request", "远端共享快照格式无效"}
+  @doc "Store a redacted conversation snapshot published by an authenticated remote device."
+  def put_remote_session(group_id, session_id, payload)
+      when is_binary(group_id) and is_binary(session_id) and is_map(payload) do
+    ensure()
+
+    entry =
+      payload
+      |> Map.take(["messages", "title", "updated_at"])
+      |> Map.put("session_id", session_id)
+      |> Map.put("group_id", group_id)
+      |> Map.update("messages", [], fn messages ->
+        messages |> List.wrap() |> Enum.filter(&is_map/1) |> Enum.take(-@max_remote_messages)
+      end)
+      |> Map.put_new("updated_at", System.system_time(:millisecond))
+
+    :ets.insert(@rst, {{group_id, session_id}, entry})
+    :ok
+  end
+
+  def put_remote_session(_, _, _), do: {:error, "bad_request", "远端会话快照格式无效"}
+
+  @doc "Read one remote conversation snapshot, if the device ever published it."
+  def remote_session(group_id, session_id) when is_binary(group_id) and is_binary(session_id) do
+    ensure()
+
+    case :ets.lookup(@rst, {group_id, session_id}) do
+      [{{_, _}, entry}] -> {:ok, entry}
+      [] -> :error
+    end
+  end
+
+  def remote_session(_, _), do: :error
+
+  @doc "All remote conversation snapshots for a group, newest first."
+  def remote_sessions(group_id) when is_binary(group_id) do
+    ensure()
+
+    :ets.tab2list(@rst)
+    |> Enum.map(fn {_key, entry} -> entry end)
+    |> Enum.filter(&(&1["group_id"] == group_id))
+    |> Enum.sort_by(&Map.get(&1, "updated_at", 0), :desc)
+  end
+
+  def remote_sessions(_), do: []
 
   @st :xh_sessions
   @spec clear() :: :ok
@@ -395,6 +440,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
     :ets.delete_all_objects(@at)
     :ets.delete_all_objects(@ot)
     :ets.delete_all_objects(@rt)
+    :ets.delete_all_objects(@rst)
 
     :ok
   end
@@ -516,6 +562,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
     ensure_owned(@kt)
     ensure_owned(@ot)
     ensure_owned(@rt)
+    ensure_owned(@rst)
 
     # 测试环境不自动恢复（各用例 setup clear 后保持隔离）；正式/开发环境重启后自动恢复。
     if :ets.info(@gt, :size) == 0 and persist_env() != :test do
@@ -596,6 +643,11 @@ defmodule Newbee.Collaboration.CrossHost.Store do
       if group_id == gid, do: :ets.delete(@rt, {group_id, resource})
     end)
 
+    :ets.tab2list(@rst)
+    |> Enum.each(fn {{group_id, session_id}, _entry} ->
+      if group_id == gid, do: :ets.delete(@rst, {group_id, session_id})
+    end)
+
     persist()
     :ok
   end
@@ -629,7 +681,8 @@ defmodule Newbee.Collaboration.CrossHost.Store do
       "messages" => capped_values(@mt, @persist_cap_per_group),
       "activity" => capped_values(@at, @persist_cap_per_group),
       "sessions" => all_values(@st),
-      "outbox" => pending_outbox_values()
+      "outbox" => pending_outbox_values(),
+      "remote_sessions" => remote_session_values()
     }
   end
 
@@ -657,6 +710,10 @@ defmodule Newbee.Collaboration.CrossHost.Store do
       Enum.each(Map.get(snap, "activity", []), fn a -> if is_map(a), do: :ets.insert(@at, {a["id"], a}) end)
       Enum.each(Map.get(snap, "sessions", []), fn b -> if is_map(b), do: :ets.insert(@st, {b["session_id"], b}) end)
       Enum.each(Map.get(snap, "outbox", []), fn e -> if is_map(e), do: :ets.insert(@ot, {e["id"], e}) end)
+
+      Enum.each(Map.get(snap, "remote_sessions", []), fn e ->
+        if is_map(e), do: :ets.insert(@rst, {{e["group_id"], e["session_id"]}, e})
+      end)
     end
 
     :ok
@@ -702,6 +759,10 @@ defmodule Newbee.Collaboration.CrossHost.Store do
     |> Enum.flat_map(fn {_, items} ->
       items |> Enum.sort_by(&Map.get(&1, "created_at", 0), :desc) |> Enum.take(per_group)
     end)
+  end
+
+  defp remote_session_values do
+    :ets.tab2list(@rst) |> Enum.map(fn {_, entry} -> entry end) |> Enum.filter(&is_map/1)
   end
 
   defp pending_outbox_values do

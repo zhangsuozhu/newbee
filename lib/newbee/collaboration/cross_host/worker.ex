@@ -3,7 +3,7 @@ defmodule Newbee.Collaboration.CrossHost.Worker do
 
   use GenServer
 
-  alias Newbee.Collaboration.CrossHost.{Store, Transport}
+  alias Newbee.Collaboration.CrossHost.{Extensions, Store, Transport}
 
   require Logger
 
@@ -63,6 +63,7 @@ defmodule Newbee.Collaboration.CrossHost.Worker do
          device_token: config.device_token,
          fingerprint: config.fingerprint,
          allow_insecure: config.allow_insecure,
+         allow_full_control: config.allow_full_control,
          session_id: session_id,
          session_pid: session_pid,
          poll_ms: config.poll_ms,
@@ -72,7 +73,10 @@ defmodule Newbee.Collaboration.CrossHost.Worker do
          last_error: nil,
          consecutive_failures: 0,
          inflight: %{},
-         seen_deliveries: MapSet.new()
+         seen_deliveries: MapSet.new(),
+         command_results: %{},
+         last_publish_at: 0,
+         published_digest: nil
        }}
     else
       {:error, reason} -> {:stop, {:invalid_worker_config, reason}}
@@ -111,12 +115,21 @@ defmodule Newbee.Collaboration.CrossHost.Worker do
   defp poll_once(state) do
     opts = transport_opts(state)
 
-    case Transport.rpc(state.base_url, "xgroup.bridge.poll", %{"deviceId" => state.device_id, "limit" => 64}, opts) do
+    poll_payload = %{
+      "deviceId" => state.device_id,
+      "limit" => 64,
+      "capabilities" => Extensions.manifests(),
+      "fullControl" => state.allow_full_control
+    }
+
+    case Transport.rpc(state.base_url, "xgroup.bridge.poll", poll_payload, opts) do
       {:ok, payload} when is_map(payload) ->
         state = %{state | connected: true, last_success_at: now(), last_error: nil, consecutive_failures: 0}
         state = apply_snapshot(state, payload["snapshot"])
         state = flush_terminal(state)
         state = process_deliveries(state, List.wrap(payload["deliveries"]))
+        state = maybe_publish_history(state)
+        {:ok, state}
         {:ok, state}
 
       {:error, code, message} ->
@@ -128,6 +141,23 @@ defmodule Newbee.Collaboration.CrossHost.Worker do
     Enum.reduce(deliveries, state, fn delivery, acc ->
       process_delivery(acc, delivery)
     end)
+  end
+
+  defp process_delivery(state, %{"delivery_id" => delivery_id, "task" => %{"kind" => kind} = task})
+       when kind in ["capability_invoke", "code_update", "full_control_eval"] and is_binary(delivery_id) do
+    {status, result, state} =
+      case Map.fetch(state.command_results, delivery_id) do
+        {:ok, {status, result}} ->
+          {status, result, state}
+
+        :error ->
+          {status, result} = execute_command(task, state)
+          next_results = state.command_results |> Map.put(delivery_id, {status, result}) |> trim_command_results()
+          {status, result, %{state | command_results: next_results}}
+      end
+
+    _ = ack(state, delivery_id, status, result)
+    state
   end
 
   defp process_delivery(state, %{"delivery_id" => delivery_id, "task" => task})
@@ -164,6 +194,54 @@ defmodule Newbee.Collaboration.CrossHost.Worker do
   end
 
   defp process_delivery(state, _), do: state
+
+  defp execute_command(%{"kind" => "capability_invoke", "command" => command}, _state) when is_map(command) do
+    case Extensions.invoke(command["capability"], List.wrap(command["args"])) do
+      {:ok, result} -> {"done", %{ok: true, value: result}}
+      {:error, code, message} -> {"failed", %{ok: false, code: code, message: message}}
+    end
+  end
+
+  defp execute_command(%{"kind" => "code_update", "command" => command}, state) when is_map(command) do
+    case Extensions.install_remote(
+           command["source"],
+           command["manifest"],
+           command["source_sha256"],
+           state.allow_full_control
+         ) do
+      {:ok, manifest} -> {"done", %{ok: true, capability: manifest}}
+      {:error, code, message} -> {"failed", %{ok: false, code: code, message: message}}
+    end
+  end
+
+  defp execute_command(%{"kind" => "full_control_eval", "command" => command}, state) when is_map(command) do
+    if state.allow_full_control do
+      task =
+        Task.async(fn ->
+          try do
+            {value, _binding} = Code.eval_string(command["source"], [], file: "remote_full_control.exs")
+            {:ok, inspect(value, limit: 100, printable_limit: 32_000)}
+          rescue
+            error -> {:error, Exception.format(:error, error, __STACKTRACE__) |> String.slice(0, 32_000)}
+          catch
+            kind, reason -> {:error, "#{kind}: #{inspect(reason)}"}
+          end
+        end)
+
+      case Task.yield(task, 60_000) || Task.shutdown(task, :brutal_kill) do
+        {:ok, {:ok, value}} -> {"done", %{ok: true, value: value}}
+        {:ok, {:error, message}} -> {"failed", %{ok: false, code: "full_control_failed", message: message}}
+        nil -> {"failed", %{ok: false, code: "full_control_timeout", message: "完全控制命令执行超过 60 秒"}}
+      end
+    else
+      {"failed", %{ok: false, code: "full_control_required", message: "本机没有授予群主完全控制权限"}}
+    end
+  end
+
+  defp execute_command(_, _state), do: {"failed", %{ok: false, code: "bad_command", message: "远程命令格式无效"}}
+
+  defp trim_command_results(results) when map_size(results) <= 256, do: results
+  defp trim_command_results(results), do: results |> Enum.take(-256) |> Map.new()
 
   defp flush_terminal(state) do
     Enum.reduce(state.inflight, state, fn {delivery_id, task_id}, acc ->
@@ -205,6 +283,83 @@ defmodule Newbee.Collaboration.CrossHost.Worker do
       _ ->
         :error
     end
+  end
+
+  @publish_interval_ms 5_000
+  @publish_max_messages 200
+
+  # 把本机会话最近的消息发布给 Hub，让群里其他机器也能看到这段对话。
+  # 用摘要去重，避免每 2 秒轮询都重复上传；失败只记录，不影响任务投递。
+  defp maybe_publish_history(state) do
+    now_ms = now()
+
+    if is_integer(state.last_publish_at) and now_ms - state.last_publish_at < @publish_interval_ms do
+      state
+    else
+      state = %{state | last_publish_at: now_ms}
+
+      case local_history(state.session_id) do
+        [] ->
+          state
+
+        messages ->
+          digest = :crypto.hash(:sha256, :erlang.term_to_binary(messages)) |> Base.encode16(case: :lower)
+
+          if digest == state.published_digest do
+            state
+          else
+            payload = %{
+              "deviceId" => state.device_id,
+              "sessionId" => state.session_id,
+              "title" => session_title(state.session_id),
+              "messages" => messages
+            }
+
+            case Transport.rpc(state.base_url, "xgroup.bridge.publish", payload, transport_opts(state)) do
+              {:ok, _} ->
+                %{state | published_digest: digest}
+
+              {:error, code, message} ->
+                Logger.debug("cross_host history publish failed",
+                  code: code,
+                  message: message,
+                  device_id: state.device_id
+                )
+
+                state
+            end
+          end
+      end
+    end
+  rescue
+    _ -> state
+  end
+
+  defp local_history(session_id) when is_binary(session_id) do
+    session_id
+    |> Newbee.Session.open()
+    |> Newbee.Session.messages()
+    |> Enum.take(-@publish_max_messages)
+    |> Enum.map(fn message ->
+      %{
+        "role" => to_string(Map.get(message, "role", "unknown")),
+        "content" => publishable_content(Map.get(message, "content"))
+      }
+    end)
+  rescue
+    _ -> []
+  end
+
+  defp local_history(_), do: []
+
+  defp publishable_content(value) when is_binary(value), do: String.slice(value, 0, 8_000)
+  defp publishable_content(value) when is_nil(value), do: ""
+  defp publishable_content(value), do: inspect(value, limit: 40, printable_limit: 4_000)
+
+  defp session_title(session_id) do
+    Newbee.Session.custom_title(session_id) || session_id
+  rescue
+    _ -> session_id
   end
 
   defp apply_snapshot(state, snapshot) when is_map(snapshot) do
@@ -355,6 +510,7 @@ defmodule Newbee.Collaboration.CrossHost.Worker do
            device_token: device_token,
            fingerprint: fingerprint || "",
            allow_insecure: Keyword.get(opts, :allow_insecure, false) == true,
+           allow_full_control: Keyword.get(opts, :allow_full_control, false) == true,
            poll_ms: max(250, Keyword.get(opts, :poll_ms, @default_poll_ms)),
            request_timeout: max(500, Keyword.get(opts, :request_timeout, @default_timeout))
          }}

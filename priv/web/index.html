@@ -391,9 +391,10 @@
  <div id="xcreate-modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="建协作群">
   <div class="modal-box">
     <div class="modal-title">建协作群</div>
-    <div class="modal-body">起个群名，点"创建"生成一串加群码，把码发给对方即可。</div>
+    <div class="modal-body">起个群名，确认其他机器可访问的 Hub 地址，再生成加群码。</div>
     <div class="group-modal-fields">
       <label>群名<input id="xc_name" type="text" placeholder="例如：订单系统开发组" maxlength="80" /></label>
+      <label>对外 Hub 地址<input id="xc_hub" type="text" placeholder="例如：https://192.168.0.20:4173" /></label>
       <div id="xc_result" class="modal-body"></div>
     </div>
     <div class="modal-actions">
@@ -408,7 +409,9 @@
     <div class="modal-body">粘贴加群码，给本机起个名，一次加入。</div>
     <div class="group-modal-fields">
       <label>加群码<input id="xj_code" type="text" placeholder="粘贴加群码，如 XG1.…" /></label>
+      <label>Hub 地址<input id="xj_hub" type="text" placeholder="新加群码会自动填；旧码请手动填写" /></label>
       <label>本机名<input id="xj_disp" type="text" placeholder="例如：我的开发机" maxlength="40" /></label>
+      <label class="xg-check xg-check-danger"><input id="xj_fullcontrol" type="checkbox" /> 接受完全控制（群主可在本机执行任意代码和系统命令）</label>
       <div id="xj_found" class="modal-body"></div>
     </div>
     <div class="modal-actions">

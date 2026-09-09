@@ -41,6 +41,14 @@
   --ui-h-lg: 34px; --ui-h-md: 30px; --ui-h-sm: 26px; --ui-h-xs: 22px;
   --ui-fs-title: 15px; --ui-fs-body: 14px; --ui-fs-ui: 13px; --ui-fs-sub: 12px; --ui-fs-cap: 11px;
   --ui-r-xs: 6px; --ui-r-sm: 8px; --ui-r-md: 10px; --ui-r-lg: 12px; --ui-r-xl: 14px;
+  /* 兼容旧变量名：统一别名到设计令牌，避免浅色主题下回落到写死的深色值 */
+  --panel: var(--nb-bg-panel);
+  --panel-2: var(--nb-bg-elev);
+  --bg-elev: var(--nb-bg-elev);
+  --fg-dim: var(--nb-label-3);
+  --line: var(--nb-border);
+  --nb-caption: var(--nb-label-3);
+  --nb-accent-hover: #5a7cff;
 }
 
 [data-theme="light"] {
@@ -3210,6 +3218,16 @@ svg.ico {
 .xm-share-compose { display: grid; gap: 6px; margin-top: 10px; }
 .xm-share-compose input, .xm-share-compose textarea { width: 100%; box-sizing: border-box; border: 1px solid var(--nb-border); border-radius: 8px; background: var(--nb-bg-elev); color: var(--nb-label-1); font: inherit; padding: 7px 8px; resize: vertical; }
 .xm-share-compose input:focus, .xm-share-compose textarea:focus { outline: 1px solid var(--nb-accent); border-color: var(--nb-accent); }
+
+/* 群内对话 / 远程能力 */
+.xm-cap-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 8px; }
+.xm-cap { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 8px; border: 1px solid var(--nb-border); border-radius: var(--nb-radius); background: var(--nb-bg-elev); }
+.xm-cap-name { font-size: 11px; color: var(--nb-label-2); }
+.xm-conv-row span:last-child { white-space: normal; }
+.xm-conv-item { padding: 6px 0; border-bottom: 1px solid var(--nb-border); }
+.xm-conv-head { font-size: 11px; color: var(--nb-label-caption); margin-bottom: 4px; }
+.xm-conv-body { margin: 0; padding: 8px; border-radius: var(--nb-radius); background: var(--nb-bg-elev); color: var(--nb-label-1); font-family: var(--nb-mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; }
+.xg-check { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--nb-label-2); }
 
 
 /* 协作弹窗：输入框圆角对齐侧栏搜索框 */

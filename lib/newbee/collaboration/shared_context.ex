@@ -80,7 +80,16 @@ defmodule Newbee.Collaboration.SharedContext do
         |> Enum.map(fn {id, device} ->
           Map.merge(
             %{"id" => id},
-            Map.take(device, ["member_id", "display", "paused", "last_seen", "remote", "bridge"])
+            Map.take(device, [
+              "member_id",
+              "display",
+              "paused",
+              "last_seen",
+              "remote",
+              "bridge",
+              "capabilities",
+              "full_control"
+            ])
           )
         end)
 
@@ -92,7 +101,7 @@ defmodule Newbee.Collaboration.SharedContext do
          "board" => %{
            "kind" => "shared_board",
            "group_id" => group_id,
-           "tasks" => Enum.map(Store.list_tasks(group_id), &safe_public/1)
+           "tasks" => Enum.map(Store.list_tasks(group_id), &public_cross_host_task/1)
          },
          "messages" => %{
            "kind" => "shared_messages",
@@ -110,7 +119,7 @@ defmodule Newbee.Collaboration.SharedContext do
            "entries" => Enum.map(Store.list_knowledge(group_id), &safe_public/1)
          },
          "capabilities" => %{"kind" => "shared_capabilities", "group_id" => group_id, "devices" => devices},
-         "history" => Enum.map(sessions, &shared_history_snapshot(Map.get(&1, "session_id")))
+         "history" => Enum.map(sessions, &shared_history_snapshot(Map.get(&1, "session_id"), group_id))
        }}
     end
   end
@@ -459,7 +468,7 @@ defmodule Newbee.Collaboration.SharedContext do
                "source" => "cross_host",
                "project_id" => group["project_id"],
                "group" => safe_public(Store.public_group(group)),
-               "tasks" => Enum.map(Store.list_tasks(scope.id), &safe_public/1)
+               "tasks" => Enum.map(Store.list_tasks(scope.id), &public_cross_host_task/1)
              }}
           end
         end)
@@ -586,7 +595,7 @@ defmodule Newbee.Collaboration.SharedContext do
                %{
                  "group_id" => scope.id,
                  "source" => Atom.to_string(scope.kind),
-                 "sessions" => Enum.map(session_ids, &history_summary/1)
+                 "sessions" => Enum.map(session_ids, &history_summary(&1, scope.id))
                }}
 
             ["q", term] ->
@@ -600,7 +609,7 @@ defmodule Newbee.Collaboration.SharedContext do
 
             [target_session_id] ->
               if target_session_id in session_ids do
-                {:ok, %{"group_id" => scope.id, "session" => history_detail(target_session_id)}}
+                {:ok, %{"group_id" => scope.id, "session" => history_detail(target_session_id, scope.id)}}
               else
                 {:error, "not_member", "目标会话不属于该协作群"}
               end
@@ -697,11 +706,16 @@ defmodule Newbee.Collaboration.SharedContext do
   end
 
   defp scope_session_ids(%{kind: :cross_host, id: group_id}, _coordinator) do
-    ids = Store.sessions_for_group(group_id) |> Enum.map(& &1["session_id"]) |> Enum.filter(&is_binary/1) |> Enum.uniq()
-    {:ok, ids}
+    bound =
+      Store.sessions_for_group(group_id)
+      |> Enum.map(& &1["session_id"])
+      |> Enum.filter(&is_binary/1)
+
+    remote = Store.remote_sessions(group_id) |> Enum.map(& &1["session_id"]) |> Enum.filter(&is_binary/1)
+    {:ok, Enum.uniq(bound ++ remote)}
   end
 
-  defp shared_history_snapshot(session_id) when is_binary(session_id) do
+  defp shared_history_snapshot(session_id, group_id) when is_binary(session_id) do
     messages =
       session_id
       |> Newbee.Session.open()
@@ -709,43 +723,94 @@ defmodule Newbee.Collaboration.SharedContext do
       |> Enum.take(-@max_history_messages)
       |> Enum.map(&public_message/1)
 
-    %{"session_id" => session_id, "messages" => messages}
+    if messages == [] do
+      remote_history_snapshot(session_id, group_id)
+    else
+      %{"session_id" => session_id, "messages" => messages}
+    end
   rescue
-    _ -> %{"session_id" => session_id, "messages" => []}
+    _ -> remote_history_snapshot(session_id, group_id)
   end
 
-  defp shared_history_snapshot(_), do: %{"session_id" => "", "messages" => []}
+  defp shared_history_snapshot(_, _), do: %{"session_id" => "", "messages" => []}
 
-  defp history_summary(session_id) do
+  # 本机没有这个会话时，回落到远端设备已发布的对话快照，保证群内成员都能看到别人的对话。
+  defp remote_history_snapshot(session_id, group_id) do
+    with gid when is_binary(gid) <- group_id,
+         {:ok, entry} <- Store.remote_session(gid, session_id) do
+      %{
+        "session_id" => session_id,
+        "title" => redact_text(entry["title"] || session_id),
+        "messages" => Enum.map(List.wrap(entry["messages"]), &public_message/1),
+        "remote" => true,
+        "updated_at" => entry["updated_at"]
+      }
+    else
+      _ -> %{"session_id" => session_id, "messages" => []}
+    end
+  end
+
+  defp history_summary(session_id, group_id) do
     session = Newbee.Session.open(session_id)
     messages = Newbee.Session.messages(session)
     facts = archive_facts(messages)
 
-    %{
-      "session_id" => session_id,
-      "title" => redact_text(Newbee.Session.custom_title(session_id) || session_id),
-      "message_count" => length(messages),
-      "recent" => recent_messages(messages),
-      "files" => safe_text_list(facts["files"]),
-      "errors" => safe_text_list(facts["errors"]),
-      "results" => safe_text_list(facts["results"]),
-      "history_path" => "history/" <> session_id
-    }
+    if messages == [] and is_binary(group_id) do
+      stored_remote_summary(session_id, group_id)
+    else
+      %{
+        "session_id" => session_id,
+        "title" => redact_text(Newbee.Session.custom_title(session_id) || session_id),
+        "message_count" => length(messages),
+        "recent" => recent_messages(messages),
+        "files" => safe_text_list(facts["files"]),
+        "errors" => safe_text_list(facts["errors"]),
+        "results" => safe_text_list(facts["results"]),
+        "history_path" => "history/" <> session_id
+      }
+    end
   rescue
     _ -> %{"session_id" => session_id, "title" => session_id, "message_count" => 0, "recent" => []}
   end
 
-  defp history_detail(session_id) do
+  defp stored_remote_summary(session_id, group_id) do
+    case Store.remote_session(group_id, session_id) do
+      {:ok, entry} ->
+        messages = Enum.map(List.wrap(entry["messages"]), &public_message/1)
+
+        %{
+          "session_id" => session_id,
+          "title" => redact_text(entry["title"] || session_id),
+          "message_count" => length(messages),
+          "recent" => Enum.take(messages, -@max_recent_messages),
+          "files" => [],
+          "errors" => [],
+          "results" => [],
+          "remote" => true,
+          "history_path" => "history/" <> session_id
+        }
+
+      :error ->
+        %{"session_id" => session_id, "title" => session_id, "message_count" => 0, "recent" => []}
+    end
+  end
+
+  defp history_detail(session_id, group_id) do
     session = Newbee.Session.open(session_id)
     all_messages = Newbee.Session.messages(session)
     messages = Enum.take(all_messages, -@max_history_messages)
 
-    %{
-      "session_id" => session_id,
-      "title" => redact_text(Newbee.Session.custom_title(session_id) || session_id),
-      "messages" => Enum.map(messages, &public_message/1),
-      "truncated" => length(all_messages) > @max_history_messages
-    }
+    if messages == [] and is_binary(group_id) do
+      remote_history_snapshot(session_id, group_id)
+      |> Map.put("truncated", false)
+    else
+      %{
+        "session_id" => session_id,
+        "title" => redact_text(Newbee.Session.custom_title(session_id) || session_id),
+        "messages" => Enum.map(messages, &public_message/1),
+        "truncated" => length(all_messages) > @max_history_messages
+      }
+    end
   rescue
     _ -> %{"session_id" => session_id, "messages" => [], "truncated" => false}
   end
@@ -873,6 +938,8 @@ defmodule Newbee.Collaboration.SharedContext do
   end
 
   defp active_device?(_), do: false
+
+  defp public_cross_host_task(task), do: task |> Map.drop(["command"]) |> safe_public()
 
   defp safe_public(map) when is_map(map) do
     map
