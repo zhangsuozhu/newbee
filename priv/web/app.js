@@ -243,6 +243,18 @@ const flow = $("flow");
     applyTheme(saved || sys, false);
   }
 
+  // ── 提示音（回合结束按状态不同声音，WebAudio合成，无需音频文件）──
+  let soundCtx = null;
+  let lastSoundAt = 0;
+  let lastSoundKind = "";
+  function soundEnabled() { try { return localStorage.getItem("newbee.sound") !== "off"; } catch (e) { return true; } }
+  function applySoundUI() { const btn = $("sound-toggle"); if (!btn) return; const on = soundEnabled(); const svgOn = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>'; const svgOff = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>'; btn.innerHTML = on ? svgOn : svgOff; btn.style.opacity = on ? "1" : "0.45"; btn.title = on ? "关闭提示音" : "开启提示音"; }
+  function ensureSoundCtx() { try { if (!soundCtx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; soundCtx = new AC(); } if (soundCtx.state === "suspended") soundCtx.resume(); return soundCtx; } catch (e) { return null; } }
+  function tone(freq, delay, dur, type, vol) { try { const ctx = ensureSoundCtx(); if (!ctx) return; const t0 = ctx.currentTime + delay; const o = ctx.createOscillator(); const g = ctx.createGain(); o.type = type || "sine"; o.frequency.setValueAtTime(freq, t0); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(vol || 0.18, t0 + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur); o.connect(g); g.connect(ctx.destination); o.start(t0); o.stop(t0 + dur + 0.05); } catch (e) {} }
+  function playSound(kind) { try { if (!soundEnabled()) return; const now = Date.now(); if (kind === lastSoundKind && now - lastSoundAt < 800) return; lastSoundKind = kind; lastSoundAt = now; ensureSoundCtx(); if (kind === "done") { tone(660, 0, 0.12, "sine", 0.2); tone(880, 0.13, 0.18, "sine", 0.2); } else if (kind === "ask") { tone(520, 0, 0.14, "sine", 0.2); tone(780, 0.15, 0.12, "sine", 0.16); } else if (kind === "error") { tone(200, 0, 0.22, "square", 0.12); tone(140, 0.16, 0.28, "square", 0.12); } else if (kind === "interrupted") { tone(320, 0, 0.1, "triangle", 0.18); } else { tone(600, 0, 0.08, "sine", 0.14); } } catch (e) {} }
+  function triggerEventSound(kind) { if (kind === "done" || kind === "goal_done") playSound("done"); else if (kind === "ask" || kind === "goal_ask" || kind === "permission_ask") playSound("ask"); else if (kind === "error") playSound("error"); else if (kind === "interrupted") playSound("interrupted"); else if (kind === "text_end" || kind === "turn_end") playSound("info"); }
+  function initSound() { applySoundUI(); const btn = $("sound-toggle"); if (btn) btn.onclick = () => { try { const on = soundEnabled(); localStorage.setItem("newbee.sound", on ? "off" : "on"); } catch (e) {} applySoundUI(); if (soundEnabled()) playSound("info"); }; const unlock = () => { ensureSoundCtx(); }; try { document.addEventListener("pointerdown", unlock, { once: true }); document.addEventListener("keydown", unlock, { once: true }); } catch (e) {} }
+
   const state = {
     sid: localStorage.getItem("newbee.sid") || null,
     token: localStorage.getItem("newbee.token") || null,
@@ -1051,6 +1063,7 @@ const flow = $("flow");
   function onEvent(kind, p) {
     state.eventCreatedAt = p && p.created_at;
     trackTiming(kind, p);
+    try { triggerEventSound(kind); } catch (e) {}
     switch (kind) {
       case "text": appendStream(p.delta, p.created_at); break;
       case "reasoning": appendReasoning(p.delta, p.created_at); break;
@@ -7570,6 +7583,7 @@ case "goal_round": break;
   // 实际启动逻辑（登录成功后或免认证时调用）
   async function bootApp() {
     initTheme();
+    initSound();
     initSidebar();
     initEvolution();
     initMissionControl();
