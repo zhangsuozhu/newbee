@@ -39,6 +39,7 @@ defmodule Newbee.Web.CollaborationSocketTest do
 
     decoded = frame |> IO.iodata_to_binary() |> Jason.decode!()
     assert decoded["type"] == "group_event"
+    assert decoded["sessionId"] == "session-b"
     assert decoded["groupId"] == "grp-test"
     assert decoded["eventId"] == 7
     assert decoded["payload"]["message"]["body"] == "群消息"
@@ -120,6 +121,7 @@ defmodule Newbee.Web.CollaborationSocketTest do
 
     state = %{sid: sid, terminal: nil}
     open = Jason.encode!(%{"type" => "terminal_open"})
+
     # shell 首个 prompt 可能抢在 :open 调用前落袋进 scrollback，此时按设计会先回放一帧 output 再发 ready
     assert {:push, frames, state} = Newbee.Web.Socket.handle_in({open, [opcode: :text]}, state)
     assert length(frames) in 1..2
