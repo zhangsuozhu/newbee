@@ -21,6 +21,9 @@
   --nb-green: #3fb950;
   --nb-red: #f85149;
   --nb-warn: #e5a13d;
+  --nb-scrollbar-thumb: #3f4a59;
+  --nb-scrollbar-thumb-hover: #596678;
+  --nb-scrollbar-thumb-active: #6c8cff;
   --nb-radius: 6px;
   --nb-radius-bubble: 22px;
   /* 加宽：默认上限 1100px，且随视窗宽度自适应（最低 720px） */
@@ -55,13 +58,34 @@
   --nb-green: #1a7f37;
   --nb-red: #cf222e;
   --nb-warn: #b4691e;
+  --nb-scrollbar-thumb: #b7c0cc;
+  --nb-scrollbar-thumb-hover: #929eae;
+  --nb-scrollbar-thumb-active: #3b6fe0;
 }
 [data-theme="light"] .btn-allow { color: #fff; }
 [data-theme="light"] .btn-deny { color: #fff; }
 [data-theme="light"] .md-code code { color: #2c3542; }
 [data-theme="light"] .msg-user { box-shadow: 0 1px 2px rgba(20,40,80,0.08); }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--nb-scrollbar-thumb) transparent;
+}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--nb-scrollbar-thumb) content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  border-width: 2px;
+  background-color: var(--nb-scrollbar-thumb-hover);
+}
+*::-webkit-scrollbar-thumb:active { background-color: var(--nb-scrollbar-thumb-active); }
+*::-webkit-scrollbar-corner { background: transparent; }
 html, body { height: 100%; margin: 0; }
 body {
   background: var(--nb-bg); color: var(--nb-label-1);
@@ -2872,6 +2896,9 @@ svg.ico {
   --terminal-bg: #0b0f14;
   --terminal-fg: #d7e0ec;
   --terminal-muted: #8b98aa;
+  --terminal-scrollbar-track: #111820;
+  --nb-scrollbar-thumb: #3f4a59;
+  --nb-scrollbar-thumb-hover: #657286;
   flex: 0 1 min(42vh, 420px);
   min-height: 220px;
   display: flex;
@@ -2883,9 +2910,12 @@ svg.ico {
 }
 .terminal-panel.hidden { display: none; }
 [data-theme="light"] .terminal-panel {
-  --terminal-bg: #17202b;
-  --terminal-fg: #e6edf5;
-  --terminal-muted: #a7b3c2;
+  --terminal-bg: #ffffff;
+  --terminal-fg: #1c2330;
+  --terminal-muted: #697386;
+  --terminal-scrollbar-track: #f0f2f5;
+  --nb-scrollbar-thumb: #b7c0cc;
+  --nb-scrollbar-thumb-hover: #8d99a9;
 }
 .terminal-toolbar {
   display: flex;
@@ -2894,8 +2924,8 @@ svg.ico {
   gap: 12px;
   min-height: 40px;
   padding: 7px 16px;
-  border-bottom: 1px solid rgba(255,255,255,0.1);
-  background: rgba(255,255,255,0.025);
+  border-bottom: 1px solid color-mix(in srgb, var(--terminal-fg) 12%, transparent);
+  background: color-mix(in srgb, var(--terminal-fg) 3%, transparent);
 }
 .terminal-title-group,
 .terminal-title,
@@ -2950,12 +2980,16 @@ svg.ico {
   height: 100%;
   color: var(--terminal-fg);
 }
-.terminal-screen .xterm-viewport {
-  background: transparent;
-  scrollbar-color: rgba(139,152,170,.55) transparent;
+.terminal-screen .xterm .xterm-viewport {
+  background: var(--terminal-bg);
+  scrollbar-color: var(--nb-scrollbar-thumb) var(--terminal-scrollbar-track);
   scrollbar-width: thin;
 }
-.terminal-screen .xterm-screen { width: 100%; height: 100%; }
+.terminal-screen .xterm .xterm-viewport::-webkit-scrollbar-track {
+  background: var(--terminal-scrollbar-track);
+  border-left: 1px solid color-mix(in srgb, var(--terminal-muted) 14%, transparent);
+}
+.terminal-screen .xterm-screen { width: 100%; height: 100%; background: var(--terminal-bg); }
 .terminal-fallback {
   display: flex;
   flex: 1 1 auto;
