@@ -799,61 +799,45 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("group.delete", %{"groupId" => group_id, "sessionId" => sid}) do
     with {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id),
          :ok <- require_group_coordinator(group_id, sid) do
-      # 运行中保护：组内任一会话 busy 或有进行中任务，均拒绝删除；返回具体阻塞原因供前端展示
+      # 实际运行中的会话仍受保护；用户已经确认整组删除时，先取消组，
+      # 让 submitted/pending 等遗留任务不再永久阻塞删除。
       busy_member = Enum.find(group["members"] || [], fn m -> Newbee.Web.Session.peek_busy(m["session_id"]) end)
 
-      active_tasks =
-        Enum.filter(group["tasks"] || [], fn task ->
-          task["status"] not in ["succeeded", "failed", "cancelled"]
-        end)
+      if busy_member do
+        title = Newbee.Session.custom_title(busy_member["session_id"]) || busy_member["session_id"]
 
-      cond do
-        busy_member ->
-          title = Newbee.Session.custom_title(busy_member["session_id"]) || busy_member["session_id"]
+        {:error, "busy",
+         "组内会话「#{title}（#{String.slice(busy_member["session_id"], -6, 6)}）」正在运行，无法删除整组。请先等待该会话空闲或点“停止”。"}
+      else
+        with {:ok, _} <- Newbee.Collaboration.Coordinator.set_group_status(group_id, "cancelled", sid),
+             {:ok, _} <- Newbee.Collaboration.Coordinator.delete_group(group_id, sid) do
+          remaining =
+            case Newbee.Collaboration.Coordinator.list(nil) do
+              groups when is_list(groups) -> groups
+              _ -> []
+            end
 
-          {:error, "busy",
-           "组内会话「#{title}（#{String.slice(busy_member["session_id"], -6, 6)}）」正在运行，无法删除整组。请先等待该会话空闲或点“停止”。"}
+          still_used =
+            remaining
+            |> Enum.flat_map(fn g -> Enum.map(g["members"] || [], fn m -> m["session_id"] end) end)
+            |> MapSet.new()
 
-        active_tasks != [] ->
-          names =
-            active_tasks
-            |> Enum.map(fn t -> "#{t["title"] || t["task_id"]}（#{t["status"]}）" end)
-            |> Enum.join("、")
-            |> String.slice(0, 120)
+          to_destroy =
+            Enum.reject(group["members"] || [], fn m -> MapSet.member?(still_used, m["session_id"]) end)
 
-          {:error, "busy", "组内有进行中任务无法删除：#{names}。请先完成/取消这些任务，或等待子会话结束。"}
+          Enum.each(to_destroy, fn m -> Newbee.Web.Session.destroy(m["session_id"]) end)
 
-        true ->
-          case Newbee.Collaboration.Coordinator.delete_group(group_id, sid) do
-            {:ok, _} ->
-              remaining =
-                case Newbee.Collaboration.Coordinator.list(nil) do
-                  groups when is_list(groups) -> groups
-                  _ -> []
-                end
-
-              still_used =
-                remaining
-                |> Enum.flat_map(fn g -> Enum.map(g["members"] || [], fn m -> m["session_id"] end) end)
-                |> MapSet.new()
-
-              to_destroy =
-                Enum.reject(group["members"] || [], fn m -> MapSet.member?(still_used, m["session_id"]) end)
-
-              Enum.each(to_destroy, fn m -> Newbee.Web.Session.destroy(m["session_id"]) end)
-
-              {:ok,
-               %{
-                 deleted: group_id,
-                 members_deleted: Enum.map(to_destroy, fn m -> m["session_id"] end),
-                 members_kept:
-                   Enum.map(group["members"] || [], fn m -> m["session_id"] end) --
-                     Enum.map(to_destroy, fn m -> m["session_id"] end)
-               }}
-
-            {:error, code, message} ->
-              {:error, code, message}
-          end
+          {:ok,
+           %{
+             deleted: group_id,
+             members_deleted: Enum.map(to_destroy, fn m -> m["session_id"] end),
+             members_kept:
+               Enum.map(group["members"] || [], fn m -> m["session_id"] end) --
+                 Enum.map(to_destroy, fn m -> m["session_id"] end)
+           }}
+        else
+          {:error, code, message} -> {:error, code, message}
+        end
       end
     else
       {:error, code, message} -> {:error, code, message}

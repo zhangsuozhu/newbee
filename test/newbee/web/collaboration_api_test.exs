@@ -237,6 +237,18 @@ defmodule Newbee.Web.CollaborationApiTest do
     refute Newbee.Collaboration.Coordinator.member?(group["group_id"], member_sid)
     refute Newbee.Collaboration.Coordinator.member?(group["group_id"], child_sid)
 
+    # 遗留的非终态任务不能让已取消的组永久锁死。
+    created =
+      hive_request("hive.task.create", group["group_id"], parent_sid, %{
+        "assignedSessionId" => parent_sid,
+        "title" => "等待验收的任务",
+        "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}],
+        "commandId" => "active-before-delete-#{suffix}"
+      })
+      |> ok!()
+
+    assert created["task"]["status"] not in ["succeeded", "failed", "cancelled"]
+
     # 删除协调者：自动解散工作组（取消 + 移出全部成员），然后删除成功
     deleted_parent = post_rpc("session.delete", %{"sessionId" => parent_sid}) |> ok!()
     assert deleted_parent["deleted"] == parent_sid
@@ -248,6 +260,33 @@ defmodule Newbee.Web.CollaborationApiTest do
     assert {:ok, g} = group_after
     assert g["status"] == "cancelled"
     assert g["members"] == []
+  end
+
+  test "删除整组会取消组并清理遗留的非终态任务" do
+    suffix = System.unique_integer([:positive])
+    parent_sid = "delete-group-parent-#{suffix}"
+
+    group =
+      post_rpc("group.create", %{"sessionId" => parent_sid, "title" => "带遗留任务的组"})
+      |> ok!()
+
+    created =
+      hive_request("hive.task.create", group["group_id"], parent_sid, %{
+        "assignedSessionId" => parent_sid,
+        "title" => "已提交但未验收",
+        "acceptance" => [%{"kind" => "file_exists", "path" => "mix.exs"}],
+        "commandId" => "task-before-group-delete-#{suffix}"
+      })
+      |> ok!()
+
+    assert created["task"]["status"] not in ["succeeded", "failed", "cancelled"]
+
+    deleted =
+      post_rpc("group.delete", %{"groupId" => group["group_id"], "sessionId" => parent_sid})
+      |> ok!()
+
+    assert deleted["deleted"] == group["group_id"]
+    assert {:error, "not_found", _} = Newbee.Collaboration.Coordinator.get(group["group_id"])
   end
 
   test "让另一个 AI 帮忙会创建会话、成员和已分派任务" do
