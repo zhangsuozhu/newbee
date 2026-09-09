@@ -255,6 +255,7 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 模型在 evaluator 中可调用的能力（每个都是内置 release，同样可进化）：
 
 - **代码 IO**：读/写/追加/复制/移动/删除/遍历工程树（`tool` 插件：`Fs`）。
+- **媒体上屏**（`Media`）：`Newbee.Tools.Media.show(path, caption: "...")` 将图片/音频/视频及合法 UTF-8 文本送入 WebUI 会话流；Markdown 直接渲染、代码按语言高亮，文本超过 256 KiB 或非文本时退化为下载卡片。
 - **双轨编辑**：
   - **文本轨 · 文件快照 + 行号范围**（`Edit`）：唯一公开 API 是 `show/2`、`patch/1`、`source_literal/1`。`show` 返回文件级 `[path#tag]` 快照标签和普通行号；`PUT N..M / PUT <N / PUT >N / CUT N..M` 全部指向原快照。文件变化（stale）、越界、未读范围、重叠和 no-op 一律拒绝，多节预检全过后原子落盘。模型不再手抄逐行 hash。
   - **安全源码字面量**（`Edit.source_literal/1`）：动态选择目标内容中不存在的 raw sigil 分隔符；全部冲突时回退普通转义字符串，避免二阶插值和 heredoc/sigil 同分隔符嵌套。

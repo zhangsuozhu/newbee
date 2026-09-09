@@ -4640,7 +4640,7 @@ case "goal_round": break;
   }
 
 
-  // 媒体上屏：渲染图片/音频/视频卡片（实时事件与历史回放共用）
+  // 媒体上屏：图片/音频/视频/文本卡片（实时事件与历史回放共用）
   function renderMediaShow(p) {
     // 去重：实时 media_show 事件与历史回放（session.history 的 media 行）是两条渲染路径，
     // 同 media_id 已在流里则跳过，避免刷新/切会话后出现两张卡。
@@ -4650,13 +4650,9 @@ case "goal_round": break;
     }
     const d = el("msg-media", "");
     d.dataset.mediaId = p.media_id || "";
-    // 修复运算符优先级：原式 `p.kind || match ? "image" : "other"` 等价于
-    // `(p.kind || match) ? "image" : "other"`——任何非空 kind（含 "other"）都被
-    // 判成 image 渲成破图。改为：已知 kind 直用，未知非空 kind 归 other，
-    // 仅 kind 缺失时按 URL 后缀兜底。
     const urlIsImage = (p.url || "").match(/\.(png|jpe?g|gif|webp|svg)/i);
-    const kind = p.kind === "image" || p.kind === "audio" || p.kind === "video" ? p.kind
-      : (p.kind ? "other" : (urlIsImage ? "image" : "other"));
+    const knownKinds = ["image", "audio", "video", "text"];
+    const kind = knownKinds.includes(p.kind) ? p.kind : (p.kind ? "other" : (urlIsImage ? "image" : "other"));
     const head = document.createElement("div");
     head.className = "media-head";
     head.innerHTML = `<span class="media-kind">${escapeHtml(kind)}</span><span class="media-name">${escapeHtml(p.name || "")}</span><span class="media-size">${escapeHtml(p.size ? fmtBytes(p.size) : "")}</span>`;
@@ -4688,19 +4684,71 @@ case "goal_round": break;
       vd.preload = "metadata";
       vd.src = p.url + "?_t=" + Date.now();
       body.appendChild(vd);
+    } else if (kind === "text") {
+      // 实时事件带正文；历史记录只带元数据，因此由受保护的媒体 URL 补读正文。
+      loadMediaText(p, body);
     } else {
-      const a = document.createElement("a");
-      a.href = p.url;
-      a.download = p.name || "file";
-      a.className = "media-download";
-      a.textContent = "下载 " + (p.name || "文件");
-      body.appendChild(a);
-
+      appendMediaDownload(p, body);
     }
     d.appendChild(body);
     flow.appendChild(d);
     scrollBottom();
   }
+
+  function appendMediaDownload(p, body) {
+    body.className = "media-body";
+    body.innerHTML = "";
+    const a = document.createElement("a");
+    a.href = p.url;
+    a.download = p.name || "file";
+    a.className = "media-download";
+    a.textContent = "下载 " + (p.name || "文件");
+    body.appendChild(a);
+  }
+
+  function renderMediaText(p, body, content) {
+    const markdown = p.markdown === true || /\.(md|markdown)$/i.test(p.name || "");
+    if (markdown) {
+      body.className = "media-body file-viewer-markdown media-text-markdown";
+      body.innerHTML = renderMarkdown(content);
+      bindCopyButtons(body);
+    } else {
+      body.className = "media-body file-viewer-source media-text-source";
+      renderSourceView(body, content, p.language || "text");
+    }
+  }
+
+  function loadMediaText(p, body) {
+    if (typeof p.content === "string") {
+      renderMediaText(p, body, p.content);
+      return;
+    }
+
+    body.className = "media-body media-text-loading";
+    body.innerHTML = '<div class="media-text-state">正在读取文本…</div>';
+    if (!p.url) {
+      appendMediaDownload(p, body);
+      return;
+    }
+
+    const headers = {};
+    if (state.token) headers.authorization = "Bearer " + state.token;
+    fetch(p.url, { credentials: "same-origin", headers })
+      .then((response) => {
+        if (!response.ok) throw new Error("media fetch failed");
+        return response.text();
+      })
+      .then((content) => {
+        if (!body.isConnected) return;
+        renderMediaText(p, body, content);
+        scrollBottom();
+      })
+      .catch(() => {
+        if (!body.isConnected) return;
+        appendMediaDownload(p, body);
+      });
+  }
+
 
   function fmtBytes(n) {
     if (n == null || isNaN(n)) return "";

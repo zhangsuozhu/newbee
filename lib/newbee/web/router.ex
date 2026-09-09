@@ -57,10 +57,9 @@ defmodule Newbee.Web.Router do
   end
 
   forward("/api", to: Newbee.Web.Api)
-  # ── 媒体上屏：模型上屏的多媒体文件（图片/音频/视频），以不透明 id 作为令牌 ──
-  # 认证：受整体 require_auth（远程强制 Bearer）保护；浏览器 <img>/<video> 标签
-  # 无法带 Authorization 头，故本地回环（auth_required? == false）直接放行；
-  # 远程暴露时通过 ?token= 查询参数鉴权（见 require_auth 的 bearer_token 兜底）。
+  # ── 媒体上屏：图片/音频/视频/文本均以不透明 id 访问 ──
+  # 认证：受整体 require_auth（远程强制 Bearer）保护；浏览器媒体元素和历史文本回读都走此 URL。
+  # 本地回环（auth_required? == false）直接放行；远程暴露时通过 ?token= 查询参数鉴权。
   # ── 扫码授权页（手机扫码后打开；服务端渲染模板核对配对码）──
   # 该页本身免 token，但页内 JS 校验手机已有登录会话。配对码只在此 URL 的 ?c=
   # 参数里，由服务端从 ETS 核对，一次性消费——不上二维码、不经 RPC 回传。
@@ -75,7 +74,7 @@ defmodule Newbee.Web.Router do
     with {:ok, item} <- Newbee.Media.info(sid, media_id),
          {:ok, bin} <- Newbee.Media.read(sid, media_id) do
       ext = item["ext"] || ""
-      mime = if ext != "", do: content_type("." <> ext), else: "application/octet-stream"
+      mime = media_content_type(item["kind"], ext)
 
       conn
       |> put_resp_content_type(mime)
@@ -334,7 +333,9 @@ defmodule Newbee.Web.Router do
       ".jpeg" -> "image/jpeg"
       ".gif" -> "image/gif"
       ".webp" -> "image/webp"
+      ".bmp" -> "image/bmp"
       ".wav" -> "audio/wav"
+      ".mp3" -> "audio/mpeg"
       ".ogg" -> "audio/ogg"
       ".m4a" -> "audio/mp4"
       ".flac" -> "audio/flac"
@@ -343,8 +344,16 @@ defmodule Newbee.Web.Router do
       ".webm" -> "video/webm"
       ".mov" -> "video/quicktime"
       ".mkv" -> "video/x-matroska"
+      ".avi" -> "video/x-msvideo"
+      ext when ext in [".mpeg", ".mpg"] -> "video/mpeg"
+      ".ts" -> "video/mp2t"
       ".webmanifest" -> "application/manifest+json"
       _ -> "application/octet-stream"
     end
   end
+
+  defp media_content_type("text", ext) when ext in ["md", "markdown"], do: "text/markdown"
+  defp media_content_type("text", _ext), do: "text/plain"
+  defp media_content_type(kind, ext) when kind in ["image", "audio", "video"], do: content_type("media." <> ext)
+  defp media_content_type(_kind, _ext), do: "application/octet-stream"
 end

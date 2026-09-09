@@ -64,4 +64,61 @@ defmodule Newbee.MediaWebE2ETest do
     assert css =~ ~r/\.nb-lightbox\s*\{[^}]*justify-content:\s*center/s
     assert js =~ ~s|mask.addEventListener("click", closeLightbox)|
   end
+
+  test "文本媒体路由返回 Markdown 类型和原始正文" do
+    suffix = System.unique_integer([:positive])
+    tmp = Path.join(System.tmp_dir!(), "newbee-media-text-web-#{suffix}")
+    sid = "media-text-web-test-#{suffix}"
+    source = Path.join(tmp, "report.md")
+    markdown = "# WebUI\n\n文本预览\n"
+
+    File.mkdir_p!(tmp)
+    File.write!(source, markdown)
+    Newbee.Web.Router.set_bind_ip({127, 0, 0, 1})
+
+    on_exit(fn ->
+      Newbee.Web.Router.set_bind_ip({127, 0, 0, 1})
+      Newbee.Session.delete(sid)
+      File.rm_rf!(tmp)
+    end)
+
+    {:ok, p} = Newbee.Media.show(sid, source)
+    assert p.kind == "text"
+    assert p.markdown == true
+
+    conn = Plug.Test.conn(:get, p.url) |> Newbee.Web.Router.call(Newbee.Web.Router.init([]))
+    assert conn.status == 200
+    assert Plug.Conn.get_resp_header(conn, "content-type") == ["text/markdown; charset=utf-8"]
+    assert conn.resp_body == markdown
+
+    html_path = Path.join(tmp, "preview.html")
+    File.write!(html_path, "<script>window.mediaExecuted = true</script>")
+    {:ok, html_media} = Newbee.Media.show(sid, html_path)
+    html_conn = Plug.Test.conn(:get, html_media.url) |> Newbee.Web.Router.call(Newbee.Web.Router.init([]))
+    assert Plug.Conn.get_resp_header(html_conn, "content-type") == ["text/plain; charset=utf-8"]
+  end
+
+  test "WebUI 媒体卡片支持实时正文、历史回读和源码高亮" do
+    js = File.read!("priv/web/app.js")
+    css = File.read!("priv/web/style.css")
+
+    assert js =~ "loadMediaText(p, body)"
+    assert js =~ "renderMediaText(p, body, content)"
+    assert js =~ "fetch(p.url"
+    assert js =~ ~s|if (state.token) headers.authorization = "Bearer " + state.token|
+    assert js =~ "renderMarkdown(content)"
+    assert js =~ "renderSourceView(body, content, p.language || \"text\")"
+    assert css =~ ".msg-media .media-body.media-text-markdown"
+    assert css =~ ".msg-media .media-body.media-text-source"
+  end
+
+  test "Media 能力索引明确提示文本和 Markdown 可内联显示" do
+    section = Newbee.Plugins.prompt_section()
+    assert section =~ "Newbee.Tools.Media"
+    assert section =~ "文本"
+
+    assert {:ok, docs} = Newbee.read("tool://Newbee.Tools.Media")
+    assert docs =~ "Markdown 直接渲染"
+    assert docs =~ "show/2"
+  end
 end

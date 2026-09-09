@@ -1,20 +1,23 @@
 defmodule Newbee.Media do
   @moduledoc """
-  媒体上屏（Media Showcase）：模型把图片/音频/视频一键展示到 WebUI。
+  媒体上屏：图片/音频/视频/文本/markdown 一键上屏 WebUI。
 
   模型在 DEE（run_elixir）里调用 `Newbee.Tools.Media.show/2`，本模块：
 
-  1. 把媒体文件复制进会话制品目录 `~/.newbee/session-artifacts/<sid>/media/<id>.<ext>`；
+  1. 把文件复制进会话制品目录 `~/.newbee/session-artifacts/<sid>/media/<id>.<ext>`；
   2. 生成不透明访问 URL `/media/<sid>/<id>`（WebUI 免认证可拉取，id 即令牌）；
   3. 经 Bus 广播 `:web_event`（kind = `:media_show`），WebSocket 下行，
-     前端会话流即时渲染图片/音频/视频卡片；
+     前端会话流即时渲染：图片可放大、音视频带控件、文本/markdown 内联显示；
   4. 落一份 `manifest.json`，供 `media.list` RPC 在恢复历史时展示
      「本会话上屏媒体」回放区。
 
   事件 payload：
       %{media_id, url, kind, caption, name, size, ext, created_at}
+      kind = "text" 时另带 %{content, language, markdown}：content 只随事件下发，
+      不写 manifest/transcript（历史回放由前端按 url 拉取），避免持久化膨胀。
 
-  其中 kind ∈ `image | audio | video | other`（按扩展名推断）。
+  其中 kind ∈ `image | audio | video | text | other`（媒体按扩展名/魔数判定；
+  文本仅在 ≤ 256 KiB 且为合法 UTF-8 时内联，否则退化为 other 只提供下载）。
   """
 
   alias Newbee.Session
@@ -44,6 +47,48 @@ defmodule Newbee.Media do
     "ts" => "video"
   }
 
+  # 文本/markdown 内联上限：超过则退化为 other（只给下载），避免事件与 transcript 膨胀
+  @text_max_bytes 256 * 1024
+
+  # 扩展名 → highlight.js 语言别名（前端未知语言会安全退化为纯文本）
+  @text_lang %{
+    "md" => "markdown",
+    "markdown" => "markdown",
+    "txt" => "text",
+    "log" => "text",
+    "csv" => "text",
+    "ex" => "elixir",
+    "exs" => "elixir",
+    "erl" => "erlang",
+    "hrl" => "erlang",
+    "eex" => "html",
+    "heex" => "html",
+    "js" => "javascript",
+    "mjs" => "javascript",
+    "cjs" => "javascript",
+    "jsx" => "javascript",
+    "ts" => "typescript",
+    "tsx" => "typescript",
+    "json" => "json",
+    "css" => "css",
+    "html" => "xml",
+    "htm" => "xml",
+    "xml" => "xml",
+    "yml" => "yaml",
+    "yaml" => "yaml",
+    "toml" => "ini",
+    "ini" => "ini",
+    "sh" => "bash",
+    "bash" => "bash",
+    "zsh" => "bash",
+    "py" => "python",
+    "rs" => "rust",
+    "go" => "go",
+    "sql" => "sql",
+    "diff" => "diff",
+    "patch" => "diff"
+  }
+
   @doc "单个文件上屏到指定会话。返回 {:ok, payload} | {:error, code, message}。"
   def show(sid, path, opts \\ [])
 
@@ -55,25 +100,28 @@ defmodule Newbee.Media do
     with {:ok, %{size: size}} <- ok_stat(File.stat(path)),
          true <- size > 0 or {:error, "empty", "文件为空: #{path}"},
          true <- size <= @max_bytes or {:error, "too_large", "媒体超过 #{fmt_bytes(@max_bytes)} 上限: #{path}"},
-         {:ok, kind} <- kind_for(ext, path),
+         {:ok, bin} <- File.read(path),
+         {:ok, meta} <- classify(ext, size, bin),
          media_id <- gen_id(),
          dest <- media_path(sid, media_id, ext),
          :ok <- File.mkdir_p(Path.dirname(dest)) |> mkdir_ok(),
-         {:ok, bin} <- File.read(path),
          :ok <- File.write(dest, bin) do
-      payload = %{
-        media_id: media_id,
-        url: "/media/#{sid}/#{media_id}",
-        kind: kind,
-        caption: caption,
-        name: name,
-        ext: ext,
-        size: size,
-        created_at: DateTime.utc_now() |> DateTime.to_iso8601()
-      }
+      payload =
+        %{
+          media_id: media_id,
+          url: "/media/#{sid}/#{media_id}",
+          kind: meta.kind,
+          caption: caption,
+          name: name,
+          ext: ext,
+          size: size,
+          created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+        |> Map.merge(Map.take(meta, [:content, :language, :markdown]))
 
-      append_manifest(sid, payload)
-      append_transcript(sid, payload)
+      stored = Map.drop(payload, [:content])
+      append_manifest(sid, stored)
+      append_transcript(sid, stored)
       broadcast(sid, payload)
 
       {:ok, payload}
@@ -156,14 +204,18 @@ defmodule Newbee.Media do
     if ext == "", do: base, else: base <> "." <> ext
   end
 
-  @doc "行内展示用的 text 摘要（tool result 呈现给模型）。"
+  @doc "行内展示用的 text 摘要（tool result 呈现给模型；不含内联正文）。"
   def describe({:ok, payload}) do
-    "✓ 已上屏 #{payload.kind} `#{payload.name}`（#{fmt_bytes(payload.size)}）\n" <>
+    "✓ 已上屏 #{payload.kind}#{text_detail(payload)} `#{payload.name}`（#{fmt_bytes(payload.size)}）\n" <>
       "  media_id=#{payload.media_id} url=#{payload.url}" <>
       if(payload.caption, do: "\n  caption=#{payload.caption}", else: "")
   end
 
   def describe({:error, code, msg}), do: "✗ 上屏失败 [#{code}] #{msg}"
+
+  defp text_detail(%{kind: "text", markdown: true}), do: "(markdown)"
+  defp text_detail(%{kind: "text", language: lang}), do: "(#{lang})"
+  defp text_detail(_), do: ""
 
   defp mkdir_ok(:ok), do: :ok
   defp mkdir_ok({:ok, _}), do: :ok
@@ -172,16 +224,31 @@ defmodule Newbee.Media do
   defp ok_stat({:ok, stat}), do: {:ok, %{size: stat.size}}
   defp ok_stat(err), do: err
 
-  defp kind_for(ext, path) do
+  # 类型判定：媒体扩展名优先，其次魔数嗅探，最后按“合法 UTF-8 文本”内联
+  defp classify(ext, size, bin) do
     case Map.get(@ext_kind, ext) do
       nil ->
-        case File.read(path) do
-          {:ok, bin} -> sniff_kind(bin)
-          _ -> {:ok, "other"}
+        case sniff_kind(bin) do
+          {:ok, kind} when kind != "other" -> {:ok, %{kind: kind}}
+          _ -> text_meta(ext, size, bin)
         end
 
       kind ->
-        {:ok, kind}
+        {:ok, %{kind: kind}}
+    end
+  end
+
+  defp text_meta(ext, size, bin) do
+    if size <= @text_max_bytes and String.valid?(bin) and not String.contains?(bin, <<0>>) do
+      {:ok,
+       %{
+         kind: "text",
+         content: bin,
+         language: Map.get(@text_lang, ext, "text"),
+         markdown: ext in ["md", "markdown"]
+       }}
+    else
+      {:ok, %{kind: "other"}}
     end
   end
 

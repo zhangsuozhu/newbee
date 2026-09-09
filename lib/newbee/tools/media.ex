@@ -1,25 +1,32 @@
 defmodule Newbee.Tools.Media do
   @moduledoc """
-  媒体上屏工具 (DESIGN §3.2 工具库)：把图片/音频/视频一键展示到 WebUI。
+  媒体文件上屏：图片、音频、视频、文本和 Markdown。
 
-  模型在 run_elixir 里调用：
-
-      Newbee.Tools.Media.show(Path.expand("shots/a.png"), caption: "页面截图")
+  ## Runnable example
+      Newbee.Tools.Media.show(Path.expand("docs/design.md"), caption: "设计文档")
+      Newbee.Tools.Media.show("out/result.ex", name: "源码")
       Newbee.Tools.Media.show("out/result.mp4", name: "生成视频", caption: "最终渲染")
+      Newbee.Tools.Media.show_to("session-id", "out/report.md", caption: "发到指定会话")
+      Newbee.Tools.Media.list()
+      Newbee.Tools.Media.delete("media-id")
 
-  - 文件会被复制进当前会话的媒体制品目录，生成 /media/<sid>/<id> URL；
-  - 事件 :media_show 经 Bus → WebSocket 下行，前端即时渲染卡片；
-  - 返回 describe 文本（含 media_id / url），供模型转述给用户。
+  选择它来把本地文件作为会话流卡片展示：图片可放大，音视频带播放控件，合法 UTF-8 的
+  文本/代码按语言高亮，Markdown 直接渲染。文本超过 256 KiB、包含 NUL 或无法识别为
+  UTF-8 时退化为下载卡片。它复制文件，不修改源文件。
+
+  `show/2` 用当前会话；`show_to/3` 用指定会话。返回值为
+  `{:ok, payload} | {:error, code, message}`，其中文本实时 payload 含 `content`，历史
+  回放会按返回的 URL 读取正文；`list/0` 和 `delete/1` 管理当前会话的媒体。
   """
 
-  @doc "把文件上屏到当前会话。返回 {:ok, payload} | {:error, code, msg}。"
+  @doc "把文件上屏到当前会话：图片/音频/视频内联，文本和 Markdown 也会在 WebUI 中显示。返回 {:ok, payload} | {:error, code, msg}。"
   def show(path, opts \\ []) when is_binary(path) do
     with {:ok, sid} <- current_session_id() do
       Newbee.Media.show(sid, path, opts)
     end
   end
 
-  @doc "把文件上屏到指定会话。"
+  @doc "把文件上屏到指定会话；文本/Markdown 会在目标 WebUI 会话流中内联显示。"
   def show_to(sid, path, opts \\ []) when is_binary(sid) and is_binary(path) do
     Newbee.Media.show(sid, path, opts)
   end
