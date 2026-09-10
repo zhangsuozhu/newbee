@@ -16,18 +16,18 @@
   }
 
   function apply(theme, persist = false) {
-    if (!themes.includes(theme)) theme = "dark";
+    if (!themes.includes(theme)) theme = "neumorphic";
     document.documentElement.dataset.theme = theme;
     syncControls(theme);
     if (persist) { try { localStorage.setItem("newbee.theme", theme); } catch (_) {} }
     return theme;
   }
 
+  // 默认是浅色拟物（浅色为底、柔和凸起）；用户显式切换过才用保存值。
   function init() {
     let saved;
     try { saved = localStorage.getItem("newbee.theme"); } catch (_) {}
-    const system = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-    return apply(themes.includes(saved) ? saved : system);
+    return apply(themes.includes(saved) ? saved : "neumorphic");
   }
 
   function closeMenu(button, menu, restoreFocus = false) {

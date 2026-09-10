@@ -29,6 +29,15 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     .group-task-claim .mc-action-btn .theme-picker .theme-menu .mcfg-box .mcfg-pitem .mcfg-model-row
     .file-viewer-box .file-viewer-mode.current .terminal-panel .ctx-menu .at-dropdown
     .effort-segments .model-opt.current .model-provider.current .xg-dev.mine
+    .btn-danger .collab-filter-row button .collab-member .collab-group-status .collab-verify-badge
+    .mc-file .queue-item .collab-verification .evo-guide .collab-write-conflicts .dir-entries
+    .mcfg-plist .file-viewer-modes .md-code .mc-test-result .mc-step-detail .terminal-panel
+    .evo-health-pill .evo-status-tag .collab-workspace-badge .attach-item .wc-item .xm-cap
+    .ctx-chip .ctx-editor .group-status .dir-crumb .evo-layers-detail .mc-impact-summary
+    .md-copy .qa-show-btn .session-group-toggle .debug-detail .collab-review-diff .file-viewer-mode.current
+    .menu-btn .msg-user-file .qa-top-text .modal-body .xm-conv-body .evo-tech .media-download
+    .media-body .media-text-markdown .media-text-source .attach-file-icon .md-inline
+    .evo-approve .diff-owner .mc-file-owner .collab-accept-note
   )
 
   setup_all do
@@ -64,16 +73,16 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     for token <- geometry, do: assert(scope =~ token, "shared material is missing #{token}")
   end
 
-  test "the picker offers all four styles on the app, login and phone pages",
+  test "login and phone pages carry no picker; the app menu still offers all four styles",
        %{index: index, pair: pair} do
     for page <- [index, pair] do
       assert page =~ "/theme.js"
-      assert page =~ "data-theme-picker"
-
-      for theme <- @themes ++ ~w(dark light) do
-        assert page =~ ~s(value="#{theme}"), "missing option #{theme}"
-      end
+      refute page =~ "data-theme-picker", "login/phone page should not offer a theme picker"
     end
+
+    # 应用内仍保留紧凑图标菜单（见下一个测试），四个风格在菜单项里可选。
+    assert index =~ ~s(data-theme-value="neumorphic-dark")
+    refute pair =~ ~r/<select[^>]*data-theme-picker/
   end
 
   test "the topbar uses a compact accessible icon menu instead of a native select", %{index: index} do
@@ -84,11 +93,18 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     refute index =~ ~r/<select id="theme-toggle"/
   end
 
-  test "theme.js owns persistence, pre-paint apply and unknown-value fallback" do
+  test "theme.js owns persistence, pre-paint apply, neumorphic default and unknown-value fallback" do
     js = File.read!(@theme_js)
     assert js =~ "newbee.theme"
     assert js =~ "neumorphic-dark"
-    assert js =~ "prefers-color-scheme"
+    evalc = Regex.run(~r/function apply\(theme, persist = false\) \{(.*?)\n  \}/s, js) |> Enum.at(1)
+    assert evalc =~ ~s(theme = "neumorphic"), "unknown values should fall back to 浅色拟物"
+    init = Regex.run(~r/function init\(\) \{(.*?)\n  \}/s, js) |> Enum.at(1)
+
+    assert init =~ ~s|apply(themes.includes(saved) ? saved : "neumorphic")|,
+           "first visit should default to 浅色拟物"
+
+    refute js =~ "prefers-color-scheme"
     assert js =~ "document.documentElement.dataset.theme"
     assert js =~ "aria-checked"
     assert js =~ "placeMenu"
@@ -119,9 +135,8 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert missing == [], "shadowed components without neumorphic styling: #{inspect(missing)}"
   end
 
-
   test "the polished sidebar uses icon QR, linear rows, a current marker and soft checkboxes",
-       %{index: index, scope: scope} do
+       %{css: css, index: index, scope: scope} do
     app = File.read!("priv/web/app.js")
 
     assert index =~ ~s(id="qa-show" class="icon-btn qa-icon-btn")
@@ -133,12 +148,17 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert scope =~ ~s(content: "✓")
     assert scope =~ ".sidebar-foot .logout-btn"
     assert scope =~ "align-self: flex-end"
-    assert index =~ ~s(id="new-session" class="xg-btn")
+
     assert app =~ ~s(mkEmptyBtn("建群", "建一个项目协作群", "")
     assert app =~ ~s(mkEmptyBtn("加群", "用加群码加入协作群", "")
     assert index =~ "允许群主完全控制本机"
     refute index =~ "接受完全控制（群主可在本机执行任意代码和系统命令）"
     assert index =~ "xg-check-mark"
+    assert index =~ ~s(id="new-session" class="icon-btn new-session-icon")
+    assert css =~ ".session-tools"
+    assert css =~ ".session-group .swipe-cell .session-item { border-bottom-color: transparent; }"
+    assert css =~ ~r/\.session-tools #new-session\s*\{[^}]*border-radius:\s*50%/s
+
     assert scope =~ ".group-modal-fields .xg-check"
     assert scope =~ "border-radius: 8px"
     assert scope =~ "backdrop-filter: none"
@@ -146,6 +166,79 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert scope =~ "#interrupt.btn-icon-round"
     assert scope =~ "fill: var(--nb-red)"
   end
+
+  test "mission control controls render with the soft material", %{scope: scope} do
+    assert scope =~
+             ~r/:is\(\[data-theme="neumorphic"\], \[data-theme="neumorphic-dark"\]\) \.collab-filter-row button \{/
+
+    assert scope =~ ".collab-filter-row button:hover:not(.active)"
+    assert scope =~ ".btn-danger:active:not(:disabled)"
+    assert scope =~ ".collab-member.active"
+    # 取消按钮必须有自己的拟物底与语义描红，不能退回浏览器默认外观。
+    assert scope =~ ~r/\.btn-danger \{[^}]*border: 1px solid color-mix\(in srgb, var\(--nb-red\) 42%/s
+  end
+
+  test "primary and danger buttons stay readable and identically sized", %{css: css, scope: scope} do
+    # 主按钮在拟物下不反色，必须显式给文字色，否则白字落在浅底上看不见。
+    assert scope =~ ~r/:is\(\.btn-primary, \.btn-send[^{]*\{\s*[^}]*color: var\(--nb-label-1\)/s
+    # 取消与暂停共用同一档几何，避免同类按钮大小不一。
+    assert css =~ ~r/\.btn-primary, \.btn-ghost, \.btn-danger \{ min-height: var\(--ui-h-lg\); \}/
+    assert css =~ ~r/\.btn-primary, \.btn-ghost, \.btn-danger, \.btn-allow, \.btn-deny \{/
+    assert css =~ ~r/\.btn-danger \{[^}]*padding: 7px 14px;[^}]*font-size: 13px;/s
+  end
+
+  test "the terminal keeps its recessed window treatment", %{scope: scope} do
+    # 用户明确认可的内陷窗口：整体凹槽 + 14px 圆角，工具栏与屏幕收在槽内。
+    assert scope =~
+             ~r/:where\([^)]*\.terminal-panel\) \{\s*background: var\(--nb-bg\);[^}]*box-shadow: var\(--nb-neu-inset\)/s
+
+    assert scope =~ ~r/\.terminal-panel \{ border-radius: 14px; \}/
+    assert scope =~ ~r/\.terminal-panel \.terminal-screen,/
+  end
+
+  test "second-wave surfaces gain material without losing semantic states", %{scope: scope} do
+    # 用 :where() 压低特异性，保证 .pass/.pending/.healthy 这类语义状态仍然生效。
+    assert scope =~ ~r/:where\(\.attach-item, \.wc-item, \.xm-cap, \.ctx-chip\)/
+    assert scope =~ ~r/:where\(\.ctx-editor, \.evo-layers-detail, \.mc-impact-summary\)/
+    assert scope =~ ~r/:where\(\.mc-test-result, \.mc-step-detail, \.md-code,/
+    assert scope =~ ~r/:where\(\.group-status, \.dir-crumb\)/
+    assert scope =~ ~r/:where\(\.collab-write-conflicts\) \{\s*box-shadow/
+    refute scope =~ ~r/:where\(\.collab-write-conflicts\) \{[^}]*border-color: transparent/s
+  end
+
+  test "task cards collapse secondary actions into a single menu", %{css: css} do
+    app = File.read!("priv/web/app.js")
+
+    # 主操作只留一个：验收 > 应用变更 > 领取 > 重试。
+    assert app =~ ~s|function renderTaskActions(task, group)|
+    assert app =~ ~s|if (coordinator && status === "submitted") primary =|
+    assert app =~ ~s|else if (canDecide) primary =|
+    assert app =~ ~s|else if (!assigned && status === "pending") primary =|
+    # 其余操作进「⋯」菜单，且菜单项点击后自动收起。
+    assert app =~ ~s|class="collab-task-more"|
+    assert app =~ ~s|class="collab-task-menu"|
+    assert app =~ "menu.open = false"
+    # 验收按钮必须绑定到验收，而不是重试（修复历史上的错误嵌套）。
+    assert app =~ ~s|await verifyCollaborationTask(button.dataset.verifyTask)|
+
+    refute app =~
+             ~r/querySelectorAll\("\[data-verify-task\]"\)\.forEach\(\(button\) => \{\s*list\.querySelectorAll\("\[data-retry-task\]"\)/s
+
+    for cls <- [".collab-task-more", ".collab-task-menu", ".collab-task-menu button.danger"], do: assert(css =~ cls)
+  end
+
+  test "swipe delete stays hidden until one row is actively swiped", %{css: css} do
+    app = File.read!("priv/web/app.js")
+
+    assert css =~ ~r/\.swipe-cell \.swipe-actions\s*\{[^}]*visibility:\s*hidden/s
+    assert css =~ ~r/\.swipe-cell \.swipe-actions\s*\{[^}]*pointer-events:\s*none/s
+    assert css =~ ~s(.swipe-cell[data-swipe-active="1"] .swipe-actions)
+    assert css =~ ~s(.swipe-cell[data-swipe-open="1"] .swipe-actions)
+    assert app =~ ~s(wrap.dataset.swipeActive = "1")
+    assert app =~ "delete wrap.dataset.swipeActive"
+    assert app =~ "delete wrap.dataset.swipeOpen"
+  end
+
   test "semantic status colors are not frozen to one theme", %{scope: scope} do
     refute scope =~
              ~r/\.(mc-file-added|mc-file-deleted|login-error|pair-msg)[^{]*\{[^}]*#[0-9a-fA-F]{3,6}/

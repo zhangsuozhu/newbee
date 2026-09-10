@@ -2017,16 +2017,22 @@ case "goal_round": break;
     }
     return '<div class="collab-accept-empty">验收契约不可用，不能自动验收</div>';
   }
+  // 验收结果：超过 2 项默认收起，卡片只显示结论与条目数，点开再看细节。
   function renderVerification(task) {
     const verification = task && task.verification;
     if (!verification || typeof verification !== "object") return "";
     const results = Array.isArray(verification.results) ? verification.results : [];
+    const failed = results.filter((r) => !(r && r.passed === true)).length;
     const details = results.map((result) => {
       const passed = result && result.passed === true;
       const label = result && (result.kind || result.path || result.program) || "验收项";
       return '<li class="' + (passed ? "passed" : "failed") + '">' + (passed ? "通过" : "失败") + " · " + escapeHtml(label) + (result && result.output ? " · " + escapeHtml(String(result.output)) : "") + "</li>";
     }).join("");
-    return '<div class="collab-verification"><strong>' + escapeHtml(verificationLabel(verification)) + "</strong>" + (details ? "<ul>" + details + "</ul>" : "") + "</div>";
+    const many = results.length > 2;
+    const verdict = results.length ? (failed ? failed + " 项未通过" : "全部通过") : "";
+    const count = results.length ? '<span class="cv-count">' + results.length + " 项" + (verdict ? " · " + verdict : "") + "</span>" : "";
+    const head = "<summary>" + escapeHtml(verificationLabel(verification)) + count + "</summary>";
+    return '<details class="collab-verification"' + (many ? "" : " open") + ">" + head + (details ? "<ul>" + details + "</ul>" : "") + "</details>";
   }
   function renderDepends(task) {
     const deps = task.depends_on || task.dependsOn || [];
@@ -2223,18 +2229,48 @@ case "goal_round": break;
     return ({ waiting: "等待任务完成", pending: "待审查", applied: "已应用", rejected: "已拒绝", cleaned: "已释放", not_applicable: "共享目录" })[status] || status || "";
   }
 
+  // 工作项操作区：只留 1 个主操作（验收/应用/领取/重试）和最多 1 个次操作，其余收进「⋯」。
+  function renderTaskActions(task, group) {
+    const status = task.status || "pending";
+    const review = state.taskReviews[task.task_id];
+    const workspace = task.workspace || null;
+    const workspaceStatus = (workspace && workspace.review_status) || "";
+    const coordinator = group.coordinator_session_id === state.sid;
+    const assigned = !!task.assigned_session_id;
+    const id = escapeHtml(task.task_id);
+    const canCancel = ["pending", "assigned", "accepted", "running", "blocked", "submitted"].includes(status) && (coordinator || task.assigned_session_id === state.sid);
+    const canRetry = coordinator && ["blocked", "failed", "cancelled"].includes(status);
+    const canReview = !!workspace && workspace.kind === "git_worktree" && ["pending", "applied", "rejected"].includes(workspaceStatus);
+    const canDecide = coordinator && workspaceStatus === "pending" && !!review;
+    const canCleanup = coordinator && ["applied", "rejected"].includes(workspaceStatus);
+
+    let primary = "";
+    if (coordinator && status === "submitted") primary = `<button class="btn-primary" data-verify-task="${id}">验收</button>`;
+    else if (canDecide) primary = `<button class="btn-primary" data-apply-task="${id}" data-sha="${escapeHtml((review && review.patch_sha256) || "")}">${review.dirty ? "应用变更" : "确认无变更"}</button>`;
+    else if (!assigned && status === "pending") primary = `<button class="btn-ghost" data-claim="${id}">领取</button>`;
+    else if (canRetry) primary = `<button class="btn-ghost" data-retry-task="${id}">重试</button>`;
+
+    const secondary = canReview ? `<button class="btn-ghost" data-review-task="${id}">${review ? "刷新变更" : "查看变更"}</button>` : "";
+
+    const menu = [];
+    if (assigned) menu.push(`<button data-open-session="${escapeHtml(task.assigned_session_id)}">查看会话</button>`);
+    if (assigned) menu.push(`<button data-message-session="${escapeHtml(task.assigned_session_id)}">发消息</button>`);
+    if (canRetry && !primary.includes("data-retry-task")) menu.push(`<button data-retry-task="${id}">重试</button>`);
+    if (canDecide) menu.push(`<button class="danger" data-reject-task="${id}">拒绝变更</button>`);
+    if (canCleanup) menu.push(`<button data-cleanup-task="${id}">释放隔离目录</button>`);
+    if (canCancel) menu.push(`<button class="danger" data-cancel-task="${id}">取消工作项</button>`);
+
+    const more = menu.length ? `<details class="collab-task-more"><summary class="icon-btn" title="更多操作" aria-label="更多操作">⋯</summary><div class="collab-task-menu">${menu.join("")}</div></details>` : "";
+    return primary || secondary || more ? `<div class="collab-task-actions">${primary}${secondary}${more}</div>` : "";
+  }
+
   function workspaceControls(task, group) {
     const workspace = task.workspace;
     if (!workspace) return "";
     const status = workspace.review_status || "waiting";
-    const coordinator = group.coordinator_session_id === state.sid;
     const review = state.taskReviews[task.task_id];
-    const reviewable = workspace.kind === "git_worktree" && ["pending", "applied", "rejected"].includes(status);
-    const reviewButton = reviewable ? `<button class="btn-ghost" data-review-task="${escapeHtml(task.task_id)}">${review ? "刷新变更" : "查看变更"}</button>` : "";
-    const decisionButtons = coordinator && status === "pending" && review ? `<button class="btn-primary" data-apply-task="${escapeHtml(task.task_id)}" data-sha="${escapeHtml(review.patch_sha256 || "")}">${review.dirty ? "应用变更" : "确认无变更"}</button><button class="btn-danger" data-reject-task="${escapeHtml(task.task_id)}">拒绝</button>` : "";
-    const cleanupButton = coordinator && ["applied", "rejected"].includes(status) ? `<button class="btn-ghost" data-cleanup-task="${escapeHtml(task.task_id)}">释放隔离目录</button>` : "";
     const badge = `<span class="collab-workspace-badge ${escapeHtml(status)}">${escapeHtml(workspaceStatusLabel(status))}</span>`;
-    return `<div class="collab-workspace"><div class="collab-workspace-head"><span>独立工作区</span>${badge}</div><div class="collab-task-actions">${reviewButton}${decisionButtons}${cleanupButton}</div>${review ? renderWorkspaceReview(review) : ""}</div>`;
+    return `<div class="collab-workspace"><div class="collab-workspace-head"><span>独立工作区</span>${badge}</div>${review ? renderWorkspaceReview(review) : ""}</div>`;
   }
 
   function renderWorkspaceReview(review) {
@@ -2286,19 +2322,14 @@ case "goal_round": break;
       const progress = task.progress ? `<div class="collab-task-progress">进度：${escapeHtml(String(task.progress))}</div>` : "";
       const resultLabel = status === "submitted" ? "提交结果" : status === "succeeded" ? "验收结果" : status === "failed" || status === "blocked" ? "失败信息" : "结果";
       const result = task.result != null && status !== "pending" && status !== "assigned" ? `<div class="collab-task-result"><strong>${resultLabel}</strong><div>${escapeHtml(formatTaskResult(task.result))}</div></div>` : "";
-      const claim = !task.assigned_session_id && status === "pending" ? `<button class="btn-ghost" data-claim="${escapeHtml(task.task_id)}">领取</button>` : "";
-      const actions = task.assigned_session_id ? `<div class="collab-task-actions"><button class="btn-ghost" data-open-session="${escapeHtml(task.assigned_session_id)}">查看会话</button><button class="btn-ghost" data-message-session="${escapeHtml(task.assigned_session_id)}">发消息</button></div>` : "";
-      const verify = group.coordinator_session_id === state.sid && status === "submitted" ? `<button class="btn-primary" data-verify-task="${escapeHtml(task.task_id)}">验收</button>` : "";
       const verification = renderVerification(task);
       const proto = task.protocol_version === 2 ? '<span class="collab-proto-badge" title="结构化验收 · 机器可验证">v2</span>' : "";
       const updated = task.updated_at ? `<span class="collab-task-updated" title="${escapeHtml(task.updated_at)}">更新 ${escapeHtml(task.updated_at.slice(0, 16).replace("T", " "))}</span>` : "";
       const scopes = task.write_scope || task.writeScope || [];
       const scope = Array.isArray(scopes) && scopes.length ? `<div class="collab-task-scope">写入：${escapeHtml(scopes.join(", "))}</div>` : "";
       const attempt = Number.isInteger(task.attempt) ? `<span class="collab-task-attempt">第 ${task.attempt + 1} 次执行</span>` : "";
-      const retry = group.coordinator_session_id === state.sid && ["blocked", "failed", "cancelled"].includes(status) ? `<button class="btn-ghost" data-retry-task="${escapeHtml(task.task_id)}">重试</button>` : "";
-      const canCancel = ["pending", "assigned", "accepted", "running", "blocked", "submitted"].includes(status) && (group.coordinator_session_id === state.sid || task.assigned_session_id === state.sid);
-      const cancelBtn = canCancel ? `<button class="btn-ghost" data-cancel-task="${escapeHtml(task.task_id)}">取消</button>` : "";
-      return `<article class="collab-task ${escapeHtml(status)}${attention ? " attention-" + attention : ""}" data-task-anchor="${escapeHtml(task.task_id)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}${proto}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))} · ${attempt} · ${updated}</div>${progress}${result}${renderAcceptance(task)}${renderDepends(task)}${scope}${renderSubmission(task)}${verification}${claim}${verify}${retry}${cancelBtn}${actions}${workspaceControls(task, group)}</article>`;
+      const taskActions = renderTaskActions(task, group);
+      return `<article class="collab-task ${escapeHtml(status)}${attention ? " attention-" + attention : ""}" data-task-anchor="${escapeHtml(task.task_id)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}${proto}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))} · ${attempt} · ${updated}</div>${progress}${result}${renderAcceptance(task)}${renderDepends(task)}${scope}${renderSubmission(task)}${verification}${taskActions}${workspaceControls(task, group)}</article>`;
 
     }).join("") + (hiddenCount ? `<div class="collab-empty">已按筛选隐藏 ${hiddenCount} 项（点“全部”查看）</div>` : "")) : '<div class="collab-empty">暂无工作项</div>';
     bindTaskActions(group, list);
@@ -2392,6 +2423,11 @@ case "goal_round": break;
       button.onclick = async () => { await hiveTaskMutation("hive.task.claim", button.dataset.claim, {}, "领取工作项"); };
     });
     list.querySelectorAll("[data-verify-task]").forEach((button) => {
+      button.onclick = async () => {
+        button.disabled = true;
+        try { await verifyCollaborationTask(button.dataset.verifyTask); } finally { button.disabled = false; }
+      };
+    });
     list.querySelectorAll("[data-retry-task]").forEach((button) => {
       button.onclick = async () => {
         button.disabled = true;
@@ -2404,11 +2440,12 @@ case "goal_round": break;
         try { await cancelCollaborationTask(button.dataset.cancelTask); } finally { button.disabled = false; }
       };
     });
-
-      button.onclick = async () => {
-        button.disabled = true;
-        try { await retryCollaborationTask(button.dataset.retryTask); } finally { button.disabled = false; }
-      };
+    // 「⋯」菜单内的操作点完就收起，避免遮挡下一次操作。
+    list.querySelectorAll(".collab-task-menu button").forEach((button) => {
+      button.addEventListener("click", () => {
+        const menu = button.closest("details.collab-task-more");
+        if (menu) menu.open = false;
+      });
     });
     list.querySelectorAll("[data-review-task]").forEach((button) => { button.onclick = () => reviewTaskWorkspace(button.dataset.reviewTask); });
     list.querySelectorAll("[data-apply-task]").forEach((button) => { button.onclick = () => applyTaskWorkspace(button.dataset.applyTask, button.dataset.sha); });
@@ -2995,18 +3032,19 @@ case "goal_round": break;
     if (!wrap) return;
     const main = wrap.querySelector(":scope > .session-item");
     if (main) main.style.transform = "";
+    delete wrap.dataset.swipeActive;
     delete wrap.dataset.swipeOpen;
     if (openSwipeWrap === wrap) openSwipeWrap = null;
   }
   function closeAllSwipeCells(except) {
-    document.querySelectorAll('.swipe-cell[data-swipe-open="1"]').forEach((w) => {
+    document.querySelectorAll('.swipe-cell[data-swipe-open="1"], .swipe-cell[data-swipe-active="1"]').forEach((w) => {
       if (w !== except) closeSwipeCell(w);
     });
     if (!except) openSwipeWrap = null;
   }
   function swipeActionsWidth(wrap) {
     const el = wrap && wrap.querySelector(":scope > .swipe-actions");
-    return (el && el.offsetWidth) || 84;
+    return (el && el.offsetWidth) || 68;
   }
   // 触摸左滑（移动端）+ 鼠标左拖（桌面端）：横向位移才劫持，纵向照常滚动列表。
   function attachSwipeGestures(wrap, main) {
@@ -3026,9 +3064,10 @@ case "goal_round": break;
       if (tHorizontal === null) {
         if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
         tHorizontal = Math.abs(dx) > Math.abs(dy);
-        if (!tHorizontal) { tDragging = false; main.style.transition = ""; return; }
+        if (!tHorizontal) { tDragging = false; delete wrap.dataset.swipeActive; main.style.transition = ""; return; }
       }
       if (!tHorizontal) return;
+      wrap.dataset.swipeActive = "1";
       const w = swipeActionsWidth(wrap);
       let x = tBase + dx;
       if (x > 0) x = 0;
@@ -3040,6 +3079,7 @@ case "goal_round": break;
       if (!tDragging && !main.dataset.dragged) return;
       tDragging = false;
       main.style.transition = "";
+      delete wrap.dataset.swipeActive;
       const w = swipeActionsWidth(wrap);
       let x0 = tBase;
       try {
@@ -3057,7 +3097,7 @@ case "goal_round": break;
       setTimeout(() => { if (wrap.dataset.swipeOpen !== "1") delete main.dataset.dragged; }, 60);
     };
     main.addEventListener("touchend", tEnd);
-    main.addEventListener("touchcancel", () => { tDragging = false; main.style.transition = ""; if (wrap.dataset.swipeOpen === "1") { main.style.transform = "translateX(" + (-swipeActionsWidth(wrap)) + "px)"; } else closeSwipeCell(wrap); });
+    main.addEventListener("touchcancel", () => { tDragging = false; delete wrap.dataset.swipeActive; main.style.transition = ""; if (wrap.dataset.swipeOpen === "1") { main.style.transform = "translateX(" + (-swipeActionsWidth(wrap)) + "px)"; } else closeSwipeCell(wrap); });
     // 桌面端：按住左键横向拖拽同样展开/收起；纵向移动不处理。
     // window 监听只在本次拖拽期间挂载，mouseup 后立即摘掉，避免每条会话常驻两个全局监听。
     main.addEventListener("mousedown", (e) => {
@@ -3070,6 +3110,7 @@ case "goal_round": break;
         const dx = ev.clientX - mStartX;
         if (Math.abs(dx) > 6) mMoved = Math.abs(dx);
         if (mMoved > 6) {
+          wrap.dataset.swipeActive = "1";
           const w = swipeActionsWidth(wrap);
           let x = mBase + dx;
           if (x > 0) x = 0;
@@ -3083,6 +3124,7 @@ case "goal_round": break;
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
         main.style.transition = "";
+        delete wrap.dataset.swipeActive;
         if (mMoved > 6) {
           const w = swipeActionsWidth(wrap);
           const x = mBase + (ev.clientX - mStartX);
@@ -8570,6 +8612,58 @@ case "goal_round": break;
       if (dx < 0 && !mcOpen() && !sidebarOpen()) { openMC(); return; }
     }
   }, { passive: true });
+  // ── 手机端底部详情抽屉：默认收起，上滑看 token 用量等详细信息，输入框始终贴底 ──
+  (function() {
+    var wrap = document.getElementById('mobile-details');
+    var handle = document.getElementById('mobile-details-handle');
+    if (!wrap || !handle) return;
+    var OPEN_H = 168;
+    var dragging = false, startY = 0, startH = 0;
+
+    function setOpen(open) {
+      wrap.classList.toggle('open', !!open);
+      handle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      wrap.style.removeProperty('height');
+    }
+    function currentH() { return wrap.getBoundingClientRect().height; }
+
+    handle.addEventListener('pointerdown', function(e) {
+      if (!isMobile()) return;
+      dragging = true;
+      wrap.classList.add('dragging');
+      startY = e.clientY;
+      startH = currentH();
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+    });
+    handle.addEventListener('pointermove', function(e) {
+      if (!dragging) return;
+      var dy = startY - e.clientY;
+      var h = Math.max(0, Math.min(OPEN_H, startH + dy));
+      wrap.style.height = h + 'px';
+      wrap.classList.toggle('open', h > 24);
+    });
+    var lastDragDy = 0;
+    function finish(e) {
+      if (!dragging) return;
+      dragging = false;
+      wrap.classList.remove('dragging');
+      var dy = startY - (e && typeof e.clientY === 'number' ? e.clientY : startY);
+      lastDragDy = dy;
+      if (Math.abs(dy) < 6) { wrap.style.removeProperty('height'); return; }
+      setOpen(startH + dy > OPEN_H * 0.4);
+    }
+    handle.addEventListener('pointerup', finish);
+    handle.addEventListener('pointercancel', finish);
+    // 轻点开关（拖拽后不重复触发）
+    handle.addEventListener('click', function() {
+      if (Math.abs(lastDragDy) >= 6) { lastDragDy = 0; return; }
+      setOpen(!wrap.classList.contains('open'));
+    });
+    handle.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(!wrap.classList.contains('open')); }
+    });
+    setOpen(false);
+  })();
   window.addEventListener('resize', function() {
     if (isMobile()) {}
   });
