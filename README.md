@@ -170,6 +170,8 @@ cat > ~/.newbee/model.json <<'EOF'
       "models": ["chat-model", "response-model"],
       "modelApis": {"response-model": "openai-responses"},
       "contextWindows": {"response-model": 200000},
+      "capabilities": {"vision": true, "maxImagesPerRequest": 24},
+      "modelCapabilities": {"chat-model": {"vision": false}},
       "responsesContinuation": false,
       "modelResponsesContinuations": {"response-model": true}
     }
@@ -185,6 +187,9 @@ EOF
 # `modelApis` 为单模型覆盖。不要使用 `responses` 作为新配置值（旧配置会兼容迁移）。
 # `responsesContinuation` 只控制 Responses API 的 previous_response_id + store:true，
 # 不会切换 API；不支持服务端存储的网关请保持 false。失效 response id 会自动回退完整请求。
+# `capabilities` 声明该 provider 模型的默认能力，`modelCapabilities` 按模型覆盖
+# （vision / imageMaxBytes / maxImagesPerRequest / maxRequestImageBytes）；角色级
+# `vision` 仍优先。图片超预算时在请求投影里按"最老优先"卸载为文本占位，transcript 不动。
 export OPENROUTER_API_KEY=sk-or-v1-...
 
 # 启动

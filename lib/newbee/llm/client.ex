@@ -24,6 +24,7 @@ defmodule Newbee.LLM.Client do
             reasoning_effort: nil,
             vision: true,
             context_window: nil,
+            capabilities: %{},
             interrupt_scope: nil,
             cache_key: nil,
             session_id: nil,
@@ -89,6 +90,9 @@ defmodule Newbee.LLM.Client do
 
     continuation = continuation_supported? and Keyword.get(opts, :responses_continuation, false)
 
+    capabilities = Newbee.LLM.Capabilities.normalize(Keyword.get(opts, :capabilities))
+    vision = Keyword.get(opts, :vision, Map.get(capabilities, :vision, true))
+
     %__MODULE__{
       model: Keyword.get(opts, :model, @default_model),
       provider: provider,
@@ -96,7 +100,8 @@ defmodule Newbee.LLM.Client do
       base_url: base_url,
       api: api,
       reasoning_effort: normalize_reasoning_effort(Keyword.get(opts, :reasoning_effort)),
-      vision: Keyword.get(opts, :vision, true),
+      vision: vision,
+      capabilities: Map.put(capabilities, :vision, vision),
       context_window: Keyword.get(opts, :context_window),
       interrupt_scope: Keyword.get(opts, :interrupt_scope),
       cache_key: cache_key,
@@ -370,6 +375,9 @@ defmodule Newbee.LLM.Client do
   end
 
   defp stream_chat_request_chat(%__MODULE__{} = client, messages, on_text, on_reasoning, tools) do
+    # 请求投影：超出预算的旧图片换成文本占位（transcript 不动）。确定性是缓存前缀的前提。
+    {messages, dropped} = Newbee.LLM.ImagePolicy.project_for(client, messages)
+    if dropped > 0, do: Newbee.DebugLog.log(:llm, "image offload dropped=" <> Integer.to_string(dropped))
     messages = sanitize_messages(messages)
     Newbee.DebugLog.log(:llm, "start model=#{client.model} messages=#{length(messages)}")
     t0 = System.monotonic_time(:millisecond)
@@ -501,7 +509,38 @@ defmodule Newbee.LLM.Client do
   返回 {:ok, content, %{usage, logprobs}} | {:error, term}。logprobs 缺失时为 nil。
   """
   def complete(%__MODULE__{} = client, messages, opts \\ []) do
-    messages = sanitize_messages(messages)
+    # 请求投影：超出预算的旧图片换成文本占位（transcript 不动）。确定性是缓存前缀的前提。
+    {messages, dropped} = Newbee.LLM.ImagePolicy.project_for(client, messages)
+    if dropped > 0, do: Newbee.DebugLog.log(:llm, "image offload dropped=" <> Integer.to_string(dropped))
+
+    case client.responses_mode do
+      :responses -> complete_responses(client, messages, opts)
+      _ -> complete_chat(client, sanitize_messages(messages), opts)
+    end
+  end
+
+  # responses 路由：非流式补全也必须打 /responses。原先 complete 永远打
+  # chat/completions，responses 网关（如 opencode）直接 500，压缩摘要与判分全废。
+  defp complete_responses(client, messages, opts) do
+    t0 = System.monotonic_time(:millisecond)
+
+    Newbee.DebugLog.log(
+      :llm,
+      "complete start model=#{client.model} messages=#{length(messages)} api=responses"
+    )
+
+    result = Newbee.LLM.Responses.complete(client, messages, opts)
+
+    Newbee.DebugLog.log(
+      :llm,
+      "complete done in #{System.monotonic_time(:millisecond) - t0}ms result=#{elem(result, 0)}"
+    )
+
+    observe_provider(result, client, t0, "complete", messages)
+    result
+  end
+
+  defp complete_chat(client, messages, opts) do
     Newbee.DebugLog.log(:llm, "complete start model=#{client.model} messages=#{length(messages)}")
 
     effort = normalize_reasoning_effort(client.reasoning_effort)
@@ -572,6 +611,13 @@ defmodule Newbee.LLM.Client do
           end
 
         {:ok, %{status: status} = resp} when status in @overload_statuses ->
+          Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
+          {:error, {:http_error, status, resp.body}}
+
+        # 任何其它非 2xx 状态（400/401/403/404...）都必须是可恢复错误值：
+        # 之前这个 case 只覆盖 200、过载状态与 transport 错误，其它状态会
+        # CaseClauseError 崩溃——摘要回放/判分调用会因此炸掉调用方。
+        {:ok, %{status: status} = resp} ->
           Newbee.LLM.HttpDebug.note_current_response(resp.status, resp.headers)
           {:error, {:http_error, status, resp.body}}
 

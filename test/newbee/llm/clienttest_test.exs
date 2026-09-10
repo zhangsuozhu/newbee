@@ -291,6 +291,46 @@ defmodule Newbee.LLM.ClientTest do
     assert usage["cache_read_tokens"] == 9
   end
 
+  test "complete 非 2xx 非过载状态返回错误值而不是崩溃" do
+    for status <- [400, 401, 403, 404, 422] do
+      plug = fn conn ->
+        conn
+        |> Plug.Conn.put_status(status)
+        |> Req.Test.json(%{"error" => %{"message" => "nope"}})
+      end
+
+      client =
+        Newbee.LLM.Client.new(
+          model: "test/m",
+          api_key: "t",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:error, {:http_error, ^status, _body}} =
+               Client.complete(client, [%{"role" => "user", "content" => "hi"}])
+    end
+  end
+
+  test "complete 过载状态耗尽重试后返回错误值" do
+    plug = fn conn ->
+      conn
+      |> Plug.Conn.put_status(503)
+      |> Req.Test.json(%{"error" => %{"message" => "overloaded"}})
+    end
+
+    client =
+      Newbee.LLM.Client.new(
+        model: "test/m",
+        api_key: "t",
+        base_url: "http://localhost",
+        req_options: [plug: plug, retry: false]
+      )
+
+    assert {:error, {:http_error, 503, _body}} =
+             Client.complete(client, [%{"role" => "user", "content" => "hi"}])
+  end
+
   describe "responses_mode" do
     test "API 字段决定端点，续写必须显式启用" do
       client = Client.new(api: "openai-responses")

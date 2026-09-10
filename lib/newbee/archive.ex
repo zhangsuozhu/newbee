@@ -183,14 +183,30 @@ defmodule Newbee.Archive do
     case Keyword.get(opts, :envelope) do
       env when is_map(env) ->
         if Newbee.RequestEnvelope.hit_eligible?(env, client) do
-          with {:ok, text} <- llm_digest_replay(client, env, seg_id) do
-            record_digest(session, seg_id, text)
-          end
+          replay_digest(session, seg_id, client, env)
         else
           extract_digest(session, seg_id, client)
         end
 
       _ ->
+        extract_digest(session, seg_id, client)
+    end
+  end
+
+  # 命中路径失败必须回退到有界抽取：回放请求对路由更敏感（例如网关不接受
+  # chat/completions 而只服务 Responses），失败若直接吞掉，这一段就永远没有摘要，
+  # 压缩后上下文会静默退化。回退只影响这一次 digest，不伪装命中。
+  defp replay_digest(session, seg_id, client, env) do
+    case llm_digest_replay(client, env, seg_id) do
+      {:ok, text} ->
+        record_digest(session, seg_id, text)
+
+      {:error, reason} ->
+        Newbee.DebugLog.log(
+          :compact,
+          "digest replay failed seg=" <> seg_id <> " reason=" <> inspect(reason) <> "; falling back to extract"
+        )
+
         extract_digest(session, seg_id, client)
     end
   end

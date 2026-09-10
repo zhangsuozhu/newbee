@@ -340,7 +340,7 @@ defmodule Newbee.Agent.Loop do
   end
 
   def handle_call({:submit_image, path, prompt}, _from, state) do
-    case Newbee.LLM.Image.message(path, prompt) do
+    case Newbee.LLM.Image.message(path, prompt, image_opts(state)) do
       {:ok, message} ->
         submit_message(state, message)
 
@@ -354,7 +354,7 @@ defmodule Newbee.Agent.Loop do
   end
 
   def handle_call({:submit_images, data_urls, text}, _from, state) do
-    case Newbee.LLM.Image.message_with_images(data_urls, text) do
+    case Newbee.LLM.Image.message_with_images(data_urls, text, image_opts(state)) do
       {:ok, message} ->
         submit_message(state, message)
 
@@ -1419,7 +1419,7 @@ defmodule Newbee.Agent.Loop do
         end
 
       case result do
-        {:ok, item} -> {:cont, {push_msg(st, steering_message(item)), count + 1}}
+        {:ok, item} -> {:cont, {push_msg(st, steering_message(item, st)), count + 1}}
         _ -> {:halt, {st, count}}
       end
     end)
@@ -1427,15 +1427,27 @@ defmodule Newbee.Agent.Loop do
 
   defp consume_steering(state), do: {state, 0}
 
-  defp steering_message(%{kind: "images"} = item) do
-    case Newbee.LLM.Image.message_with_images(Map.get(item, :images, []), Map.get(item, :text, "")) do
+  defp steering_message(%{kind: "images"} = item, state) do
+    case Newbee.LLM.Image.message_with_images(
+           Map.get(item, :images, []),
+           Map.get(item, :text, ""),
+           image_opts(state)
+         ) do
       {:ok, message} -> message
       {:error, _} -> %{"role" => "user", "content" => Map.get(item, :text, Map.get(item, :preview, ""))}
     end
   end
 
-  defp steering_message(item) do
+  defp steering_message(item, _state) do
     %{"role" => "user", "content" => Newbee.Commands.expand_at_files(Map.get(item, :text, ""))}
+  end
+
+  # 单张图片字节上限来自模型能力（capabilities.imageMaxBytes），缺省沿用模块默认。
+  defp image_opts(state) do
+    case get_in(state.client, [:capabilities, :image_max_bytes]) do
+      n when is_integer(n) and n > 0 -> [max_bytes: n]
+      _ -> []
+    end
   end
 
   defp call_client(fun, messages, on_text, on_reasoning) do

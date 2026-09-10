@@ -28,6 +28,9 @@ defmodule Newbee.RequestEnvelope do
   def record(%Newbee.Session{} = session, %Newbee.LLM.Client{} = client, messages, tools)
       when is_list(messages) and is_list(tools) do
     path = path_for(session)
+    # 快照必须记"真正会发出去的那份"：请求投影（图像卸载）在此先行，否则
+    # 摘要回放的前缀与路由请求逐字节不一致，"命中"就是假的。
+    {messages, _dropped} = Newbee.LLM.ImagePolicy.project_for(client, messages)
 
     route = Newbee.LLM.Client.cache_route(client)
 
