@@ -312,6 +312,24 @@ defmodule Newbee.ArchiveTest do
     assert Archive.digests(s)[seg] =~ "回放摘要"
   end
 
+  test "命中路径失败 → 回退抽取路径（不丢这段摘要）", %{session: s} do
+    feed(s, conv(6))
+    env_msgs = [%{"role" => "system", "content" => "BASE-SYS"}] ++ List.flatten(conv(6))
+    client = replay_fails_client(self())
+    :ok = Newbee.RequestEnvelope.record(s, client, env_msgs)
+    env = Newbee.RequestEnvelope.load(s)
+
+    {:ok, %{segment: seg}} = Archive.compact(s, retain: 4, client: client, envelope: env)
+
+    # 第一次是命中路径的回放（多消息，被 400 拒绝），第二次是回退的抽取（单消息，成功）
+    assert_received {:digest_request, replay}
+    assert length(replay) > 1
+    assert_received {:digest_request, extract}
+    assert length(extract) == 1
+    assert hd(extract)["content"] =~ "结构化抽取"
+    assert Archive.digests(s)[seg] =~ "抽取路径摘要"
+  end
+
   test "无 envelope → 抽取路径（单 user 消息）", %{session: s} do
     feed(s, conv(6))
     {:ok, %{segment: _seg}} = Archive.compact(s, retain: 4, client: capture_client(self()))
@@ -390,6 +408,34 @@ defmodule Newbee.ArchiveTest do
         ],
         "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 5}
       })
+    end
+
+    Newbee.LLM.Client.new(
+      model: "test/digest-model",
+      api_key: "test",
+      base_url: "http://localhost",
+      req_options: [plug: plug, retry: false]
+    )
+  end
+
+  # 命中路径专用 fake：多消息（回放）一律 400，单消息（抽取回退）成功。
+  # 模拟"envelope 资格成立、但该 route 不支持 chat/completions 回放"的真实情形。
+  defp replay_fails_client(test_pid) do
+    plug = fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      req = Jason.decode!(body)
+      send(test_pid, {:digest_request, req["messages"]})
+
+      if length(req["messages"]) > 1 do
+        conn
+        |> Plug.Conn.put_status(400)
+        |> Req.Test.json(%{"error" => %{"message" => "replay not supported on this route"}})
+      else
+        Req.Test.json(conn, %{
+          "choices" => [%{"message" => %{"role" => "assistant", "content" => "抽取路径摘要"}}],
+          "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 5}
+        })
+      end
     end
 
     Newbee.LLM.Client.new(

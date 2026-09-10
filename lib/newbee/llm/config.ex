@@ -12,6 +12,10 @@ defmodule Newbee.LLM.Config do
   - apiKey 支持 `"${ENV_VAR}"` 环境变量展开、`"${prime:NAME}"` 从 ~/.prime/agent/auth.json 取 key，密钥不必落盘。
   - roles 对应 DESIGN §3.8 的模型角色路由（default/worker/adapter/explorer...）。
   - 解析顺序：$NEWBEE_MODEL_JSON → ./model.json → ./model.local.json → ~/.newbee/model.json。
+  - 模型能力（capabilities）声明见 `Newbee.LLM.Capabilities`：
+    `providers.<name>.capabilities` 是该 provider 的默认能力，
+    `providers.<name>.modelCapabilities.<model-id>` 按模型覆盖，
+    角色级 `roles.<role>.vision` 仍可覆盖 `vision`。
   """
 
   @roles ["default", "worker", "adapter", "explorer", "plan", "advisor", "verifier"]
@@ -48,7 +52,7 @@ defmodule Newbee.LLM.Config do
       context_window:
         provider_context_override(provider, model) || role_cfg["contextWindow"] ||
           provider["contextWindow"],
-      vision: Map.get(role_cfg, "vision", Map.get(provider, "vision", true)),
+      capabilities: capabilities_for(provider, model, role_cfg),
       responses_continuation: model_responses_continuation(provider, model),
       # 会话级缓存路由键：显式 opts > 角色配置 cacheKey；nil 时由 Loop 补齐。
       cache_key: Keyword.get(opts, :cache_key) || role_cfg["cacheKey"],
@@ -228,6 +232,8 @@ defmodule Newbee.LLM.Config do
         - "contextWindows"   — 单模型覆盖表 %{"model" => n}（空 map 清除）
         - "responsesContinuation" — provider 级 Responses 续写默认值
         - "modelResponsesContinuations" — 单模型续写覆盖表
+        - "capabilities"  — provider 级模型能力默认值（见 Newbee.LLM.Capabilities）
+        - "modelCapabilities" — %{"model" => capabilities} 按模型覆盖该默认值
         - "extras"    — %{"k" => v} 额外字段，原样写入（保留键外的任意字段）
         - "roles"     — %{"role" => model_id} 绑定；model_id 为 nil/"" 解绑
   返回 :ok | {:error, reason}。校验失败时不落盘。
@@ -292,6 +298,8 @@ defmodule Newbee.LLM.Config do
         |> maybe_put_ctxws(attrs["contextWindows"])
         |> maybe_put_resp_cont(attrs["responsesContinuation"])
         |> maybe_put_model_resp_cont(attrs["modelResponsesContinuations"])
+        |> maybe_put_capabilities(attrs["capabilities"])
+        |> maybe_put_model_capabilities(attrs["modelCapabilities"])
         |> Map.merge(sanitize_extras(attrs["extras"]))
 
       providers =
@@ -401,9 +409,61 @@ defmodule Newbee.LLM.Config do
 
   defp maybe_put_model_resp_cont(provider, _), do: provider
 
+  # ── 模型能力（capabilities）──
+  # provider 默认 + 按模型覆盖 + 角色级 vision；旧的 provider["vision"] 折成默认值。
+  defp capabilities_for(provider, model, role_cfg) do
+    provider
+    |> Map.get("capabilities", %{})
+    |> Newbee.LLM.Capabilities.merge(model_capabilities(provider, model))
+    |> Newbee.LLM.Capabilities.merge(%{"vision" => Map.get(provider, "vision")})
+    |> Newbee.LLM.Capabilities.put_vision(Map.get(role_cfg, "vision"))
+  end
+
+  defp model_capabilities(provider, model) when is_binary(model) do
+    case Map.get(provider, "modelCapabilities") do
+      %{} = map -> Map.get(map, model, %{})
+      _ -> %{}
+    end
+  end
+
+  defp model_capabilities(_provider, _model), do: %{}
+
+  # attrs 未提供能力字段时保留既有声明：WebUI 表单不认识这些字段，不能因此抹掉配置文件。
+  defp maybe_put_capabilities(provider, nil), do: provider
+
+  defp maybe_put_capabilities(provider, attrs) when is_map(attrs) do
+    case Newbee.LLM.Capabilities.sanitize(attrs) do
+      clean when map_size(clean) == 0 -> Map.delete(provider, "capabilities")
+      clean -> Map.put(provider, "capabilities", clean)
+    end
+  end
+
+  defp maybe_put_capabilities(provider, _attrs), do: provider
+
+  defp maybe_put_model_capabilities(provider, nil), do: provider
+
+  defp maybe_put_model_capabilities(provider, attrs) when is_map(attrs) do
+    clean =
+      Enum.reduce(attrs, %{}, fn {model, caps}, acc ->
+        model = to_string(model)
+
+        case Newbee.LLM.Capabilities.sanitize(caps) do
+          caps when map_size(caps) == 0 -> acc
+          _caps when model == "" -> acc
+          caps -> Map.put(acc, model, caps)
+        end
+      end)
+
+    if map_size(clean) > 0,
+      do: Map.put(provider, "modelCapabilities", clean),
+      else: Map.delete(provider, "modelCapabilities")
+  end
+
+  defp maybe_put_model_capabilities(provider, _attrs), do: provider
+
   defp sanitize_extras(map) when is_map(map) do
     reserved =
-      ~w(newName baseUrl api apiKey models modelApis contextWindow contextWindows responsesContinuation modelResponsesContinuations roles extras)
+      ~w(newName baseUrl api apiKey models modelApis contextWindow contextWindows responsesContinuation modelResponsesContinuations capabilities modelCapabilities roles extras)
 
     Map.drop(map, reserved)
   end

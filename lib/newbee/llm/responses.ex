@@ -11,6 +11,7 @@ defmodule Newbee.LLM.Responses do
   @capability_key {__MODULE__, :capabilities}
 
   def request(client, messages, tools, opts \\ []) do
+    {messages, _dropped} = Newbee.LLM.ImagePolicy.project_for(client, messages)
     logical_input = input(messages)
     wire_tools = tools(tools)
 
@@ -22,6 +23,64 @@ defmodule Newbee.LLM.Responses do
 
     run_request(client, logical_input, wire_tools, opts, state)
   end
+
+  @doc """
+  非流式补全：`Newbee.LLM.Client.complete/3` 在 responses 路由上的实现。
+
+  `Client.complete/3` 原先永远 POST `chat/completions`，于是 responses 路由上
+  （`api: auto`/`openai-responses`）压缩摘要、进度判分、advisor 与 PPT 判分全部失效。
+  这里复用流式路径的输入转换、请求构造与 `parse_with_id/1`，只把 `stream` 关掉走 JSON 分支，
+  返回契约与 `Client.complete/3` 保持一致：`{:ok, content, %{usage, logprobs}}`。
+  """
+  def complete(client, messages, opts \\ []) do
+    logical_input = input(messages)
+    wire_tools = tools(Keyword.get(opts, :tools, []))
+    caps = capabilities(client)
+
+    body =
+      full_body(client, logical_input, wire_tools, opts, %{caps | stream: false, continuation: false})
+      |> normalize_output_limit(opts)
+      |> drop_empty_tools(wire_tools)
+
+    case perform(client, body, fn _ -> :ok end, fn _ -> :ok end) do
+      {:ok, {:json, response_body}} ->
+        case parse_with_id(response_body) do
+          {:ok, message, usage, _response_id} ->
+            {:ok, message["content"] || "", %{usage: usage, logprobs: nil}}
+
+          error ->
+            error
+        end
+
+      {:ok, other} ->
+        {:error, {:bad_response, other}}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  # 调用方沿用 chat/completions 的 `max_tokens` 口径（archive 摘要传 extra: %{max_tokens: n}）；
+  # Responses 的字段名是 `max_output_tokens`，不翻译会被网关当未知字段拒绝。
+  defp normalize_output_limit(body, opts) do
+    limit =
+      body[:max_tokens] || body["max_tokens"] || Keyword.get(opts, :max_tokens)
+
+    case limit do
+      n when is_integer(n) and n > 0 ->
+        body
+        |> Map.delete(:max_tokens)
+        |> Map.delete("max_tokens")
+        |> Map.put(:max_output_tokens, n)
+
+      _ ->
+        body
+    end
+  end
+
+  # 无工具时不出 tools 键：与 Client.complete/3 的 chat 路径一致，避免空数组被网关拒绝。
+  defp drop_empty_tools(body, []), do: Map.delete(body, :tools)
+  defp drop_empty_tools(body, _wire_tools), do: body
 
   def input(messages) do
     Enum.flat_map(messages, fn

@@ -81,6 +81,110 @@ defmodule Newbee.LLM.ResponsesTest do
     assert usage["cache_write_tokens"] == 3
   end
 
+  describe "complete/3 on a responses route" do
+    test "posts /responses (not chat/completions) and returns Client.complete's contract" do
+      test_pid = self()
+
+      plug = fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:request, conn.request_path, Jason.decode!(body)})
+
+        Req.Test.json(conn, %{
+          "output" => [
+            %{
+              "type" => "message",
+              "content" => [%{"type" => "output_text", "text" => "摘要正文"}]
+            }
+          ],
+          "usage" => %{
+            "input_tokens" => 30,
+            "output_tokens" => 7,
+            "total_tokens" => 37,
+            "input_tokens_details" => %{"cached_tokens" => 24}
+          }
+        })
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: "muse-spark-1.2-contributor",
+          api_key: "test",
+          base_url: "http://localhost",
+          cache_key: "newbee-responses-session",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:ok, "摘要正文", %{usage: usage, logprobs: nil}} =
+               Client.complete(client, [%{"role" => "user", "content" => "压缩这段历史"}],
+                 tools: Newbee.Codec.tools(),
+                 tool_choice: "none",
+                 temperature: nil,
+                 extra: %{max_tokens: 2000}
+               )
+
+      assert_received {:request, "/responses", body}
+      assert body["stream"] == false
+      assert body["input"] == [%{"role" => "user", "content" => "压缩这段历史"}]
+      assert body["prompt_cache_key"] == "newbee-responses-session"
+
+      # max_tokens 必须翻译成 Responses 的 max_output_tokens，否则网关当未知字段拒绝
+      assert body["max_output_tokens"] == 2000
+      refute Map.has_key?(body, "max_tokens")
+
+      # 调用方显式传 temperature: nil 时不写字段（压缩回放要求与路由请求同形）
+      refute Map.has_key?(body, "temperature")
+
+      assert [%{"type" => "function", "name" => "run_elixir"} | _] = body["tools"]
+
+      assert usage["prompt_tokens"] == 30
+      assert usage["cache_read_tokens"] == 24
+    end
+
+    test "omits tools when none are given" do
+      test_pid = self()
+
+      plug = fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:request, Jason.decode!(body)})
+        Req.Test.json(conn, %{"output" => [], "usage" => %{}})
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: "m",
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:ok, "", %{usage: _}} = Client.complete(client, [%{"role" => "user", "content" => "hi"}])
+      assert_received {:request, body}
+      refute Map.has_key?(body, "tools")
+    end
+
+    test "non-2xx returns an error value instead of crashing" do
+      plug = fn conn ->
+        conn
+        |> Plug.Conn.put_status(500)
+        |> Req.Test.json(%{"error" => %{"message" => "Internal server error"}})
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: "m",
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:error, {:http_error, 500, _body}} =
+               Client.complete(client, [%{"role" => "user", "content" => "hi"}])
+    end
+  end
+
   test "explicit prompt cache options are sent only when configured" do
     test_pid = self()
 

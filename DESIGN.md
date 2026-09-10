@@ -415,6 +415,28 @@ ledger compactions.jsonl（append-only；tail_sha 锚自校验；尾行损坏整
 - **过载重试**：429/500/502/503/529 退避重试（默认 5×1s），与 Completions 路径摘参重试双保险。
 - **前缀缓存兼容**：`Newbee.RequestEnvelope` 记录上次路由请求的可缓存前缀快照（消息+tools+route 逐字节），Archive 摘要请求 = 快照严格前缀 + 尾部压缩指令 → 前缀缓存命中成立（未命中绝不伪装命中）。
 
+
+### 6.9 模型能力声明与图片请求策略（2026-09 落地）
+
+**能力即路由事实**（`Newbee.LLM.Capabilities`）：模型能做什么不再散落成 if，而是配置文件里的声明，折进 `%Newbee.LLM.Client{capabilities: %{}}`：
+
+| 配置键 | 含义 |
+|---|---|
+| `providers.<name>.capabilities` | 该 provider 模型的默认能力 |
+| `providers.<name>.modelCapabilities.<model>` | 按模型覆盖 |
+| `roles.<role>.vision` | 角色级 `vision` 覆盖（优先级最高，兼容既有配置） |
+
+已识别能力键：`vision`、`imageMaxBytes`、`maxImagesPerRequest`、`maxRequestImageBytes`、`systemPromptUpdate`。未识别键与非法值在加载时丢弃，不静默透传；WebUI 模型表单不认识这些字段，也不会因此抹掉配置里的声明。
+
+**图片预算与最老优先卸载**（`Newbee.LLM.ImagePolicy`）：会话图片以内联 data URL 随历史被永久重发，旧截图既烧 token 又撑坏上下文。请求投影阶段按"张数 / 总字节 / 单张字节"预算**从最新往旧保留**，超预算的图片替换为稳定文本占位符（`[image omitted: id=… mime=… bytes=…]`）；transcript 与 UI 回放不动。占位符对同一图片恒定，投影是纯函数——这是它能与缓存前缀快照共存的前提：`RequestEnvelope` 记录的就是投影后的字节，否则摘要回放的"命中"是假的。
+
+**命中失败必须回退**：Archive 摘要的 envelope 回放路径失败时回退到有界抽取，不静默丢掉这段摘要。
+
+**命中验证**：`test/newbee/llm/cache_hit_e2e_test.exs` 对真实端点断言 `cache_read_tokens > 0`（重复请求、前缀扩展、envelope 严格前缀回放三条）。形状单测只能证明"我们发了什么"，证明不了"provider 认了这个前缀"；默认跳过，`NEWBEE_CACHE_E2E=1` 打开。
+
+**非流式补全的协议分流**：`Client.complete/3` 原先永远 POST `chat/completions`，在 Responses 路由上（压缩摘要、进度判分、advisor、PPT 判分都用它）必然失败。现按 `responses_mode` 分流到 `Newbee.LLM.Responses.complete/3`，并把 `max_tokens` 翻译为 `max_output_tokens`。
+
+---
 ---
 
 ## 7. Worker / Adapter：两个真正的模型身份
@@ -802,6 +824,8 @@ lib/newbee/
 │   ├── cert.ex / server.ex / workspace.ex
 ├── llm/
 │   ├── client.ex responses.ex  # 流式 Completions + Responses API 双协议
+
+│   ├── capabilities.ex image_policy.ex  # 模型能力声明 + 图片请求投影（§6.9）
 ├── memory.ex / permissions.ex / diff.ex / status.ex
 ├── tui/ cli.ex commands.ex daemon.ex   # 视图与控制，不持有环境状态
 └── plugins/                    # 内置插件（兼容包装器）：
