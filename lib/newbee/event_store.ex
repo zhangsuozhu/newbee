@@ -48,7 +48,67 @@ defmodule Newbee.EventStore do
     path
     |> read_frames()
     |> Enum.filter(&(&1["id"] > from_id))
-    |> Enum.map(fn f -> %{id: f["id"], topic: String.to_atom(f["topic"]), data: f["data"], at: f["at"]} end)
+    |> Enum.map(&to_event/1)
+  end
+
+  @doc """
+  只重放**末尾 n 条**事件（`replay/2 |> Enum.take(-n)` 的等值快路径）。
+
+  大事件流（>100MB）下 `replay/2` 需要整文件读入 + 逐行解码，n 再小也躲不掉；
+  本函数改用尾部窗口读取（见 `Newbee.JsonlTail`），代价只与 n 相关。
+
+  语义：
+  - 窗口内非末尾出现坏帧（真实损坏）→ 退回 `replay/2`，保持「首个坏帧之后全部丢弃」；
+  - 末尾坏帧（崩溃半帧）→ 丢弃该行，与前向扫描一致；
+  - 尾部窗口不足 n 条完整帧 → 退回 `replay/2`。
+  """
+  def replay_tail(path, n) when is_integer(n) and n > 0 do
+    # 多取一行：崩溃半帧占位时仍能凑够 n 条
+    case Newbee.JsonlTail.read_lines(path, n + 1, keep_partial: true) do
+      {:ok, _lines, :whole} -> replay(path) |> Enum.take(-n)
+      {:ok, lines, :partial} -> decode_tail(path, lines, n)
+      {:error, reason} -> read_failure(path, reason)
+    end
+  end
+
+  defp decode_tail(path, lines, n) do
+    last = length(lines) - 1
+
+    decoded =
+      lines
+      |> Enum.with_index()
+      |> Enum.reduce_while([], fn {line, idx}, acc ->
+        case decode_frame(line) do
+          {:ok, frame} -> {:cont, [frame | acc]}
+          # 末尾坏帧 = 崩溃写一半：丢弃该行
+          :bad when idx == last -> {:cont, acc}
+          :bad -> {:halt, :corrupt}
+        end
+      end)
+
+    case decoded do
+      :corrupt ->
+        replay(path) |> Enum.take(-n)
+
+      frames when length(frames) >= n ->
+        frames |> Enum.reverse() |> Enum.take(-n) |> Enum.map(&to_event/1)
+
+      # 尾部窗口内凑不满 n 条（坏帧占位）→ 退回全量语义
+      _frames ->
+        replay(path) |> Enum.take(-n)
+    end
+  end
+
+  # :enoent 是「还没建流」的正常情况（与 read_frames/1 一致，不打日志）
+  defp read_failure(_path, :enoent), do: []
+
+  defp read_failure(path, reason) do
+    Logger.warning("event store read failed #{path}: #{inspect(reason)}")
+    []
+  end
+
+  defp to_event(frame) do
+    %{id: frame["id"], topic: String.to_atom(frame["topic"]), data: frame["data"], at: frame["at"]}
   end
 
   @doc "读取全部帧（含校验）；首个坏帧之后的全部丢弃（崩溃截断恢复）。"

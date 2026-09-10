@@ -41,7 +41,8 @@ defmodule Newbee.Status do
     antibodies = safe(fn -> Newbee.Environment.Antibodies.all() end, [])
     verified = Enum.count(antibodies, &(&1["state"] == "verified_regression_test"))
     sessions = safe(fn -> Newbee.Session.count() end, 0)
-    events = safe(fn -> Newbee.EventLog.read(100_000) end, [])
+    # 只数行不解析 JSON：读 100k 条事件（几十 MB）会拖慢每次 status。
+    event_count = safe(fn -> Newbee.EventLog.count() end, 0)
     event_bytes = safe(fn -> Newbee.EventLog.size() end, 0)
 
     env_line =
@@ -60,7 +61,7 @@ defmodule Newbee.Status do
       "功能：价签（fitness 投影） 数据：#{map_size(tags)}个",
       "功能：Token 统计 数据：#{inspect(usage)}",
       "功能：失败抗体 数据：#{length(antibodies)}条（已验证 #{verified}）",
-      "功能：事件溯源 数据：#{length(events)}条 #{human_bytes(event_bytes)}",
+      "功能：事件溯源 数据：#{event_count}条 #{human_bytes(event_bytes)}",
       "功能：会话记录 数据：至少#{sessions}条"
     ]
     |> Enum.join("\n")
