@@ -35,7 +35,7 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     .evo-health-pill .evo-status-tag .collab-workspace-badge .attach-item .wc-item .xm-cap
     .ctx-chip .ctx-editor .group-status .dir-crumb .evo-layers-detail .mc-impact-summary
     .md-copy .qa-show-btn .session-group-toggle .debug-detail .collab-review-diff .file-viewer-mode.current
-    .menu-btn .msg-user-file .qa-top-text .modal-body .xm-conv-body .evo-tech .media-download
+    .menu-btn .msg-user-file .qa-top-text .evo-tech .media-download
     .media-body .media-text-markdown .media-text-source .attach-file-icon .md-inline
     .evo-approve .diff-owner .mc-file-owner .collab-accept-note
   )
@@ -113,6 +113,19 @@ defmodule Newbee.Web.NeumorphicThemeTest do
   test "required component families carry the neumorphic material", %{scope: scope} do
     missing = Enum.reject(@required_material, &(scope =~ &1))
     assert missing == [], "missing neumorphic material for: #{inspect(missing)}"
+  end
+
+  # 对话框/会话预览里的正文按用户要求保持纯文本：不做物化面板（凸起 + 高光让长句难读）。
+  test "dialog and conversation-preview body text stays plain, not a raised plate", %{css: css} do
+    plate_group =
+      Regex.run(
+        ~r/:where\(\.msg-user-file[^)]*\)\s*\{[^}]*box-shadow:\s*var\(--nb-neu-small\)/s,
+        css
+      )
+      |> List.last()
+
+    refute plate_group =~ ".modal-body"
+    refute plate_group =~ ".xm-conv-body"
   end
 
   test "components that draw a shadow in the base theme are covered too", %{css: css, scope: scope} do
