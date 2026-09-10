@@ -3812,7 +3812,8 @@ button { font-size: var(--ui-fs-ui); }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item .menu-btn:hover:not(:disabled) {
   background: var(--nb-neu-hover); color: var(--nb-label-1);
 }
-:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.msg-user-file, .qa-top-text, .modal-body, .xm-conv-body, .evo-tech, .media-download) {
+/* 对话框/会话预览里的正文保持纯文本：不做物化面板（凸起 + 高光会让长句很难读）。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.msg-user-file, .qa-top-text, .evo-tech, .media-download) {
   background: var(--nb-bg-panel); border-color: transparent; border-radius: 8px; box-shadow: var(--nb-neu-small);
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.media-body, .media-text-markdown, .media-text-source,
