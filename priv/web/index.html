@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-<link rel="stylesheet" href="/style.css?v=20260910-swipe-polish-11" />
+<link rel="stylesheet" href="/style.css?v=20260910-mobile-drawer-1" />
   <link rel="stylesheet" href="/vendor/xterm.css?v=5.6.0" />
 
-<script src="/theme.js?v=20260910-swipe-polish-11"></script>
+<script src="/theme.js?v=20260910-mobile-drawer-1"></script>
 </head>
 <body>
 <div id="app">
@@ -28,8 +28,10 @@
     </div>
     <div id="session-list" class="session-list"></div>
     <div class="session-group-actions">
-      <span id="selected-session-count">0 个已选</span>
-      <button id="new-group" class="btn-ghost" title="把选中的会话组成工作组">组成工作组</button>
+      <span id="selected-session-count">选择会话组成工作组</span>
+      <button id="new-group" class="icon-btn group-icon-btn" title="把选中的会话组成工作组" aria-label="组成工作组" disabled>
+        <svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
+      </button>
     </div>
 
 
@@ -151,9 +153,15 @@
         </div>
       </div>
       <div id="attach-preview" class="attach-preview hidden"></div>
-      <div id="statsbar" class="statsbar">
-        <span id="stats-left" class="stats-left"></span>
-        <span id="stats-right" class="stats-right"></span>
+      <div id="mobile-details" class="mobile-details">
+        <button id="mobile-details-handle" class="mobile-details-handle" type="button" aria-expanded="false" aria-controls="statsbar" title="上滑查看详细信息（token 用量等）">
+          <span class="mobile-details-grab" aria-hidden="true"></span>
+          <span class="mobile-details-label">详细信息</span>
+        </button>
+        <div id="statsbar" class="statsbar">
+          <span id="stats-left" class="stats-left"></span>
+          <span id="stats-right" class="stats-right"></span>
+        </div>
       </div>
     </footer>
   </main>
@@ -649,7 +657,7 @@
       <span>newbee</span>
     </div>
     <div id="login-title" class="login-title">登录</div>
-    <div class="login-theme"><select class="theme-picker" data-theme-picker aria-label="界面风格"><option value="dark">深色</option><option value="light">浅色</option><option value="neumorphic">浅色拟物</option><option value="neumorphic-dark">深色拟物</option></select></div>
+
 
     <div class="login-cols" id="login-cols">
       <!-- 左栏：密码 + 指纹 -->
@@ -702,7 +710,7 @@
 <script src="/vendor/qrcodegen.js"></script>
 <script src="/vendor/xterm.js?v=5.6.0"></script>
 
-<script src="/app.js?v=20260910-swipe-polish-11"></script>
+<script src="/app.js?v=20260910-mobile-drawer-1"></script>
 <!-- 手机扫码免登录弹窗 -->
 <div id="qa-overlay" class="qa-overlay hidden">
   <div class="qa-box">

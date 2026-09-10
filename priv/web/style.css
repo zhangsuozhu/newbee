@@ -770,6 +770,8 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 .stats-right { flex: none; color: var(--nb-label-caption); }
 .stats-right .st-ok { color: var(--nb-green); }
 .stats-right .st-busy { color: var(--nb-accent); }
+/* 手机端底部详情抽屉的把手：桌面隐藏，窄屏媒体查询里再显示。 */
+.mobile-details-handle { display: none; }
 
 /* 侧栏收起时内容列更宽 */
 #app.sidebar-collapsed .flow,
@@ -2044,6 +2046,25 @@ svg.ico {
 
   /* 5. composer 贴底 + 安全区 */
   #composer { padding: 8px 10px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  /* 底部详细信息（token 用量等）：默认收起成一根把手，输入框贴最底，上滑查看。 */
+  #composer { display: flex; flex-direction: column; }
+  #queue-bar { order: 0; }
+  .mobile-details { order: 1; overflow: hidden; max-height: 0; transition: max-height .18s var(--nb-ease); }
+  .mobile-details.open { max-height: 168px; }
+  .mobile-details.dragging { max-height: none; }
+  #attach-preview { order: 2; }
+  .composer-card { order: 3; }
+  .mobile-details-handle {
+    display: flex; align-items: center; justify-content: flex-start; gap: 7px;
+    width: 100%; min-height: 26px; padding: 3px 2px 5px; margin: 0;
+    background: none; border: 0; color: var(--nb-label-caption); font-size: 11px;
+    cursor: grab; touch-action: none;
+  }
+  .mobile-details-grab { flex: none; width: 34px; height: 4px; border-radius: 2px; background: var(--nb-border); }
+  .mobile-details.open .mobile-details-grab { background: var(--nb-accent-soft); }
+  .mobile-details-label { white-space: nowrap; }
+  .mobile-details .statsbar { margin: 0 auto 2px; white-space: normal; line-height: 1.5; }
+  .mobile-details .statsbar .stats-left { overflow: visible; }
   .composer-card { border-radius: 16px; padding: 8px 10px; }
   #input { font-size: 16px; min-height: 44px; max-height: 120px; }
   #input, input, select, textarea { font-size: 16px; }
@@ -2489,7 +2510,8 @@ svg.ico {
 .session-group-body{display:flex;flex-direction:column;gap:1px;padding:0 6px 6px}
 .session-group.collapsed .session-group-body{display:none}
 .session-group.collapsed .session-group-header{opacity:.85}
-
+.session-group-actions{display:flex;align-items:center;gap:7px;border-top:1px solid var(--nb-border);padding:6px 3px 0;color:var(--nb-label-caption);font-size:11px}.session-group-actions span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-group-actions .group-icon-btn{flex:none;width:26px;height:26px}.session-group-actions .group-icon-btn:disabled{opacity:.4;cursor:default}
+/* 手机端详情抽屉的把手只在窄屏出现，基础规则见 .statsbar 附近。 */
 
 .group-current-badge{display:none}
 .session-child{margin:0!important;width:100%!important;border-left:0!important;border-radius:8px;position:relative}
@@ -2508,7 +2530,7 @@ svg.ico {
 .collab-task-list{display:flex;flex-direction:column;gap:6px;padding:5px 8px}.collab-task{padding:8px;border-left:2px solid var(--nb-border);background:var(--nb-bg);font-size:12px}.collab-task.running{border-left-color:var(--nb-accent)}.collab-task.succeeded{border-left-color:var(--nb-green)}.collab-task.failed{border-left-color:var(--nb-red)}
 .collab-task-title{color:var(--nb-label-1);overflow-wrap:anywhere}.collab-task-meta,.collab-task-progress{color:var(--nb-label-caption);font:10px var(--nb-mono);margin-top:3px;overflow-wrap:anywhere}.collab-task button{margin-top:6px;padding:3px 8px;font-size:11px}.collab-empty{padding:24px 10px;text-align:center;color:var(--nb-label-caption);font-size:12px}
 .session-item{position:relative}.session-item.session-child{margin-left:18px;width:calc(100% - 18px);border-left:1px solid var(--nb-border);border-radius:0 8px 8px 0}.session-item .session-role{margin-left:6px;color:var(--nb-label-caption);font-size:10px;font-weight:400}.session-item .session-select{position:absolute;left:7px;top:10px;z-index:2;opacity:0;cursor:pointer}.session-item:hover .session-select,.session-select:focus-within{opacity:1}.session-select input{width:13px;height:13px;margin:0;accent-color:var(--nb-accent);cursor:pointer}.session-item:has(.session-select input:checked){box-shadow:inset 2px 0 0 var(--nb-accent);background:var(--nb-bg-elev)}
-.session-group-actions{display:flex;align-items:center;gap:7px;border-top:1px solid var(--nb-border);padding:9px 3px 0;color:var(--nb-label-caption);font-size:11px}.session-group-actions span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-group-actions button:disabled{opacity:.45;cursor:default}
+/* 旧的 .session-group-actions 规则已合并到文件上方同一选择器（避免层叠覆盖）。 */
 .collab-member-strip{display:flex;flex-wrap:wrap;gap:5px;padding:4px 8px 9px;border-bottom:1px solid var(--nb-border)}.collab-member{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:5px 7px;border:1px solid var(--nb-border);border-radius:7px;background:var(--nb-bg-elev);color:var(--nb-label-2);cursor:pointer;font:11px var(--nb-font)}.collab-member:hover,.collab-member.active{border-color:var(--nb-accent);color:var(--nb-label-1)}.collab-member small{color:var(--nb-label-caption)}
 .collab-message-list{display:flex;flex-direction:column;gap:7px;padding:8px;overflow:auto;min-height:120px;max-height:calc(100vh - 300px)}.collab-message{padding:7px 9px;border-left:2px solid var(--nb-border);background:var(--nb-bg);font-size:12px;color:var(--nb-label-1);overflow-wrap:anywhere}.collab-message.mine{border-left-color:var(--nb-accent)}.collab-message-head{display:flex;gap:5px;align-items:center;color:var(--nb-label-caption);font-size:10px;margin-bottom:3px}.collab-message-head b{color:var(--nb-accent-soft)}.collab-message-head time{margin-left:auto;font-family:var(--nb-mono)}
 .collab-composer{border-top:1px solid var(--nb-border);padding:8px;display:flex;flex-direction:column;gap:6px}.collab-composer select,.collab-composer textarea{width:100%;border:1px solid var(--nb-border);border-radius:6px;background:var(--nb-bg-elev);color:var(--nb-label-1);font:12px var(--nb-font);padding:6px;resize:vertical}.collab-composer button{align-self:flex-end;padding:5px 12px;font-size:12px}.collab-task-list{display:flex;flex-direction:column;gap:6px;padding:5px 8px}.collab-task{padding:8px;border-left:2px solid var(--nb-border);background:var(--nb-bg);font-size:12px}.collab-task.running{border-left-color:var(--nb-accent)}.collab-task.succeeded{border-left-color:var(--nb-green)}.collab-task.failed{border-left-color:var(--nb-red)}.collab-task-title{color:var(--nb-label-1);overflow-wrap:anywhere}.collab-task-meta,.collab-task-progress{color:var(--nb-label-caption);font:10px var(--nb-mono);margin-top:3px;overflow-wrap:anywhere}.collab-task button{margin-top:6px;padding:3px 8px;font-size:11px}.collab-empty{padding:24px 10px;text-align:center;color:var(--nb-label-caption);font-size:12px}
@@ -2517,6 +2539,31 @@ svg.ico {
 .collab-dbadge{font-style:normal;font-size:10px;color:#5b6472;border:1px solid #3a4149;border-radius:8px;padding:0 6px;margin-left:4px;white-space:nowrap}
 
 .collab-task-result{margin-top:8px;padding:8px 10px;background:var(--panel-2,#20252b);border-left:2px solid var(--accent,#6ea8fe);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.collab-task-result strong{display:block;margin-bottom:4px;color:var(--fg2,#9aa4b2)}.collab-task-actions{display:flex;gap:6px;margin-top:8px}
+/* 工作项操作区：「⋯」收次要操作，主操作靠左，触发器靠右。 */
+.collab-task-actions { align-items: center; }
+.collab-task-more { position: relative; margin-left: auto; }
+.collab-task-more > summary {
+  display: inline-grid; place-items: center; width: 26px; height: 26px;
+  border: 1px solid var(--nb-border); border-radius: 50%;
+  background: transparent; color: var(--nb-label-2); font-size: 14px; line-height: 1;
+  cursor: pointer; list-style: none;
+}
+.collab-task-more > summary::-webkit-details-marker { display: none; }
+.collab-task-more[open] > summary { border-color: var(--nb-accent); color: var(--nb-accent-soft); }
+.collab-task-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30;
+  display: flex; flex-direction: column; min-width: 150px; padding: 4px;
+  background: var(--nb-bg-panel); border: 1px solid var(--nb-border); border-radius: 10px;
+  box-shadow: 0 10px 26px rgb(0 0 0 / 0.28);
+}
+.collab-task-menu button {
+  display: block; width: 100%; padding: 7px 10px;
+  border: 0; border-radius: 8px; background: transparent;
+  color: var(--nb-label-2); font-size: 12px; text-align: left; white-space: nowrap; cursor: pointer;
+}
+.collab-task-menu button:hover { background: var(--nb-bg-elev); color: var(--nb-label-1); }
+.collab-task-menu button.danger { color: var(--nb-red); }
+.collab-task-menu button.danger:hover { background: color-mix(in srgb, var(--nb-red) 10%, transparent); }
 
 .diff-owner,.mc-file-owner{font-size:10px;color:var(--fg2,#9aa4b2);margin-left:8px;border:1px solid var(--line,#3a4149);border-radius:8px;padding:1px 6px;white-space:nowrap}.mc-file-path{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
 
@@ -3392,7 +3439,7 @@ button { font-size: var(--ui-fs-ui); }
   background: var(--nb-bg-panel); color: var(--nb-label-2); font: inherit;
   font-size: 12px; cursor: pointer;
 }
-.login-theme { display: flex; justify-content: flex-end; }
+/* .login-theme 随登录页主题下拉一起移除：应用内仍用 topbar 图标菜单切换。 */
 .theme-menu-wrap { position: relative; display: flex; flex: none; }
 .theme-icon-btn { position: relative; flex: none; }
 .theme-icon-btn::after {
@@ -3691,6 +3738,23 @@ button { font-size: var(--ui-fs-ui); }
   background: var(--nb-bg); border: 1px solid var(--nb-neu-edge); box-shadow: var(--nb-neu-inset);
 }
 /* 终端是「仿真窗口」：整体内陷成凹槽，工具栏与屏幕都收在凹槽里。 */
+/* 工作项「⋯」触发器与下拉菜单：触发器是图标按钮，菜单是抬起的小卡片。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .collab-task-more > summary {
+  background: var(--nb-bg); border-color: var(--nb-neu-edge); box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .collab-task-more[open] > summary {
+  background: var(--nb-neu-plate); box-shadow: var(--nb-neu-inset);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .collab-task-menu {
+  background: var(--nb-bg-panel); border-color: transparent;
+  box-shadow: var(--nb-neu-small), 0 12px 28px rgb(0 0 0 / 0.22);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .collab-task-menu button:hover {
+  background: var(--nb-neu-hover); color: var(--nb-label-1);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .collab-task-menu button.danger:hover {
+  background: color-mix(in srgb, var(--nb-red) 12%, var(--nb-bg-panel)); color: var(--nb-red);
+}
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .terminal-panel { border-radius: 14px; }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .terminal-panel .terminal-toolbar { border-radius: 13px 13px 0 0; }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .terminal-panel .terminal-screen,
