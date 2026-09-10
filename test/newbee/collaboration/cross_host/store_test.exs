@@ -117,4 +117,55 @@ defmodule Newbee.Collaboration.CrossHost.StoreTest do
     :timer.sleep(100)
     assert {:ok, %{"id" => "g-heir"}} = Store.get_group("g-heir")
   end
+
+  test "replayed activity snapshots are idempotent and never re-emit" do
+    Store.clear()
+    gid = "g-activity-dedup"
+    Store.put_group(%{"id" => gid, "devices" => %{}})
+    :ok = Store.bind_session(%{"session_id" => "s-activity-dedup", "group_id" => gid, "device_id" => "d1"})
+    :ok = Newbee.Bus.subscribe()
+    on_exit(fn -> Newbee.Bus.unsubscribe() end)
+
+    aid = "a-replay-1"
+    event = %{"id" => aid, "event" => "task_created", "created_at" => 1_700_000_000_000}
+    assert {:ok, %{"id" => "a-replay-1"}} = Store.add_activity(gid, event)
+    assert_receive {:newbee_event, :collab_event, %{"payload" => %{"id" => ^aid}}}, 1_000
+
+    # 轮询快照反复重放同一事件：不再广播，也不覆盖已有记录
+    assert {:ok, %{"event" => "task_created"}} = Store.add_activity(gid, event)
+    refute_receive {:newbee_event, :collab_event, %{"payload" => %{"id" => ^aid}}}, 300
+    assert [%{"id" => "a-replay-1"}] = Store.list_activity(gid)
+
+    # 全新事件（调用方未给 id）照常广播
+    fresh = %{"event" => "task_status_changed"}
+    assert {:ok, %{"id" => fresh_id}} = Store.add_activity(gid, fresh)
+    assert_receive {:newbee_event, :collab_event, %{"payload" => %{"id" => ^fresh_id}}}, 1_000
+    assert fresh_id != aid
+  end
+
+  test "replayed messages are deduplicated by id and never re-emit" do
+    Store.clear()
+    gid = "g-message-dedup"
+    Store.put_group(%{"id" => gid, "devices" => %{}})
+    :ok = Store.bind_session(%{"session_id" => "s-message-dedup", "group_id" => gid, "device_id" => "d1"})
+    :ok = Newbee.Bus.subscribe()
+    on_exit(fn -> Newbee.Bus.unsubscribe() end)
+
+    mid = "m-replay-1"
+
+    message = %{
+      "id" => mid,
+      "role" => "system",
+      "kind" => "notice",
+      "body" => "hello",
+      "created_at" => 1_700_000_000_000
+    }
+
+    assert {:ok, %{"id" => "m-replay-1"}} = Store.add_message(gid, message)
+    assert_receive {:newbee_event, :collab_event, %{"payload" => %{"id" => ^mid}}}, 1_000
+
+    assert {:ok, %{"id" => "m-replay-1"}} = Store.add_message(gid, message)
+    refute_receive {:newbee_event, :collab_event, %{"payload" => %{"id" => ^mid}}}, 300
+    assert length(Store.list_messages(gid)) == 1
+  end
 end
