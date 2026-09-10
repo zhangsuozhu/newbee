@@ -1059,7 +1059,7 @@ const flow = $("flow");
       case "done": {
         setInterrupted(false);
         finishTurn();
-        const doneCard = line("done", p.summary, true, p.created_at);
+        const doneCard = doneBubble(p.summary, p.created_at);
         // done 总结卡补挂本轮用量（与刷新回放视图一致），避免底部空白
         try {
           if (doneCard && doneCard.dataset.hasUsage !== "1") {
@@ -1332,6 +1332,16 @@ case "goal_round": break;
       });
     };
     d.appendChild(btn);
+    return d;
+  // done 消息（子代理完成 / 提交提示 / 最终交付总结）与助手回复同样待遇：
+  // 气泡 + 右上角整条复制，避免「最终交付没有气泡、也没法复制」。
+  // summary 为空时不套气泡，免得留一个空盒子（用量仍可挂在返回的元素上）。
+  function doneBubble(text, createdAt) {
+    const d = line("done", text, true, createdAt);
+    if (!String(text || "").trim()) return d;
+    addAssistantChrome(d);
+    d.dataset.raw = text || "";
+    bindCopyButtons(d);
     return d;
   }
 
@@ -2813,7 +2823,7 @@ case "goal_round": break;
       if (task.status === "submitted") {
         line("notice", `工作项已提交，等待 Lead 验收：${task.title || "工作项"}`);
       } else if (task.status === "succeeded" && verification.status === "passed") {
-        line("done", `子代理完成：${task.title || "工作项"}`, true);
+        doneBubble(`子代理完成：${task.title || "工作项"}`);
       }
     } else if (topic === "collab_workspace_updated" && payload.task) {
       delete state.taskReviews[payload.task.task_id];
@@ -4815,7 +4825,7 @@ case "goal_round": break;
       if (m.images && m.images.length) renderUserLine(m.content, m.images);
       else line("user", m.content);
     } else if (m.role === "done") {
-      const doneCard = line("done", m.content, true);
+      const doneCard = doneBubble(m.content);
       if (replayPendingUsage) { attachUsageToBubble(doneCard, replayPendingUsage); replayPendingUsage = null; }
       // 回放时若 done 携带下一步选项，同样渲染选择卡片
       try {
@@ -7601,7 +7611,7 @@ case "goal_round": break;
     if (!msg) return;
     try {
       const res = await rpc("git.commit", { message: msg });
-      line("done", `已提交: ${msg}`);
+      doneBubble(`已提交: ${msg}`);
       refreshMCFiles();
       refreshMCDiff();
     } catch (e) {

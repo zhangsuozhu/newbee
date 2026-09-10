@@ -70,5 +70,26 @@ defmodule Newbee.Web.CssSingleSourceTest do
     assert js =~ "getPropertyValue(name)"
     assert js =~ "terminal.term.options.theme = terminalTheme()"
     assert js =~ "const ansi = light"
+    assert js =~ "const ansi = light"
+  end
+
+  # 回归：最终交付（done）曾经走纯文本总结卡渲染路径，既没有气泡也没有复制按钮，
+  # 与助手回复不一致。现在所有 done 出口都必须经过 doneBubble/2。
+  test "every done message renders as a boxed bubble with copy chrome" do
+    js = File.read!("priv/web/app.js")
+
+    # doneBubble 必须挂上复制外壳与原始 markdown（供 ⧉ 复制整条）
+    assert js =~ "function doneBubble(text, createdAt)"
+    assert js =~ "addAssistantChrome(d)"
+    assert js =~ "d.dataset.raw = text || \"\""
+
+    # 不允许其它地方再裸调 line("done", ...)（会退回无气泡/无复制的旧路径）；
+    # doneBubble 自身那一处是唯一合法出口。
+    [_, after_def] = String.split(js, "function doneBubble(text, createdAt)", parts: 2)
+    [body, rest] = String.split(after_def, "\n  }", parts: 2)
+    assert body =~ ~r/\bline\("done",/
+    assert body =~ "addAssistantChrome(d)"
+    assert Regex.scan(~r/\bline\("done",/, rest) == []
+    assert Regex.scan(~r/\bline\("done",/, rest) == []
   end
 end
