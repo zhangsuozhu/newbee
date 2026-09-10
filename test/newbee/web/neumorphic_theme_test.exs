@@ -121,7 +121,7 @@ defmodule Newbee.Web.NeumorphicThemeTest do
 
 
   test "the polished sidebar uses icon QR, linear rows, a current marker and soft checkboxes",
-       %{index: index, scope: scope} do
+       %{css: css, index: index, scope: scope} do
     app = File.read!("priv/web/app.js")
 
     assert index =~ ~s(id="qa-show" class="icon-btn qa-icon-btn")
@@ -133,18 +133,34 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert scope =~ ~s(content: "✓")
     assert scope =~ ".sidebar-foot .logout-btn"
     assert scope =~ "align-self: flex-end"
-    assert index =~ ~s(id="new-session" class="xg-btn")
+
     assert app =~ ~s(mkEmptyBtn("建群", "建一个项目协作群", "")
     assert app =~ ~s(mkEmptyBtn("加群", "用加群码加入协作群", "")
     assert index =~ "允许群主完全控制本机"
     refute index =~ "接受完全控制（群主可在本机执行任意代码和系统命令）"
     assert index =~ "xg-check-mark"
+    assert index =~ ~s(id="new-session" class="icon-btn new-session-icon")
+    assert css =~ ".session-tools"
+    assert css =~ ~r/\.session-tools #new-session\s*\{[^}]*border-radius:\s*50%/s
+
     assert scope =~ ".group-modal-fields .xg-check"
     assert scope =~ "border-radius: 8px"
     assert scope =~ "backdrop-filter: none"
     assert index =~ ~s(class="ico stop-icon")
     assert scope =~ "#interrupt.btn-icon-round"
     assert scope =~ "fill: var(--nb-red)"
+  end
+
+  test "swipe delete stays hidden until one row is actively swiped", %{css: css} do
+    app = File.read!("priv/web/app.js")
+
+    assert css =~ ~r/\.swipe-cell \.swipe-actions\s*\{[^}]*visibility:\s*hidden/s
+    assert css =~ ~r/\.swipe-cell \.swipe-actions\s*\{[^}]*pointer-events:\s*none/s
+    assert css =~ ~s(.swipe-cell[data-swipe-active="1"] .swipe-actions)
+    assert css =~ ~s(.swipe-cell[data-swipe-open="1"] .swipe-actions)
+    assert app =~ ~s(wrap.dataset.swipeActive = "1")
+    assert app =~ "delete wrap.dataset.swipeActive"
+    assert app =~ "delete wrap.dataset.swipeOpen"
   end
   test "semantic status colors are not frozen to one theme", %{scope: scope} do
     refute scope =~

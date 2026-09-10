@@ -2995,18 +2995,19 @@ case "goal_round": break;
     if (!wrap) return;
     const main = wrap.querySelector(":scope > .session-item");
     if (main) main.style.transform = "";
+    delete wrap.dataset.swipeActive;
     delete wrap.dataset.swipeOpen;
     if (openSwipeWrap === wrap) openSwipeWrap = null;
   }
   function closeAllSwipeCells(except) {
-    document.querySelectorAll('.swipe-cell[data-swipe-open="1"]').forEach((w) => {
+    document.querySelectorAll('.swipe-cell[data-swipe-open="1"], .swipe-cell[data-swipe-active="1"]').forEach((w) => {
       if (w !== except) closeSwipeCell(w);
     });
     if (!except) openSwipeWrap = null;
   }
   function swipeActionsWidth(wrap) {
     const el = wrap && wrap.querySelector(":scope > .swipe-actions");
-    return (el && el.offsetWidth) || 84;
+    return (el && el.offsetWidth) || 68;
   }
   // 触摸左滑（移动端）+ 鼠标左拖（桌面端）：横向位移才劫持，纵向照常滚动列表。
   function attachSwipeGestures(wrap, main) {
@@ -3026,9 +3027,10 @@ case "goal_round": break;
       if (tHorizontal === null) {
         if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
         tHorizontal = Math.abs(dx) > Math.abs(dy);
-        if (!tHorizontal) { tDragging = false; main.style.transition = ""; return; }
+        if (!tHorizontal) { tDragging = false; delete wrap.dataset.swipeActive; main.style.transition = ""; return; }
       }
       if (!tHorizontal) return;
+      wrap.dataset.swipeActive = "1";
       const w = swipeActionsWidth(wrap);
       let x = tBase + dx;
       if (x > 0) x = 0;
@@ -3040,6 +3042,7 @@ case "goal_round": break;
       if (!tDragging && !main.dataset.dragged) return;
       tDragging = false;
       main.style.transition = "";
+      delete wrap.dataset.swipeActive;
       const w = swipeActionsWidth(wrap);
       let x0 = tBase;
       try {
@@ -3057,7 +3060,7 @@ case "goal_round": break;
       setTimeout(() => { if (wrap.dataset.swipeOpen !== "1") delete main.dataset.dragged; }, 60);
     };
     main.addEventListener("touchend", tEnd);
-    main.addEventListener("touchcancel", () => { tDragging = false; main.style.transition = ""; if (wrap.dataset.swipeOpen === "1") { main.style.transform = "translateX(" + (-swipeActionsWidth(wrap)) + "px)"; } else closeSwipeCell(wrap); });
+    main.addEventListener("touchcancel", () => { tDragging = false; delete wrap.dataset.swipeActive; main.style.transition = ""; if (wrap.dataset.swipeOpen === "1") { main.style.transform = "translateX(" + (-swipeActionsWidth(wrap)) + "px)"; } else closeSwipeCell(wrap); });
     // 桌面端：按住左键横向拖拽同样展开/收起；纵向移动不处理。
     // window 监听只在本次拖拽期间挂载，mouseup 后立即摘掉，避免每条会话常驻两个全局监听。
     main.addEventListener("mousedown", (e) => {
@@ -3070,6 +3073,7 @@ case "goal_round": break;
         const dx = ev.clientX - mStartX;
         if (Math.abs(dx) > 6) mMoved = Math.abs(dx);
         if (mMoved > 6) {
+          wrap.dataset.swipeActive = "1";
           const w = swipeActionsWidth(wrap);
           let x = mBase + dx;
           if (x > 0) x = 0;
@@ -3083,6 +3087,7 @@ case "goal_round": break;
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
         main.style.transition = "";
+        delete wrap.dataset.swipeActive;
         if (mMoved > 6) {
           const w = swipeActionsWidth(wrap);
           const x = mBase + (ev.clientX - mStartX);

@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-<link rel="stylesheet" href="/style.css?v=20260910-sidebar-polish-5" />
+<link rel="stylesheet" href="/style.css?v=20260910-swipe-polish-4" />
   <link rel="stylesheet" href="/vendor/xterm.css?v=5.6.0" />
 
-<script src="/theme.js?v=20260910-sidebar-polish-5"></script>
+<script src="/theme.js?v=20260910-swipe-polish-4"></script>
 </head>
 <body>
 <div id="app">
@@ -18,11 +18,13 @@
       <span class="logo"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8.5 5v8L12 21l-8.5-5V8L12 3z"/><path d="M8.5 10.5h7M8.5 13.5h7"/></svg></span><span class="name">newbee</span>
       <button id="sidebar-toggle" class="icon-btn" title="收起侧栏"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
     </div>
-    <div class="session-actions">
-      <button id="new-session" class="xg-btn">+ 新会话</button>
-    </div>
-    <div class="session-search">
-      <input id="session-search" type="search" placeholder="搜索会话…" />
+    <div class="session-tools">
+      <div class="session-search">
+        <input id="session-search" type="search" placeholder="搜索会话…" />
+      </div>
+      <button id="new-session" class="icon-btn new-session-icon" title="新建会话" aria-label="新建会话">
+        <svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
     </div>
     <div id="session-list" class="session-list"></div>
     <div class="session-group-actions">
@@ -700,7 +702,7 @@
 <script src="/vendor/qrcodegen.js"></script>
 <script src="/vendor/xterm.js?v=5.6.0"></script>
 
-<script src="/app.js?v=20260910-sidebar-polish-5"></script>
+<script src="/app.js?v=20260910-swipe-polish-4"></script>
 <!-- 手机扫码免登录弹窗 -->
 <div id="qa-overlay" class="qa-overlay hidden">
   <div class="qa-box">

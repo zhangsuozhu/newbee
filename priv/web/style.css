@@ -143,6 +143,12 @@ body {
 .sidebar-expand:hover { background: var(--nb-bg-elev); color: var(--nb-label-1); }
 .sidebar-expand.hidden { display: none; }
 
+.session-tools { display: flex; align-items: center; gap: 8px; padding: 0 10px 8px; }
+.session-tools .session-search { flex: 1; min-width: 0; }
+.session-tools #new-session {
+  flex: 0 0 32px; width: 32px; height: 32px; border-radius: 50%;
+}
+.session-tools #new-session .ico { display: block; margin: auto; }
 /* 会话搜索：在 #session-list 之外，列表滚动时本就常驻，无需 sticky */
 .session-search input {
   width: 100%; background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
@@ -198,33 +204,26 @@ body {
    transition: transform 0.22s var(--nb-ease), background var(--nb-dur) var(--nb-ease);
    touch-action: pan-y; user-select: none; -webkit-user-select: none;
  }
- .swipe-cell.session-child {
-   margin-left: 18px; width: calc(100% - 18px);
-   border-left: 1px solid var(--nb-border); border-radius: 0 8px 8px 0;
- }
- .swipe-cell.session-child .session-item { border-radius: 0 8px 8px 0; }
+.swipe-cell.session-child { margin: 0; width: 100%; border-left: 0; border-radius: 8px; }
+ .swipe-cell.session-child .session-item { border-radius: 8px; }
  .swipe-cell .swipe-actions {
-   position: absolute; top: 0; right: 0; bottom: 0; width: 84px; z-index: 0;
+   position: absolute; top: 1px; right: 0; bottom: 1px; width: 68px; z-index: 0;
    display: flex; align-items: stretch; justify-content: flex-end;
+   visibility: hidden; opacity: 0; pointer-events: none;
+   transition: opacity 0.12s ease, visibility 0s linear 0.12s;
+ }
+ .swipe-cell[data-swipe-active="1"] .swipe-actions,
+ .swipe-cell[data-swipe-open="1"] .swipe-actions {
+   visibility: visible; opacity: 1; pointer-events: auto; transition-delay: 0s;
  }
  .swipe-cell .swipe-delete {
-   flex: 1; border: none; cursor: pointer;
-   background: #fa5151; color: #fff; font-size: 14px; font-weight: 600;
-   font-family: var(--nb-font); letter-spacing: 1px;
+   flex: 1; border: 0; border-radius: 0; cursor: pointer;
+   background: color-mix(in srgb, var(--nb-red) 82%, #9d2228); color: #fff;
+   font: 600 12px var(--nb-font); letter-spacing: 0;
  }
- .swipe-cell .swipe-delete:active { background: #d63d3d; }
- /* ── 未读数：微信式红点数字角标 ── */
- .session-unread {
-   display: inline-flex; align-items: center; justify-content: center;
-   min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px;
-   border-radius: 9px; background: #fa5151; color: #fff;
-   font-size: 11px; line-height: 18px; font-weight: 700; vertical-align: 1px;
- }
- /* 触屏无 hover 时 ⋯ 常显，保证重命名/移组可达；左滑仍是快捷删除 */
+ .swipe-cell .swipe-delete:active { filter: brightness(.88); }
  @media (hover: none), (pointer: coarse) {
    .session-item .menu-btn { opacity: 1; }
-   .swipe-cell .swipe-actions { width: 88px; }
-   .swipe-cell .swipe-delete { font-size: 15px; }
  }
  @media (max-width: 768px) {
    .swipe-cell { border-radius: 10px; }
@@ -1727,9 +1726,6 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 .btn-retry:hover { background: var(--nb-accent); border-color: var(--nb-accent); color: #fff; }
 
 /* ── 项目工作目录选择（dsh DirectoryBrowser 语义）── */
-.session-actions { display: flex; gap: 6px; padding: 0 10px 8px; }
-.session-actions #new-session { flex: 1; width: 100%; }
-.session-actions .btn-ghost { flex: 1; font-size: 12.5px; }
 .sidebar-foot { padding: 8px 10px; border-top: 1px solid var(--nb-border); display: flex;
   flex-direction: column; gap: 4px; }
 .cwd-label { font-family: var(--nb-mono); font-size: 11px; color: var(--nb-label-3);
@@ -2046,6 +2042,7 @@ svg.ico {
 
   /* 6. 侧栏内部 */
   .session-search input { min-height: 44px; font-size: 15px; }
+  .session-tools #new-session { width: 44px; height: 44px; flex-basis: 44px; }
   .session-item { padding: 9px 10px; }
   #cwd-label, #model-label { font-size: 12px; }
 
@@ -2460,11 +2457,14 @@ svg.ico {
 /* ── 会话协作列表（保留原会话条目，仅增加层级和选择态）── */
 .session-group-label{padding:9px 8px 4px;color:var(--nb-label-caption);font-size:11px;font-weight:650;border-top:1px solid var(--nb-border);margin-top:5px}
 .session-group-label:first-child{border-top:0;margin-top:0}.session-group-label.other{margin-top:10px}
-.session-group-label.current{color:var(--nb-accent);}/* 会话组折叠 & 删除 */
-.session-group{margin:4px 0;border-radius:8px;overflow:visible}
-.session-group-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;row-gap:4px;padding:7px 8px 7px 6px;background:var(--nb-bg-elev);border:1px solid var(--nb-border);border-radius:8px;cursor:pointer;user-select:none}
-.session-group-header:hover{border-color:var(--nb-accent);background:var(--nb-bg)}
-.session-group-header.current{border-left:2px solid var(--nb-accent)}
+ /* ── 会话协作列表：一个干净的组容器包住成员，当前会话只用图标标志。 ── */
+.session-group-label{padding:9px 8px 4px;color:var(--nb-label-caption);font-size:11px;font-weight:650;border-top:1px solid var(--nb-border);margin-top:5px}
+.session-group-label:first-child{border-top:0;margin-top:0}.session-group-label.other{margin-top:10px}
+.session-group-label.current{color:var(--nb-accent);}
+.session-group{margin:4px 0;border-radius:12px;overflow:hidden;border:1px solid var(--nb-border);background:var(--nb-bg-elev)}
+.session-group-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;row-gap:4px;padding:7px 8px 7px 6px;background:var(--nb-bg-elev);cursor:pointer;user-select:none;border-radius:0}
+.session-group-header:hover{background:var(--nb-bg)}
+.session-group-header.current{border-left:0}
 .session-group-toggle{border:0;background:transparent;color:var(--nb-label-2);width:22px;height:22px;flex:0 0 auto;display:grid;place-items:center;border-radius:6px;cursor:pointer;font-size:12px}
 .session-group-toggle:hover{background:var(--nb-border);color:var(--nb-label-1)}
 .session-group-title{flex:1 1 60px;min-width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--nb-label-1);font-size:12px;font-weight:600}
@@ -2478,24 +2478,19 @@ svg.ico {
 .session-group-delete:hover{background:var(--nb-red);color:#fff;border-color:var(--nb-red)}
 .session-group-delete:disabled{opacity:.35;cursor:not-allowed}
 .session-group-delete.hidden{display:none}
-.session-group-body{display:flex;flex-direction:column;gap:0;padding:4px 0 2px}
+.session-group-body{display:flex;flex-direction:column;gap:1px;padding:0 6px 6px}
 .session-group.collapsed .session-group-body{display:none}
 .session-group.collapsed .session-group-header{opacity:.85}
 
 
-.group-current-badge{display:inline-block;margin-left:6px;padding:0 5px;font-size:10px;line-height:14px;border-radius:7px;background:var(--nb-accent);color:#fff;vertical-align:middle;}
-.session-child{margin-left:22px!important;width:calc(100% - 22px)!important;border-left:2px solid var(--nb-border);border-radius:0 8px 8px 0;position:relative}
-.session-child::before{content:"";position:absolute;left:-14px;top:50%;width:12px;height:1px;background:var(--nb-border)}
-.session-group-body{position:relative}
-.session-group-body::before{content:"";position:absolute;left:8px;top:4px;bottom:4px;width:2px;background:var(--nb-border);opacity:0.5}
+.group-current-badge{display:none}
+.session-child{margin:0!important;width:100%!important;border-left:0!important;border-radius:8px;position:relative}
+.session-child::before,.session-group-body::before{content:none}
 .session-role{margin-left:6px;color:var(--nb-label-caption);font-size:10px;font-weight:400}
 .session-select{position:absolute;left:4px;top:9px;z-index:2;display:flex;align-items:center;cursor:pointer;opacity:0;transition:opacity var(--nb-dur)}
 .session-item{padding-left:28px}.session-item:hover .session-select,.session-select:focus-within{opacity:1}
 .session-select input{width:13px;height:13px;margin:0;accent-color:var(--nb-accent);cursor:pointer}.session-select-mark{display:none}
 .session-item:has(.session-select input:checked){box-shadow:inset 2px 0 0 var(--nb-accent);background:var(--nb-bg-elev)}
-.session-group-actions{display:flex;align-items:center;gap:7px;border-top:1px solid var(--nb-border);padding:9px 3px 0;color:var(--nb-label-caption);font-size:11px}
-.session-group-actions span{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.session-group-actions button:disabled{opacity:.45;cursor:default}
-.collab-member-strip{display:flex;flex-wrap:wrap;gap:5px;padding:4px 8px 9px;border-bottom:1px solid var(--nb-border)}
 .collab-member{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:5px 7px;border:1px solid var(--nb-border);border-radius:7px;background:var(--nb-bg-elev);color:var(--nb-label-2);cursor:pointer;font:11px var(--nb-font)}
 .collab-member:hover,.collab-member.active{border-color:var(--nb-accent);color:var(--nb-label-1)}.collab-member small{color:var(--nb-label-caption)}
 .collab-message-list{display:flex;flex-direction:column;gap:7px;padding:8px;overflow:auto;min-height:120px;max-height:calc(100vh - 300px)}
@@ -3581,13 +3576,9 @@ button { font-size: var(--ui-fs-ui); }
   background: transparent;
   border-bottom-color: color-mix(in srgb, var(--nb-neu-shadow) 44%, var(--nb-border));
 }
-:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item:hover:not(.active) {
-  background: color-mix(in srgb, var(--nb-bg-elev) 72%, transparent); box-shadow: none;
-}
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item.active {
-  background: color-mix(in srgb, var(--nb-neu-warm) 4%, var(--nb-bg-elev));
-  color: var(--nb-label-1); border-radius: 0;
-  box-shadow: inset 2px 0 0 var(--nb-neu-warm);
+  background: color-mix(in srgb, var(--nb-bg-elev) 72%, var(--nb-bg));
+  color: var(--nb-label-1); border-radius: 0; box-shadow: none;
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-current-mark {
   color: var(--nb-neu-warm); background: var(--nb-bg);
@@ -3620,7 +3611,7 @@ button { font-size: var(--ui-fs-ui); }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-primary, .btn-send, .btn-steer, .pair-approve, .xg-btn.solid, .ask-send, .terminal-send) {
   background: var(--nb-neu-plate);
   background-image: linear-gradient(180deg, color-mix(in srgb, var(--nb-neu-light) 62%, transparent), transparent 64%);
-  color: var(--nb-accent-soft); border: 1px solid color-mix(in srgb, var(--nb-neu-warm) 40%, transparent);
+  background: color-mix(in srgb, var(--nb-neu-warm) 3%, var(--nb-bg)); box-shadow: none;
   border-radius: 12px; font-weight: 600;
   box-shadow: var(--nb-neu-small), 0 3px 10px color-mix(in srgb, var(--nb-neu-warm) 16%, transparent);
 }
