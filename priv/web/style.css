@@ -3795,7 +3795,8 @@ button { font-size: var(--ui-fs-ui); }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.group-status, .dir-crumb) {
   background: var(--nb-bg); border-radius: 8px; box-shadow: var(--nb-neu-small);
 }
-:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.ctx-editor, .evo-layers-detail, .mc-impact-summary) {
+  /* 影响小结是正文型文字（一句话风险摘要），按用户要求不做材质：只保留基础样式的底色。 */
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.ctx-editor, .evo-layers-detail) {
   background: var(--nb-bg); border: 1px solid var(--nb-neu-edge); box-shadow: var(--nb-neu-inset);
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.md-copy, .qa-show-btn, .session-group-toggle) {

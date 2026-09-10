@@ -33,7 +33,7 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     .mc-file .queue-item .collab-verification .evo-guide .collab-write-conflicts .dir-entries
     .mcfg-plist .file-viewer-modes .md-code .mc-test-result .mc-step-detail .terminal-panel
     .evo-health-pill .evo-status-tag .collab-workspace-badge .attach-item .wc-item .xm-cap
-    .ctx-chip .ctx-editor .group-status .dir-crumb .evo-layers-detail .mc-impact-summary
+    .ctx-chip .ctx-editor .group-status .dir-crumb .evo-layers-detail
     .md-copy .qa-show-btn .session-group-toggle .debug-detail .collab-review-diff .file-viewer-mode.current
     .menu-btn .msg-user-file .qa-top-text .evo-tech .media-download
     .media-body .media-text-markdown .media-text-source .attach-file-icon .md-inline
@@ -126,6 +126,19 @@ defmodule Newbee.Web.NeumorphicThemeTest do
 
     refute plate_group =~ ".modal-body"
     refute plate_group =~ ".xm-conv-body"
+    refute plate_group =~ ".modal-body"
+    refute plate_group =~ ".xm-conv-body"
+  end
+
+  # 影响小结同样是正文型文字（一句话风险摘要），按用户要求只留底色、不做材质。
+  test "impact summary stays plain text in the neumorphic scope", %{css: css} do
+    [_, neu_scope] = String.split(css, @marker, parts: 2)
+
+    refute Regex.match?(
+             ~r/:where\([^)]*\.mc-impact-summary[^)]*\)\s*\{[^}]*box-shadow:\s*var\(--nb-neu-/s,
+             neu_scope
+           ),
+           "影响小结不应再套材质（凸起/内陷）"
   end
 
   test "components that draw a shadow in the base theme are covered too", %{css: css, scope: scope} do
@@ -212,7 +225,7 @@ defmodule Newbee.Web.NeumorphicThemeTest do
   test "second-wave surfaces gain material without losing semantic states", %{scope: scope} do
     # 用 :where() 压低特异性，保证 .pass/.pending/.healthy 这类语义状态仍然生效。
     assert scope =~ ~r/:where\(\.attach-item, \.wc-item, \.xm-cap, \.ctx-chip\)/
-    assert scope =~ ~r/:where\(\.ctx-editor, \.evo-layers-detail, \.mc-impact-summary\)/
+    assert scope =~ ~r/:where\(\.ctx-editor, \.evo-layers-detail\)/
     assert scope =~ ~r/:where\(\.mc-test-result, \.mc-step-detail, \.md-code,/
     assert scope =~ ~r/:where\(\.group-status, \.dir-crumb\)/
     assert scope =~ ~r/:where\(\.collab-write-conflicts\) \{\s*box-shadow/

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>扫码登录授权 · newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-<link rel="stylesheet" href="/style.css?v=20260910-dialog-plain-1" />
+<link rel="stylesheet" href="/style.css?v=20260910-done-bubble-1" />
 <style>
   body { display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
   .pair-card { max-width:420px; width:100%; margin:16px; padding:28px 24px; border-radius:18px;
@@ -28,7 +28,7 @@
   .pair-hint { text-align:center; color:var(--muted,#8b93a3); font-size:12px; margin-top:18px; }
   .hidden { display:none !important; }
 </style>
-<script src="/theme.js?v=20260910-dialog-plain-1"></script>
+<script src="/theme.js?v=20260910-done-bubble-1"></script>
 </head>
 <body>
 <script>window.AUTH_REQUIRED = <%= auth_required %>;</script>

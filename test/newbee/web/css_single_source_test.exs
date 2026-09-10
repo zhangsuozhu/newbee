@@ -71,4 +71,48 @@ defmodule Newbee.Web.CssSingleSourceTest do
     assert js =~ "terminal.term.options.theme = terminalTheme()"
     assert js =~ "const ansi = light"
   end
+
+  # app.js 是 ~8.6k 行手写大文件：字符串匹配断言抓不到括号错位这类语法问题
+  # （曾经在插入 doneBubble 时吃掉 addAssistantChrome 的收尾 `}`，只有浏览器里才暴露）。
+  # 这里用真正的 JS 打包器解析一遍（`bun build` 会完整解析；
+  # 注意 `new Function(src)` 是惰性解析，抓不到这类错误）；
+  # 没有可用解析器时跳过（不阻塞无 bun 的环境）。
+  test "web JS parses as valid JavaScript" do
+    bun = System.find_executable("bun") || "/home/alanx/.bun/bin/bun"
+
+    if File.exists?(bun) do
+      out = Path.join(System.tmp_dir!(), "newbee-js-parse-check.js")
+
+      for rel <- ["priv/web/app.js", "priv/web/theme.js"] do
+        path = Path.expand(rel)
+        assert File.exists?(path), "#{rel} 不存在"
+
+        {msg, code} =
+          System.cmd(bun, ["build", path, "--target", "browser", "--outfile", out], stderr_to_stdout: true)
+
+        File.rm(out)
+        assert code == 0, "#{rel} 不是合法 JavaScript：\n#{msg}"
+      end
+    end
+  end
+
+  # 回归：最终交付（done）曾经走纯文本总结卡渲染路径，既没有气泡也没有复制按钮，
+  # 与助手回复不一致。现在所有 done 出口都必须经过 doneBubble/2。
+  test "every done message renders as a boxed bubble with copy chrome" do
+    js = File.read!("priv/web/app.js")
+
+    # doneBubble 必须挂上复制外壳与原始 markdown（供 ⧉ 复制整条）
+    assert js =~ "function doneBubble(text, createdAt)"
+    assert js =~ "addAssistantChrome(d)"
+    assert js =~ "d.dataset.raw = text || \"\""
+
+    # 不允许其它地方再裸调 line("done", ...)（会退回无气泡/无复制的旧路径）；
+    # doneBubble 自身那一处是唯一合法出口。
+    [_, after_def] = String.split(js, "function doneBubble(text, createdAt)", parts: 2)
+    [body, rest] = String.split(after_def, "\n  }", parts: 2)
+    assert body =~ ~r/\bline\("done",/
+    assert body =~ "addAssistantChrome(d)"
+    assert Regex.scan(~r/\bline\("done",/, rest) == []
+    assert Regex.scan(~r/\bline\("done",/, rest) == []
+  end
 end
