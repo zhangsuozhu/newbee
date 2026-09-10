@@ -3328,6 +3328,85 @@ case "goal_round": break;
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
     else { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); } catch (e) {} ta.remove(); done(); }
   }
+  // ── 群卡片 ─────────────────────────────────────────────────────────────
+  // 一眼看懂：谁在线（x/y 在线）、几个会话几个任务、下一步点哪里。
+  // 头部两行：第一行标题 + 状态 + 主按钮；第二行统计。机身按机器分组，会话挂在各自机器下。
+  const X_TASK_CN = { queued: "待开始", running: "进行中", waiting_input: "等输入", done: "已完成", failed: "失败", cancelled: "已取消" };
+  function xTaskCn(s) { return X_TASK_CN[s] || s || "任务"; }
+  function xGroupLive(gid, devs) {
+    const st = (state.xgroupDeviceStatus || {})[gid] || {};
+    const ids = Object.keys(devs);
+    let online = 0, paused = 0, remote = 0;
+    ids.forEach((did) => {
+      const d = devs[did] || {}, s = st[did] || null;
+      if (s ? !!s.paused : !!d.paused) paused += 1;
+      if (s ? s.state === "online" : xOnline(d)) online += 1;
+      if (s ? !!s.remote : xIsRemote(d)) remote += 1;
+    });
+    return { online: online, paused: paused, remote: remote, total: ids.length };
+  }
+  function xDeviceOrder(gid, devs) {
+    const st = (state.xgroupDeviceStatus || {})[gid] || {};
+    return Object.keys(devs).sort((a, b) => {
+      const mineA = xIsMine(gid, a) ? 0 : 1, mineB = xIsMine(gid, b) ? 0 : 1;
+      if (mineA !== mineB) return mineA - mineB;
+      const onA = ((st[a] || {}).state === "online") ? 0 : 1, onB = ((st[b] || {}).state === "online") ? 0 : 1;
+      if (onA !== onB) return onA - onB;
+      return String((devs[a] || {}).display || a).localeCompare(String((devs[b] || {}).display || b), "zh-Hans-CN");
+    });
+  }
+  // 轻量弹层菜单：用于群卡「⋯」和机器行的行内操作。
+  let xPopupEl = null;
+  function xClosePopup() {
+    if (!xPopupEl) return;
+    xPopupEl.remove(); xPopupEl = null;
+    document.removeEventListener("pointerdown", xPopupOutside, true);
+    document.removeEventListener("keydown", xPopupKey, true);
+  }
+  function xPopupOutside(e) { if (xPopupEl && !xPopupEl.contains(e.target)) xClosePopup(); }
+  function xPopupKey(e) { if (e.key === "Escape") { e.stopPropagation(); xClosePopup(); } }
+  function xPopup(anchor, items) {
+    xClosePopup();
+    const menu = document.createElement("div");
+    menu.className = "xg-menu";
+    menu.setAttribute("role", "menu");
+    items.forEach((it) => {
+      if (!it) { const sep = document.createElement("div"); sep.className = "xg-menu-sep"; menu.appendChild(sep); return; }
+      const b = document.createElement("button");
+      b.type = "button"; b.setAttribute("role", "menuitem");
+      b.className = "xg-menu-item" + (it.danger ? " danger" : "");
+      b.textContent = it.label;
+      if (it.hint) b.title = it.hint;
+      b.onclick = (e) => { e.stopPropagation(); xClosePopup(); it.run(); };
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    const r = anchor.getBoundingClientRect();
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    menu.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + "px";
+    menu.style.top = (r.bottom + h + 10 > window.innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6) + "px";
+    xPopupEl = menu;
+    setTimeout(() => {
+      document.addEventListener("pointerdown", xPopupOutside, true);
+      document.addEventListener("keydown", xPopupKey, true);
+    }, 0);
+    return menu;
+  }
+  function xGroupMenu(anchor, gid) {
+    const det = (state.xgroupDetail || {})[gid] || {};
+    const devs = det.group ? det.group.devices || {} : {};
+    const mine = xDeviceOrder(gid, devs).find((did) => xIsMine(gid, did)) || xDeviceOrder(gid, devs)[0];
+    xPopup(anchor, [
+      { label: "打开聊天室", hint: "和常驻代表讨论议题", run: () => window.NewbeeProjectChat.open(rpc, gid) },
+      { label: "群管理", hint: "机器、会话、任务、共享内容", run: () => openXManage(gid) },
+      null,
+      { label: "复制加群码", hint: "把这串码发给要加入的机器", run: async () => {
+          try { const c = await rpc("xgroup.code", { groupId: gid }); xCopy((c && c.code) || "", anchor); }
+          catch (e) { line("error", e.message || "读取加群码失败"); }
+        } },
+      mine ? { label: "新建群会话", hint: "在本群开一个共享会话", run: () => xNewSession(gid, mine) } : null
+    ]);
+  }
   function renderXGroups(box, kw, ctx) {
     const gs = state.xgroups || [];
     const list = gs.filter((g) => !kw || String(g.name || "").toLowerCase().includes(kw) || String(g.project_id || "").toLowerCase().includes(kw));
@@ -3340,7 +3419,7 @@ case "goal_round": break;
       const row = document.createElement("div");
       row.className = "xgroup-empty-actions";
       const mkEmptyBtn = (txt, tip, cls, fn) => { const b = document.createElement("button"); b.className = "xg-btn " + cls; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; row.appendChild(b); };
-      mkEmptyBtn("建群", "建一个项目协作群", "", openXCreate);
+      mkEmptyBtn("建群", "建一个项目协作群", "xg-main", openXCreate);
       mkEmptyBtn("加群", "用加群码加入协作群", "", openXJoin);
       em.appendChild(row);
       box.appendChild(em);
@@ -3366,26 +3445,36 @@ case "goal_round": break;
       const devIds = Object.keys(devs);
       const running = tasks.filter((t) => t.status === "running" || t.status === "queued" || t.status === "waiting_input").length;
       const collapsed = xCollapsed(g.id);
+      const live = xGroupLive(g.id, devs);
+      const liveCls = live.paused ? "paused" : (live.online ? "online" : "offline");
+      const liveTxt = live.total ? live.online + "/" + live.total + " 在线" : "等待加入";
       const wrap = document.createElement("div");
       wrap.className = "session-group xgroup" + (collapsed ? " collapsed" : "");
       const header = document.createElement("div");
       header.className = "session-group-header";
-      // 两行头：第一行标题+管理，第二行元信息；标题不再被计数挤扁
-      const metaBits = [`${devIds.length} 台机器`, `${bound.length} 会话`];
-      if (tasks.length) metaBits.push(`${tasks.length} 任务`);
-      header.innerHTML = `<div class="sg-line"><button class="session-group-toggle" title="${collapsed ? "展开" : "收起"}">${collapsed ? "▸" : "▾"}</button><span class="session-group-title">${escapeHtml(g.name || "协作群")}</span><button class="xg-btn" title="群管理">管理</button></div><div class="session-group-meta">${metaBits.map(escapeHtml).join('<span class="sg-sep">·</span>')}${running ? ` <span class="session-group-busy">● ${running} 进行中</span>` : ""}</div>`;
-      header.onclick = (e) => { if (e.target.closest(".xg-btn") || e.target.closest(".session-group-toggle")) return; xToggle(g.id); };
-      header.querySelector(".xg-btn").onclick = (e) => { e.stopPropagation(); openXManage(g.id); };
+      const metaBits = [devIds.length + " 台机器", bound.length + " 会话"];
+      if (tasks.length) metaBits.push(tasks.length + " 任务");
+      header.innerHTML =
+        '<div class="xg-hd-row">' +
+          '<button class="session-group-toggle" title="' + (collapsed ? "展开" : "收起") + '" aria-label="' + (collapsed ? "展开" : "收起") + '">' + (collapsed ? "▸" : "▾") + '</button>' +
+          '<span class="session-group-title" title="' + escapeHtml(g.name || "协作群") + '">' + escapeHtml(g.name || "协作群") + '</span>' +
+          '<button class="xg-btn xg-main" title="打开聊天室，和常驻代表讨论">聊天室</button>' +
+          '<button class="xg-icon-btn" title="更多：群管理、复制加群码、新建群会话" aria-label="更多操作">⋯</button>' +
+        '</div>' +
+        '<div class="xg-hd-meta">' +
+          '<span class="xg-live ' + liveCls + '" title="在线机器 / 全部机器"><i class="xg-live-dot"></i>' + escapeHtml(liveTxt) + '</span>' +
+          '<span class="sg-sep">·</span>' + metaBits.map(escapeHtml).join('<span class="sg-sep">·</span>') +
+          (running ? '<span class="xg-chip busy">' + running + ' 进行中</span>' : '') +
+        '</div>';
+      header.onclick = (e) => { if (e.target.closest("button")) return; xToggle(g.id); };
       header.querySelector(".session-group-toggle").onclick = (e) => { e.stopPropagation(); xToggle(g.id); };
-      const chatButton = document.createElement("button");
-      chatButton.className = "xg-btn"; chatButton.textContent = "聊天室";
-      chatButton.onclick = (e) => { e.stopPropagation(); window.NewbeeProjectChat.open(rpc, g.id); };
-      header.querySelector(".sg-line").appendChild(chatButton);
+      header.querySelector(".xg-main").onclick = (e) => { e.stopPropagation(); window.NewbeeProjectChat.open(rpc, g.id); };
+      header.querySelector(".xg-icon-btn").onclick = (e) => { e.stopPropagation(); xGroupMenu(e.currentTarget, g.id); };
       wrap.appendChild(header);
       if (!collapsed) {
         const body = document.createElement("div");
         body.className = "session-group-body";
-        devIds.forEach((did) => {
+        xDeviceOrder(g.id, devs).forEach((did) => {
           const d = devs[did] || {};
           const mem = members[d.member_id] || {};
           const mine = xIsMine(g.id, did);
@@ -3393,49 +3482,81 @@ case "goal_round": break;
           const online = st ? st.state === "online" : xOnline(d);
           const paused = st ? !!st.paused : !!d.paused;
           const remote = st ? !!st.remote : xIsRemote(d);
-          const drow = document.createElement("div");
-          drow.className = "xg-dev" + (mine ? " mine" : "");
-          const stateTxt = paused ? "已暂停" : (online ? "在线" : "离线");
           const stateCls = paused ? "paused" : (online ? "online" : "offline");
-          const memTxt = mem.display && mem.display !== (d.display || did) ? mem.display + " · " : "";
-          const ageTxt = st && st.age_text ? " · " + st.age_text : (d.last_seen ? " · " + xAgeText(d) : "");
-          const remoteBadge = remote ? '<span class="xg-badge">远端</span>' : "";
-          drow.innerHTML = `<span class="sess-dot ${stateCls}"></span><span class="xg-dev-name">${escapeHtml(d.display || did)}${mine ? '<span class="xg-badge">本机</span>' : ""}${remoteBadge}</span><span class="xg-dev-state">${escapeHtml(memTxt + stateTxt + ageTxt)}</span>`;
+          const stateTxt = paused ? "已暂停" : (online ? "在线" : "离线");
+          const ageTxt = st && st.age_text ? st.age_text : (d.last_seen ? xAgeText(d) : "从未上报");
+          const memTxt = mem.display && mem.display !== (d.display || did) ? mem.display : "";
+          const block = document.createElement("div");
+          block.className = "xg-device" + (mine ? " mine" : "");
+          const drow = document.createElement("div");
+          drow.className = "xg-dev";
+          drow.title = (d.display || did) + (memTxt ? "（" + memTxt + "）" : "") + " · " + stateTxt + " · " + ageTxt;
+          drow.innerHTML =
+            '<span class="sess-dot ' + stateCls + '"></span>' +
+            '<span class="xg-dev-name">' + escapeHtml(d.display || did) +
+              (mine ? '<span class="xg-badge">本机</span>' : "") + (remote ? '<span class="xg-badge alt">远端</span>' : "") + '</span>' +
+            '<span class="xg-dev-state">' + escapeHtml(stateTxt + " · " + ageTxt) + '</span>';
+          drow.onclick = () => openXManage(g.id, { tab: "devices" });
+          block.appendChild(drow);
           const hintTxt = st && st.hint ? st.hint : xLocalHint(d);
           if (hintTxt && (!online || paused)) {
             const h = document.createElement("div");
-            h.className = "session-empty";
+            h.className = "xg-note";
             h.textContent = hintTxt;
             h.title = hintTxt;
-            body.appendChild(drow);
-            body.appendChild(h);
-          } else {
-            body.appendChild(drow);
+            block.appendChild(h);
           }
-          const mkBtn = (txt, title, fn, accent) => { const b = document.createElement("button"); b.className = "xg-btn" + (accent ? " accent" : ""); b.textContent = txt; b.title = title; b.onclick = (ev) => { ev.stopPropagation(); fn(); }; drow.appendChild(b); };
-
-          bound.filter((b) => b.device_id === did).forEach((b) => {
-            const it = ctx.addItem(ctx.findSession(b.session_id), true, { role: "群会话" });
-            if (it) body.appendChild(it);
-          });
+          const deviceSessions = bound.filter((b) => b.device_id === did);
+          if (deviceSessions.length) {
+            const rail = document.createElement("div");
+            rail.className = "xg-rail";
+            deviceSessions.forEach((b) => {
+              const it = ctx.addItem(ctx.findSession(b.session_id), true, { role: "群会话" });
+              if (it) rail.appendChild(it);
+            });
+            block.appendChild(rail);
+          }
+          body.appendChild(block);
         });
         bound.filter((b) => !b.device_id || !devs[b.device_id]).forEach((b) => {
           const it = ctx.addItem(ctx.findSession(b.session_id), true, { role: "群会话" });
           if (it) body.appendChild(it);
         });
-        if (!devIds.length && !bound.length) { const em = document.createElement("div"); em.className = "session-empty"; em.textContent = "还没有机器加入，点管理把加群码发出去"; body.appendChild(em); }
-        const statusCn2 = (s) => ({ queued: "待开始", running: "进行中", waiting_input: "等输入", done: "已完成", failed: "失败" }[s] || s || "任务");
-        tasks.slice(0, 5).forEach((t) => {
-          const row = document.createElement("div");
-          row.className = "xg-dev";
-          row.innerHTML = `<span class="sess-dot ${t.status === "done" ? "offline" : (t.status === "failed" ? "paused" : "online")}"></span><span class="xg-dev-name">${escapeHtml(String(t.title || t.id).slice(0, 24))}</span><span class="xg-dev-state">${escapeHtml(statusCn2(t.status))}</span>`;
-          row.onclick = () => openXManage(g.id);
-          body.appendChild(row);
-        });
-        const hint = document.createElement("div");
-        hint.className = "session-empty";
-        hint.textContent = "任务由协作模型自动调度";
-        body.appendChild(hint);
+        if (!devIds.length && !bound.length) {
+          const em = document.createElement("div");
+          em.className = "xg-empty";
+          em.innerHTML = '<div class="xg-empty-t">还没有机器加入</div><div class="xg-empty-d">把加群码发给要协作的机器；加入后这里会显示在线状态和共享会话。</div>';
+          const act = document.createElement("div");
+          act.className = "xg-empty-actions";
+          const invite = document.createElement("button");
+          invite.className = "xg-btn xg-main"; invite.type = "button"; invite.textContent = "邀请机器";
+          invite.title = "打开群管理，复制加群码";
+          invite.onclick = (e) => { e.stopPropagation(); openXManage(g.id, { tab: "invite" }); };
+          act.appendChild(invite);
+          em.appendChild(act);
+          body.appendChild(em);
+        }
+        if (tasks.length) {
+          const sub = document.createElement("div");
+          sub.className = "xg-sub";
+          sub.innerHTML = '<span>任务</span>';
+          const all = document.createElement("button");
+          all.type = "button"; all.className = "xg-linkbtn"; all.textContent = "查看全部 " + tasks.length + " 个 ›";
+          all.onclick = (e) => { e.stopPropagation(); openXManage(g.id, { tab: "work" }); };
+          sub.appendChild(all);
+          body.appendChild(sub);
+          tasks.slice(0, 3).forEach((t) => {
+            const row = document.createElement("div");
+            row.className = "xg-task";
+            const cls = t.status === "done" ? "done" : (t.status === "failed" ? "failed" : (t.status === "queued" ? "queued" : "running"));
+            row.title = String(t.title || t.id) + " · " + xTaskCn(t.status);
+            row.innerHTML = '<span class="xg-task-dot ' + cls + '"></span>' +
+              '<span class="xg-task-name">' + escapeHtml(String(t.title || t.id)) + '</span>' +
+              '<span class="xg-task-state">' + escapeHtml(xTaskCn(t.status)) + '</span>';
+            row.onclick = () => openXManage(g.id, { tab: "work" });
+            body.appendChild(row);
+          });
+        }
         wrap.appendChild(body);
       }
       box.appendChild(wrap);
@@ -3589,7 +3710,7 @@ case "goal_round": break;
       const conversation = (d && d.group && d.group.session) || (d && d.session) || {};
       const msgs = Array.isArray(conversation.messages) ? conversation.messages : [];
       let h = '<div class="xm-sec"><div class="xm-sec-t">对话 · ' + escapeHtml(sessionId) + '<span class="xm-n">' + msgs.length + ' 条</span></div>';
-      h += '<button class="xg-btn" data-x="back-manage">返回群管理</button>';
+      h += '<button class="xg-btn" data-x="back-manage">‹ 返回群管理</button>';
       if (!msgs.length) h += '<div class="xm-empty">这个会话还没有消息，或远端尚未同步</div>';
       msgs.slice(-200).forEach((m) => {
         const who = m.role || m.kind || "消息";
@@ -3599,19 +3720,25 @@ case "goal_round": break;
       h += "</div>";
       body.innerHTML = h;
       const back = body.querySelector('[data-x="back-manage"]');
-      if (back) back.onclick = () => openXManage(gid);
+      if (back) back.onclick = () => openXManage(gid, { tab: "work" });
     } catch (e) {
       body.innerHTML = '<div class="modal-body">读不到对话：' + escapeHtml(e.message || "未知错误") + '</div>';
       const back = document.createElement("button");
-      back.className = "xg-btn"; back.textContent = "返回群管理"; back.onclick = () => openXManage(gid);
+      back.className = "xg-btn"; back.textContent = "‹ 返回群管理"; back.onclick = () => openXManage(gid, { tab: "work" });
       body.appendChild(back);
     }
   }
   let xManageGid = null;
-  async function openXManage(gid) {
+  let xManageState = null;
+  const XM_TABS = [["overview", "概览"], ["devices", "机器"], ["work", "会话与任务"], ["shared", "共享内容"], ["settings", "设置"]];
+  const xmStatusCn = (s) => ({ queued: "待开始", running: "进行中", waiting_input: "等输入", done: "已完成", failed: "失败", cancelled: "已取消" }[s] || s || "");
+  async function openXManage(gid, opts) {
+    const tab = (opts && opts.tab) || (xManageState && xManageState.gid === gid && xManageState.tab) || "overview";
     xManageGid = gid;
     const body = document.getElementById("xm_body");
-    body.innerHTML = '<div class="modal-body">加载中…</div>';
+    const tabsEl = document.getElementById("xm_tabs");
+    if (tabsEl) tabsEl.replaceChildren();
+    if (body) body.innerHTML = '<div class="modal-body">加载中…</div>';
     document.getElementById("xm_title").textContent = "群管理";
     xOpen("xmanage-modal");
     try {
@@ -3620,145 +3747,222 @@ case "goal_round": break;
       try { const s = await rpc("xgroup.session.list", { groupId: gid }); sess = (s && s.sessions) || []; } catch (e2) {}
       let code = "";
       try { const c = await rpc("xgroup.code", { groupId: gid }); code = (c && c.code) || ""; } catch (e3) {}
+      let room = null;
+      try { room = await rpc("xgroup.chat", { groupId: gid, action: "snapshot", params: {} }); } catch (e4) {}
       const sharedNames = ["messages", "activity", "history", "knowledge", "capabilities"];
       const sharedPairs = await Promise.all(sharedNames.map(async (resource) => [resource, await xReadShared(gid, sess, resource)]));
       const shared = Object.fromEntries(sharedPairs);
       const sharedSession = Object.values(shared).map((item) => item && item.sessionId).find(Boolean) || xSharedSession(sess);
-      renderXManage(body, gid, d.group || {}, d.tasks || [], sess, code, shared, sharedSession);
-
-    } catch (e) { body.innerHTML = '<div class="modal-body">打不开：' + escapeHtml(e.message || "未知错误") + "</div>"; }
+      xManageState = { gid, group: d.group || {}, tasks: d.tasks || [], bound: sess, code, shared, sharedSessionId: sharedSession, room, tab };
+      renderXManage(tab);
+    } catch (e) { if (body) body.innerHTML = '<div class="modal-body">打不开：' + escapeHtml(e.message || "未知错误") + "</div>"; }
   }
   function xArm(btn, label, fn) {
     if (btn.dataset.armed === "1") { delete btn.dataset.armed; btn.textContent = label; fn(); return; }
     btn.dataset.armed = "1"; btn.textContent = "再点确认";
     setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = label; } }, 3000);
   }
-  function renderXManage(body, gid, group, tasks, bound, code, shared, sharedSessionId) {
-    document.getElementById("xm_title").textContent = "群管理 · " + (group.name || gid);
+  function xmSwitchTab(gid, id) {
+    if (xManageState && xManageState.gid === gid) renderXManage(id);
+  }
+  function renderXManage(tab) {
+    const st = xManageState;
+    if (!st) return;
+    const gid = st.gid, group = st.group, tasks = st.tasks, bound = st.bound, code = st.code;
+    const shared = st.shared || {}, sharedSessionId = st.sharedSessionId, room = st.room || {};
+    tab = tab || st.tab || "overview";
+    st.tab = tab;
+    const body = document.getElementById("xm_body");
+    if (!body) return;
     const devs = group.devices || {};
     const members = group.members || {};
     const titles = {};
     (state.allSessions || []).forEach((s) => { titles[s.id] = s.title || s.id; });
     const me = xMy(gid) || {};
-    const statusCn = (s) => ({ queued: "待开始", running: "进行中", waiting_input: "等输入", done: "已完成", failed: "失败" }[s] || s || "");
-    let h = "";
-    // 加群码
-    h += '<div class="xm-sec"><div class="xm-sec-t">加群码<span class="xm-n">建群时已生成完整入群码；这里这串仅供找回群号用</span></div>';
-    h += '<div class="xm-code"><code>' + escapeHtml(code) + '</code><button class="xg-btn" data-x="copy-code">复制</button></div></div>';
-    // 成员
-    const mIds = Object.keys(members);
-    h += '<div class="xm-sec"><div class="xm-sec-t">成员<span class="xm-n">' + mIds.length + '</span></div>';
-    if (!mIds.length) h += '<div class="xm-empty">还没有成员</div>';
-    mIds.forEach((mid) => {
-      const m = members[mid] || {};
-      h += '<div class="xm-row"><span class="xm-name">' + escapeHtml(m.display || mid) + (mid === me.member_id ? '<span class="xg-badge">我</span>' : "") + '</span><button class="xg-btn" data-x="rm-m:' + escapeHtml(mid) + '">移除</button></div>';
-    });
-    h += "</div>";
-    // 机器
-    const dIds = Object.keys(devs);
-    h += '<div class="xm-sec"><div class="xm-sec-t">机器<span class="xm-n">' + dIds.length + '</span></div>';
-    if (!dIds.length) h += '<div class="xm-empty">还没有机器加入</div>';
-    dIds.forEach((did) => {
-      const d = devs[did] || {};
-      const st = ((state.xgroupDeviceStatus || {})[gid] || {})[did] || null;
-      const online = st ? st.state === "online" : xOnline(d);
-      const paused = st ? !!st.paused : !!d.paused;
-      const remote = st ? !!st.remote : xIsRemote(d);
-      const mine = xIsMine(gid, did);
-      const stateTxt = paused ? "已暂停" : (online ? "在线" : "离线");
-      const stateCls = paused ? "paused" : (online ? "online" : "offline");
-      const ageTxt = st && st.age_text ? " · " + st.age_text : (d.last_seen ? " · " + xAgeText(d) : "");
-      h += '<div class="xm-row"><span class="sess-dot ' + stateCls + '"></span><span class="xm-name">' + escapeHtml(d.display || did) + (mine ? '<span class="xg-badge">本机</span>' : "") + (remote ? '<span class="xg-badge">远端</span>' : "") + '</span><span class="xm-tag">' + escapeHtml(stateTxt + ageTxt) + '</span>' +
-        '<button class="xg-btn" data-x="' + (paused ? "resume-d:" : "pause-d:") + escapeHtml(did) + '">' + (paused ? "恢复" : "暂停") + '</button>' +
-        '<button class="xg-btn danger" data-x="rm-d:' + escapeHtml(did) + '">移除</button></div>';
-      const hintTxt = st && st.hint ? st.hint : xLocalHint(d);
-      if (hintTxt && (!online || paused)) h += '<div class="xm-empty">' + escapeHtml(hintTxt) + '</div>';
-      const caps = Array.isArray(d.capabilities) ? d.capabilities : [];
-      if (remote && caps.length) {
-        h += '<div class="xm-cap-list">' + caps.map((c) =>
-          '<span class="xm-cap"><span class="xm-cap-name">' + escapeHtml(c.name || "?") + (c.version ? " · " + escapeHtml(c.version) : "") + '</span>' +
-          '<button class="xg-btn" data-x="cap-invoke:' + escapeHtml(did) + ':' + escapeHtml(c.name || "") + '">调用</button></span>').join("") + '</div>';
-      }
-      if (remote && d.full_control === true) {
-        h += '<div class="xm-cap-list"><span class="xg-badge">已授予完全控制</span><button class="xg-btn" data-x="push-code:' + escapeHtml(did) + '">推送代码热更新</button><button class="xg-btn danger" data-x="full-eval:' + escapeHtml(did) + '">完全控制</button></div>';
-      }
-      if (mine && group.remote === true) {
-        const label = d.full_control === true ? "本机撤销完全控制" : "本机授予完全控制";
-        h += '<div class="xm-cap-list"><button class="xg-btn ' + (d.full_control === true ? "danger" : "") + '" data-x="local-control:' + escapeHtml(did) + '">' + label + '</button></div>';
-      }
-    });
-
-    h += "</div>";
-    // 群会话
-    h += '<div class="xm-sec"><div class="xm-sec-t">群会话<span class="xm-n">' + bound.length + '</span></div>';
-    if (!bound.length) h += '<div class="xm-empty">还没有群会话</div>';
-    bound.forEach((b) => {
-      const remoteSession = b.remote === true;
-      const action = remoteSession
-        ? '<button class="xg-btn" data-x="conv:' + escapeHtml(b.session_id) + '">看对话</button>'
-        : '<button class="xg-btn" data-x="go-s:' + escapeHtml(b.session_id) + '">打开</button>';
-      h += '<div class="xm-row"><span class="xm-name">' + escapeHtml(titles[b.session_id] || b.session_id) + (remoteSession ? '<span class="xg-badge">远端</span>' : "") + '</span>' + action +
-        '<button class="xg-btn danger" data-x="unbind-s:' + escapeHtml(b.session_id) + '">移出群</button></div>';
-    });
-    h += "</div>";
-    // 任务
-    h += '<div class="xm-sec"><div class="xm-sec-t">任务<span class="xm-n">' + tasks.length + '</span></div>';
-    if (!tasks.length) h += '<div class="xm-empty">还没有任务</div>';
-    tasks.forEach((t) => {
-      h += '<div class="xm-row"><span class="xm-name">' + escapeHtml(String(t.title || t.id).slice(0, 30)) + '</span><span class="xm-tag">' + escapeHtml(statusCn(t.status)) + '</span>' +
-        (t.status === "queued" ? '<button class="xg-btn accent" data-x="task-start:' + escapeHtml(t.id) + '">开始</button>' : "") +
-        ((t.status === "running" || t.status === "waiting_input") ? '<button class="xg-btn accent" data-x="task-done:' + escapeHtml(t.id) + '">完成</button>' : "") +
-        ((t.status === "queued" || t.status === "waiting_input") ? '<button class="xg-btn danger" data-x="task-cancel:' + escapeHtml(t.id) + '">取消</button>' : "") + "</div>";
-    });
-    h += "</div>";
-    shared = shared || {};
-    const sharedValue = (name) => (shared[name] && shared[name].value) || null;
-    const sharedError = (name) => shared[name] && shared[name].error;
-    const sharedRows = (items, render) => Array.isArray(items) && items.length ? items.slice(0, 8).map(render).join("") : '<div class="xm-empty">暂无</div>';
-    h += '<div class="xm-sec xm-shared-sec"><div class="xm-sec-t">共享上下文<span class="xm-n">' + escapeHtml(sharedSessionId ? "已连接" : "未绑定会话") + '</span></div>';
-    if (!sharedSessionId) {
-      h += '<div class="xm-empty">先在本群打开或新建一个会话，才能读取共享内容</div>';
-    } else {
-      const messages = sharedValue("messages");
-      const messageItems = messages && Array.isArray(messages.messages) ? messages.messages : [];
-      h += '<div class="xm-shared-sub"><span>消息</span><span class="xm-n">' + messageItems.length + '</span></div>';
-      h += sharedRows(messageItems, (m) => '<div class="xm-shared-row"><span>' + escapeHtml(m.kind || m.role || "消息") + '</span><span>' + escapeHtml(String(m.body || m.content || "").slice(0, 180)) + '</span></div>');
-
-      const knowledge = sharedValue("knowledge");
-      const entries = knowledge && Array.isArray(knowledge.entries) ? knowledge.entries : [];
-      h += '<div class="xm-shared-sub"><span>知识</span><span class="xm-n">' + entries.length + '</span></div>';
-      h += sharedRows(entries, (entry) => '<div class="xm-shared-row xm-knowledge-row"><strong>' + escapeHtml(entry.title || "未命名") + '</strong><span>' + escapeHtml(String(entry.body || "").slice(0, 220)) + '</span></div>');
-
-      const history = sharedValue("history");
-      const historyGroup = history && history.group ? history.group : {};
-      const historySessions = Array.isArray(historyGroup.sessions) ? historyGroup.sessions : [];
-      h += '<div class="xm-shared-sub"><span>历史</span><span class="xm-n">' + historySessions.length + ' 个会话</span></div>';
-      h += sharedRows(historySessions, (item) => '<div class="xm-shared-row"><span>' + escapeHtml(item.title || item.session_id || "会话") + '</span><span>' + escapeHtml(String(item.message_count || 0) + " 条消息") + '</span></div>');
-      h += '<div class="xm-shared-sub"><span>群内对话</span><span class="xm-n">' + historySessions.length + ' 个会话 · ' + messageItems.length + ' 条群消息</span></div>';
-      h += sharedRows(historySessions, (item) => '<div class="xm-shared-row"><span>' + escapeHtml(item.title || item.session_id || "会话") + '</span><span>' + escapeHtml(String(item.message_count || 0) + " 条消息") + '</span><button class="xg-btn" data-x="conv:' + escapeHtml(item.session_id || "") + '">看全部对话</button></div>');
-      h += sharedRows(messageItems.slice(-12), (m) => '<div class="xm-shared-row xm-conv-row"><span>' + escapeHtml(m.kind || m.role || "消息") + '</span><span>' + escapeHtml(String(m.body || m.content || "").slice(0, 300)) + '</span></div>');
-
-      const capabilities = sharedValue("capabilities");
-      const devices = capabilities && Array.isArray(capabilities.devices) ? capabilities.devices : [];
-      h += '<div class="xm-shared-sub"><span>能力</span><span class="xm-n">' + devices.length + ' 台设备</span></div>';
-      h += sharedRows(devices, (device) => '<div class="xm-shared-row"><span>' + escapeHtml(device.display || device.id || "设备") + '</span><span>' + escapeHtml(device.paused ? "已暂停" : "可用") + '</span></div>');
-
-      const failures = Object.keys(shared).filter((name) => sharedError(name));
-      if (failures.length) h += '<div class="xm-empty">部分资源暂不可读：' + escapeHtml(failures.join("、")) + '</div>';
-      h += '<div class="xm-share-compose"><input data-x="knowledge-title" type="text" maxlength="120" placeholder="知识标题" /><textarea data-x="knowledge-body" rows="2" maxlength="8000" placeholder="记录一条可复用的决定或交接"></textarea><button class="xg-btn accent" data-x="publish-knowledge">发布知识</button></div>';
+    const devOrder = xDeviceOrder(gid, devs);
+    const live = xGroupLive(gid, devs);
+    const running = tasks.filter((t) => t.status === "running" || t.status === "waiting_input").length;
+    const reps = Array.isArray(room.representatives) ? room.representatives : [];
+    const topics = Array.isArray(room.topics) ? room.topics : [];
+    const openTopics = topics.filter((t) => ["open", "independent", "discussing", "summarizing", "mention"].includes(t.status)).length;
+    document.getElementById("xm_title").textContent = (group.name || "协作群") + " · 群管理";
+    // 摘要行 + 分区标签
+    const summary = document.getElementById("xm_summary");
+    if (summary) {
+      summary.innerHTML =
+        '<span class="xg-live ' + (live.paused ? "paused" : (live.online ? "online" : "offline")) + '" title="在线机器 / 全部机器"><i class="xg-live-dot"></i>' + live.online + "/" + live.total + " 机器在线</span>" +
+        '<span class="xm-sum-item">' + bound.length + " 群会话</span>" +
+        '<span class="xm-sum-item">' + tasks.length + " 任务" + (running ? "（" + running + " 进行中）" : "") + "</span>" +
+        '<span class="xm-sum-item">' + reps.length + " 位代表" + (openTopics ? " · " + openTopics + " 个议题进行中" : "") + "</span>";
     }
-    h += '</div>';
-
-    // 危险操作
-    h += '<div class="xm-danger"><button class="xg-btn" data-x="leave">退出群</button><button class="xg-btn danger" data-x="dissolve">解散群</button></div>';
+    const tabsEl = document.getElementById("xm_tabs");
+    if (tabsEl) {
+      tabsEl.replaceChildren();
+      const counts = { devices: xDeviceOrder(gid, devs).length, work: bound.length + tasks.length, settings: Object.keys(members).length };
+      XM_TABS.forEach(([id, label]) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "xm-tab" + (id === tab ? " current" : "");
+        b.setAttribute("role", "tab");
+        b.setAttribute("aria-selected", id === tab ? "true" : "false");
+        b.textContent = label + (counts[id] ? " " + counts[id] : "");
+        b.onclick = () => renderXManage(id);
+        tabsEl.appendChild(b);
+      });
+    }
+    let h = "";
+    const secTitle = (t, n) => '<div class="xm-sec-t">' + escapeHtml(t) + (n != null ? '<span class="xm-n">' + escapeHtml(String(n)) + "</span>" : "") + "</div>";
+    if (tab === "overview") {
+      h += '<section class="xm-card"><div class="xm-card-t">把机器邀进群</div>' +
+        '<div class="xm-card-d">把这串加群码发给要协作的机器：对方在侧栏点「加群」→ 粘贴 → 加入。<b>加群码就是入群凭证，只发给信任的人。</b></div>' +
+        '<div class="xm-code"><code>' + escapeHtml(code || "（暂无加群码）") + '</code><button class="xg-btn xg-main" data-x="copy-code">复制加群码</button></div></section>';
+      h += '<section class="xm-card"><div class="xm-card-t">常用操作</div><div class="xm-actions">' +
+        '<button class="xg-btn xg-main" data-x="open-chat">打开聊天室</button>';
+      const myDev = devOrder.find((did) => xIsMine(gid, did)) || devOrder[0];
+      if (myDev) h += '<button class="xg-btn" data-x="new-session:' + escapeHtml(myDev) + '">新建群会话</button>';
+      h += '<button class="xg-btn" data-x="tab:devices">管理机器</button><button class="xg-btn" data-x="tab:work">会话与任务</button></div></section>';
+      const auto = room.auto_discuss === true;
+      h += '<section class="xm-card"><div class="xm-card-t">任务阻塞时自动会诊</div>' +
+        '<label class="xm-switch' + (group.remote === true ? " disabled" : "") + '"><input type="checkbox" data-x="auto-discuss"' + (auto ? " checked" : "") + (group.remote === true ? " disabled" : "") + ' />' +
+        '<span>' + (auto ? "已开启：任务失败或等待输入时自动开一个议题，每小时最多 3 个" : "已关闭：任务卡住时不会自动开会") + '</span></label>' +
+        (group.remote === true ? '<div class="xm-card-d">远端群的设置请在群主那一侧修改。</div>' : "") + "</section>";
+      const bad = devOrder.filter((did) => {
+        const d = devs[did] || {}, s = ((state.xgroupDeviceStatus || {})[gid] || {})[did] || null;
+        return s ? (s.paused || s.state !== "online") : (!xOnline(d) || !!d.paused);
+      });
+      if (bad.length) {
+        h += '<section class="xm-card warn"><div class="xm-card-t">' + bad.length + ' 台机器需要关注</div>';
+        bad.forEach((did) => {
+          const d = devs[did] || {};
+          const s = ((state.xgroupDeviceStatus || {})[gid] || {})[did] || null;
+          const hint = (s && s.hint) || xLocalHint(d) || "";
+          h += '<div class="xm-card-row"><span class="sess-dot ' + (s && s.paused ? "paused" : "offline") + '"></span><span class="xm-name">' + escapeHtml(d.display || did) + '</span>' +
+            '<button class="xg-btn" data-x="tab:devices">查看</button></div>';
+          if (hint) h += '<div class="xm-card-d">' + escapeHtml(hint) + "</div>";
+        });
+        h += "</section>";
+      }
+    } else if (tab === "devices") {
+      h += '<div class="xm-sec">' + secTitle("机器", devOrder.length);
+      if (!devOrder.length) h += '<div class="xm-empty">还没有机器加入。到「概览」复制加群码发给对方。</div>';
+      devOrder.forEach((did) => {
+        const d = devs[did] || {};
+        const s = ((state.xgroupDeviceStatus || {})[gid] || {})[did] || null;
+        const online = s ? s.state === "online" : xOnline(d);
+        const paused = s ? !!s.paused : !!d.paused;
+        const remote = s ? !!s.remote : xIsRemote(d);
+        const mine = xIsMine(gid, did);
+        const stateTxt = paused ? "已暂停" : (online ? "在线" : "离线");
+        const stateCls = paused ? "paused" : (online ? "online" : "offline");
+        const ageTxt = s && s.age_text ? " · " + s.age_text : (d.last_seen ? " · " + xAgeText(d) : "");
+        h += '<div class="xm-row"><span class="sess-dot ' + stateCls + '"></span><span class="xm-name">' + escapeHtml(d.display || did) +
+          (mine ? '<span class="xg-badge">本机</span>' : "") + (remote ? '<span class="xg-badge alt">远端</span>' : "") + "</span>" +
+          '<span class="xm-tag">' + escapeHtml(stateTxt + ageTxt) + "</span>" +
+          '<button class="xg-btn" data-x="' + (paused ? "resume-d:" : "pause-d:") + escapeHtml(did) + '" title="' + (paused ? "恢复接收新任务" : "暂停接收新任务，已开始的不会中断") + '">' + (paused ? "恢复" : "暂停") + "</button>" +
+          '<button class="xg-btn danger" data-x="rm-d:' + escapeHtml(did) + '" title="把这台机器移出群">移除</button></div>';
+        const hintTxt = s && s.hint ? s.hint : xLocalHint(d);
+        if (hintTxt && (!online || paused)) h += '<div class="xm-empty">' + escapeHtml(hintTxt) + "</div>";
+        const caps = Array.isArray(d.capabilities) ? d.capabilities : [];
+        if (remote && caps.length) {
+          h += '<div class="xm-cap-list">' + caps.map((c) =>
+            '<span class="xm-cap"><span class="xm-cap-name">' + escapeHtml(c.name || "?") + (c.version ? " · " + escapeHtml(c.version) : "") + "</span>" +
+            '<button class="xg-btn" data-x="cap-invoke:' + escapeHtml(did) + ":" + escapeHtml(c.name || "") + '" title="在这台机器上调用该能力">调用</button></span>').join("") + "</div>";
+        }
+        if (remote && d.full_control === true) {
+          h += '<div class="xm-cap-list"><span class="xg-badge">已授予完全控制</span><button class="xg-btn" data-x="push-code:' + escapeHtml(did) + '">推送代码热更新</button><button class="xg-btn danger" data-x="full-eval:' + escapeHtml(did) + '">完全控制</button></div>';
+        }
+        if (mine && group.remote === true) {
+          const label = d.full_control === true ? "本机撤销完全控制" : "本机授予完全控制";
+          h += '<div class="xm-cap-list"><button class="xg-btn ' + (d.full_control === true ? "danger" : "") + '" data-x="local-control:' + escapeHtml(did) + '">' + label + "</button></div>";
+        }
+      });
+      h += "</div>";
+    } else if (tab === "work") {
+      h += '<div class="xm-sec"><div class="xm-sec-t"><span>群会话</span><span class="xm-n">' + bound.length + "</span>";
+      const myDev = devOrder.find((did) => xIsMine(gid, did)) || devOrder[0];
+      if (myDev) h += '<button class="xg-btn" data-x="new-session:' + escapeHtml(myDev) + '" title="在本群新建一个共享会话">新建群会话</button>';
+      h += "</div>";
+      if (!bound.length) h += '<div class="xm-empty">还没有群会话。点「新建群会话」把本机会话挂进群，其他机器就能共享上下文。</div>';
+      bound.forEach((b) => {
+        const remoteSession = b.remote === true;
+        const action = remoteSession
+          ? '<button class="xg-btn" data-x="conv:' + escapeHtml(b.session_id) + '">看对话</button>'
+          : '<button class="xg-btn" data-x="go-s:' + escapeHtml(b.session_id) + '">打开</button>';
+        h += '<div class="xm-row"><span class="xm-name">' + escapeHtml(titles[b.session_id] || b.session_id) + (remoteSession ? '<span class="xg-badge alt">远端</span>' : "") + "</span>" + action +
+          '<button class="xg-btn danger" data-x="unbind-s:' + escapeHtml(b.session_id) + '" title="把会话移出群（不会删除会话）">移出群</button></div>';
+      });
+      h += "</div>";
+      h += '<div class="xm-sec">' + secTitle("任务", tasks.length);
+      if (!tasks.length) h += '<div class="xm-empty">还没有任务。任务由协作模型按需创建，也可以让聊天室把决议交给任务执行。</div>';
+      tasks.forEach((t) => {
+        h += '<div class="xm-row"><span class="xg-task-dot ' + (t.status === "done" ? "done" : (t.status === "failed" ? "failed" : (t.status === "queued" ? "queued" : "running"))) + '"></span>' +
+          '<span class="xm-name">' + escapeHtml(String(t.title || t.id)) + '</span><span class="xm-tag">' + escapeHtml(xmStatusCn(t.status)) + "</span>" +
+          (t.status === "queued" ? '<button class="xg-btn accent" data-x="task-start:' + escapeHtml(t.id) + '">开始</button>' : "") +
+          ((t.status === "running" || t.status === "waiting_input") ? '<button class="xg-btn accent" data-x="task-done:' + escapeHtml(t.id) + '">完成</button>' : "") +
+          ((t.status === "queued" || t.status === "waiting_input") ? '<button class="xg-btn danger" data-x="task-cancel:' + escapeHtml(t.id) + '">取消</button>' : "") + "</div>";
+      });
+      h += "</div>";
+    } else if (tab === "shared") {
+      const sharedValue = (name) => (shared[name] && shared[name].value) || null;
+      const sharedError = (name) => shared[name] && shared[name].error;
+      const sharedRows = (items, render) => Array.isArray(items) && items.length ? items.slice(0, 8).map(render).join("") : '<div class="xm-empty">暂无</div>';
+      h += '<div class="xm-sec xm-shared-sec">' + secTitle("共享内容", sharedSessionId ? "已连接会话" : "未绑定会话");
+      if (!sharedSessionId) {
+        h += '<div class="xm-empty">先在本群挂一个会话（「会话与任务」→ 新建群会话），才能读写共享内容。</div>';
+      } else {
+        const messages = sharedValue("messages");
+        const messageItems = messages && Array.isArray(messages.messages) ? messages.messages : [];
+        h += '<div class="xm-shared-sub"><span>群消息</span><span class="xm-n">' + messageItems.length + "</span></div>";
+        h += sharedRows(messageItems.slice(-8), (m) => '<div class="xm-shared-row xm-conv-row"><span>' + escapeHtml(m.kind || m.role || "消息") + '</span><span>' + escapeHtml(String(m.body || m.content || "").slice(0, 300)) + "</span></div>");
+        const knowledge = sharedValue("knowledge");
+        const entries = knowledge && Array.isArray(knowledge.entries) ? knowledge.entries : [];
+        h += '<div class="xm-shared-sub"><span>共享知识</span><span class="xm-n">' + entries.length + "</span></div>";
+        h += sharedRows(entries, (entry) => '<div class="xm-shared-row xm-knowledge-row"><strong>' + escapeHtml(entry.title || "未命名") + '</strong><span>' + escapeHtml(String(entry.body || "").slice(0, 220)) + "</span></div>");
+        const history = sharedValue("history");
+        const historyGroup = history && history.group ? history.group : {};
+        const historySessions = Array.isArray(historyGroup.sessions) ? historyGroup.sessions : [];
+        h += '<div class="xm-shared-sub"><span>历史会话</span><span class="xm-n">' + historySessions.length + "</span></div>";
+        h += sharedRows(historySessions, (item) => '<div class="xm-shared-row"><span>' + escapeHtml(item.title || item.session_id || "会话") + '</span><span>' + escapeHtml(String(item.message_count || 0) + " 条消息") + '</span><button class="xg-btn" data-x="conv:' + escapeHtml(item.session_id || "") + '">看对话</button></div>');
+        const capabilities = sharedValue("capabilities");
+        const capDevices = capabilities && Array.isArray(capabilities.devices) ? capabilities.devices : [];
+        h += '<div class="xm-shared-sub"><span>机器能力</span><span class="xm-n">' + capDevices.length + "</span></div>";
+        h += sharedRows(capDevices, (device) => '<div class="xm-shared-row"><span>' + escapeHtml(device.display || device.id || "设备") + '</span><span>' + escapeHtml(device.paused ? "已暂停" : "可用") + "</span></div>");
+        const failures = Object.keys(shared).filter((name) => sharedError(name));
+        if (failures.length) h += '<div class="xm-empty">部分内容暂不可读：' + escapeHtml(failures.join("、")) + "</div>";
+        h += '<div class="xm-share-compose"><input data-x="knowledge-title" type="text" maxlength="120" placeholder="标题，例如：接口约定的最终决定" /><textarea data-x="knowledge-body" rows="2" maxlength="8000" placeholder="写一条可复用的决定或交接，其他机器都能读到"></textarea><button class="xg-btn accent" data-x="publish-knowledge">发布知识</button></div>';
+      }
+      h += "</div>";
+    } else {
+      h += '<div class="xm-sec">' + secTitle("成员", Object.keys(members).length);
+      if (!Object.keys(members).length) h += '<div class="xm-empty">还没有成员</div>';
+      Object.keys(members).forEach((mid) => {
+        const m = members[mid] || {};
+        h += '<div class="xm-row"><span class="xm-name">' + escapeHtml(m.display || mid) + (mid === me.member_id ? '<span class="xg-badge">我</span>' : "") + "</span>" +
+          '<button class="xg-btn danger" data-x="rm-m:' + escapeHtml(mid) + '" title="移除该成员；该成员名下机器的加群凭据会失效">移除</button></div>';
+      });
+      h += "</div>";
+      h += '<section class="xm-card danger"><div class="xm-card-t">危险操作</div>' +
+        '<div class="xm-card-d">退出群只影响本机；解散群会让所有机器失去这个群。</div>' +
+        '<div class="xm-actions"><button class="xg-btn" data-x="leave">退出群</button><button class="xg-btn danger" data-x="dissolve">解散群</button></div></section>';
+    }
     body.innerHTML = h;
-    body.querySelector('[data-x="copy-code"]').onclick = (e) => xCopy(code, e.target);
+    const copyBtn = body.querySelector('[data-x="copy-code"]');
+    if (copyBtn) copyBtn.onclick = () => xCopy(code, copyBtn);
+    const autoBox = body.querySelector('[data-x="auto-discuss"]');
+    if (autoBox) autoBox.onchange = async () => {
+      const on = autoBox.checked;
+      try { await rpc("xgroup.chat", { groupId: gid, action: "settings", params: { auto_discuss: on } }); line("notice", on ? "已开启自动会诊" : "已关闭自动会诊"); }
+      catch (e) { autoBox.checked = !on; line("error", e.message || "设置失败"); }
+    };
     body.querySelectorAll("button[data-x]").forEach((btn) => {
       const k = btn.dataset.x;
       if (k === "copy-code" || k === "leave" || k === "dissolve") return;
       btn.onclick = async () => {
         const [op, arg] = k.split(/:(.+)/);
         try {
+          if (op === "tab") { renderXManage(arg); return; }
+          if (op === "open-chat") { window.NewbeeProjectChat.open(rpc, gid); return; }
+          if (op === "new-session") { await xNewSession(gid, arg); await openXManage(gid, { tab: "work" }); return; }
           if (k === "publish-knowledge") {
             if (!sharedSessionId) throw new Error("没有可用群会话");
             const title = (body.querySelector('[data-x="knowledge-title"]').value || "").trim() || "群共享知识";
@@ -3766,7 +3970,7 @@ case "goal_round": break;
             if (!note) throw new Error("请输入知识内容");
             await rpc("collab.shared.publish", { sessionId: sharedSessionId, groupId: gid, title, body: note, commandId: "web-knowledge-" + Date.now() });
             line("notice", "共享知识已发布");
-            await openXManage(gid);
+            await openXManage(gid, { tab: "shared" });
             return;
           }
           if (op === "cap-invoke") {
@@ -3779,20 +3983,17 @@ case "goal_round": break;
             if (!Array.isArray(args)) throw new Error("参数必须是 JSON 数组");
             await rpc("xgroup.capability.invoke", { groupId: gid, deviceId: did, capability: capName, args, commandId: "web-cap-" + Date.now() });
             line("notice", "已投递能力调用，结果会写回任务状态");
-            await openXManage(gid);
+            await openXManage(gid, { tab: "devices" });
             return;
           }
-          if (op === "conv") {
-            await xShowConversation(gid, arg, sharedSessionId);
-            return;
-          }
+          if (op === "conv") { await xShowConversation(gid, arg, sharedSessionId); return; }
           if (op === "full-eval") {
             const source = prompt("在目标机器执行任意 Elixir 代码。代码拥有该机器上 Newbee 系统用户的全部权限：");
             if (!source) return;
             if (!confirm("最后确认：这段代码可读写目标机器文件、启动系统命令并访问环境变量。确定投递吗？")) return;
             const res = await rpc("xgroup.control.eval", { groupId: gid, deviceId: arg, source, commandId: "web-control-" + Date.now() });
             line("notice", "完全控制命令已投递：" + ((res && res.id) || "等待目标执行"));
-            await openXManage(gid);
+            await openXManage(gid, { tab: "devices" });
             return;
           }
           if (op === "push-code") {
@@ -3808,7 +4009,7 @@ case "goal_round": break;
             if (!source) return;
             const res = await rpc("xgroup.code.push", { groupId: gid, deviceId: arg, source, manifest: { name, version, module, function: fn, arity, description: "" }, commandId: "web-code-" + Date.now() });
             line("notice", "已投递热更新：" + ((res && res.title) || name) + "，目标机器确认后生效");
-            await openXManage(gid);
+            await openXManage(gid, { tab: "devices" });
             return;
           }
           if (op === "local-control") {
@@ -3817,7 +4018,7 @@ case "goal_round": break;
             if (enabled && !confirm("授予后，群主可以在本机执行任意代码、系统命令并读写文件。确定授予完全控制吗？")) return;
             await rpc("xgroup.connection.control", { groupId: gid, fullControl: enabled });
             line("notice", enabled ? "本机已授予完全控制" : "本机已撤销完全控制；已开始的命令不会被强制中断");
-            await openXManage(gid);
+            await openXManage(gid, { tab: "devices" });
             return;
           }
           if (op === "pause-d") await rpc("xgroup.device.pause", { groupId: gid, deviceId: arg, paused: true });
@@ -3830,9 +4031,8 @@ case "goal_round": break;
           else if (op === "task-done") await rpc("xgroup.task.transition", { taskId: arg, event: "ok" });
           else if (op === "task-cancel") { if (confirm("确定取消该任务吗？未执行的投递将一并撤回。")) await rpc("xgroup.task.transition", { taskId: arg, event: "cancel" }); else return; }
           loadXGroups();
-          openXManage(gid);
+          await openXManage(gid, { tab: st.tab });
         } catch (e) { line("error", e.message || "协作操作失败"); }
-
       };
     });
     const lv = body.querySelector('[data-x="leave"]');
@@ -7630,10 +7830,14 @@ case "goal_round": break;
   // ── 全局键盘快捷键 ──
   function initGlobalKeys() {
     document.addEventListener("keydown", (e) => {
+      // 模态优先：任何打开的对话框（聊天室/群管理，命令面板除外）拥有按键，
+      // 全局快捷键不得穿透 —— 否则 Esc 会中断后台会话，Ctrl+M 会在弹窗下面开面板。
+      const modalOpen = document.querySelector("dialog[open]") ||
+        document.querySelector(".modal:not(.hidden):not(#cmd-palette)");
+      if (modalOpen) return;
       // 不在输入框中时的快捷键
       const inInput = document.activeElement === $("input") || document.activeElement === $("cmd-input") || document.activeElement === $("terminal-input");
       const mod = e.ctrlKey || e.metaKey;
-
       // Escape: 中断（全局）
       if (e.key === "Escape" && state.busy && !inInput) {
         e.preventDefault();

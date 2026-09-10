@@ -175,8 +175,9 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert scope =~ ".sidebar-foot .logout-btn"
     assert scope =~ "align-self: flex-end"
 
-    assert app =~ ~s(mkEmptyBtn("建群", "建一个项目协作群", "")
-    assert app =~ ~s(mkEmptyBtn("加群", "用加群码加入协作群", "")
+    assert app =~ "xg-main"
+    assert app =~ "xg-icon-btn"
+    assert app =~ "aria-label=\"更多操作\""
     assert index =~ "允许群主完全控制本机"
     refute index =~ "接受完全控制（群主可在本机执行任意代码和系统命令）"
     assert index =~ "xg-check-mark"
