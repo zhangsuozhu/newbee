@@ -414,6 +414,7 @@ ledger compactions.jsonl（append-only；tail_sha 锚自校验；尾行损坏整
 - `input/1` 消息规整（含工具结果）、`tools/1` 转义 function calling、`reasoning/1` 映射思考强度档位、`parse/1` 解析 `output` 数组（`function_call` / `message` / `reasoning` 分派）。
 - **过载重试**：429/500/502/503/529 退避重试（默认 5×1s），与 Completions 路径摘参重试双保险。
 - **前缀缓存兼容**：`Newbee.RequestEnvelope` 记录上次路由请求的可缓存前缀快照（消息+tools+route 逐字节），Archive 摘要请求 = 快照严格前缀 + 尾部压缩指令 → 前缀缓存命中成立（未命中绝不伪装命中）。
+  - **思考文本的两种载体**：`reasoning_text/1` 同时认 OpenAI 的 `summary[]` 与 DeepSeek/国御这类网关的 `content[].reasoning_text`（此类网关 `summary` 是空数组）。只看 `summary` 会让非流式路径（`complete/3`、`parse/1`）与终稿合并把整段思考丢干净——前端历史里再也看不到 Think 行。
 
 
 ### 6.9 模型能力声明与图片请求策略（2026-09 落地）
@@ -435,6 +436,10 @@ ledger compactions.jsonl（append-only；tail_sha 锚自校验；尾行损坏整
 **命中验证**：`test/newbee/llm/cache_hit_e2e_test.exs` 对真实端点断言 `cache_read_tokens > 0`（重复请求、前缀扩展、envelope 严格前缀回放三条）。形状单测只能证明"我们发了什么"，证明不了"provider 认了这个前缀"；默认跳过，`NEWBEE_CACHE_E2E=1` 打开。
 
 **非流式补全的协议分流**：`Client.complete/3` 原先永远 POST `chat/completions`，在 Responses 路由上（压缩摘要、进度判分、advisor、PPT 判分都用它）必然失败。现按 `responses_mode` 分流到 `Newbee.LLM.Responses.complete/3`，并把 `max_tokens` 翻译为 `max_output_tokens`。
+  **运行时能力探测的落盘纪律**：`stream` / `encrypted_reasoning` / `continuation` 对网关是事实问题，只能靠"试探一次 → 关掉该能力重试"探明，结论按 `{base_url, model}` 落盘复用（`~/.newbee/llm-responses-capabilities.json`，可用 `NEWBEE_HOME` 覆盖根目录）。两条纪律：
+
+  1. **只有重试成功才算探明**：关掉能力后仍以同一错误失败，说明降级没解决问题（实例：把 `must be passed back` 里的 `passed` 当成 `sse`，把支持流式的网关判成不支持）。此时回退内存标记且**不落盘**——误判一旦落盘，流式（连带实时思考流）会永久消失，直到人工删掉那一行。
+  2. **只对报错 message 按词边界匹配**：JSON 里的 `"type":"invalid_request_error"` 是固定分类码，任何 4xx 都带；拿整段 body 做 `String.contains?` 判定，会把所有 400 都当成"能力缺失"。
 
 ---
 ---
