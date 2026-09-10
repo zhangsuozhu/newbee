@@ -126,6 +126,7 @@ defmodule Newbee.Collaboration.CrossHost.Worker do
       {:ok, payload} when is_map(payload) ->
         state = %{state | connected: true, last_success_at: now(), last_error: nil, consecutive_failures: 0}
         state = apply_snapshot(state, payload["snapshot"])
+        Newbee.Collaboration.Chat.Runner.enqueue(payload["chat_jobs"] || [], {state.base_url, state.device_id, opts})
         state = flush_terminal(state)
         state = process_deliveries(state, List.wrap(payload["deliveries"]))
         state = maybe_publish_history(state)

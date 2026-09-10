@@ -3377,6 +3377,10 @@ case "goal_round": break;
       header.onclick = (e) => { if (e.target.closest(".xg-btn") || e.target.closest(".session-group-toggle")) return; xToggle(g.id); };
       header.querySelector(".xg-btn").onclick = (e) => { e.stopPropagation(); openXManage(g.id); };
       header.querySelector(".session-group-toggle").onclick = (e) => { e.stopPropagation(); xToggle(g.id); };
+      const chatButton = document.createElement("button");
+      chatButton.className = "xg-btn"; chatButton.textContent = "聊天室";
+      chatButton.onclick = (e) => { e.stopPropagation(); window.NewbeeProjectChat.open(rpc, g.id); };
+      header.querySelector(".sg-line").appendChild(chatButton);
       wrap.appendChild(header);
       if (!collapsed) {
         const body = document.createElement("div");

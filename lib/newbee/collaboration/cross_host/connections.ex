@@ -58,7 +58,15 @@ defmodule Newbee.Collaboration.CrossHost.Connections do
   end
 
   def invoke(_, _, _, _, _), do: {:error, "bad_request", "远程能力调用参数无效"}
+  @doc "Forward a project chat operation using this host's private enrolled device credential."
+  def chat(group_id, action, params, manager \\ __MODULE__) do
+    if Process.whereis(manager),
+      do: GenServer.call(manager, {:chat, group_id, action, params}, 15_000),
+      else: {:error, "not_running", "远程连接管理器未启动"}
+  end
+
   @doc "Return outbound connection state without exposing device credentials."
+
   def status(group_id, manager \\ __MODULE__) when is_binary(group_id) do
     if Process.whereis(manager),
       do: GenServer.call(manager, {:status, group_id}),
@@ -186,6 +194,25 @@ defmodule Newbee.Collaboration.CrossHost.Connections do
         )
       else
         :error -> {:error, "not_found", "本机没有这个远程群连接"}
+      end
+
+    {:reply, reply, state}
+  end
+
+  def handle_call({:chat, group_id, action, params}, _from, state) do
+    reply =
+      case Map.fetch(state.connections, group_id) do
+        {:ok, config} ->
+          Transport.rpc(
+            config["base_url"],
+            "xgroup.bridge.chat",
+            %{"deviceId" => config["device_id"], "action" => action, "params" => params},
+            device_token: config["device_token"],
+            fingerprint: config["fingerprint"]
+          )
+
+        :error ->
+          {:error, "not_found", "本机没有这个远程群连接"}
       end
 
     {:reply, reply, state}

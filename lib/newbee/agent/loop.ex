@@ -1200,9 +1200,16 @@ defmodule Newbee.Agent.Loop do
 
       # I1：记录本次路由请求的可缓存前缀快照（Archive 摘要路径消费）。
       # 标准 LLM client + 会话才写；注入函数/无会话 no-op。
-      Newbee.RequestEnvelope.record(state.session, state.client, state.messages)
+      request_messages = Newbee.Collaboration.Chat.execution_messages(state.messages, state.session, state.root)
 
-      case call_client(state.client_fun, state.messages, on_text, on_reasoning) do
+      request_messages =
+        if compaction_budget(%{state | messages: request_messages}).status == :hard_limit,
+          do: state.messages,
+          else: request_messages
+
+      Newbee.RequestEnvelope.record(state.session, state.client, request_messages)
+
+      case call_client(state.client_fun, request_messages, on_text, on_reasoning) do
         {:ok, msg, usage} ->
           Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
           emit(state, {:usage, Map.put(usage, "model", client_model(state.client))})

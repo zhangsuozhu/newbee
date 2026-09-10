@@ -1,5 +1,6 @@
 defmodule Newbee.LLM.ResponsesTest do
-  use ExUnit.Case, async: true
+  # These tests change NEWBEE_HOME; the process-wide environment must not race other modules.
+  use ExUnit.Case, async: false
 
   alias Newbee.LLM.{Client, Responses}
 
@@ -675,14 +676,27 @@ defmodule Newbee.LLM.ResponsesTest do
     }
   end
 
+  test "default test capability cache stays inside this VM's isolated global storage" do
+    previous = System.get_env("NEWBEE_HOME")
+    System.delete_env("NEWBEE_HOME")
+
+    on_exit(fn ->
+      if previous, do: System.put_env("NEWBEE_HOME", previous), else: System.delete_env("NEWBEE_HOME")
+    end)
+
+    assert Newbee.LLM.ResponsesCapabilities.path() ==
+             Path.join(Newbee.GlobalStore.root(), "llm-responses-capabilities.json")
+  end
+
   test "capability downgrade persists to disk and survives process restart (NEWBEE_HOME)" do
     # 隔离持久化文件到临时 HOME，避免污染真实 ~/.newbee，也不污染 async 兄弟测试
-    tmp_home = Path.join(System.tmp_dir!(), "newbee-home-#{System.unique_integer([:positive])}")
+    tmp_home = Path.join(Newbee.GlobalStore.root(), "newbee-home-#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp_home)
+    previous_home = System.get_env("NEWBEE_HOME")
     System.put_env("NEWBEE_HOME", tmp_home)
 
     on_exit(fn ->
-      System.delete_env("NEWBEE_HOME")
+      if previous_home, do: System.put_env("NEWBEE_HOME", previous_home), else: System.delete_env("NEWBEE_HOME")
       File.rm_rf(tmp_home)
     end)
 

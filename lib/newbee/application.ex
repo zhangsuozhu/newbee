@@ -24,6 +24,9 @@ defmodule Newbee.Application do
         {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Web.SessionSup},
         {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Collaboration.CrossHost.WorkerSupervisor},
         Newbee.Collaboration.CrossHost.Extensions,
+        Newbee.Collaboration.Chat.Room,
+        {Task.Supervisor, name: Newbee.Collaboration.Chat.Tasks},
+        Newbee.Collaboration.Chat.Runner,
         Newbee.Collaboration.CrossHost.Connections,
         Newbee.Collaboration.Capability,
         Newbee.Browser

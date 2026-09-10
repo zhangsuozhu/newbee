@@ -336,3 +336,8 @@ MIT — 详见 [LICENSE](LICENSE)
   <a href="DESIGN.md">📖 设计文档 Design Doc</a> ·
   <a href="priv/jspace/SKILL.md">🗂️ J-Space 台账</a>
 </p>
+
+
+## 项目聊天室
+
+项目协作群支持一台主机多个常驻代表、有限多轮讨论和有版本的决议。Web群标题旁的「聊天室」可以添加代表、发起议题和观察对话；模型使用 `Newbee.Tools.Hive.chat/3`，通过 `shared://<group_id>/chat` 读取共享讨论。决议作为任务上下文，经过代码基线与权限核对后由执行代理规划行动。使用、权限、预算和恢复语义见 [项目聊天室设计](docs/project-chat-design.md)。

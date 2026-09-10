@@ -15,13 +15,13 @@ defmodule Newbee.LLM.ResponsesCapabilities do
 
   @file_name "llm-responses-capabilities.json"
 
-  @doc "能力文件路径（`$NEWBEE_HOME` 或 `~/.newbee` 下）。"
+  @doc "能力文件路径（`$NEWBEE_HOME` 或 `~/.newbee` 下；测试默认使用当前VM独立的GlobalStore）。"
   def path do
     root =
       case System.get_env("NEWBEE_HOME") do
         nil ->
           if Mix.env() == :test do
-            Path.join(System.tmp_dir!(), "newbee-test-caps")
+            Newbee.GlobalStore.root()
           else
             Path.join(System.user_home!(), ".newbee")
           end
@@ -38,8 +38,7 @@ defmodule Newbee.LLM.ResponsesCapabilities do
     with {:ok, bytes} <- File.read(path()),
          {:ok, %{} = all} <- Jason.decode(bytes),
          %{} = caps <- Map.get(all, scope_key(scope)) do
-      for {k, v} <- caps, k in ["stream", "encrypted_reasoning", "continuation"], is_boolean(v),
-          into: %{} do
+      for {k, v} <- caps, k in ["stream", "encrypted_reasoning", "continuation"], is_boolean(v), into: %{} do
         {String.to_existing_atom(k), v}
       end
     else
