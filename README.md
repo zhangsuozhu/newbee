@@ -35,6 +35,8 @@
 | 固定工具集，模型只能将就 | **一切皆 Plugin** — 工具/规则/提示/provider 皆可版本化热插拔 |
 | 黑盒进化，无质检 | **五层评价 + 失败抗体** — 静态/确定性/反事实/真实使用/纵向，单调免疫 |
 | 单 loop 串行干活 | **Worker / Adapter 双模型** — 前台干活，后台进化，激励隔离 |
+| 单机孤军，跨机靠人肉搬运 | **跨主机协作群** — 多台机器一个项目；设备独立凭据、任务带票据、断线可续 |
+| 人是旁观者，agent 自说自话 | **人机同席聊天室** — 人类与模型同为群代表；@ 定向邀请、有限预算讨论、决议绑代码基线 |
 | 上下文是日志，越积越乱 | **Event Sourcing** — 上下文是日志的物化视图，任意时点可重建 |
 
 > **Claude Code 是"模型吩咐工具干活"；newbee 是"模型住在它自己持续翻修、且每块砖都有质检记录的房子里干活"。**
@@ -147,6 +149,22 @@ Hive 是唯一协作协议；旧 `Newbee.Tools.Collaboration` 工具及旧任务
 
 *Hive v2 adds a durable DAG board, revision CAS, event-driven waits, bounded context forks, and Lead-owned verification on the existing Coordinator. It governs collaboration; it does not claim universal multi-agent gains or sandbox untrusted project code.*
 
+### 🌍 跨主机协作群：一个项目，多台机器，各自出力
+每台跑着 newbee 的机器都是独立 daemon，却能加入**同一个项目协作群**。口令只用于接入（默认 16 位随机、常数时间校验、限流防爆破），真正干活靠**每台设备独立凭据**；群主设备担任权威 Hub，其余设备**只出站定期轮询**——不开入站端口、不依赖内网穿透，也能跨机协作。传输默认**证书钉选 HTTPS**：先钉服务器身份、再发口令，HTTP 仅限显式测试开关。
+
+群内不是"远程 shell"，而是带票据的任务协作：任务绑定**人 + 设备 + 项目 + 预算**，幂等防重、状态可查；执行在目标任务自己的隔离目录里跑源码快照、留日志、可启停，断线重连回到同一个任务。远程代码扩展必须由**目标 Worker 显式 opt-in**，且只能活在 `Newbee.RemoteExtensions` 命名空间下。
+
+*One project group spans machines: a password only gets you in, per-device credentials do the work. The Hub is authoritative, workers poll outbound only, TLS pins the server identity, and task tickets bind person + device + project + budget.*
+
+### 🤝 人机同席：人类是群里的一等代表
+项目群里的「聊天室」把协作从任务板延伸到讨论。一台主机可以有多位**常驻代表**（每台 ≤6 位、每群 ≤24 位）由模型发言；**你也可以是一位代表**——人类代表署名发言、**零模型调用**、固定在群主本机。议题按 `独立评估 → 交叉讨论（1~2 轮） → 总结` 推进，产出带版本、任务与 Git 基线的**决议草案**；决议经权限与基线核对后，才作为不可信数据注入执行会话。
+
+**@ 定向邀请**对人类和模型同样可用：只唤醒被点名的代表，正文里的 `@` 不会误触发；`@all` 最多展开 5 位。被点名的人类代表产生**等待回合**——可以回复、点「本轮不发言」、或超时自动继续，三种结局都有记录，**人不回话也不会卡住讨论**。
+
+成本被硬约束：每条消息 ≤5 个目标、每议题 ≤12 次邀请、≤4 个定向回合，全部计入议题 16 次调用预算；讨论轮里"自己的话就是最后一句"的代表记为 `skipped`，零调用。停止的议题不会被 @ 复活。入口：Web 群标题旁的「聊天室」，或模型的 `Newbee.Tools.Hive.chat/3`（共享视图 `shared://<group_id>/chat`）；完整权限、预算与恢复语义见 [项目聊天室设计](docs/project-chat-design.md)。
+
+*Humans and agents share the same table — a human representative costs zero model calls, wait windows never stall a topic, @mentions wake only the named representative, and every decision lands with a version, a task and a code baseline inside a hard call budget.*
+
 ---
 
 ## ⚡ 快速开始 / Quick Start
@@ -221,6 +239,7 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 ## 🌐 WebUI（浏览器控制台，支持 HTTPS + 登录）
 
 浏览器里的工作台：文件浏览、git 操作（diff/checkpoint/PR）、agent 会话管理，走 JSON-RPC over HTTP/WebSocket。
+协作群管理（建群/加群/设备凭据/看板）与项目聊天室也在浏览器里：群标题旁的「聊天室」可添加代表、发起议题、@ 点名、查看预算与用量；远程设备经钉选 HTTPS 接入权威 Hub。
 
 ```bash
 # 本地（零摩擦，免登录）
@@ -336,8 +355,3 @@ MIT — 详见 [LICENSE](LICENSE)
   <a href="DESIGN.md">📖 设计文档 Design Doc</a> ·
   <a href="priv/jspace/SKILL.md">🗂️ J-Space 台账</a>
 </p>
-
-
-## 项目聊天室
-
-项目协作群支持一台主机多个常驻代表、有限多轮讨论和有版本的决议。Web群标题旁的「聊天室」可以添加代表、发起议题和观察对话；模型使用 `Newbee.Tools.Hive.chat/3`，通过 `shared://<group_id>/chat` 读取共享讨论。决议作为任务上下文，经过代码基线与权限核对后由执行代理规划行动。使用、权限、预算和恢复语义见 [项目聊天室设计](docs/project-chat-design.md)。
