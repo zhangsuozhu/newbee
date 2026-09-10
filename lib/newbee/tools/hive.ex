@@ -17,6 +17,7 @@ defmodule Newbee.Tools.Hive do
       Hive.dispatch(gid, "Run integration"); Hive.roster(gid)
       Hive.interrupt(gid, sid); Hive.request_preempt(gid, sid, "re-plan"); Hive.close(gid, sid)
       names = Hive.personas()
+      Hive.chat(gid, "snapshot")   # project chat topic (agents + humans)
   """
   @context_key {Newbee.Tools.Hive, :context}
   @report_statuses ~w(accepted running blocked submitted failed cancelled)
@@ -294,6 +295,17 @@ defmodule Newbee.Tools.Hive do
   end
 
   def shared(_, _), do: {:error, "bad_request", "group_id and path must be texts"}
+
+  @doc "Project chat for a bound session: snapshot | topic.open | message.post | discussion.start | discussion.stop | decision.apply. Structured @mentions (mention_all too) wake only named representatives, stay inside the topic call budget, and never execute commands."
+  def chat(group_id, action, params \\ %{})
+
+  def chat(group_id, action, params) when is_binary(group_id) and is_binary(action) and is_map(params) do
+    with {:ok, identity} <- identity() do
+      host_call(Newbee.Collaboration.Chat, :for_session, [identity.session_id, group_id, action, params])
+    end
+  end
+
+  def chat(_, _, _), do: {:error, "bad_request", "group_id/action must be text, params a map"}
 
   @doc "Publish a project-scoped note to the group; credentials/bindings are never auto-included."
   def share(group_id, title, body, opts \\ [])

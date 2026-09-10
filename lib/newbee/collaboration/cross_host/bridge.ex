@@ -67,6 +67,7 @@ defmodule Newbee.Collaboration.CrossHost.Bridge do
          "protocol" => "xbridge.v1",
          "server_time" => now(),
          "deliveries" => Enum.map(deliveries, &public_delivery/1),
+         "chat_jobs" => Newbee.Collaboration.Chat.Room.jobs(group["id"], device["id"]),
          "snapshot" => snapshot
        }}
     end
@@ -341,6 +342,15 @@ defmodule Newbee.Collaboration.CrossHost.Bridge do
   defp command_description("capability_invoke", _), do: "向远程设备投递一次已声明能力调用"
   defp command_description("code_update", command), do: "源码 SHA-256：" <> command["source_sha256"]
   defp command_description("full_control_eval", command), do: "代码 SHA-256：" <> command["source_sha256"]
+
+  @doc "Run a chat operation as the authenticated device, with no caller-selected group or author identity."
+  def chat(params) when is_map(params) do
+    with {:ok, group, device} <- authenticate(params) do
+      Newbee.Collaboration.Chat.Room.command(group["id"], params["action"], params["params"] || %{}, device["id"])
+    end
+  end
+
+  def chat(_), do: {:error, "bad_request", "聊天室请求无效"}
 
   defp authenticate(params) do
     device_id = text(params, "device_id")

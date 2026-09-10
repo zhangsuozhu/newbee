@@ -365,7 +365,7 @@ defmodule Newbee.Collaboration.CrossHost.Store do
 
   @doc "写入一份 Hub 快照，单个资源失败不会污染其他资源。"
   def put_remote_snapshot(group_id, snapshot) when is_binary(group_id) and is_map(snapshot) do
-    Enum.each(~w(board messages activity knowledge capabilities history), fn resource ->
+    Enum.each(~w(board messages activity knowledge capabilities history chat), fn resource ->
       case Map.get(snapshot, resource) do
         value when is_map(value) ->
           put_remote_resource(group_id, resource, value)

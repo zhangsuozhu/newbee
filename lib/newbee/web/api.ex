@@ -35,7 +35,9 @@ defmodule Newbee.Web.Api do
     Newbee.Web.WebAuthn.set_origin(origin)
 
     rpc_id = get_in(conn.body_params, ["rpcId"]) || "-"
-    payload = (get_in(conn.body_params, ["payload"]) || %{}) |> Map.put("__origin__", origin)
+
+    payload =
+      (get_in(conn.body_params, ["payload"]) || %{}) |> Map.delete("__device_token__") |> Map.put("__origin__", origin)
 
     payload =
       case get_req_header(conn, "authorization") do
@@ -2062,6 +2064,21 @@ defmodule Newbee.Web.Api do
       "token" => p["__device_token__"]
     })
   end
+
+  defp dispatch_rpc("xgroup.bridge.chat", p) do
+    Newbee.Collaboration.CrossHost.Bridge.chat(%{
+      "device_id" => p["deviceId"] || p["device_id"],
+      "token" => p["__device_token__"],
+      "action" => p["action"],
+      "params" => p["params"] || %{}
+    })
+  end
+
+  defp dispatch_rpc("xgroup.chat", %{"groupId" => gid, "action" => action} = p) do
+    Newbee.Collaboration.Chat.request(gid, action, p["params"] || %{})
+  end
+
+  defp dispatch_rpc("xgroup.chat", _), do: {:error, "bad_request", "need groupId action params"}
 
   defp dispatch_rpc("xgroup.endpoint.info", _p) do
     {:ok, Newbee.Web.Server.endpoint_info()}

@@ -83,6 +83,7 @@ defmodule Newbee.Agent.AdapterMaintenanceTest do
 
   test "repeated API needs promote L1 to L2 once through the full Change lifecycle" do
     coordinator = start_coordinator!(autonomy: :manual)
+    :ok = Newbee.Bus.subscribe()
 
     needs = [
       need("worker:101", "Newbee.Tools.Run.sh/2 should honor timeout"),
@@ -106,8 +107,11 @@ defmodule Newbee.Agent.AdapterMaintenanceTest do
                need_promotion_threshold: 3
              )
 
-    change = wait_for_status(coordinator, change_id, [:canary, :rejected])
-    assert change.status == :canary, inspect(change.evaluation_result)
+    # The real verifier compiles and evaluates a candidate asynchronously. Wait for
+    # its durable completion signal, not a four-second guess at completion time.
+    assert_receive {:newbee_event, :change_evaluated, %{"change_id" => ^change_id}}, 30_000
+    change = Enum.find(Coordinator.changes(coordinator), &(&1.change_id == change_id))
+    assert change.status == :canary, inspect({change.status, change.evaluation_result})
 
     [evidence] = change.evidence
     assert (evidence[:jit_promotion] || evidence["jit_promotion"]) == "l1_to_l2"
@@ -147,19 +151,6 @@ defmodule Newbee.Agent.AdapterMaintenanceTest do
         "evidence" => "test"
       }
     }
-  end
-
-  defp wait_for_status(coordinator, change_id, statuses, retries \\ 200)
-
-  defp wait_for_status(coordinator, change_id, statuses, retries) do
-    change = Enum.find(Coordinator.changes(coordinator), &(&1.change_id == change_id))
-
-    if change.status in statuses or retries == 0 do
-      change
-    else
-      Process.sleep(20)
-      wait_for_status(coordinator, change_id, statuses, retries - 1)
-    end
   end
 
   defp canary(id, updated_at) do
