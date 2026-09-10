@@ -116,12 +116,13 @@ defmodule Newbee.Collaboration.CrossHost.Store do
     ensure()
 
     with {:ok, _group} <- get_group(gid) do
-      key = Map.get(message, "message_id") || Map.get(message, "command_id")
+      key = Map.get(message, "message_id") || Map.get(message, "command_id") || Map.get(message, "id")
 
       existing =
         if is_binary(key) and key != "" do
           Enum.find(list_messages(gid), fn item ->
-            Map.get(item, "message_id") == key or Map.get(item, "command_id") == key
+            Map.get(item, "message_id") == key or Map.get(item, "command_id") == key or
+              Map.get(item, "id") == key
           end)
         end
 
@@ -162,11 +163,18 @@ defmodule Newbee.Collaboration.CrossHost.Store do
         |> Map.put("group_id", gid)
         |> Map.put_new("created_at", System.system_time(:millisecond))
 
-      :ets.insert(@at, {stored["id"], stored})
-      emit_group_event(gid, "cross_host_activity_added", Map.take(stored, ["id", "event", "created_at"]))
+      case :ets.lookup(@at, stored["id"]) do
+        # 轮询快照会反复重放同一事件：已有记录直接返回，不重复广播、不重复落盘。
+        [{_, existing}] ->
+          {:ok, existing}
 
-      _ = persist()
-      {:ok, stored}
+        _ ->
+          :ets.insert(@at, {stored["id"], stored})
+          emit_group_event(gid, "cross_host_activity_added", Map.take(stored, ["id", "event", "created_at"]))
+
+          _ = persist()
+          {:ok, stored}
+      end
     end
   end
 
