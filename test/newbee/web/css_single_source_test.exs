@@ -83,7 +83,7 @@ defmodule Newbee.Web.CssSingleSourceTest do
     if File.exists?(bun) do
       out = Path.join(System.tmp_dir!(), "newbee-js-parse-check.js")
 
-      for rel <- ["priv/web/app.js", "priv/web/theme.js"] do
+      for rel <- ["priv/web/app.js", "priv/web/theme.js", "priv/web/project-chat.js"] do
         path = Path.expand(rel)
         assert File.exists?(path), "#{rel} 不存在"
 
