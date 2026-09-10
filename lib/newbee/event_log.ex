@@ -25,25 +25,49 @@ defmodule Newbee.EventLog do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
   end
 
-  @doc "读取事件（新→旧，默认最多 1000 条）。过滤: 按 topic 列表。"
-  def read(n \\ 1000, topics \\ nil) do
-    case File.read(@path) do
-      {:ok, body} ->
-        body
-        |> String.split("\n", trim: true)
-        |> Enum.flat_map(fn line ->
-          case Jason.decode(line) do
-            {:ok, %{"topic" => t} = ev} ->
-              if topics == nil or t in topics, do: [ev], else: []
+  @doc """
+  读取事件（新→旧，最多 n 条，默认 1000）。过滤: 按 topic 列表。
 
-            _ ->
-              []
-          end
-        end)
+  只从文件尾部窗口读取（见 `Newbee.JsonlTail`）：全局日志会涨到几十 MB，
+  全量读入 + 逐行解码不值得。带 topic 过滤时窗口内匹配可能不足 n 条，
+  此时返回窗口内的全部匹配（需要更早的匹配请用 `query/1`）。
+  """
+  def read(n \\ 1000, topics \\ nil) do
+    case Newbee.JsonlTail.read_lines(@path, max(n, 1), keep_partial: false) do
+      {:ok, lines, _coverage} ->
+        lines
+        |> Enum.reverse()
+        |> Enum.flat_map(&decode_event(&1, topics))
         |> Enum.take(n)
 
       _ ->
         []
+    end
+  end
+
+  defp decode_event(line, topics) do
+    case Jason.decode(line) do
+      {:ok, %{"topic" => t} = ev} ->
+        if topics == nil or t in topics, do: [ev], else: []
+
+      _ ->
+        []
+    end
+  end
+
+  @doc "事件条数（只数行、不解析 JSON，供 status 等轻量指标使用）。"
+  def count do
+    case File.stat(@path) do
+      {:ok, %{size: 0}} ->
+        0
+
+      {:ok, _} ->
+        @path
+        |> File.stream!([], :line)
+        |> Enum.count(fn line -> line != "\n" end)
+
+      _ ->
+        0
     end
   end
 

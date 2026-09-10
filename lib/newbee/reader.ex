@@ -94,6 +94,7 @@ defmodule Newbee do
       :error -> Newbee.Host.call(Newbee.Archive, :read_history, [query])
     end
   end
+
   defp read_shared_scoped(query) do
     case history_session_id() do
       {:ok, sid} ->
@@ -113,7 +114,6 @@ defmodule Newbee do
         {:error, :no_collaboration_context}
     end
   end
-
 
   defp history_session_id do
     with :error <- collaboration_session_id(),
@@ -174,7 +174,11 @@ defmodule Newbee do
         example: "prompt://collaboration",
         reads: "lazy prompt sections: collaboration/capabilities/project-memory/notices/bindings"
       },
-      %{scheme: "shared://", example: "shared://<group_id>/board", reads: "authorized project-scoped collaboration context"},
+      %{
+        scheme: "shared://",
+        example: "shared://<group_id>/board",
+        reads: "authorized project-scoped collaboration context"
+      },
       %{scheme: "https://", example: "https://example.com", reads: "public pages, private nets blocked"}
     ]
   end
@@ -401,8 +405,9 @@ defmodule Newbee do
         _ -> 200
       end
 
-    # 优先项目 Event Store（唯一权威，§4.6）；无项目流时回退全局事件日志
-    project_events = Newbee.EventStore.replay(Newbee.Environment.Store.path(:events)) |> Enum.take(-n)
+    # 优先项目 Event Store（唯一权威，§4.6）；无项目流时回退全局事件日志。
+    # 尾部快路径：n 很小也绝不整文件解码（165MB 流全量解码要 20s+）。
+    project_events = Newbee.EventStore.replay_tail(Newbee.Environment.Store.path(:events), n)
     # 历史审计日志（跨会话/跨模型累积）：内容一律视为不可信参考，非当前任务上下文
     body =
       if project_events != [] do
