@@ -293,16 +293,16 @@ defmodule Newbee.LLM.Responses do
         Newbee.DebugLog.log(:llm, "responses continuation expired; retrying full request")
         Continuation.clear(client.responses_checkpoint)
 
-        # 该 route 实际不支持/不保留 previous_response_id：把 continuation 能力降级并
-        # 持久化，本会话后续 turn 与重启后都不再白试续接（否则每个 turn 都先失败一次
-        # 再全量重放，等于每步白付一个全 prompt）。
-        put_capability(client, :continuation, false)
-
-        run_request(client, logical_input, wire_tools, opts, %{
-          state
-          | force_full: true,
-            replayed_previous: true
-        })
+        # 该 route 实际不支持/不保留 previous_response_id：把 continuation 能力降级，
+        # 重试成功后才落盘——本会话后续 turn 与重启后都不再白试续接（否则每个 turn
+        # 都先失败一次再全量重放，等于每步白付一个全 prompt）。
+        retry_with_capability(client, :continuation, false, error, fn ->
+          run_request(client, logical_input, wire_tools, opts, %{
+            state
+            | force_full: true,
+              replayed_previous: true
+          })
+        end)
 
       continued? and not state.replayed_previous and tool_output_missing_error?(error) ->
         Newbee.DebugLog.log(:llm, "responses tool output orphaned in delta; retrying full request")
@@ -316,19 +316,15 @@ defmodule Newbee.LLM.Responses do
 
       downgrade = capability_downgrade(caps, error) ->
         {capability, value} = downgrade
-        put_capability(client, capability, value)
-
-        Newbee.DebugLog.log(
-          :llm,
-          "responses capability downgrade #{capability}=#{inspect(value)}; retrying"
-        )
 
         force_full =
           if capability == :continuation,
             do: true,
             else: state.force_full
 
-        run_request(client, logical_input, wire_tools, opts, %{state | force_full: force_full})
+        retry_with_capability(client, capability, value, error, fn ->
+          run_request(client, logical_input, wire_tools, opts, %{state | force_full: force_full})
+        end)
 
       match?({:http_error, _, _}, error) ->
         {:http_error, status, body} = error
@@ -338,6 +334,43 @@ defmodule Newbee.LLM.Responses do
         {:error, error}
     end
   end
+
+  # 能力降级是"猜测 + 重试"：只有关掉该能力后重试**确实成功**，才把这一猜测落盘复用；
+  # 重试仍以同一错误失败，说明降级没解决问题（例如把 "must be passed back" 里的 "passed"
+  # 误当成 "sse"，判定网关不支持流式），就地回退内存标记，避免误判被永久固化。
+  defp retry_with_capability(client, capability, value, error, retry) do
+    put_capability(client, capability, value)
+
+    Newbee.DebugLog.log(
+      :llm,
+      "responses capability downgrade #{capability}=#{inspect(value)}; retrying"
+    )
+
+    case retry.() do
+      {:ok, _message, _usage} = ok ->
+        persist_capability(client, capability, value)
+        ok
+
+      {:error, retry_error} = failed ->
+        if error_signature(retry_error) == error_signature(error) do
+          revert_capability(client, capability)
+
+          Newbee.DebugLog.log(
+            :llm,
+            "responses capability downgrade #{capability} reverted: retry hit the same error"
+          )
+        end
+
+        failed
+
+      other ->
+        other
+    end
+  end
+
+  defp error_signature({:error, error}), do: error_signature(error)
+  defp error_signature({:http_error, status, body}), do: {status, error_text(body)}
+  defp error_signature(other), do: other
 
   defp finish(client, caps, envelope, logical_input, result, on_text, on_reasoning) do
     parsed =
@@ -928,11 +961,33 @@ defmodule Newbee.LLM.Responses do
 
   defp reasoning_text(items) do
     items
-    |> Enum.flat_map(fn item -> item["summary"] || [] end)
+    |> Enum.flat_map(&reasoning_parts/1)
     |> Enum.map_join(fn
       %{"text" => text} when is_binary(text) -> text
       _ -> ""
     end)
+  end
+
+  # OpenAI 系把思考放在 summary[]；DeepSeek/国御这类网关放在 content[] 的 reasoning_text
+  # 段且 summary 为空数组。两条都认，否则非流式路径与最终 output 合并会把整段思考丢掉，
+  # 历史回放里就再也看不到 Think。
+  defp reasoning_parts(item) do
+    summarized =
+      case item["summary"] do
+        parts when is_list(parts) -> Enum.filter(parts, &is_map/1)
+        _ -> []
+      end
+
+    content =
+      case item["content"] do
+        parts when is_list(parts) ->
+          Enum.filter(parts, &match?(%{"type" => type} when type in ["reasoning_text", "text"], &1))
+
+        _ ->
+          []
+      end
+
+    summarized ++ content
   end
 
   defp capabilities(client) do
@@ -970,8 +1025,25 @@ defmodule Newbee.LLM.Responses do
       Map.put(all, scope, Map.put(current, capability, value))
     )
 
-    # 落盘：重启后复用探测结果，避免每次重启重新踩一遍 400 全量重放。
-    Caps.put(scope, capability, value)
+    :ok
+  end
+
+  defp revert_capability(client, capability) do
+    all = :persistent_term.get(@capability_key, %{})
+    scope = capability_scope(client)
+    current = Map.get(all, scope, %{})
+
+    :persistent_term.put(
+      @capability_key,
+      Map.put(all, scope, Map.delete(current, capability))
+    )
+
+    :ok
+  end
+
+  # 落盘：重启后复用已探明（且经重试验证）的能力，避免每次重启重新踩一遍 400 全量重放。
+  defp persist_capability(client, capability, value) do
+    Caps.put(capability_scope(client), capability, value)
   end
 
   # 进程内缓存磁盘快照，避免每个请求都读盘；只把已探测的降级键（false）合并进来。
@@ -1010,9 +1082,7 @@ defmodule Newbee.LLM.Responses do
                    String.contains?(text, "quota")))) ->
         {:continuation, false}
 
-      caps.stream and
-        (String.contains?(text, "stream") or String.contains?(text, "event-stream") or
-           String.contains?(text, "sse")) and unsupported_text?(text) ->
+      caps.stream and stream_unsupported?(text) ->
         {:stream, false}
 
       true ->
@@ -1022,15 +1092,47 @@ defmodule Newbee.LLM.Responses do
 
   defp capability_downgrade(_caps, _error), do: nil
 
+  # 按词边界匹配"不支持"线索：老实现用 String.contains?(text, "sse")，会被
+  # "must be passed back"（passed 里含 sse）命中，把支持流式的网关误判成不支持，
+  # 再被持久化就永久失去流式（连带实时思考流）。
+  defp stream_unsupported?(text) do
+    unsupported_text?(text) and
+      Regex.match?(~r/\bstream(?:ing)?\b|\bevent[-\s]?stream\b|\bsse\b/, text)
+  end
+
   defp unsupported_text?(text) do
-    Enum.any?(
-      ["unsupported", "not supported", "unknown", "invalid", "not allowed"],
-      &String.contains?(text, &1)
+    Regex.match?(
+      ~r/\bunsupported\b|\bnot supported\b|\bunknown\b|\binvalid\b|\bnot allowed\b/,
+      text
     )
   end
 
-  defp error_text(body) when is_binary(body), do: String.downcase(body)
-  defp error_text(body), do: body |> encoded() |> String.downcase()
+  # 只匹配报错正文里的 message/description：JSON 里的 `"type":"invalid_request_error"`
+  # 是各家网关的固定分类码，任何 400 都带，混进来会让所有 4xx 都像"能力缺失"。
+  defp error_text(body) do
+    body
+    |> encoded()
+    |> error_message()
+    |> String.downcase()
+  end
+
+  defp error_message(text) do
+    case Jason.decode(text) do
+      {:ok, decoded} when is_map(decoded) -> error_message_field(decoded, text)
+      _ -> text
+    end
+  end
+
+  defp error_message_field(%{"error" => error}, fallback) when is_map(error) do
+    case error["message"] || error["description"] || error["detail"] do
+      message when is_binary(message) -> message
+      _ -> fallback
+    end
+  end
+
+  defp error_message_field(%{"message" => message}, _fallback) when is_binary(message), do: message
+  defp error_message_field(%{"detail" => detail}, _fallback) when is_binary(detail), do: detail
+  defp error_message_field(_decoded, fallback), do: fallback
 
   defp previous_response_not_found?({:http_error, _status, body}),
     do: previous_response_not_found?(body)

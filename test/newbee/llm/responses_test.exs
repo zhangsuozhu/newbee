@@ -857,4 +857,248 @@ defmodule Newbee.LLM.ResponsesTest do
     refute Map.has_key?(full, "previous_response_id")
     assert full["input"] == history
   end
+
+  describe "capability downgrade guards" do
+    test "a 400 whose text merely contains \"passed\" never downgrades streaming" do
+      test_pid = self()
+      model = unique_model("passed-back")
+
+      plug = fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:guard_request, Jason.decode!(raw)})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(
+          400,
+          Jason.encode!(%{
+            "error" => %{
+              "code" => "invalid_request_error",
+              "message" => "The `reasoning_text` in the thinking mode must be passed back to the API.",
+              "type" => "invalid_request_error"
+            }
+          })
+        )
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: model,
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:error, {:http_error, 400, _body}} = Client.stream_chat(client, [user("hi")])
+
+      # "passed" 里虽然含 sse，但它不是"不支持流式"的证据：一次请求就够，不许降级重试
+      assert_received {:guard_request, %{"stream" => true}}
+      refute_received {:guard_request, _}
+      refute Map.has_key?(memory_caps(model), :stream)
+      assert Newbee.LLM.ResponsesCapabilities.load({"http://localhost", model}) == %{}
+    end
+
+    test "a downgrade that does not clear the error is reverted and not persisted" do
+      test_pid = self()
+      model = unique_model("downgrade-ineffective")
+
+      plug = fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:stream_retry_request, Jason.decode!(raw)})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(
+          400,
+          Jason.encode!(%{"error" => %{"message" => "stream is not supported"}})
+        )
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: model,
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:error, {:http_error, 400, _body}} = Client.stream_chat(client, [user("hi")])
+
+      # 降级后重试还是同一个 400，说明"关掉流式"并没有解决问题 → 回退内存标记、不落盘
+      assert_received {:stream_retry_request, %{"stream" => true}}
+      assert_received {:stream_retry_request, %{"stream" => false}}
+      refute_received {:stream_retry_request, _}
+      refute Map.has_key?(memory_caps(model), :stream)
+      assert Newbee.LLM.ResponsesCapabilities.load({"http://localhost", model}) == %{}
+    end
+
+    test "a confirmed downgrade is persisted for the next process" do
+      tmp_home = Path.join(System.tmp_dir!(), "newbee-home-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp_home)
+      System.put_env("NEWBEE_HOME", tmp_home)
+
+      on_exit(fn ->
+        System.delete_env("NEWBEE_HOME")
+        File.rm_rf(tmp_home)
+      end)
+
+      test_pid = self()
+      model = unique_model("downgrade-confirmed")
+      scope = {"http://localhost", model}
+
+      plug = fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        body = Jason.decode!(raw)
+        send(test_pid, {:confirmed_request, body})
+
+        if body["stream"] do
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.send_resp(
+            400,
+            Jason.encode!(%{"error" => %{"message" => "unsupported parameter: stream"}})
+          )
+        else
+          Req.Test.json(conn, response("resp-confirmed", "json"))
+        end
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: model,
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:ok, %{"content" => "json"}, _usage} = Client.stream_chat(client, [user("hi")])
+
+      assert_received {:confirmed_request, %{"stream" => true}}
+      assert_received {:confirmed_request, %{"stream" => false}}
+      assert Map.get(memory_caps(model), :stream) == false
+
+      # 落盘这份"重试已验证"的结论：另一进程（清掉内存缓存后）也能读到
+      :persistent_term.erase({:newbee, :responses_caps_persisted, scope})
+      assert Newbee.LLM.ResponsesCapabilities.load(scope) == %{stream: false}
+    end
+  end
+
+  describe "reasoning extraction" do
+    test "keeps reasoning carried in content reasoning_text parts (non-stream path)" do
+      test_pid = self()
+
+      plug = fn conn ->
+        Req.Test.json(conn, %{
+          "id" => "resp-reasoning-content",
+          "output" => [
+            %{
+              "type" => "reasoning",
+              "id" => "rs-content",
+              "summary" => [],
+              "content" => [%{"type" => "reasoning_text", "text" => "先想一步"}]
+            },
+            %{"type" => "message", "content" => [%{"type" => "output_text", "text" => "答案"}]}
+          ],
+          "usage" => %{"input_tokens" => 3, "output_tokens" => 4, "total_tokens" => 7}
+        })
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: unique_model("reasoning-content"),
+          api_key: "test",
+          base_url: "http://localhost",
+          responses_stream: false,
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:ok, %{"content" => "答案"} = message, _usage} =
+               Client.stream_chat(
+                 client,
+                 [user("hi")],
+                 fn text -> send(test_pid, {:text_delta, text}) end,
+                 fn reasoning -> send(test_pid, {:reasoning_delta, reasoning}) end
+               )
+
+      assert message["reasoning"] == "先想一步"
+      assert_received {:text_delta, "答案"}
+      assert_received {:reasoning_delta, "先想一步"}
+    end
+
+    test "keeps reasoning from the final streamed output when no reasoning delta arrives" do
+      test_pid = self()
+
+      plug = fn conn ->
+        events = [
+          %{"type" => "response.created", "response" => %{"id" => "resp-final-reasoning"}},
+          %{
+            "type" => "response.output_item.done",
+            "output_index" => 0,
+            "item" => %{
+              "type" => "reasoning",
+              "id" => "rs-final",
+              "summary" => [],
+              "content" => [%{"type" => "reasoning_text", "text" => "网关只给终稿"}]
+            }
+          },
+          %{
+            "type" => "response.output_item.done",
+            "output_index" => 1,
+            "item" => %{
+              "type" => "message",
+              "content" => [%{"type" => "output_text", "text" => "答案"}]
+            }
+          },
+          %{
+            "type" => "response.completed",
+            "response" => %{
+              "id" => "resp-final-reasoning",
+              "usage" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
+            }
+          }
+        ]
+
+        payload = Enum.map_join(events, fn event -> "data: " <> Jason.encode!(event) <> "\n\n" end)
+
+        conn =
+          conn
+          |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
+          |> Plug.Conn.send_chunked(200)
+
+        {:ok, conn} = Plug.Conn.chunk(conn, payload)
+        conn
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: unique_model("reasoning-final"),
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:ok, message, _usage} =
+               Client.stream_chat(
+                 client,
+                 [user("hi")],
+                 fn text -> send(test_pid, {:text_delta, text}) end,
+                 fn reasoning -> send(test_pid, {:reasoning_delta, reasoning}) end
+               )
+
+      assert message["reasoning"] == "网关只给终稿"
+      assert_received {:reasoning_delta, "网关只给终稿"}
+    end
+  end
+
+  defp unique_model(prefix), do: "test/#{prefix}-#{System.unique_integer([:positive])}"
+
+  defp memory_caps(model) do
+    :persistent_term.get({Newbee.LLM.Responses, :capabilities}, %{})
+    |> Map.get({"http://localhost", model}, %{})
+  end
 end
