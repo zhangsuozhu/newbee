@@ -294,6 +294,15 @@ defmodule Newbee.Web.CollaborationApiTest do
     parent_sid = "delegate-parent-#{suffix}"
     child_sid = "delegate-child-#{suffix}"
 
+    # delegate 会在项目根的 .newbee/workspaces 下建隔离工作区。
+    # System.unique_integer 只在单次 VM 内唯一，跨运行会重复；
+    # 上一次运行留下的同名目录会让这次报 workspace_exists（历史 flaky 根因）。
+    # 因此测试自己负责清理：开始时先清残留，结束时删除本次产物。
+    ws_path = Path.join([File.cwd!(), ".newbee", "workspaces", child_sid])
+    ws_snapshot = ws_path <> ".base_snapshot.term"
+    File.rm_rf(ws_path)
+    File.rm_rf(ws_snapshot)
+
     group =
       post_rpc("group.create", %{"sessionId" => parent_sid, "title" => "原子分工"})
       |> ok!()
@@ -325,7 +334,11 @@ defmodule Newbee.Web.CollaborationApiTest do
     assert Enum.any?(detail["members"], &(&1["session_id"] == child_sid))
     assert Enum.any?(detail["tasks"], &(&1["assigned_session_id"] == child_sid))
 
-    on_exit(fn -> Newbee.Web.Session.destroy(child_sid) end)
+    on_exit(fn ->
+      Newbee.Web.Session.destroy(child_sid)
+      File.rm_rf(ws_path)
+      File.rm_rf(ws_snapshot)
+    end)
   end
 
   test "消息投递方式：notify 只入时间线，queue 唤醒目标会话且忙时安全排队" do
