@@ -29,6 +29,7 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     .group-task-claim .mc-action-btn .theme-picker .theme-menu .mcfg-box .mcfg-pitem .mcfg-model-row
     .file-viewer-box .file-viewer-mode.current .terminal-panel .ctx-menu .at-dropdown
     .effort-segments .model-opt.current .model-provider.current .xg-dev.mine
+    .btn-danger .collab-filter-row button .collab-member .collab-group-status .collab-verify-badge
   )
 
   setup_all do
@@ -141,6 +142,7 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert index =~ "xg-check-mark"
     assert index =~ ~s(id="new-session" class="icon-btn new-session-icon")
     assert css =~ ".session-tools"
+    assert css =~ ".session-group .swipe-cell .session-item { border-bottom-color: transparent; }"
     assert css =~ ~r/\.session-tools #new-session\s*\{[^}]*border-radius:\s*50%/s
 
     assert scope =~ ".group-modal-fields .xg-check"
@@ -149,6 +151,22 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert index =~ ~s(class="ico stop-icon")
     assert scope =~ "#interrupt.btn-icon-round"
     assert scope =~ "fill: var(--nb-red)"
+  end
+  test "mission control controls render with the soft material", %{scope: scope} do
+    assert scope =~ ~r/:is\(\[data-theme="neumorphic"\], \[data-theme="neumorphic-dark"\]\) \.collab-filter-row button \{/
+    assert scope =~ ".collab-filter-row button:hover:not(.active)"
+    assert scope =~ ".btn-danger:active:not(:disabled)"
+    assert scope =~ ".collab-member.active"
+    # 取消按钮必须有自己的拟物底与语义描红，不能退回浏览器默认外观。
+    assert scope =~ ~r/\.btn-danger \{[^}]*border: 1px solid color-mix\(in srgb, var\(--nb-red\) 42%/s
+  end
+  test "primary and danger buttons stay readable and identically sized", %{css: css, scope: scope} do
+    # 主按钮在拟物下不反色，必须显式给文字色，否则白字落在浅底上看不见。
+    assert scope =~ ~r/:is\(\.btn-primary, \.btn-send[^{]*\{\s*[^}]*color: var\(--nb-label-1\)/s
+    # 取消与暂停共用同一档几何，避免同类按钮大小不一。
+    assert css =~ ~r/\.btn-primary, \.btn-ghost, \.btn-danger \{ min-height: var\(--ui-h-lg\); \}/
+    assert css =~ ~r/\.btn-primary, \.btn-ghost, \.btn-danger, \.btn-allow, \.btn-deny \{/
+    assert css =~ ~r/\.btn-danger \{[^}]*padding: 7px 14px;[^}]*font-size: 13px;/s
   end
 
   test "swipe delete stays hidden until one row is actively swiped", %{css: css} do
