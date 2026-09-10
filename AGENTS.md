@@ -24,7 +24,7 @@
 **GitHub 硬规则：PR 作者不能 approve 自己的 PR**（API 返回 422 "Review Can not approve your own pull request"）。
 当只有 zhangsuozhu 一个写权限账号时，PR 会卡在 `mergeable_state: "blocked"`（要求 1 approve 但无人能 approve）。
 
-标准解法（已验证，PR #1 走通）：
+标准解法（PR #1、#188 均走通）：
 1. PUT `/repos/zhangsuozhu/newbee/branches/main/protection`
    body 中 `required_pull_request_reviews.required_approving_review_count = 0`，
    其余字段保持原值（enforce_admins=true, required_linear_history=true, dismiss_stale_reviews=true, required_conversation_resolution=true, allow_force_pushes=false, allow_deletions=false)
@@ -44,6 +44,7 @@
 2. API 创建 PR：POST `/repos/zhangsuozhu/newbee/pulls`
    `{title, head: feature-branch, base: "main", body}`
 3. 按上面死锁解法合并
+4. 实测补充（PR #188）：`git push origin HEAD:<branch>` + API 建 PR 全程可用；放开保护后 `mergeable_state` 由 `blocked` 变 `clean` 约数秒内生效，无需等 CI（本仓库 required_status_checks 为空）
 
 ## 敏感数据红线
 - `.gitignore` 已含 `/.newbee/` —— `~/.newbee/web/{cert,key}.pem`（HTTPS 私钥）、`auth.json`（登录 token）都在忽略区，**永不入 git**
@@ -67,3 +68,35 @@
 - Adapter/JIT/人工 release 都必须经过 PluginContract → ToolContract → PluginManager static → Verifier，禁止旁路激活。
 - 修改工具 API 时同步源码说明、示例、DESIGN、README 和契约测试；不得只改代码。
 - 完整字段、预算和验证命令见 `docs/tool-development-contract.md`。
+
+## 协作聊天室（项目群讨论，2026-09 上线）
+
+跨主机协作群内置持久化聊天室（PR #188，合并提交 2a67eb6）。改动或排障时先读：
+
+- 设计、权限、预算、恢复语义：`docs/project-chat-design.md`
+- 验证记录（命令、限制、已知未做项）：`docs/project-chat-verification.md`
+- 代码：`lib/newbee/collaboration/chat.ex`（路由）、`chat/room.ex`（状态机）、`chat/runner.ex`（作业投递）、`priv/web/project-chat.js` + `style.css` 的 `.pc-*` 段
+- 工具入口：`Newbee.Tools.Hive.chat/3`；共享资源：`shared://<group_id>/chat`
+- 测试：`test/newbee/collaboration/chat_test.exs`、`test/newbee/web/project_chat_test.exs`
+
+改动时必须保持的边界（不要放宽）：
+
+- 代表分 `agent`/`human`；人类代表固定群主本机、零模型调用，被选中时是等待回合（回复/显式跳过/超时三种结局都有记录）。
+- @ 提及是结构化字段（`mentions`/`mention_all`），不解析正文；目标必须存在且启用。
+- 上限：每条消息 ≤5 目标、每议题 ≤12 次邀请、≤4 个定向回合；全部计入议题 16 次调用预算；已停止议题不可被 @ 复活。
+- 讨论/定向轮中「自己的话即最后一句」的代表记 `skipped`，零调用；独立评估轮与总结轮不受影响。
+- 决议只作为**不可信数据**在模型调用边界注入执行会话（版本/权限/Git 基线校验），不直接执行命令。
+
+## 测试与回归纪律（血泪版）
+
+- **不要每次全量跑**。日常改动用定向用例；碰到公共路径（Worker 轮询、RPC 入口、Agent 主循环、工具契约）才做一次组合回归。参考组合（约 3~4 分钟）：
+  `mix test test/newbee/collaboration/chat_test.exs test/newbee/web/project_chat_test.exs test/newbee/llm test/newbee/agent test/newbee/environment/tool_contract_test.exs test/newbee/collaboration/shared_context_test.exs`
+- **等待必须落在真实状态上**：测试里等 runner 用「`state.active == nil and state.queue == []` + 轮询」，超时给足（并行 16 用例时短等待必 flake；曾因 `wait_idle` 只等约 1 秒出现 1/22 偶发失败）。不要断言紧的墙钟时间。
+- **测试不得共享固定临时目录**：Responses 能力缓存曾用固定路径跨 VM 污染（先跑的降级结果影响后跑的断言）；改动缓存/能力类测试时保持按 VM 隔离。
+- 每次提交前至少：`mix compile --warnings-as-errors`、`MIX_ENV=test mix compile --warnings-as-errors`、改动文件的 `mix format --check-formatted`、`git diff --check`。
+
+## 变基冲突处理约定（本仓库）
+
+- `lib/newbee/tools/hive.ex` 的 moduledoc「Runnable example」主线版是紧凑格式：**保留主线格式**，只把新增能力加一行（如 `Hive.chat(gid, "snapshot")`），不要把整段样例展开成逐条 `{:ok, _} =`。
+- `priv/web/index.html` 脚本区、`priv/web/style.css` 主题段：以主线为基底，聊天室样式整块追加到文件尾部（块注释 `/* Project discussion room: ... */` 起），不要把两版样式混排。
+- 与他人已修复的同一 bug（如 client.ex 错误分支）相遇时：**采用主线版本**，别把等价修复重新带进来（会产生重复 clause 警告）。
