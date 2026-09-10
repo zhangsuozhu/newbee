@@ -5,7 +5,7 @@ defmodule Newbee.Tools.Http do
 
   ## Functions
   - `get(url, headers \\\\ []) :: {:ok, %{status: integer(), body: String.t()}} | {:error, reason}` — GET request. Errors split three ways: `{:error, %{reason: :invalid_url}}` (malformed URL) vs `{:error, %{reason: :network_error}}` (network down) vs `{:error, %{reason: :request_failed}}` (anything else).
-  - `post(url, json, headers \\ []) :: {:ok, %{status, body}} | {:error, reason}` — POST; `json` takes a `map` (auto `Jason.encode!`) or a JSON `String.t()` sent as-is.
+  - `post(url, json, headers \\\\ []) :: {:ok, %{status, body}} | {:error, reason}` — POST; `json` takes a `map` (auto `Jason.encode!`) or a JSON `String.t()` sent as-is.
 
   Runs on `Req`, 30_000ms default timeout, bodies cut at 512KB.
 

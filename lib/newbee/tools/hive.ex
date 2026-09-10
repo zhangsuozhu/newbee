@@ -2,38 +2,26 @@ defmodule Newbee.Tools.Hive do
   @moduledoc """
   Persistent collaboration: revision-CAS Board, DAG, event waits, Lead acceptance. Returns `{:ok, _} | {:error, _, _}` (`personas/0` returns `[name]` directly).
 
-  Workers may only submit `submitted`, never rewrite task contracts; `succeeded` is written solely by the Lead
-  after running structured acceptance on the host node — callers pass no attestation. Command acceptance executes
-  project code and only the Lead may create it; it is not a sandbox. `write_scope` diagnoses conflicts, it is not
-  a lock. Personas, forks, and spawn/payload sizes all have hard caps; capabilities bind normal tool-call identity,
-  they don't isolate arbitrary BEAM/RPC code.
+  Workers may only submit `submitted`, never rewrite task contracts; `succeeded` is written solely by the Lead after
+  structured acceptance on the host — callers pass no attestation. Command acceptance runs project code and only the
+  Lead may create it; not a sandbox. `write_scope` diagnoses conflicts, not locks. Personas, forks and spawn/payload
+  sizes are hard-capped; capabilities bind tool-call identity, they don't isolate BEAM/RPC code.
 
   ## Runnable example
-      {:ok, g} = Newbee.Tools.Hive.open("Auth refactor")
-      {:ok, _} = Newbee.Tools.Hive.delegate(g["group_id"], "Add tests", acceptance: checks)
-      {:ok, b} = Newbee.Tools.Hive.board(g["group_id"])
-      {:ok, _} = Newbee.Tools.Hive.board_put(gid, task)
-      {:ok, _} = Newbee.Tools.Hive.board_claim(gid, tid, rev)
-      {:ok, _} = Newbee.Tools.Hive.report(gid, tid, "submitted", expected_revision: rev, result: "done")
-      {:ok, _} = Newbee.Tools.Hive.retry(gid, tid, expected_revision: b["revision"], reason: "retry after interruption")
-
-      {:ok, _} = Newbee.Tools.Hive.verify(gid, tid)
-      {:ok, _} = Newbee.Tools.Hive.wait(gid, since_revision: rev)
-      {:ok, _} = Newbee.Tools.Hive.send(gid, sid, "Review")
-      {:ok, _} = Newbee.Tools.Hive.inbox(gid)
-       {:ok, _} = Newbee.Tools.Hive.shared(gid, "board")
-       {:ok, _} = Newbee.Tools.Hive.share(gid, "Decision", "Use the shared project contract")
-       {:ok, _} = Newbee.Tools.Hive.dispatch(gid, "Run integration", description: "build and test on a group machine")
-      {:ok, _} = Newbee.Tools.Hive.roster(gid)
-      {:ok, _} = Newbee.Tools.Hive.interrupt(gid, sid)
-      {:ok, _} = Newbee.Tools.Hive.request_preempt(gid, sid, "dependency failed, please re-plan")
-      {:ok, _} = Newbee.Tools.Hive.close(gid, sid)
-      names = Newbee.Tools.Hive.personas()
+      # Hive = Newbee.Tools.Hive; gid/tid/sid = existing group/task/session ids
+      {:ok, g} = Hive.open("Auth refactor"); {:ok, _} = Hive.delegate(g["group_id"], "Add tests", acceptance: checks)
+      {:ok, b} = Hive.board(gid); Hive.board_put(gid, task); Hive.board_claim(gid, tid, rev)
+      Hive.report(gid, tid, "submitted", expected_revision: rev); Hive.retry(gid, tid, expected_revision: b["revision"])
+      Hive.verify(gid, tid); Hive.wait(gid, since_revision: rev); Hive.send(gid, sid, "note")
+      Hive.inbox(gid); Hive.shared(gid, "board"); Hive.share(gid, "Decision", "note")
+      Hive.dispatch(gid, "Run integration"); Hive.roster(gid)
+      Hive.interrupt(gid, sid); Hive.request_preempt(gid, sid, "re-plan"); Hive.close(gid, sid)
+      names = Hive.personas()
   """
   @context_key {Newbee.Tools.Hive, :context}
   @report_statuses ~w(accepted running blocked submitted failed cancelled)
 
-  @doc "Open a collaboration group; opts take goal/project_root/max_depth/max_total/command_id. Retry with the same command_id returns the existing group instead of creating a duplicate."
+  @doc "Open a collaboration group; opts: goal/project_root/max_depth/max_total/command_id. Same command_id is idempotent."
   def open(title, opts \\ [])
 
   def open(title, opts) when is_binary(title) and is_list(opts) do
@@ -54,7 +42,7 @@ defmodule Newbee.Tools.Hive do
 
   def open(_, _), do: {:error, "bad_request", "title must be a text and opts a keyword list"}
 
-  @doc "Spawn a real subsession; structured acceptance and Board revision CAS are required. Opts take persona/fork_turns/depends_on/write_scope/isolate/expected_revision."
+  @doc "Spawn a subsession; acceptance + Board revision CAS required. Opts: persona/fork_turns/depends_on/write_scope/isolate."
   def delegate(group_id, title, opts \\ [])
 
   def delegate(group_id, title, opts)
@@ -91,7 +79,7 @@ defmodule Newbee.Tools.Hive do
 
   def delegate(_, _, _), do: {:error, "bad_request", "group_id/title must be texts and opts a keyword list"}
 
-  @doc "Read the authoritative Board visible to current members (revision/tasks/write_scope_overlaps)."
+  @doc "Read the authoritative Board visible to members (revision/tasks/overlaps)."
   def board(group_id) when is_binary(group_id) do
     with {:ok, identity} <- identity() do
       host_call(Newbee.Collaboration.Coordinator, :board, [group_id, identity.session_id])
@@ -100,7 +88,7 @@ defmodule Newbee.Tools.Hive do
 
   def board(_), do: {:error, "bad_request", "group_id must be a text"}
 
-  @doc "Create or update a task; maps must carry expected_revision, plus task_id on update; executors can't rewrite task contracts."
+  @doc "Create or update a task; carry expected_revision (plus task_id on update)."
   def board_put(group_id, attrs) when is_binary(group_id) and is_map(attrs) do
     with {:ok, identity} <- identity() do
       attrs = put_identity(attrs, identity.session_id) |> put_command("hive-board")
@@ -135,7 +123,7 @@ defmodule Newbee.Tools.Hive do
 
   def board_claim(_, _, _), do: {:error, "bad_request", "group_id/task_id must be texts and revision an integer"}
 
-  @doc "Retry a blocked, failed, or cancelled task using the current Board revision. Only the Lead is authorized by Coordinator."
+  @doc "Retry a blocked/failed/cancelled task at the current Board revision; Lead only."
   def retry(group_id, task_id, opts \\ [])
 
   def retry(group_id, task_id, opts)
@@ -162,7 +150,7 @@ defmodule Newbee.Tools.Hive do
 
   def retry(_, _, _), do: {:error, "bad_request", "group_id/task_id must be texts and opts a keyword list"}
 
-  @doc "Report an atom or string status; workers finish with :submitted, never succeeded directly. Opts must carry expected_revision."
+  @doc "Report status; workers finish with :submitted, never succeeded. Opts must carry expected_revision."
   def report(group_id, task_id, status, opts \\ [])
 
   def report(group_id, task_id, status, opts)
@@ -191,7 +179,7 @@ defmodule Newbee.Tools.Hive do
 
   def report(_, _, _, _), do: {:error, "bad_request", "invalid Hive status"}
 
-  @doc "The Lead runs structured acceptance on the trusted host node; caller attestations rejected, commits via Board revision CAS after execution."
+  @doc "Lead runs structured acceptance on the host; caller attestations rejected, then Board CAS."
   def verify(group_id, task_id) when is_binary(group_id) and is_binary(task_id) do
     with {:ok, identity} <- identity(),
          {:ok, board} <-
@@ -243,7 +231,7 @@ defmodule Newbee.Tools.Hive do
 
   def wait(_, _), do: {:error, "bad_request", "group_id must be a text and opts a keyword list"}
 
-  @doc "Send a reliable message. wake:false lands on the timeline only; wake:true triggers the target model's turn."
+  @doc "Send a reliable message; wake:false only lands on the timeline, wake:true runs a turn."
   def send(group_id, to_session_id, body, opts \\ [])
 
   def send(group_id, to_session_id, body, opts)
@@ -267,7 +255,7 @@ defmodule Newbee.Tools.Hive do
 
   def send(_, _, _, _), do: {:error, "bad_request", "invalid message arg types"}
 
-  @doc "Let the model hand a request to the appropriate local Hive or cross-host group backend. No UI click is required."
+  @doc "Hand a request to the right local Hive or cross-host group backend."
   def dispatch(group_id, title, opts \\ [])
 
   def dispatch(group_id, title, opts) when is_binary(group_id) and is_binary(title) and is_list(opts) do
@@ -295,7 +283,7 @@ defmodule Newbee.Tools.Hive do
 
   def dispatch(_, _, _), do: {:error, "bad_request", "group_id/title must be texts and opts a keyword list"}
 
-  @doc "Read the authorized shared collaboration context. Path may be empty, a resource, or resource/session path."
+  @doc "Read the authorized shared context; path may be empty, a resource, or resource/session."
   def shared(group_id, path \\ "")
 
   def shared(group_id, path) when is_binary(group_id) and is_binary(path) do
@@ -307,7 +295,7 @@ defmodule Newbee.Tools.Hive do
 
   def shared(_, _), do: {:error, "bad_request", "group_id and path must be texts"}
 
-  @doc "Publish a project-scoped knowledge note to the group; credentials and local bindings are never included automatically."
+  @doc "Publish a project-scoped note to the group; credentials/bindings are never auto-included."
   def share(group_id, title, body, opts \\ [])
 
   def share(group_id, title, body, opts)
@@ -319,7 +307,7 @@ defmodule Newbee.Tools.Hive do
 
   def share(_, _, _, _), do: {:error, "bad_request", "invalid shared knowledge arguments"}
 
-  @doc "Read messages to the current session or broadcasts; opts: since_seq."
+  @doc "Read messages to this session or broadcasts; opts: since_seq."
   def inbox(group_id, opts \\ [])
 
   def inbox(group_id, opts) when is_binary(group_id) and is_list(opts) do
@@ -348,7 +336,7 @@ defmodule Newbee.Tools.Hive do
 
   def roster(_), do: {:error, "bad_request", "group_id must be a text"}
 
-  @doc "Only the Lead or the target's direct parent session may interrupt; tasks and messages survive."
+  @doc "Only the Lead or the target's parent may interrupt; tasks/messages survive."
   def interrupt(group_id, target_session_id)
       when is_binary(group_id) and is_binary(target_session_id) do
     with {:ok, identity} <- identity(),
@@ -365,7 +353,7 @@ defmodule Newbee.Tools.Hive do
 
   def interrupt(_, _), do: {:error, "bad_request", "group_id and target_session_id must be texts"}
 
-  @doc "Ask a member session to reconsider at the next turn boundary; never interrupts the running turn. Opts: reason (required), task_id/attempt/board_revision, request_id/command_id."
+  @doc "Ask a member to reconsider at its next turn boundary; never interrupts the running turn. Opts: reason (required)."
   def request_preempt(group_id, to_session_id, reason, opts \\ [])
 
   def request_preempt(group_id, to_session_id, reason, opts)
@@ -389,7 +377,7 @@ defmodule Newbee.Tools.Hive do
 
   def request_preempt(_, _, _, _), do: {:error, "bad_request", "invalid preempt arg types"}
 
-  @doc "The Lead explicitly removes members with no live tasks/children and destroys their session processes when no other group still references them."
+  @doc "Lead removes members with no live tasks/children and destroys their sessions."
   def close(group_id, target_session_id)
       when is_binary(group_id) and is_binary(target_session_id) do
     with {:ok, identity} <- identity(),

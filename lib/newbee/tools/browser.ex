@@ -14,8 +14,8 @@ defmodule Newbee.Tools.Browser do
   `timeout` is the whole-plan budget (500..120000 ms, default 30000), including startup;
   `action_timeout` bounds individual actions (default at most 10000 ms). Errors include
   the failing action and completed results; inspect before retrying submissions.
-  Chromium temporary files live under the project `.newbee/browser/tmp` and are cleaned
-  up on normal shutdown. Python Playwright and matching browsers must be installed.
+  Chromium temp files live in `.newbee/browser/tmp`, cleaned up on normal shutdown.
+  Python Playwright and matching browsers must be installed.
 
   Authorized CAPTCHA tests: `run(%{session: handle, captcha: %{image: "#img", input: "#code"}})`.
   CSS selectors, optional shared `frame` and `length: 1..32`. Existing session only;
