@@ -12,7 +12,8 @@ defmodule Newbee.Environment.Store do
   ├── changes/<change_id>/  # change manifest、评测计划与结果
   ├── evaluations/<id>/     # 测试/回放/worker 反馈证据（含失败抗体）
   ├── messages.jsonl        # worker ↔ adapter 协议（事件流派生物理视图）
-  ├── events.jsonl          # 项目级事件流（Event Store，唯一权威）
+  ├── events.jsonl          # 项目级事件流（Event Store，唯一权威；活动文件）
+  ├── events/               # 轮转后的存档段 seg-<seq>-<last_id>.jsonl.gz（只读，重放时按序读）
   ├── projections/          # prompt、工具清单、画像等物化视图
   ├── bindings/             # 可选绑定快照
   └── locks/                # change/release 原子提交锁
