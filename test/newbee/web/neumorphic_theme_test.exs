@@ -30,6 +30,14 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     .file-viewer-box .file-viewer-mode.current .terminal-panel .ctx-menu .at-dropdown
     .effort-segments .model-opt.current .model-provider.current .xg-dev.mine
     .btn-danger .collab-filter-row button .collab-member .collab-group-status .collab-verify-badge
+    .mc-file .queue-item .collab-verification .evo-guide .collab-write-conflicts .dir-entries
+    .mcfg-plist .file-viewer-modes .md-code .mc-test-result .mc-step-detail .terminal-panel
+    .evo-health-pill .evo-status-tag .collab-workspace-badge .attach-item .wc-item .xm-cap
+    .ctx-chip .ctx-editor .group-status .dir-crumb .evo-layers-detail .mc-impact-summary
+    .md-copy .qa-show-btn .session-group-toggle .debug-detail .collab-review-diff .file-viewer-mode.current
+    .menu-btn .msg-user-file .qa-top-text .modal-body .xm-conv-body .evo-tech .media-download
+    .media-body .media-text-markdown .media-text-source .attach-file-icon .md-inline
+    .evo-approve .diff-owner .mc-file-owner .collab-accept-note
   )
 
   setup_all do
@@ -167,6 +175,21 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert css =~ ~r/\.btn-primary, \.btn-ghost, \.btn-danger \{ min-height: var\(--ui-h-lg\); \}/
     assert css =~ ~r/\.btn-primary, \.btn-ghost, \.btn-danger, \.btn-allow, \.btn-deny \{/
     assert css =~ ~r/\.btn-danger \{[^}]*padding: 7px 14px;[^}]*font-size: 13px;/s
+  end
+  test "the terminal keeps its recessed window treatment", %{scope: scope} do
+    # 用户明确认可的内陷窗口：整体凹槽 + 14px 圆角，工具栏与屏幕收在槽内。
+    assert scope =~ ~r/:where\([^)]*\.terminal-panel\) \{\s*background: var\(--nb-bg\);[^}]*box-shadow: var\(--nb-neu-inset\)/s
+    assert scope =~ ~r/\.terminal-panel \{ border-radius: 14px; \}/
+    assert scope =~ ~r/\.terminal-panel \.terminal-screen,/
+  end
+  test "second-wave surfaces gain material without losing semantic states", %{scope: scope} do
+    # 用 :where() 压低特异性，保证 .pass/.pending/.healthy 这类语义状态仍然生效。
+    assert scope =~ ~r/:where\(\.attach-item, \.wc-item, \.xm-cap, \.ctx-chip\)/
+    assert scope =~ ~r/:where\(\.ctx-editor, \.evo-layers-detail, \.mc-impact-summary\)/
+    assert scope =~ ~r/:where\(\.mc-test-result, \.mc-step-detail, \.md-code,/
+    assert scope =~ ~r/:where\(\.group-status, \.dir-crumb\)/
+    assert scope =~ ~r/:where\(\.collab-write-conflicts\) \{\s*box-shadow/
+    refute scope =~ ~r/:where\(\.collab-write-conflicts\) \{[^}]*border-color: transparent/s
   end
 
   test "swipe delete stays hidden until one row is actively swiped", %{css: css} do

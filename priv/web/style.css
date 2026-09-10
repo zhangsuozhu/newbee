@@ -2935,6 +2935,11 @@ svg.ico {
 .collab-task-scope{margin-top:6px;color:var(--nb-label-caption);font:10px var(--nb-mono);overflow-wrap:anywhere}
 .collab-accept-heading{color:var(--nb-label-2);font-size:11px;font-weight:600}
 .collab-verification{margin-top:7px;padding:6px 8px;border:1px solid var(--nb-border);background:var(--nb-bg-elev);font-size:11px;color:var(--nb-label-2)}
+.collab-verification > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; list-style: none; }
+.collab-verification > summary::-webkit-details-marker { display: none; }
+.collab-verification > summary::after { content: "▾"; margin-left: auto; color: var(--nb-label-caption); font-size: 10px; transition: transform var(--nb-dur); }
+.collab-verification[open] > summary::after { transform: rotate(180deg); }
+.cv-count { color: var(--nb-label-caption); font: 10px var(--nb-mono); border: 1px solid var(--nb-border); border-radius: 8px; padding: 0 6px; white-space: nowrap; }
 .collab-verification ul{margin:4px 0 0 16px;padding:0;font:10px var(--nb-mono);color:var(--nb-label-caption)}
 .collab-verification li.passed{color:var(--nb-green)}
 .collab-verification li.failed{color:var(--nb-red)}
@@ -3431,6 +3436,8 @@ button { font-size: var(--ui-fs-ui); }
   --nb-border: #c7cbd3; --nb-label-1: #272c35; --nb-label-2: #454d59;
   --nb-label-3: #596372; --nb-label-caption: #5b6572; --nb-bubble: #e9eaee;
   --nb-accent: #3f4a5b; --nb-accent-soft: #4d586a; --nb-warn: #875500; --nb-green: #14702f;
+  /* 浅色拟物需要更深的红，保证 12–14px 文字也满足 AA 对比度。 */
+  --nb-red: #b3141f;
   --nb-scrollbar-thumb-active: #3f4a5b;
   --nb-neu-plate: #eef0f4;
   --nb-neu-warm: #8a5c10; --nb-neu-warm-ink: #ffffff;
@@ -3543,7 +3550,7 @@ button { font-size: var(--ui-fs-ui); }
   background: var(--nb-bg); border-color: var(--nb-neu-edge);
   border-radius: 8px; box-shadow: var(--nb-neu-small);
 }
-:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .icon-btn {
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.icon-btn, .model-config-btn) {
   background: var(--nb-bg); border-color: var(--nb-neu-edge);
   border-radius: 50%; box-shadow: var(--nb-neu-small);
 }
@@ -3671,6 +3678,86 @@ button { font-size: var(--ui-fs-ui); }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .collab-member.active {
   color: var(--nb-accent-soft); border-color: color-mix(in srgb, var(--nb-neu-warm) 38%, transparent);
 }
+/* 其余面板表面：文件、队列、目录、配置、进化等补齐同一套材质。
+   用 :where() 降低特异性，让 .pending/.pass 这类语义修饰仍然生效。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.mc-file, .queue-item, .collab-verification, .evo-guide) {
+  background: var(--nb-bg-panel); border-color: transparent; box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.mc-file, .queue-item):hover {
+  background: var(--nb-neu-hover); color: var(--nb-label-1);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.mc-test-result, .mc-step-detail, .md-code,
+  .collab-review-diff, .dir-entries, .mcfg-plist, .debug-detail pre, .file-viewer-modes, .terminal-panel) {
+  background: var(--nb-bg); border: 1px solid var(--nb-neu-edge); box-shadow: var(--nb-neu-inset);
+}
+/* 终端是「仿真窗口」：整体内陷成凹槽，工具栏与屏幕都收在凹槽里。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .terminal-panel { border-radius: 14px; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .terminal-panel .terminal-toolbar { border-radius: 13px 13px 0 0; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .terminal-panel .terminal-screen,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .terminal-panel .terminal-fallback { border-radius: 0 0 13px 13px; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.file-viewer-modes) { border-radius: 10px; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.file-viewer-mode.current) {
+  background: var(--nb-neu-plate); color: var(--nb-accent-soft);
+  box-shadow: inset 0 -2px 0 var(--nb-neu-warm), var(--nb-neu-small);
+}
+/* 其余面板表面（第二批）：附件、欢迎卡、能力标签、右键菜单芯片、目录面包屑、二维码入口等。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.attach-item, .wc-item, .xm-cap, .ctx-chip) {
+  background: var(--nb-bg-panel); border-color: transparent; box-shadow: var(--nb-neu-small);
+}
+/* 冲突告警保留语义描边，只补柔和外形。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.collab-write-conflicts) {
+  box-shadow: var(--nb-neu-small);
+}
+/* 计数与状态小徽标：底色抬亮、文字加深，避免灰底灰字落到 3.6:1。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.session-group-count, .session-group-unread,
+  .collab-kbadge, .collab-dbadge, .collab-proto-badge, .collab-accept-kind, .cv-count) {
+  background: var(--nb-bg); color: var(--nb-label-2);
+  border: 1px solid var(--nb-neu-edge); box-shadow: var(--nb-neu-small);
+}
+/* 标注文字下限：动态行 9px、验收清单/徽标/diff 头 10px 统一抬到 11px。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.collab-activity, .collab-activity span,
+  .collab-activity time, .collab-member small,
+  .collab-verification :is(li, ul, summary), .collab-verification .cv-count, .collab-proto-badge,
+  .collab-workspace-badge, .collab-verify-badge, .collab-review-summary, .collab-review-file,
+  .collab-review-file :is(span, b, small), .collab-review-diff, .collab-task-attempt,
+  .collab-task-scope, .media-kind, .evo-status-tag, .evo-tech summary, .session-role, .diff-owner,
+  .mc-file-owner) { font-size: var(--ui-fs-cap, 11px); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.group-status, .dir-crumb) {
+  background: var(--nb-bg); border-radius: 8px; box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.ctx-editor, .evo-layers-detail, .mc-impact-summary) {
+  background: var(--nb-bg); border: 1px solid var(--nb-neu-edge); box-shadow: var(--nb-neu-inset);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.md-copy, .qa-show-btn, .session-group-toggle) {
+  background: var(--nb-bg); border-color: var(--nb-neu-edge); border-radius: 8px; box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.md-copy, .qa-show-btn, .session-group-toggle):hover:not(:disabled) {
+  background: var(--nb-neu-hover); color: var(--nb-label-1);
+}
+/* 其余面板表面（第三批）：会话行菜单、消息附件、媒体块、技术细节、模态内块、二维码提示。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item .menu-btn {
+  background: var(--nb-bg); border: 1px solid var(--nb-neu-edge);
+  border-radius: 50%; box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item .menu-btn:hover:not(:disabled) {
+  background: var(--nb-neu-hover); color: var(--nb-label-1);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.msg-user-file, .qa-top-text, .modal-body, .xm-conv-body, .evo-tech, .media-download) {
+  background: var(--nb-bg-panel); border-color: transparent; border-radius: 8px; box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.media-body, .media-text-markdown, .media-text-source,
+  .attach-file-icon, .md-inline) {
+  background: var(--nb-bg); border-color: var(--nb-neu-edge); box-shadow: var(--nb-neu-inset);
+}
+/* 语义小标：只补柔和外形，颜色与描边交给状态类。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.evo-approve, .diff-owner, .mc-file-owner, .collab-accept-note) {
+  box-shadow: var(--nb-neu-small);
+}
+
+/* 徽标类：与筛选胶囊同材质，语义描边由各自的状态类决定。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :where(.evo-health-pill, .evo-status-tag, .collab-workspace-badge) {
+  background: var(--nb-bg); border-radius: 8px; box-shadow: var(--nb-neu-small);
+}
 /* 授权按钮：淡色底 + 语义色文字与描边。 */
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-allow, .btn-deny) {
   background: var(--nb-neu-plate); border-radius: 12px; box-shadow: var(--nb-neu-small);
@@ -3731,12 +3818,23 @@ button { font-size: var(--ui-fs-ui); }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-primary, .btn-ghost, .xg-btn, .ask-btn, .ask-send, .pair-refresh, .qa-refresh, .pair-actions button,
     .modal-box .icon-btn, .webauthn-modal-close, .mcfg-x, .mcfg-add-btn) { min-height: 44px; }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.modal-box .icon-btn, .webauthn-modal-close, .mcfg-x) { min-width: 44px; }
+  /* 小控件补齐 32px 触控下限：筛选胶囊、面板动作、分段与终端输入。 */
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.collab-filter-row button, .mc-action-btn,
+    .file-viewer-mode, .evo-approve, .terminal-input, .session-group-toggle, .session-more, .md-copy,
+    .queue-cancel, .group-task-claim, .collab-dep-chip) { min-height: 32px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.collab-filter-row button, .file-viewer-mode,
+    .evo-approve, .md-copy, .session-more) { padding-left: 10px; padding-right: 10px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-group-toggle { width: 32px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select-mark { width: 18px; height: 18px; }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select) { font-size: 16px; }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .theme-picker { font-size: 12px; }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .task-accept-row { grid-template-columns: minmax(0, 1fr) 44px; }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .mcfg-model-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px; }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .task-accept-row :is(select, input) { grid-column: 1; }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .task-accept-row button { grid-column: 2; grid-row: 1 / 4; }
+  /* 多选：可视方块 18px，命中区扩到 28px。 */
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select { width: 28px; height: 28px; padding: 5px; left: 2px; top: 7px; }
+  :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select input { width: 28px; height: 28px; }
 }
 @media (max-width: 400px) {
   #topbar .theme-picker { width: 92px; }

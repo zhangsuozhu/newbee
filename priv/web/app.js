@@ -2017,16 +2017,22 @@ case "goal_round": break;
     }
     return '<div class="collab-accept-empty">验收契约不可用，不能自动验收</div>';
   }
+  // 验收结果：超过 2 项默认收起，卡片只显示结论与条目数，点开再看细节。
   function renderVerification(task) {
     const verification = task && task.verification;
     if (!verification || typeof verification !== "object") return "";
     const results = Array.isArray(verification.results) ? verification.results : [];
+    const failed = results.filter((r) => !(r && r.passed === true)).length;
     const details = results.map((result) => {
       const passed = result && result.passed === true;
       const label = result && (result.kind || result.path || result.program) || "验收项";
       return '<li class="' + (passed ? "passed" : "failed") + '">' + (passed ? "通过" : "失败") + " · " + escapeHtml(label) + (result && result.output ? " · " + escapeHtml(String(result.output)) : "") + "</li>";
     }).join("");
-    return '<div class="collab-verification"><strong>' + escapeHtml(verificationLabel(verification)) + "</strong>" + (details ? "<ul>" + details + "</ul>" : "") + "</div>";
+    const many = results.length > 2;
+    const verdict = results.length ? (failed ? failed + " 项未通过" : "全部通过") : "";
+    const count = results.length ? '<span class="cv-count">' + results.length + " 项" + (verdict ? " · " + verdict : "") + "</span>" : "";
+    const head = "<summary>" + escapeHtml(verificationLabel(verification)) + count + "</summary>";
+    return '<details class="collab-verification"' + (many ? "" : " open") + ">" + head + (details ? "<ul>" + details + "</ul>" : "") + "</details>";
   }
   function renderDepends(task) {
     const deps = task.depends_on || task.dependsOn || [];
