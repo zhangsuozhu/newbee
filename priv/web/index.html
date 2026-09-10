@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-<link rel="stylesheet" href="/style.css?v=20260910-theme-menu-1" />
+<link rel="stylesheet" href="/style.css?v=20260910-sidebar-polish-5" />
   <link rel="stylesheet" href="/vendor/xterm.css?v=5.6.0" />
 
-<script src="/theme.js?v=20260910-theme-menu-1"></script>
+<script src="/theme.js?v=20260910-sidebar-polish-5"></script>
 </head>
 <body>
 <div id="app">
@@ -19,7 +19,7 @@
       <button id="sidebar-toggle" class="icon-btn" title="收起侧栏"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
     </div>
     <div class="session-actions">
-      <button id="new-session" class="btn-primary" style="border-radius:12px">+ 新会话</button>
+      <button id="new-session" class="xg-btn">+ 新会话</button>
     </div>
     <div class="session-search">
       <input id="session-search" type="search" placeholder="搜索会话…" />
@@ -55,9 +55,8 @@
       <button id="to-bottom" class="to-bottom icon-btn" title="回到底部">↓</button>
       <button id="delegate-session" class="btn-ghost hidden" title="让另一个 AI 分担当前工作">+ 让另一个 AI 帮忙</button>
 
-      <button id="qa-show" class="qa-top-text" title="生成二维码，手机扫码免登录打开">
-        <svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><path d="M14 14h3v3h-3z"/><path d="M21 14v3M14 21h3"/></svg>
-        <span>手机扫码</span>
+      <button id="qa-show" class="icon-btn qa-icon-btn" title="手机扫码登录" aria-label="手机扫码登录">
+        <svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><path d="M14 14h3v3h-3z"/><path d="M21 14v3M14 21h3"/></svg>
       </button>
       <button id="terminal-toggle" class="icon-btn" title="打开终端" aria-label="打开终端" aria-expanded="false"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 4-4-4-4"/><path d="M12 19h8"/></svg></button>
 
@@ -144,7 +143,7 @@
           <input type="file" id="file-input" multiple hidden />
         </div>        <textarea id="input" rows="1" placeholder="输入消息…"></textarea>
         <div class="composer-actions">
-          <button id="interrupt" class="btn-icon-round hidden" title="中断当前并清空排队" aria-label="中断并清空排队"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><rect x="7" y="7" width="10" height="10" rx="2"/></svg></button>
+          <button id="interrupt" class="btn-icon-round hidden" title="中断当前并清空排队" aria-label="中断并清空排队"><svg class="ico stop-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><rect x="8" y="8" width="8" height="8" rx="1"/></svg></button>
           <button id="send" class="btn-icon-round btn-send" title="发送 (Enter)" aria-label="发送"><svg class="ico send-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg><svg class="ico whip-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l5-5"/><path d="m3 18 3 3"/><path d="M9 15c3.1-1.4 2-4.7 3.7-7.2 1.1-1.6 3.8-2.1 4.9-.5 1.3 1.9-1.1 3.1-2.2 4.4-1.1 1.4-.1 3.1 1.8 3.2 1.6.1 2.9-1.1 3.7-2.5"/><path d="M20.4 12.9 22 11"/></svg></button>
         </div>
         </div>
@@ -422,7 +421,7 @@
       <label>加群码<input id="xj_code" type="text" placeholder="粘贴加群码，如 XG1.…" /></label>
       <label>Hub 地址<input id="xj_hub" type="text" placeholder="新加群码会自动填；旧码请手动填写" /></label>
       <label>本机名<input id="xj_disp" type="text" placeholder="例如：我的开发机" maxlength="40" /></label>
-      <label class="xg-check xg-check-danger"><input id="xj_fullcontrol" type="checkbox" /> 接受完全控制（群主可在本机执行任意代码和系统命令）</label>
+<label class="xg-check xg-check-danger" title="允许后，群主可以使用当前 Newbee 系统用户权限执行代码、命令并读写文件；仅加入完全信任的群。"><input id="xj_fullcontrol" type="checkbox" /><span class="xg-check-mark" aria-hidden="true"></span><span>允许群主完全控制本机</span></label>
       <div id="xj_found" class="modal-body"></div>
     </div>
     <div class="modal-actions">
@@ -701,7 +700,7 @@
 <script src="/vendor/qrcodegen.js"></script>
 <script src="/vendor/xterm.js?v=5.6.0"></script>
 
-<script src="/app.js?v=20260910-theme-menu-1"></script>
+<script src="/app.js?v=20260910-sidebar-polish-5"></script>
 <!-- 手机扫码免登录弹窗 -->
 <div id="qa-overlay" class="qa-overlay hidden">
   <div class="qa-box">
