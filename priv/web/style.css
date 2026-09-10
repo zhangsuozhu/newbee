@@ -1728,7 +1728,7 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 
 /* ── 项目工作目录选择（dsh DirectoryBrowser 语义）── */
 .session-actions { display: flex; gap: 6px; padding: 0 10px 8px; }
-.session-actions .btn-primary { flex: 1.4; }
+.session-actions #new-session { flex: 1; width: 100%; }
 .session-actions .btn-ghost { flex: 1; font-size: 12.5px; }
 .sidebar-foot { padding: 8px 10px; border-top: 1px solid var(--nb-border); display: flex;
   flex-direction: column; gap: 4px; }
@@ -2020,8 +2020,8 @@ svg.ico {
   .btn-primary, .btn-ghost, .btn-allow, .btn-deny {
     min-height: 40px; font-size: 14px; padding: 8px 14px; border-radius: 10px;
   }
-  /* 侧栏头部操作按钮紧凑(新建会话/选目录) */
-  #new-session, #new-session-dir {
+  /* 选目录保持紧凑；新会话与建群、加群使用同一按钮尺度。 */
+  #new-session-dir {
     min-height: 32px; padding: 4px 12px; font-size: 13px; border-radius: 9px;
   }
   .session-actions { gap: 6px; }
@@ -3466,6 +3466,47 @@ button { font-size: var(--ui-fs-ui); }
   background: var(--nb-bg-panel); border-color: var(--nb-neu-edge);
   border-radius: 22px; box-shadow: var(--nb-neu-raised);
 }
+/* 精修弹窗：短阴影、克制圆角，不再出现大面积发白光晕。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .modal {
+  backdrop-filter: none; background: rgb(12 14 18 / 0.58);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.modal-box, .login-box, .qa-box, .webauthn-modal, .pair-card, .file-viewer-box) {
+  border-radius: 14px;
+  box-shadow: 4px 5px 10px color-mix(in srgb, var(--nb-neu-shadow) 72%, transparent), -2px -2px 6px color-mix(in srgb, var(--nb-neu-light) 58%, transparent);
+}
+/* 输入框是真正的内凹槽，边界更清楚，圆角统一为 8px。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+  textarea:not(#input), select:not(.theme-picker), .pair-dev, .xm-code, .collab-task-result) {
+  background: var(--nb-bg); color: var(--nb-label-1);
+  border: 1px solid color-mix(in srgb, var(--nb-border) 82%, var(--nb-neu-shadow));
+  border-radius: 8px;
+  box-shadow: inset 2px 2px 4px var(--nb-neu-shadow), inset -1px -1px 3px color-mix(in srgb, var(--nb-neu-light) 80%, transparent);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select):focus {
+  border-color: color-mix(in srgb, var(--nb-neu-warm) 58%, var(--nb-border));
+}
+/* 文字型长按钮收紧圆角；圆形图标按钮不受影响。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-primary, .btn-ghost, .xg-btn, .btn-retry, .btn-steer,
+  .ask-btn, .ask-opt, .ask-send, .terminal-send, .pair-approve, .pair-deny, .btn-allow, .btn-deny,
+  .qa-refresh, .mc-action-btn, .group-task-claim, .collab-dep-chip, .evo-explain) { border-radius: 8px; }
+/* 完全控制是左对齐的新拟物复选框，不继承表单标签的纵向布局。 */
+.group-modal-fields .xg-check {
+  flex-direction: row; justify-content: flex-start; align-items: center; align-self: flex-start;
+  width: 100%; min-height: 32px; gap: 9px; padding: 2px 0; text-align: left;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .xg-check input {
+  position: absolute; width: 18px; height: 18px; opacity: 0; pointer-events: none;
+}
+.xg-check-mark { display: none; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .xg-check-mark {
+  display: grid; place-items: center; flex: 0 0 18px; width: 18px; height: 18px;
+  border: 1px solid var(--nb-neu-edge); border-radius: 5px; background: var(--nb-bg);
+  box-shadow: var(--nb-neu-inset); color: var(--nb-neu-warm); font-size: 12px; font-weight: 700;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .xg-check input:checked + .xg-check-mark::after { content: "✓"; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .xg-check input:focus-visible + .xg-check-mark {
+  outline: 2px solid var(--nb-neu-warm); outline-offset: 2px;
+}
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .theme-menu {
   border-radius: 10px; box-shadow: var(--nb-neu-small), 0 12px 30px rgb(0 0 0 / 0.24);
 }
@@ -3488,11 +3529,7 @@ button { font-size: var(--ui-fs-ui); }
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .composer-card:focus-within { border-color: var(--nb-accent); }
 /* Form controls keep their boundaries, including when shadows are hard to see. */
-:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
-  textarea:not(#input), select:not(.theme-picker), .pair-dev, .xm-code, .collab-task-result) {
-  background: var(--nb-bg); color: var(--nb-label-1); border-color: var(--nb-border);
-  border-radius: 12px; box-shadow: var(--nb-neu-inset);
-}
+/* Form controls are refined below with an inset material and compact radius. */
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input, textarea)::placeholder { color: var(--nb-label-caption); opacity: 1; }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(input[type="checkbox"], input[type="radio"], input[type="range"]) { accent-color: var(--nb-accent); }
 /* 按钮：次级控件抬起，悬停亮一档，按下凹陷；主操作是中性实心。 */
@@ -3501,7 +3538,7 @@ button { font-size: var(--ui-fs-ui); }
   .pair-deny, .group-task-claim, .collab-dep-chip, .evo-explain,
   .file-viewer-mode.current) {
   background: var(--nb-bg); border-color: var(--nb-neu-edge);
-  border-radius: 12px; box-shadow: var(--nb-neu-small);
+  border-radius: 8px; box-shadow: var(--nb-neu-small);
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .icon-btn {
   background: var(--nb-bg); border-color: var(--nb-neu-edge);
@@ -3517,17 +3554,68 @@ button { font-size: var(--ui-fs-ui); }
   .model-opt.current, .model-provider.current, .xg-dev.mine) {
   box-shadow: var(--nb-neu-inset);
 }
-/* 选中行保留浅凹与细标记，减少大面积暖色和重阴影。 */
-:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.swipe-cell, .session-item) { border-radius: 12px; }
+/* 会话列表改为连续清单：无独立圆角框，以细刻线分隔。 */
+.session-list { gap: 0; }
+.swipe-cell, .swipe-cell .session-item { border-radius: 0; }
+.swipe-cell .session-item {
+  border-bottom: 1px solid color-mix(in srgb, var(--nb-border) 72%, transparent);
+}
+.swipe-cell:last-child .session-item { border-bottom-color: transparent; }
+.session-item.active { border-radius: 0; }
+.session-current-mark {
+  position: absolute; right: 36px; top: 9px; display: inline-grid; place-items: center;
+  width: 18px; height: 18px; border-radius: 50%; color: var(--nb-accent-soft);
+  background: color-mix(in srgb, var(--nb-accent) 10%, var(--nb-bg-panel));
+  border: 1px solid color-mix(in srgb, var(--nb-accent) 28%, transparent);
+  transition: opacity var(--nb-dur), color var(--nb-dur);
+}
+.session-current-mark svg { display: block; }
+.session-item:hover .session-current-mark { color: var(--nb-label-1); }
+/* 侧栏底部形成清晰对齐轴：模型靠左，退出靠右。 */
+.sidebar-foot .model-row { width: 100%; }
+.sidebar-foot .model-label { text-align: left; }
+.sidebar-foot .logout-btn { align-self: flex-end; justify-content: flex-end; }
+/* 新拟物会话行保持平面，只在悬停和当前项上给轻微材质变化。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.swipe-cell, .session-item) { border-radius: 0; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .swipe-cell .session-item {
+  background: transparent;
+  border-bottom-color: color-mix(in srgb, var(--nb-neu-shadow) 44%, var(--nb-border));
+}
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item:hover:not(.active) {
-  background: var(--nb-bg-elev); box-shadow: var(--nb-neu-small);
+  background: color-mix(in srgb, var(--nb-bg-elev) 72%, transparent); box-shadow: none;
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item.active {
   background: color-mix(in srgb, var(--nb-neu-warm) 4%, var(--nb-bg-elev));
-  color: var(--nb-label-1); border-radius: 12px;
-  box-shadow: inset 2px 0 0 var(--nb-neu-warm), inset 0 1px 3px color-mix(in srgb, var(--nb-neu-shadow) 65%, transparent);
+  color: var(--nb-label-1); border-radius: 0;
+  box-shadow: inset 2px 0 0 var(--nb-neu-warm);
 }
-:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item.active .meta { color: var(--nb-label-2); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-current-mark {
+  color: var(--nb-neu-warm); background: var(--nb-bg);
+  border-color: color-mix(in srgb, var(--nb-neu-warm) 38%, transparent);
+  box-shadow: var(--nb-neu-small);
+}
+/* 新拟物多选框：内凹槽、常显轮廓、暖色选中勾。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select {
+  top: 10px; left: 5px; width: 16px; height: 16px; opacity: .72;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item:hover .session-select,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select:focus-within,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select:has(input:checked) { opacity: 1; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select input {
+  position: absolute; inset: 0; width: 16px; height: 16px; margin: 0; opacity: 0;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select-mark {
+  display: grid; place-items: center; width: 16px; height: 16px; border-radius: 5px;
+  background: var(--nb-bg); border: 1px solid var(--nb-neu-edge); box-shadow: var(--nb-neu-inset);
+  color: var(--nb-neu-warm); font-size: 11px; font-weight: 700; line-height: 1;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select input:checked + .session-select-mark::after { content: "✓"; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select input:focus-visible + .session-select-mark {
+  outline: 2px solid var(--nb-neu-warm); outline-offset: 2px;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-item:not(.active):has(.session-select input:checked) {
+  background: color-mix(in srgb, var(--nb-neu-warm) 3%, transparent); box-shadow: none;
+}
 /* 主操作不反色：与面板同色，用暖色描边、顶部高光和柔光做装饰。 */
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-primary, .btn-send, .btn-steer, .pair-approve, .xg-btn.solid, .ask-send, .terminal-send) {
   background: var(--nb-neu-plate);
@@ -3627,3 +3715,16 @@ button { font-size: var(--ui-fs-ui); }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *, :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *::before, :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) *::after { animation: none !important; transition: none !important; }
 }
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #model-modal .modal-actions .btn-allow { background: var(--nb-neu-plate); color: var(--nb-green); border: 1px solid color-mix(in srgb, var(--nb-green) 45%, transparent); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) :is(.btn-primary.btn-primary, .btn-ghost, .xg-btn, .btn-retry, .btn-steer,
+  .ask-btn, .ask-opt, .ask-send, .terminal-send, .pair-approve, .pair-deny, .btn-allow, .btn-deny,
+  .qa-refresh, .mc-action-btn, .group-task-claim, .collab-dep-chip, .evo-explain) { border-radius: 8px; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #interrupt.btn-icon-round {
+  background: var(--nb-bg); color: var(--nb-red);
+  border: 1px solid var(--nb-neu-edge); box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #interrupt.btn-icon-round .stop-icon rect { fill: var(--nb-red); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #interrupt.btn-icon-round:hover {
+  background: color-mix(in srgb, var(--nb-red) 7%, var(--nb-bg));
+  color: var(--nb-red); border-color: color-mix(in srgb, var(--nb-red) 38%, transparent);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) #interrupt.btn-icon-round:active { box-shadow: var(--nb-neu-inset); }

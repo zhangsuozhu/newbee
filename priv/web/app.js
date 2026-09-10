@@ -3286,7 +3286,7 @@ case "goal_round": break;
       const row = document.createElement("div");
       row.className = "xgroup-empty-actions";
       const mkEmptyBtn = (txt, tip, cls, fn) => { const b = document.createElement("button"); b.className = "xg-btn " + cls; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; row.appendChild(b); };
-      mkEmptyBtn("建群", "建一个项目协作群", "solid", openXCreate);
+      mkEmptyBtn("建群", "建一个项目协作群", "", openXCreate);
       mkEmptyBtn("加群", "用加群码加入协作群", "", openXJoin);
       em.appendChild(row);
       box.appendChild(em);
@@ -3823,7 +3823,8 @@ case "goal_round": break;
       const cwdShort = s.cwd ? (() => { const p = String(s.cwd).replace(/\/$/, ""); return p.split("/").filter(Boolean).pop() || p; })() : null;
       const unreadN = sessionUnreadCount(s.id);
       const unreadHtml = unreadN > 0 ? `<span class="session-unread" title="${unreadN} 条未读消息">${unreadN > 99 ? "99+" : unreadN}</span>` : "";
-      item.innerHTML = `<label class="session-select"><input type="checkbox" data-select-session="${escapeHtml(s.id)}"${selected}><span class="session-select-mark"></span></label><span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}${unreadHtml}${child ? `<span class="session-role">${escapeHtml(role)}</span>` : ""}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>`;
+      const currentHtml = s.id === state.sid ? `<span class="session-current-mark" title="当前会话" aria-label="当前会话"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4V3z"/></svg></span>` : "";
+      item.innerHTML = `<label class="session-select"><input type="checkbox" data-select-session="${escapeHtml(s.id)}"${selected}><span class="session-select-mark"></span></label><span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}${unreadHtml}${child ? `<span class="session-role">${escapeHtml(role)}</span>` : ""}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>${currentHtml}`;
       item.onclick = (e) => {
         if (wrap.dataset.swipeOpen === "1") { closeSwipeCell(wrap); return; }
         if (item.dataset.dragged === "1") { delete item.dataset.dragged; return; }

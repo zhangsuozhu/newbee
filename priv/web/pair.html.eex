@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>扫码登录授权 · newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-<link rel="stylesheet" href="/style.css?v=20260910-theme-menu-1" />
+<link rel="stylesheet" href="/style.css?v=20260910-sidebar-polish-5" />
 <style>
   body { display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
   .pair-card { max-width:420px; width:100%; margin:16px; padding:28px 24px; border-radius:18px;

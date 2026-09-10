@@ -119,6 +119,33 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert missing == [], "shadowed components without neumorphic styling: #{inspect(missing)}"
   end
 
+
+  test "the polished sidebar uses icon QR, linear rows, a current marker and soft checkboxes",
+       %{index: index, scope: scope} do
+    app = File.read!("priv/web/app.js")
+
+    assert index =~ ~s(id="qa-show" class="icon-btn qa-icon-btn")
+    refute index =~ ">手机扫码<"
+    assert app =~ "session-current-mark"
+    assert scope =~ ".swipe-cell .session-item"
+    assert scope =~ "border-bottom"
+    assert scope =~ ".session-select-mark"
+    assert scope =~ ~s(content: "✓")
+    assert scope =~ ".sidebar-foot .logout-btn"
+    assert scope =~ "align-self: flex-end"
+    assert index =~ ~s(id="new-session" class="xg-btn")
+    assert app =~ ~s(mkEmptyBtn("建群", "建一个项目协作群", "")
+    assert app =~ ~s(mkEmptyBtn("加群", "用加群码加入协作群", "")
+    assert index =~ "允许群主完全控制本机"
+    refute index =~ "接受完全控制（群主可在本机执行任意代码和系统命令）"
+    assert index =~ "xg-check-mark"
+    assert scope =~ ".group-modal-fields .xg-check"
+    assert scope =~ "border-radius: 8px"
+    assert scope =~ "backdrop-filter: none"
+    assert index =~ ~s(class="ico stop-icon")
+    assert scope =~ "#interrupt.btn-icon-round"
+    assert scope =~ "fill: var(--nb-red)"
+  end
   test "semantic status colors are not frozen to one theme", %{scope: scope} do
     refute scope =~
              ~r/\.(mc-file-added|mc-file-deleted|login-error|pair-msg)[^{]*\{[^}]*#[0-9a-fA-F]{3,6}/
