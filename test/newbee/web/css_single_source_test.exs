@@ -25,9 +25,29 @@ defmodule Newbee.Web.CssSingleSourceTest do
 
     assert MapSet.to_list(MapSet.difference(refs, defs)) == []
   end
+
   test "swipe rows cannot shrink out of the scrollable session list" do
     css = File.read!("priv/web/style.css")
     assert Regex.match?(~r/\.swipe-cell\s*\{[^}]*flex-shrink:\s*0\s*;/, css)
+  end
+
+  # 回归：会话列表是 flex column + overflow:auto，整块子项默认 flex-shrink:1
+  # 会被压成 2px（只剩边框），工作组标题与成员行全部被 overflow:hidden 裁掉。
+  test "block-level list children cannot shrink inside the scrollable session list" do
+    css = File.read!("priv/web/style.css")
+
+    for selector <- [
+          ".session-group",
+          ".session-group-label",
+          ".xgroup-empty",
+          ".session-empty"
+        ] do
+      assert Regex.match?(
+               ~r/#session-list > #{Regex.escape(selector)}[^{}]*\{[^}]*flex:\s*none\s*;/,
+               css
+             ),
+             "#{selector} 缺少 #session-list > … { flex: none }，会被 flex 压扁"
+    end
   end
 
   test "swipe foreground covers delete actions until translated" do
@@ -51,5 +71,4 @@ defmodule Newbee.Web.CssSingleSourceTest do
     assert js =~ "terminal.term.options.theme = terminalTheme()"
     assert js =~ "const ansi = light"
   end
-
 end
