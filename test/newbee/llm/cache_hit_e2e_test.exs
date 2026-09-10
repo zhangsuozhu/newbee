@@ -100,10 +100,15 @@ defmodule Newbee.LLM.CacheHitE2ETest do
       # ③ 摘要回放请求 = 快照严格前缀 + 尾部指令，tools 同源
       replay = env["messages"] ++ [%{"role" => "user", "content" => compact_instruction()}]
 
-      {:ok, _content, replay_usage} =
+      # complete/3 的第三元素是 %{usage, logprobs}（与 chat 路径同契约）；
+      # stream_chat 返回的是裸 usage map——两条路径形状不同，别混用。
+      {:ok, _content, %{usage: replay_usage}} =
         Client.complete(client, replay, tools: tools, tool_choice: "none", extra: %{max_tokens: 64})
 
       hit = replay_usage["cache_read_tokens"] || 0
+      prompt = replay_usage["prompt_tokens"] || 0
+
+      assert prompt > 0, "回放请求未报告 prompt_tokens：#{inspect(replay_usage)}"
 
       assert hit > 0,
              """
@@ -116,11 +121,15 @@ defmodule Newbee.LLM.CacheHitE2ETest do
 
   # ── helpers ──
 
+  # complete/3 返回 `{:ok, content, %{usage:, logprobs:}}`；这里统一解包成 usage map，
+  # 同时把形状不符合契约的情况当成失败报出来（而不是安静地拿到一个空 map）。
   defp usage!(client, messages, label) do
     case Client.complete(client, messages, tools: [], extra: %{max_tokens: 16}) do
-      {:ok, _content, usage} ->
-        assert is_map(usage), "#{label}: provider 未返回 usage：#{inspect(usage)}"
+      {:ok, _content, %{usage: usage}} when is_map(usage) ->
         usage
+
+      {:ok, _content, other} ->
+        flunk("#{label}: complete/3 第三元素不是 %{usage: _}：#{inspect(other)}")
 
       other ->
         flunk("#{label}: 请求失败 #{inspect(other)}")
