@@ -12,7 +12,8 @@ defmodule Newbee.Tools.Run do
 
   ## Permissions and truncation
   - Dangerous commands (`rm -rf /`, `git push`, …) are gated by the `Newbee.Permissions` level (`:lenient`/`:ask`/`:deny`); a block returns `%{exit: :denied, output: msg}`.
-  - Output over 32KB truncates to first/last 16KB + `… [truncated]`.
+  - Output over 32KB keeps the first/last 16KB plus a marker; the full text is stored by content hash and the marker carries a readable handle (`Newbee.read("spill://<id>")`). Windows that can be reconstructed exactly are returned verbatim, so short or barely-over-budget output is never falsely marked as truncated.
+
   - The shell runs in its own process group; timeouts, Esc interrupts, or caller death clean up the whole command tree.
 
 

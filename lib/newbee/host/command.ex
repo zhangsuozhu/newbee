@@ -13,6 +13,9 @@ defmodule Newbee.Host.Command do
   # 继承它会导致 worktree/DEE 会话漂回主仓 (进化提案根因: 子进程目录漂移)。
   @env_deny_exact ~w(NEWBEE_CWD)
   @output_head_bytes 16_000
+  # 头尾各自 16KB（合计 32KB 预算）；窗口内可精确重建的区间不算截断。
+  @output_tail_bytes 16_000
+
   @term_grace_ms 200
   @pidfile_attempts 20
 
@@ -47,7 +50,7 @@ defmodule Newbee.Host.Command do
     case open_shell(cmd, cwd) do
       {:ok, job} ->
         try do
-          collect(job, waiter, ref, cancel_refs, deadline(timeout), {"", "", 0})
+          collect(job, waiter, ref, cancel_refs, deadline(timeout), new_buffer())
         after
           if job.pidfile, do: File.rm(job.pidfile)
         end
@@ -131,6 +134,7 @@ defmodule Newbee.Host.Command do
       {:DOWN, down_ref, :process, _pid, _reason} ->
         if MapSet.member?(cancel_refs, down_ref) do
           terminate(job)
+          abort_buffer(buffer)
         else
           collect(job, waiter, ref, cancel_refs, :infinity, buffer)
         end
@@ -150,6 +154,7 @@ defmodule Newbee.Host.Command do
       {:DOWN, down_ref, :process, _pid, _reason} ->
         if MapSet.member?(cancel_refs, down_ref) do
           terminate(job)
+          abort_buffer(buffer)
         else
           collect(job, waiter, ref, cancel_refs, deadline, buffer)
         end
@@ -160,42 +165,80 @@ defmodule Newbee.Host.Command do
     end
   end
 
+  defp abort_buffer(%{spill: spill}), do: Newbee.Spill.abort(spill)
+  defp abort_buffer(_buffer), do: :ok
+
   defp send_result(waiter, ref, status, buffer) do
     output = bounded_output(buffer)
     send(waiter, {ref, %{exit: status, exit_code: status, output: output}})
   end
 
-  # 固定头尾缓冲：头保留前 16KB，尾用滑动窗口保留最后 16KB。
-  # 内存占用与命令输出量无关，跑几小时的构建也不会撑爆 Ring0。
-  defp push_output({head, tail, dropped}, data) do
-    head = take_head(head, data)
-    {tail, dropped} = take_tail(tail, data, dropped)
-    {head, tail, dropped}
+  # 固定头尾缓冲 + 同步流式落盘。内存占用与命令输出量无关（跑几小时的构建也不会
+  # 撑爆 Ring0），但被截掉的原文一律先按内容寻址落盘，标记里给出回读句柄——
+  # 于是模型既省了上下文，又不会连"为什么失败"都看不到。
+  defp push_output(buffer, data) do
+    %{
+      buffer
+      | window: Newbee.Truncate.Window.push(buffer.window, data),
+        spill: spill_push(buffer.spill, data)
+    }
   end
 
-  defp take_head(head, _data) when byte_size(head) >= @output_head_bytes, do: head
-
-  defp take_head(head, data) do
-    need = @output_head_bytes - byte_size(head)
-    head <> binary_part(data, 0, min(need, byte_size(data)))
+  defp new_buffer do
+    %{
+      window: Newbee.Truncate.Window.new(@output_head_bytes, @output_tail_bytes),
+      spill: spill_open("host_command")
+    }
   end
 
-  defp take_tail(tail, data, dropped) do
-    combined = tail <> data
-
-    if byte_size(combined) <= @output_head_bytes do
-      {combined, dropped}
-    else
-      keep = binary_part(combined, byte_size(combined) - @output_head_bytes, @output_head_bytes)
-      {keep, dropped + byte_size(combined) - @output_head_bytes}
+  defp bounded_output(%{window: window} = buffer) do
+    case Newbee.Truncate.Window.render(window, handle: spill_finish_if_dropped(buffer)) do
+      %{text: text} -> text
     end
   end
 
-  defp bounded_output({_head, tail, 0}), do: tail
-
-  defp bounded_output({head, tail, dropped}) do
-    head <> "\n… [输出截断: 省略 " <> to_string(dropped) <> " bytes] …\n" <> tail
+  # 没丢字节就不必留对象（否则每条短命令都会产生一个 spill 文件）。
+  defp spill_finish_if_dropped(%{window: %{total: total}, spill: spill}) do
+    if total <= spill_keep_bytes() do
+      spill_abort(spill)
+      nil
+    else
+      spill_finish(spill)
+    end
   end
+
+  defp spill_keep_bytes, do: @output_head_bytes + @output_tail_bytes
+
+  # spill 永远是可选的：拿不到句柄就不落盘，绝不因此让命令失败（fail-open）。
+  defp spill_open(source) do
+    case Newbee.Spill.open_stream(source: source) do
+      {:ok, handle} -> handle
+      {:error, _reason} -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp spill_push(nil, _data), do: nil
+  defp spill_push(handle, data), do: Newbee.Spill.push(handle, data)
+
+  defp spill_finish(nil), do: nil
+
+  defp spill_finish(handle) do
+    case Newbee.Spill.finish(handle) do
+      {:ok, info} -> info
+      {:error, _reason} -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp spill_abort(nil), do: :ok
+  defp spill_abort(handle), do: Newbee.Spill.abort(handle)
 
   defp error_result(message), do: %{exit: 127, exit_code: 127, output: message}
 

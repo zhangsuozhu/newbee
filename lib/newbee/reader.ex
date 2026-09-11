@@ -6,6 +6,8 @@ defmodule Newbee do
   Scheme overview:
     - bare path       → file or directory
     - `file://`     → file
+    - `spill://<id>` → verbatim original of a truncated output (`?offset=N` pages; handle comes from the truncation marker)
+
     - `tool://M`    → module docs (@moduledoc + public @doc entries)
     - `rules://[sub]` → sleeping-rule list (empty lists all, non-empty filters by id+pattern; routed to host)
     - `memory://k`  → global memory entry (empty key lists topics)
@@ -72,6 +74,9 @@ defmodule Newbee do
 
       String.starts_with?(path, "http://") or String.starts_with?(path, "https://") ->
         read_url(path)
+
+      String.starts_with?(path, "spill://") ->
+        read_spill(String.replace_prefix(path, "spill://", ""))
 
       String.starts_with?(path, "file://") ->
         read_path(String.replace_prefix(path, "file://", ""))
@@ -179,11 +184,126 @@ defmodule Newbee do
         example: "shared://<group_id>/board",
         reads: "authorized project-scoped collaboration context"
       },
+      %{
+        scheme: "spill://",
+        example: "spill://<id>",
+        reads: "verbatim original of a truncated output, paged by ?offset="
+      },
       %{scheme: "https://", example: "https://example.com", reads: "public pages, private nets blocked"}
     ]
   end
 
   # ── 各实现 ──
+
+  # spill://<id>[?offset=N&bytes=M]：读回被截断时落盘的原文。
+  #
+  # 截断标记里给出句柄，模型用它把"被省掉的那段"按需取回——这是"省 token 不丢证据"
+  # 的兑现处。内容与命令输出同级，一律走不可信信封（可能含注入文本）。
+  defp read_spill(""), do: {:ok, spill_usage()}
+
+  defp read_spill(query) do
+    {id, opts} = parse_spill_query(query)
+
+    case spill_read(id, opts) do
+      {:ok, page} ->
+        {:ok,
+         Newbee.Trust.envelope(spill_page_text(id, page), "spill:" <> id)
+         |> Newbee.Trust.render()}
+
+      {:error, :spill_not_found} ->
+        {:error, {:spill_not_found, id}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp parse_spill_query(query) do
+    case String.split(query, "?", parts: 2) do
+      [id] -> {String.trim(id), []}
+      [id, options] -> {String.trim(id), parse_spill_options(options)}
+    end
+  end
+
+  defp parse_spill_options(options) do
+    options
+    |> String.split("&", trim: true)
+    |> Enum.flat_map(fn pair ->
+      case String.split(pair, "=", parts: 2) do
+        [key, value] -> spill_option(String.trim(key), String.trim(value))
+        _ -> []
+      end
+    end)
+  end
+
+  defp spill_option("offset", value) do
+    case Integer.parse(value) do
+      {offset, ""} when offset >= 0 -> [offset: offset]
+      _ -> []
+    end
+  end
+
+  defp spill_option("bytes", value) do
+    case Integer.parse(value) do
+      {bytes, ""} when bytes > 0 -> [max_bytes: bytes]
+      _ -> []
+    end
+  end
+
+  defp spill_option(_key, _value), do: []
+
+  # 本机优先（同一台机器上 peer 求值节点直接读盘即可），取不到再回主节点——
+  # 远程 peer 上命令输出落在主节点，必须经 Host.call。
+  defp spill_read(id, opts) do
+    case Newbee.Spill.read(id, opts) do
+      {:error, :spill_not_found} -> spill_read_via_host(id, opts)
+      other -> other
+    end
+  rescue
+    _ -> spill_read_via_host(id, opts)
+  catch
+    _kind, _reason -> spill_read_via_host(id, opts)
+  end
+
+  defp spill_read_via_host(id, opts) do
+    case Newbee.Host.call(Newbee.Spill, :read, [id, opts]) do
+      {:ok, _} = ok -> ok
+      {:error, _} = error -> error
+      _ -> {:error, :spill_not_found}
+    end
+  rescue
+    _ -> {:error, :spill_not_found}
+  catch
+    _kind, _reason -> {:error, :spill_not_found}
+  end
+
+  defp spill_page_text(id, page) do
+    header =
+      "[spill id=#{id} offset=#{page.offset} bytes=#{page.bytes} lines=#{page.lines} " <>
+        "total_bytes=#{page.total_bytes} eof=#{page.eof}#{next_offset_note(page)}]"
+
+    hint =
+      if page.eof,
+        do: "[已到末尾]",
+        else: ~s|[继续读: Newbee.read("spill://#{id}?offset=#{page.next_offset}")]|
+
+    header <> "\n" <> hint <> "\n\n" <> page.text
+  end
+
+  defp next_offset_note(%{eof: true}), do: ""
+  defp next_offset_note(%{next_offset: offset}), do: " next_offset=#{offset}"
+
+  defp spill_usage do
+    """
+    spill://<id>[?offset=N&bytes=M] — 读回被截断时落盘的原文。
+
+    句柄出现在截断标记里，例如：
+      … [截断: 省略 92894 bytes · 原文 124938 bytes · 完整原文: Newbee.read("spill://<id>")] …
+
+    `offset` 缺省 0；一页返回整行对齐的一段（字节数有上界），
+    用返回的 next_offset 继续读；eof=true 表示已到末尾。
+    """
+  end
 
   defp read_path(path) do
     if sensitive_path?(path) do
