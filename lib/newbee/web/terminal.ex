@@ -5,9 +5,15 @@ defmodule Newbee.Web.Terminal do
   @registry Newbee.Web.TerminalRegistry
   @supervisor Newbee.Web.SessionSup
   @max_input_bytes 64_000
-  @max_exec_output_bytes 64_000
+  # 可执行输出预算：头尾各 32KB（合计 64KB，与原 trim_output 总预算一致）。
+  # 窗口内可精确重建的区间不算截断——旧的 dropped 计数会把 20KB 的输出
+  # 谎报成"省略 12KB"。
+  @max_exec_head_bytes 32_000
+  @max_exec_tail_bytes 32_000
   @terminal_pid_attempts 20
-  @max_manual_context_bytes 16_000
+  # 手动终端上下文预算（进 transcript，比命令输出更小气）。
+  @max_manual_context_head_bytes 8_000
+  @max_manual_context_tail_bytes 8_000
   @manual_context_quiet_ms 500
   @max_scrollback_bytes 128_000
 
@@ -182,7 +188,15 @@ defmodule Newbee.Web.Terminal do
           timer =
             if timeout == :infinity, do: nil, else: Process.send_after(self(), {:terminal_exec_timeout, ref}, timeout)
 
-          pending = %{from: from, marker: marker, ref: ref, timer: timer, buffer: <<>>}
+          pending = %{
+            from: from,
+            marker: marker,
+            ref: ref,
+            timer: timer,
+            buffer: Newbee.Truncate.Window.new(@max_exec_head_bytes, @max_exec_tail_bytes),
+            spill: spill_open("web_terminal")
+          }
+
           {:noreply, %{st | pending_exec: pending}}
         else
           {:reply, %{exit: 127, exit_code: 127, output: "终端进程已停止"}, st}
@@ -234,21 +248,22 @@ defmodule Newbee.Web.Terminal do
 
   def handle_info({:terminal_exec_timeout, ref}, %{pending_exec: %{ref: ref} = pending} = st) do
     if is_port(st.port) and Port.info(st.port), do: Port.command(st.port, <<3>>)
-    reply_pending(pending, %{exit: :timeout, exit_code: :timeout, output: trim_output(pending.buffer)})
+    reply_pending(pending, %{exit: :timeout, exit_code: :timeout, output: render_exec_output(pending)})
     {:noreply, %{st | pending_exec: nil}}
   rescue
     _ ->
-      reply_pending(pending, %{exit: :timeout, exit_code: :timeout, output: trim_output(pending.buffer)})
+      reply_pending(pending, %{exit: :timeout, exit_code: :timeout, output: render_exec_output(pending)})
       {:noreply, %{st | pending_exec: nil}}
   end
 
   def handle_info(_, st), do: {:noreply, st}
-
   @impl true
   def terminate(_reason, st) do
     st = flush_manual_context(st)
-    pending_output = if is_map(st.pending_exec), do: st.pending_exec.buffer, else: <<>>
-    reply_pending(st.pending_exec, %{exit: :closed, exit_code: :closed, output: trim_output(pending_output)})
+    pending = st.pending_exec
+    output = if is_map(pending), do: render_exec_output(pending), else: ""
+
+    reply_pending(pending, %{exit: :closed, exit_code: :closed, output: output})
     terminate_terminal_tree(st.os_pid, if(st.isolated?, do: st.group_pid, else: nil))
     close_port(st.port)
     :ok
@@ -369,7 +384,8 @@ defmodule Newbee.Web.Terminal do
     if line == "" do
       st
     else
-      capture = st.manual_context || %{commands: [], output: <<>>}
+      capture = st.manual_context || new_manual_capture()
+
       capture = %{capture | commands: Enum.take(capture.commands ++ [line], -8)}
       st |> Map.put(:manual_context, capture) |> schedule_manual_context_flush()
     end
@@ -379,8 +395,12 @@ defmodule Newbee.Web.Terminal do
 
   defp capture_manual_output(st, data) do
     capture = st.manual_context
-    output = trim_manual_context_output(capture.output <> data)
-    st |> Map.put(:manual_context, %{capture | output: output}) |> schedule_manual_context_flush()
+
+    # 手动上下文进 transcript，比命令输出更小气；同样只在真丢字节时才落盘 + 报截断。
+    window = Newbee.Truncate.Window.push(capture.window, data)
+    spill = spill_push(capture.spill, data)
+    st = %{st | manual_context: %{capture | window: window, spill: spill}}
+    schedule_manual_context_flush(st)
   end
 
   defp schedule_manual_context_flush(%{manual_context_timer: {timer, _token}} = st) do
@@ -396,8 +416,12 @@ defmodule Newbee.Web.Terminal do
 
   defp manual_context_text(nil), do: ""
 
-  defp manual_context_text(%{commands: commands, output: raw_output}) do
-    output = terminal_context_text(raw_output)
+  defp manual_context_text(%{commands: commands, window: window, spill: spill}) do
+    output =
+      window
+      |> Newbee.Truncate.Window.render(handle: manual_spill_handle(window, spill))
+      |> Map.fetch!(:text)
+      |> terminal_context_text()
 
     if commands == [] do
       ""
@@ -457,46 +481,138 @@ defmodule Newbee.Web.Terminal do
     |> String.replace(<<27>>, "")
   end
 
-  defp trim_manual_context_output(data) when byte_size(data) <= @max_manual_context_bytes, do: data
+  defp new_manual_capture do
+    %{
+      commands: [],
+      window: Newbee.Truncate.Window.new(@max_manual_context_head_bytes, @max_manual_context_tail_bytes),
+      spill: spill_open("web_terminal_manual")
+    }
+  end
 
-  defp trim_manual_context_output(data) do
-    head = div(@max_manual_context_bytes, 2)
-    binary_part(data, 0, head) <> "\n[终端输出过长，已保留首尾]\n" <> binary_part(data, byte_size(data) - head, head)
+  # 未丢字节就不必留对象（否则每次手动敲命令都会产生一个 spill 文件）。
+  defp manual_spill_handle(window, spill) do
+    if window.total <= @max_manual_context_head_bytes + @max_manual_context_tail_bytes do
+      spill_abort(spill)
+      nil
+    else
+      spill_finish(spill)
+    end
   end
 
   defp complete_pending_exec(%{pending_exec: nil} = st, _data), do: st
 
   defp complete_pending_exec(%{pending_exec: pending} = st, data) do
-    buffer = pending.buffer <> data
+    pending = %{
+      pending
+      | buffer: Newbee.Truncate.Window.push(pending.buffer, data),
+        spill: spill_push(pending.spill, data)
+    }
 
-    case :binary.match(buffer, pending.marker) do
-      :nomatch ->
-        %{st | pending_exec: %{pending | buffer: trim_output(buffer)}}
+    case exec_status(pending) do
+      {:ok, status} ->
+        cancel_timer(pending.timer)
+        output = render_exec_output(pending)
+        reply_pending(pending, %{exit: status, exit_code: status, output: output})
+        %{st | pending_exec: nil}
 
-      {position, _length} ->
-        after_marker = position + byte_size(pending.marker)
-        tail = binary_part(buffer, after_marker, byte_size(buffer) - after_marker)
-
-        case :binary.match(tail, <<7>>) do
-          :nomatch ->
-            %{st | pending_exec: %{pending | buffer: trim_output(buffer)}}
-
-          {status_length, _} ->
-            status_text = binary_part(tail, 0, status_length)
-
-            status =
-              case Integer.parse(status_text) do
-                {value, ""} -> value
-                _ -> 1
-              end
-
-            output = binary_part(buffer, 0, position)
-            cancel_timer(pending.timer)
-            reply_pending(pending, %{exit: status, exit_code: status, output: trim_output(output)})
-            %{st | pending_exec: nil}
-        end
+      :incomplete ->
+        %{st | pending_exec: pending}
     end
   end
+
+  # 结束标记 = ESC]777;newbee-done;<token>;<status> BEL，由 shell 在命令结束后打印。
+  #
+  # 先看 tail（正常情形：标记出现在最后一段），再回退看 head——若命令结束后
+  # 仍有超过 32KB 字节涌入（提示符刷屏、后台任务仍在写），标记会被挤出 tail 窗口，
+  # 此时它连同紧随其后的状态码一定落在 head 里。两处都不在才算未完成。
+  #
+  # BEL 必须到齐才算完整状态码，否则 "1" 可能是 "127" 的前缀，会提前结束命令。
+  defp exec_status(pending) do
+    [pending.buffer.tail, pending.buffer.head]
+    |> Enum.find_value(:incomplete, &status_in(&1, pending.marker))
+  end
+
+  defp status_in(region, marker) do
+    with {at, _len} <- match_or_missing(region, marker),
+         after_marker = at + byte_size(marker),
+         {bel, _} <- match_or_missing(region, <<7>>, after_marker) do
+      case Integer.parse(String.trim(binary_part(region, after_marker, bel - after_marker))) do
+        {value, ""} -> {:ok, value}
+        _ -> {:ok, 1}
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp match_or_missing(binary, pattern, from \\ 0) do
+    case :binary.match(binary, pattern, scope: {from, byte_size(binary) - from}) do
+      :nomatch -> :missing
+      found -> found
+    end
+  end
+
+  # 结束标记之前的输出才是命令输出：标记之后（含状态码与 BEL）的部分要丢掉。
+  # 其余按同一套「头尾预览 + 内容寻址落盘」渲染，标记里带回读句柄。
+  defp render_exec_output(pending) do
+    window =
+      pending.buffer
+      |> drop_after(pending.buffer.tail, pending.marker)
+      |> drop_after(pending.buffer.head, pending.marker)
+
+    Newbee.Truncate.Window.render(window, handle: exec_spill_handle(pending, window)).text
+  end
+
+  # 若该 region 里出现标记，就把这一 region 截到标记之前（其余 region 不动）。
+  defp drop_after(window, region, marker) do
+    case match_or_missing(region, marker) do
+      {at, _len} when region == window.tail -> %{window | tail: binary_part(region, 0, at)}
+      {at, _len} when region == window.head -> %{window | head: binary_part(region, 0, at)}
+      _ -> window
+    end
+  end
+
+  # 未丢字节就不必留对象（否则每条短命令都会产生一个 spill 文件）。
+  defp exec_spill_handle(pending, window) do
+    if window.total <= exec_keep_bytes() do
+      spill_abort(pending.spill)
+      nil
+    else
+      spill_finish(pending.spill)
+    end
+  end
+
+  defp exec_keep_bytes, do: @max_exec_head_bytes + @max_exec_tail_bytes
+
+  defp spill_open(source) do
+    case Newbee.Spill.open_stream(source: source) do
+      {:ok, handle} -> handle
+      {:error, _reason} -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp spill_push(nil, _data), do: nil
+  defp spill_push(handle, data), do: Newbee.Spill.push(handle, data)
+
+  defp spill_finish(nil), do: nil
+
+  defp spill_finish(handle) do
+    case Newbee.Spill.finish(handle) do
+      {:ok, info} -> info
+      {:error, _reason} -> nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _kind, _reason -> nil
+  end
+
+  defp spill_abort(nil), do: :ok
+  defp spill_abort(handle), do: Newbee.Spill.abort(handle)
 
   defp reply_pending(nil, _result), do: :ok
   defp reply_pending(%{from: from}, result), do: GenServer.reply(from, result)
@@ -517,13 +633,6 @@ defmodule Newbee.Web.Terminal do
   end
 
   defp normalize_dimension(_, _, _), do: {:error, :invalid_dimension}
-
-  defp trim_output(data) when byte_size(data) <= @max_exec_output_bytes, do: data
-
-  defp trim_output(data) do
-    head = div(@max_exec_output_bytes, 2)
-    binary_part(data, 0, head) <> "\n[输出过长，已保留首尾]\n" <> binary_part(data, byte_size(data) - head, head)
-  end
 
   # 累积终端输出到滚动缓冲（截断保尾部），供 WS 重连后回放，
   # 让"AI 在终端干了啥"对人可见、可回看。

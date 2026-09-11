@@ -9,12 +9,22 @@ defmodule Newbee.DEE.ResultTest do
     assert out =~ "✓"
   end
 
-  test "长输出被压缩，头尾保留" do
+  test "长输出被压缩，头尾保留，并给出可回读句柄" do
     big = String.duplicate("line\n", 10_000)
     out = Result.render(%{status: :ok, value: ":done", output: big})
+
     assert byte_size(out) < 10_000
-    assert out =~ "compressed"
+    assert out =~ "截断: 省略 "
+
+    # 标记自报的原文量 = 送进来的字节数（不再谎报）
+    original = byte_size(big <> "\n" <> ":done")
+    assert out =~ "原文 #{original} bytes"
     assert out =~ "line"
+
+    # 句柄可执行：读回的原文含被省略的中段
+    assert [id] = Newbee.Spill.handles_in(out)
+    assert {:ok, page} = Newbee.Spill.read(id, offset: 0, max_bytes: 4_096)
+    assert page.text == binary_part(big <> "\n:done", 0, byte_size(page.text))
   end
 
   test "错误渲染" do

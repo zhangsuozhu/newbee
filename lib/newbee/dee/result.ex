@@ -1,28 +1,30 @@
 defmodule Newbee.DEE.Result do
   @moduledoc """
-  结果压缩 (DESIGN §4.3)：回填给模型的输出默认做头尾截断，
-  长输出引导模型用 binding 或文件引用，而非全文塞回上下文。
+  结果回填的 token 控制 (DESIGN §6.2)：默认做头尾截断，但**截断不再销毁证据**。
+
+  被截掉的原文先按内容寻址落盘（`Newbee.Spill`），标记里回一个可执行的句柄
+  `Newbee.read("spill://<id>")`。旧实现只写"用 binding 变量或写文件后再局部读取"，
+  而 binding 里只剩残骸、也没有任何文件被写出来——那句话是做不到的：
+  长构建日志里唯一那条 `ERROR` 行会静默消失，模型只剩一个 `exit=2`。
   """
 
   @max_chars 8_000
   @head_ratio 0.6
 
-  @doc "压缩文本为 head+tail 形式，附行数统计。"
+  @doc """
+  压缩文本为 head+tail 形式。
+
+  超预算时切成预览 + 标记（含省略量、原文量与回读句柄）；未超预算时原样返回。
+  UTF-8 安全、整行对齐在 `Newbee.Truncate` 里统一处理。
+  """
   def compress(text, opts \\ []) when is_binary(text) do
     max = Keyword.get(opts, :max_chars, @max_chars)
 
-    if byte_size(text) <= max do
-      text
-    else
-      head = floor(max * @head_ratio)
-      tail = max - head
-      total_lines = text |> String.split("\n") |> length()
-
-      binary_part(text, 0, head) <>
-        "\n… [compressed: #{byte_size(text)} bytes, #{total_lines} lines; " <>
-        "用 binding 变量或写文件后再局部读取] …\n" <>
-        binary_part(text, byte_size(text) - tail, tail)
-    end
+    Newbee.Truncate.head_tail(text,
+      max_bytes: max,
+      head_ratio: @head_ratio,
+      source: "dee_result"
+    ).text
   end
 
   @doc "把求值结果 map 渲染成回填给模型的字符串。"
