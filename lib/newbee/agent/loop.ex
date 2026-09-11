@@ -1450,12 +1450,19 @@ defmodule Newbee.Agent.Loop do
   end
 
   # 单张图片字节上限来自模型能力（capabilities.imageMaxBytes），缺省沿用模块默认。
-  defp image_opts(state) do
-    case get_in(state.client, [:capabilities, :image_max_bytes]) do
+  # 用 Map.get/2 而非 get_in/2：client 是结构体，Elixir 1.20 起对未实现 Access 的结构体
+  # 调 get_in/2 会抛 UndefinedFunctionError（Access.get -> Client.fetch/2 未定义）。
+  # 该异常发生在 handle_call 里，会让内核直接崩溃、会话被重启并静默吞掉用户排队的图片。
+  defp image_opts(%{client: client}) when is_map(client) do
+    caps = Map.get(client, :capabilities)
+
+    case Map.get(caps || %{}, :image_max_bytes) do
       n when is_integer(n) and n > 0 -> [max_bytes: n]
       _ -> []
     end
   end
+
+  defp image_opts(_state), do: []
 
   defp call_client(fun, messages, on_text, on_reasoning) do
     case :erlang.fun_info(fun, :arity) do
