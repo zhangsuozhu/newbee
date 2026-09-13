@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>newbee · 蜂群（企业微信式）</title>
+<style>
+:root{
+  --nb-font:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
+  --nb-mono:'SF Mono','JetBrains Mono',Consolas,Menlo,monospace;
+  --nb-bg:#0f1115;--nb-bg-panel:#161a21;--nb-bg-elev:#1d232d;--nb-border:#2a313c;
+  --nb-label-1:#e8ecf1;--nb-label-3:#7d8590;--nb-bubble:#26324a;--nb-accent:#6c8cff;
+  --nb-accent-soft:#a5bffc;--nb-green:#3fb950;--nb-red:#f85149;--nb-warn:#e5a13d;
+  --nb-radius-bubble:22px;--nb-side:300px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--nb-font);background:var(--nb-bg);color:var(--nb-label-1);font-size:14px;line-height:1.55}
+.app{display:grid;grid-template-columns:var(--nb-side) 1fr;height:100vh;overflow:hidden}
+button{font-family:inherit;cursor:pointer}
+code{font-family:var(--nb-mono)}
+
+/* ========== 左侧：蜂群 + 会话列表 ========== */
+#side{background:var(--nb-bg-panel);border-right:1px solid var(--nb-border);display:flex;flex-direction:column;overflow:hidden}
+.org-switch{padding:12px 14px;border-bottom:1px solid var(--nb-border)}
+.org-btn{width:100%;display:flex;align-items:center;gap:9px;background:var(--nb-bg-elev);border:1px solid var(--nb-border);border-radius:10px;padding:9px 12px;color:var(--nb-label-1);font-size:14px;font-weight:600}
+.org-btn:hover{border-color:var(--nb-accent)}
+.org-btn .av{width:26px;height:26px;border-radius:7px;background:var(--nb-accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px}
+.org-btn .car{margin-left:auto;color:var(--nb-label-3);font-size:11px}
+.org-menu{display:none;margin-top:6px;background:var(--nb-bg-elev);border:1px solid var(--nb-border);border-radius:10px;overflow:hidden}
+.org-menu.show{display:block}
+.org-item{display:flex;align-items:center;gap:9px;padding:9px 12px;font-size:13px;cursor:pointer}
+.org-item:hover{background:var(--nb-bubble)}
+.org-item .av{width:22px;height:22px;border-radius:6px;background:var(--nb-bubble);display:flex;align-items:center;justify-content:center}
+.org-item .role{margin-left:auto;font-size:10px;color:var(--nb-label-3)}
+.org-new{padding:9px 12px;font-size:12.5px;color:var(--nb-accent);border-top:1px solid var(--nb-border);cursor:pointer}
+.sec-label{padding:10px 14px 4px;font-size:11px;color:var(--nb-label-3);letter-spacing:.4px;display:flex;justify-content:space-between;align-items:center}
+.sec-label .add{color:var(--nb-accent);background:none;border:none;font-size:14px}
+#convList{flex:1;overflow-y:auto;padding:2px 8px}
+.conv{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:10px;cursor:pointer;position:relative}
+.conv:hover{background:var(--nb-bg-elev)}
+.conv.active{background:var(--nb-bg-elev);box-shadow:inset 2px 0 0 var(--nb-accent)}
+.avta{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+.avta.ai{background:rgba(108,140,255,.18)}
+.avta.human{background:rgba(229,161,61,.18)}
+.avta.grp{background:rgba(63,185,80,.16)}
+.conv .meta{min-width:0;flex:1}
+.conv .nm{font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:6px}
+.conv .pv{font-size:11.5px;color:var(--nb-label-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kindtag{font-size:9px;padding:0 4px;border-radius:4px;border:1px solid var(--nb-warn);color:var(--nb-warn)}
+.kindtag.ai{border-color:var(--nb-accent);color:var(--nb-accent-soft)}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--nb-green);flex-shrink:0}
+.live-dot.working{animation:blink 1.2s infinite}
+@keyframes blink{50%{opacity:.3}}
+.drill-into{margin-left:4px;background:none;border:1px solid var(--nb-border);color:var(--nb-label-3);border-radius:6px;font-size:10px;padding:1px 6px}
+.drill-into:hover{color:var(--nb-accent-soft);border-color:var(--nb-accent)}
+
+/* ========== 右侧：对话区 ========== */
+#right{display:flex;flex-direction:column;overflow:hidden;background:var(--nb-bg)}
+#crumb{display:flex;align-items:center;gap:8px;padding:10px 18px;border-bottom:1px solid var(--nb-border);background:var(--nb-bg-panel);font-size:13px}
+#crumb .back{background:none;border:1px solid var(--nb-border);color:var(--nb-label-1);border-radius:8px;padding:4px 11px;font-size:12px;display:none}
+#crumb .back.show{display:inline-flex}
+#crumb .back:hover{border-color:var(--nb-accent)}
+#crumb .who{font-weight:600}
+#crumb .sub{color:var(--nb-label-3);font-size:12px}
+#crumb .invite{margin-left:auto;background:none;border:1px solid var(--nb-border);color:var(--nb-accent-soft);border-radius:8px;padding:4px 11px;font-size:12px}
+#crumb .invite:hover{border-color:var(--nb-accent)}
+#view{flex:1;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:14px}
+.mrow{display:flex}
+.mrow.me{justify-content:flex-end}
+.bub{max-width:72%;padding:10px 15px;border-radius:var(--nb-radius-bubble)}
+.mrow.me .bub{background:var(--nb-accent);color:#fff;border-bottom-right-radius:6px}
+.mrow.oth .bub{background:var(--nb-bubble);border-bottom-left-radius:6px}
+.bub .w{font-size:10.5px;color:var(--nb-label-3);margin-bottom:3px}
+.mrow.me .bub .w{color:rgba(255,255,255,.65)}
+.sysline{align-self:center;font-size:12px;color:var(--nb-label-3);background:var(--nb-bg-elev);border:1px dashed var(--nb-border);border-radius:999px;padding:4px 13px}
+/* 工作轨迹（一对一潜入 / 深钻视图） */
+.trace-hint{align-self:center;font-size:11.5px;color:var(--nb-label-3);padding:2px 0}
+.toolcall{background:var(--nb-bg-panel);border:1px solid var(--nb-border);border-radius:12px;padding:9px 13px;max-width:80%;font-size:12.5px}
+.toolcall .th{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.toolcall .tn{font-family:var(--nb-mono);font-size:11.5px;color:var(--nb-accent-soft);background:var(--nb-bg-elev);padding:1px 7px;border-radius:5px}
+.toolcall .ts{margin-left:auto;font-size:11px}
+.toolcall .tb{color:var(--nb-label-3);font-family:var(--nb-mono);font-size:11.5px;white-space:pre-wrap}
+.ok{color:var(--nb-green)}.err{color:var(--nb-red)}.run{color:var(--nb-warn)}
+.msgbub{background:var(--nb-bubble);border-radius:var(--nb-radius-bubble);border-bottom-left-radius:6px;padding:9px 14px;max-width:80%;font-size:13.5px}
+/* composer */
+#comp{border-top:1px solid var(--nb-border);padding:12px 16px;background:var(--nb-bg-panel)}
+.quick{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:9px}
+.chip{background:var(--nb-bg-elev);border:1px solid var(--nb-border);color:var(--nb-label-1);border-radius:999px;padding:5px 12px;font-size:12px}
+.chip:hover{border-color:var(--nb-accent);color:var(--nb-accent-soft)}
+.irow{display:flex;gap:9px;align-items:flex-end}
+.irow textarea{flex:1;background:var(--nb-bg-elev);border:1px solid var(--nb-border);border-radius:14px;padding:11px 15px;color:var(--nb-label-1);font:inherit;font-size:14px;resize:none;min-height:46px;max-height:120px;outline:none}
+.irow textarea:focus{border-color:var(--nb-accent)}
+.snd{background:var(--nb-accent);color:#fff;border:none;border-radius:12px;width:46px;height:46px;font-size:18px}
+.snd:hover{filter:brightness(1.1)}
+</style>
+</head>
+<body>
+<div role="note" style="padding:10px 16px;background:#332b16;color:#fff0bf;font-size:14px">历史交互原型：仅供旧版样式参考。当前方案见 <a href="bee-colony-collaboration-design.md" style="color:inherit;text-decoration:underline">协作系统设计 v2</a>；此页未实现 v2 的执行控制与工作流程。</div>
+<div class="app">
+
+  <!-- 左：蜂群切换 + 会话列表 -->
+  <aside id="side">
+    <div class="org-switch">
+      <button class="org-btn" onclick="toggleOrg(event)">
+        <span class="av">🐝</span> <span id="orgName">重构蜂群</span> <span class="car">▾</span>
+      </button>
+      <div class="org-menu" id="orgMenu">
+        <div class="org-item" onclick="switchOrg('重构蜂群',event)"><span class="av">🐝</span> 重构蜂群 <span class="role">我是 Queen</span></div>
+        <div class="org-item" onclick="switchOrg('文档蜂群',event)"><span class="av">🐝</span> 文档蜂群 <span class="role">我是成员</span></div>
+        <div class="org-item" onclick="switchOrg('压测蜂群',event)"><span class="av">🐝</span> 压测蜂群 <span class="role">我是 Queen</span></div>
+        <div class="org-new" onclick="alert('在对话里说"建个群做X"即可')">＋ 建个新群…</div>
+      </div>
+    </div>
+
+    <div class="sec-label">对话 <button class="add" title="拉人或拉 AI 进群" onclick="alert('生成邀请串给人 / 或选个 AI 能力包')">＋</button></div>
+    <div id="convList">
+      <!-- 群 -->
+      <div class="conv active" data-k="group" onclick="openConv(this,'重构蜂群 · 群聊','group')">
+        <div class="avta grp">🐝</div>
+        <div class="meta"><div class="nm">重构蜂群（群）</div><div class="pv">bob：token 刷新那块我建议…</div></div>
+      </div>
+      <div class="sec-label" style="padding-left:10px">工蜂（人 / AI）</div>
+      <!-- 人 -->
+      <div class="conv" data-k="dm" onclick="openConv(this,'bob','dm')">
+        <div class="avta human">🧑</div>
+        <div class="meta"><div class="nm">bob <span class="kindtag">人</span></div><div class="pv">好的，我看看 login 那块</div></div>
+      </div>
+      <!-- AI，在干活 -->
+      <div class="conv" data-k="dm" onclick="openConv(this,'auth-bot','dm')">
+        <div class="avta ai">🤖</div>
+        <div class="meta"><div class="nm">auth-bot <span class="kindtag ai">AI</span><span class="live-dot working" title="正在干活"></span></div><div class="pv">正在重构 login 模块…</div></div>
+        <button class="drill-into" title="潜入它的工作轨迹" onclick="drillIn(event,'auth-bot')">潜入 ▾</button>
+      </div>
+      <div class="conv" data-k="dm" onclick="openConv(this,'data-bot','dm')">
+        <div class="avta ai">🤖</div>
+        <div class="meta"><div class="nm">data-bot <span class="kindtag ai">AI</span></div><div class="pv">空闲</div></div>
+      </div>
+      <div class="conv" data-k="dm" onclick="openConv(this,'charlie','dm')">
+        <div class="avta human">🧑</div>
+        <div class="meta"><div class="nm">charlie <span class="kindtag">人</span></div><div class="pv">（另一个蜂群来的）</div></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 右：对话 / 工作轨迹 -->
+  <main id="right">
+    <style>
+      #crumb{display:flex;align-items:center;gap:8px}
+      .breadcrumbs{display:flex;align-items:center;gap:5px;min-width:0}
+      .crumb-link{background:none;border:0;color:var(--nb-accent-soft);font-size:13px;padding:4px 3px;cursor:pointer;white-space:nowrap}
+      .crumb-link.active{color:var(--nb-label-1);font-weight:600;cursor:default}
+      .crumb-sep{color:var(--nb-label-3);font-size:12px}
+      .drill-action{margin-left:8px;background:var(--nb-bg-elev);border:1px solid var(--nb-border);color:var(--nb-accent-soft);border-radius:6px;padding:2px 7px;font-size:11px}
+      .drill-action:hover{border-color:var(--nb-accent)}
+      .handoff{border-left:2px solid var(--nb-warn);padding-left:10px;color:var(--nb-label-3);font-size:12px}
+    </style>
+    <div id="crumb">
+      <button class="back" id="backBtn" onclick="goBack()">‹ 返回</button>
+      <div class="breadcrumbs" id="breadcrumbs">
+        <button class="crumb-link active" onclick="crumbGo('group')">重构蜂群 · 群聊</button>
+      </div>
+      <span class="sub" id="crumbSub">3 只工蜂在线</span>
+      <button class="invite" onclick="alert('邀请串：newbee --join garden://…?k=7f3a…\n发给人；或从 AI 能力包选一个加入')">＋ 拉人 / 拉 AI</button>
+    </div>
+
+    <div id="view"></div>
+
+    <div id="comp">
+      <div class="quick" id="quickBar"></div>
+      <div class="irow">
+        <textarea id="box" placeholder="说点什么…"></textarea>
+        <button class="snd" onclick="send()">→</button>
+      </div>
+    </div>
+  </main>
+</div>
+<script>
+var view=document.getElementById('view'),box=document.getElementById('box');
+var state={mode:'group',stack:[],path:['group']};
+
+/* ---------- 视图渲染 ---------- */
+function esc(s){return s.replace(/</g,'&lt;');}
+function bubble(cls,who,html){return '<div class="mrow '+cls+'"><div class="bub"><div class="w">'+who+'</div>'+html+'</div></div>';}
+function sysline(t){return '<div class="sysline">'+t+'</div>';}
+function traceHint(t){return '<div class="trace-hint">'+t+'</div>';}
+function msgbub(t){return '<div class="msgbub">'+t+'</div>';}
+function tool(tn,status,body){var cl=status==='ok'?'ok':(status==='run'?'run':'err');var stxt=status==='ok'?'✓ ok':(status==='run'?'● 运行中':'✗ 失败');return '<div class="toolcall"><div class="th"><span class="tn">'+tn+'</span><span class="ts '+cl+'">'+stxt+'</span></div><div class="tb">'+body+'</div></div>';}
+function quick(chips){document.getElementById('quickBar').innerHTML=chips.map(function(c){return '<button class="chip" onclick="fill(\''+c+'\')">'+c+'</button>';}).join('');}
+/* 群聊视图：大家的对话 */
+function renderGroup(){
+ state.mode='group'; state.path=['group']; setCrumbs(); document.getElementById('crumbSub').textContent='3 只工蜂在线'; document.getElementById('backBtn').classList.remove('show');
+ view.innerHTML=sysline('群聊：所有人/AI 的公共对话')+bubble('oth','bob 🧑','login 模块我看了，建议把 token 刷新抽出来。')+bubble('oth','auth-bot 🤖','收到，我抽离 token 刷新逻辑。<span class="sigbadge" style="background:rgba(108,140,255,.18);color:var(--nb-accent-soft);font-size:10px;padding:1px 6px;border-radius:4px">report</span>')+bubble('me','你','好，抽完给我看下。')+bubble('oth','data-bot 🤖','我这边测到一个缓存方案不错 <span class="sigbadge" style="background:rgba(63,185,80,.18);color:var(--nb-green);font-size:10px;padding:1px 6px;border-radius:4px">recommend 0.8</span>')+traceHint('—— 群消息；点 AI 的“潜入”可看轨迹，也可以直接进入一对一 ——'); quick(['进展如何','把任务分给 data-bot','你会做什么']);
+}
+/* 一对一：人只显示对话，AI 显示实时工作轨迹 */
+function renderDM(name){
+ state.mode='dm'; state.path=['group','dm']; setCrumbs(); document.getElementById('crumbSub').textContent='一对一 · 他的工作轨迹实时可见'; document.getElementById('backBtn').classList.remove('show');
+ if(name==='auth-bot'){view.innerHTML=sysline('与 auth-bot 一对一 · 它的工作轨迹直接显示在这里')+bubble('me','你','重构 login 模块')+traceHint('auth-bot 开始干活 · 工具调用实时上屏')+tool('edit','ok','auth/login.ex\n+ 抽离 refresh_token/0 到新模块')+tool('shell','ok','mix test test/auth  →  14 passed')+tool('shell','run','mix credo --strict  …运行中')+msgbub('login 模块重构完成，已自测通过。<b>待 Queen 验收</b>')+traceHint('—— 你可以直接在下面接着指挥它 ——'); quick(['做得好，验收','credo 报什么','继续重构 session 模块']);}
+ else if(name==='bob'){view.innerHTML=sysline('与 bob 一对一（人）· 他接的活/说的意见在这里')+bubble('me','你','login 模块帮忙评审一下')+bubble('oth','bob 🧑','看了，token 刷新建议抽出来，其余 OK')+traceHint('bob 是人，不显示工具轨迹，只显示他的回复/产出'); quick(['好，让 auth-bot 按你说的改','还有别的意见吗']);}
+ else {view.innerHTML=sysline('与 '+name+' 一对一')+traceHint('对方暂无工作轨迹'); quick(['在吗','帮我做点事']);}
+}
+function setCrumbs(){
+ var el=document.getElementById('breadcrumbs'),html='';
+ state.path.forEach(function(p,i){if(i)html+='<span class="crumb-sep">›</span>';var label=p==='group'?'重构蜂群 · 群聊':p==='dm'?'auth-bot':p==='task'?'task_31 · 重构 login':'子任务 · token 刷新';html+='<button class="crumb-link '+(i===state.path.length-1?'active':'')+'" onclick="crumbGo('+i+')">'+label+'</button>';}); el.innerHTML=html;
+}
+function crumbGo(index){if(index===0){state.stack=[];renderGroup();return;} if(index===1){state.stack=[];renderDM('auth-bot');return;} if(index===2){state.path=['group','dm','task'];renderDrill('auth-bot','task');}}
+/* 深钻：可交互、多层任务、面包屑可返回 */
+function drillIn(e,name){if(e)e.stopPropagation();state.stack.push(state.mode);state.path=['group','dm'];renderDrill(name,'task');}
+function enterSubtask(){state.stack.push(state.mode);state.path=['group','dm','task','subtask'];renderDrill('auth-bot','subtask');}
+function renderDrill(name,level){state.mode='drill';setCrumbs();document.getElementById('crumbSub').textContent='可交互 · 当前 Bee 可直接接收指令';document.getElementById('backBtn').classList.add('show');
+ if(level==='subtask'){view.innerHTML=sysline('🔍 task_31 › 子任务：抽离 token 刷新逻辑')+tool('edit','ok','auth/token_refresh.ex\n+ 新建 refresh/0')+tool('shell','run','mix test test/auth/token_refresh  …运行中')+'<div class="handoff">这是 auth-bot 派出的子任务。你现在可以直接告诉它修改方向，或点击面包屑返回上一级。</div>'+traceHint('—— 当前层级：子任务 · token 刷新 ——');quick(['把测试补上','暂停这个子任务','返回 task_31']);}
+ else {view.innerHTML=sysline('🔍 深钻：'+name+' › task_31 重构 login（实时，可操作）')+tool('shell','ok','git status  →  clean')+tool('edit','ok','auth/login.ex  →  +refresh_token')+'<div class="toolcall"><div class="th"><span class="tn">task_31</span><button class="drill-action" onclick="enterSubtask()">进入子任务 ›</button></div><div class="tb">auth-bot 已拆出 token 刷新子任务</div></div>'+tool('shell','ok','mix test  →  14 passed')+tool('shell','run','mix credo --strict  …')+traceHint('—— 底部可直接插话，指令会发给当前 Bee；也可以继续下钻 ——');quick(['让它加快点','先停一下','进入 token 刷新子任务']);} view.scrollTop=0;}
+function goBack(){if(state.path.length>1)crumbGo(state.path.length-2);else renderGroup();}
+/* 列表交互 */
+function openConv(el,name,k){document.querySelectorAll('.conv').forEach(function(c){c.classList.remove('active');});el.classList.add('active');state.stack=[];if(k==='group')renderGroup();else renderDM(name);}
+
+function toggleOrg(e){e.stopPropagation();document.getElementById('orgMenu').classList.toggle('show');}
+document.addEventListener('click',function(){var m=document.getElementById('orgMenu');if(m)m.classList.remove('show');});
+function switchOrg(name,e){e.stopPropagation();
+  document.getElementById('orgName').textContent=name;
+  document.getElementById('orgMenu').classList.remove('show');
+  renderGroup();
+}
+function fill(t){box.value=t;box.focus();}
+function send(){
+  var t=box.value.trim();if(!t)return;
+  view.insertAdjacentHTML('beforeend',bubble('me','你',esc(t)));
+  var reply=route(t);
+  setTimeout(function(){
+    if(reply) view.insertAdjacentHTML('beforeend',bubble('oth',state.mode==='group'?'Colony':'对方',reply));
+    view.scrollTop=view.scrollHeight;
+  },300);
+  box.value='';view.scrollTop=view.scrollHeight;
+}
+function route(t){
+  if(/你会做什么|功能|帮助/.test(t))return '我能：派活「帮我做X」· 问「进展如何」· 拉人「加某人」· 验收「这个通过」· 移出/退出/建群。点上方快捷标签直接用。';
+  if(/进展|怎么样/.test(t))return '群进度 80%，auth-bot 在做 session 模块，login 待你验收。';
+  if(/验收|通过|做得好/.test(t))return '已验收 ✓。';
+  if(/加|拉.*进|邀请/.test(t))return '邀请串已生成：newbee --join garden://…?k=7f3a…（发给人）；拉 AI 就从能力包选一个加入。';
+  return null;
+}
+box.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}});
+
+renderGroup();
+</script>
+</body>
+</html>

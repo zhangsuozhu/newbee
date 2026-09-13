@@ -1,0 +1,792 @@
+/* 蜂群前端样式。只放「主界面 style.css 没有、蜂群特有」的部分：
+   主界面组件（.session-item / .msg-user / .composer-card / .btn-allow …）继续复用，
+   这里定义蜂群自己的层级：动态行、工作卡、成果卡、快捷条、待验收条。
+   三层结构：容器（bg-panel+边框）→ 卡片（圆角+边框+不透明底）→ 行内（无边）。
+   ——圆角：8（控件）/12（卡片）/16（对话气泡）
+   ——字号：15 正文 / 13 次要 / 11.5 标注
+   ——颜色：只有 --nb-accent 一个强调色；绿/红/黄只表达状态。 */
+
+/* 自己那一项只做标识，不参与对话/深钻，视觉上也不必像可点。 */
+.colony-home .session-item.session-self { cursor: default; opacity: .78; }
+.colony-home .session-item.session-self .sess-dot { background: var(--nb-label-caption); }
+
+/* ══ 顶部标题 ══ */
+.topbar-head { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.topbar-head .session-title { flex: none; padding: 2px 6px; margin-left: -6px; }
+.session-meta {
+  padding-left: 2px; font: 11.5px/1.4 var(--nb-mono);
+  color: var(--nb-label-caption); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.session-meta:empty { display: none; }
+.colony-home #topbar { gap: 8px; }
+
+/* ══ 面包屑（标题下的一行小字）══ */
+.colony-sub {
+  padding: 0 28px 4px;
+  font: 11.5px/1.6 var(--nb-mono);
+  color: var(--nb-label-caption);
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  min-height: 0;
+}
+.colony-sub:empty { display: none; }
+.colony-sub .crumb-link {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--nb-label-3); font: inherit;
+}
+.colony-sub .crumb-link:hover { color: var(--nb-accent); }
+.colony-sub .crumb-link.active { color: var(--nb-label-1); font-weight: 600; }
+.colony-sub .crumb-sep { color: var(--nb-label-caption); opacity: .55; }
+
+/* ══ 待验收条：一条横幅，不用主界面 permission-bar 的警示配色 ══ */
+.review-strip {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 4px; padding: 9px 14px;
+  background: color-mix(in srgb, var(--nb-accent) 9%, var(--nb-bg-panel));
+  border-top: 1px solid var(--nb-border);
+  border-bottom: 1px solid var(--nb-border);
+}
+.review-strip.hidden { display: none; }
+.review-ico { flex: none; font-size: 14px; opacity: .9; }
+.review-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.review-title { font-size: 13px; color: var(--nb-label-1); font-weight: 600; }
+.review-items {
+  font: 11.5px/1.45 var(--nb-mono); color: var(--nb-label-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.review-btn {
+  flex: none; padding: 5px 13px; font-size: 12.5px; font-weight: 600;
+  color: var(--nb-accent); background: transparent;
+  border: 1px solid color-mix(in srgb, var(--nb-accent) 45%, transparent);
+  border-radius: 8px; cursor: pointer;
+  transition: background var(--nb-dur), color var(--nb-dur);
+}
+.review-btn:hover { background: color-mix(in srgb, var(--nb-accent) 14%, transparent); }
+
+/* ══ 消息发送者一行 ══ */
+.msg-from {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 5px; font: 11px/1.4 var(--nb-mono);
+  color: var(--nb-label-caption);
+}
+.msg-from .sess-dot { width: 6px; height: 6px; }
+.msg-from .from-name { color: var(--nb-label-2); font-weight: 600; }
+.msg-from .from-kind { color: var(--nb-label-caption); }
+
+/* ══ 动态行（lifecycle / command / signal / tool / dispatch）══
+   群里大量出现的状态更新：不套卡片，做成一行时间线，减少纵向噪音。 */
+.msg-tool {
+  display: flex; flex-direction: column;
+  background: transparent; border: 0; border-left: 2px solid var(--nb-border);
+  border-radius: 0; margin: 0; padding: 0 0 0 10px;
+font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
+}
+.msg-tool .tool-head {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 2px 0; background: none;
+  color: var(--nb-label-3); cursor: pointer;
+}
+.msg-tool .kind-dot {
+  flex: none; align-self: center;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--nb-label-caption); opacity: .75;
+}
+.msg-tool .tool-head .card-kind {
+  flex: none; color: var(--nb-label-3); font-size: 11.5px;
+}
+.msg-tool .tool-head .diffstat {
+  color: var(--nb-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--nb-font);
+}
+.msg-tool .tool-head .tool-dur { margin-left: auto; flex: none; }
+.msg-tool .tool-result {
+  border: 0; padding: 3px 0 5px; background: none;
+  color: var(--nb-label-caption); max-height: 200px;
+}
+.msg-tool .tool-result[hidden] { display: none; }
+.msg-tool .msg-time { margin: 0 0 4px; }
+/* 承接「工作」的横向分隔：动态多了以后仍能分辨断点 */
+#flow > .msg-tool + .msg-tool { margin-top: -12px; }
+
+/* ══ 工作卡 ══ */
+.work-card {
+  border: 1px solid var(--nb-border); border-left: 3px solid var(--nb-accent);
+  border-radius: 12px; background: var(--nb-bg-panel);
+  padding: 0; overflow: hidden;
+}
+.work-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px 9px;
+}
+.work-dot {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--nb-label-caption);
+}
+.work-dot.accent { background: var(--nb-accent); animation: nb-pulse 1.4s var(--nb-ease) infinite; }
+.work-dot.ok { background: var(--nb-green); }
+.work-dot.bad { background: var(--nb-red); }
+.work-title {
+  flex: 1; min-width: 0; font-family: var(--nb-font); font-size: 13.5px; font-weight: 600;
+  color: var(--nb-label-1); line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.work-time { flex: none; font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); }
+.work-body { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 5px; }
+.work-meta { display: flex; gap: 8px; font-size: 12.5px; line-height: 1.55; }
+.work-label { flex: none; color: var(--nb-label-caption); min-width: 34px; }
+.work-value { min-width: 0; color: var(--nb-label-2); overflow-wrap: anywhere; }
+.work-desc { color: var(--nb-label-2); font-size: 13px; line-height: 1.6; }
+.work-desc.md > :first-child { margin-top: 0; }
+.work-desc.md > :last-child { margin-bottom: 0; }
+.work-next {
+  display: flex; gap: 8px; margin-top: 3px;
+  padding: 1px 0 1px 9px; flex-wrap: wrap;
+  border-left: 2px solid color-mix(in srgb, var(--nb-accent) 55%, transparent);
+  font-size: 12.5px; line-height: 1.55;
+}
+.work-next .work-label { color: var(--nb-label-3); }
+.work-next-text { flex: 1 1 0; min-width: 0; color: var(--nb-label-1); overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
+.work-ask {
+  margin-top: 2px; padding: 6px 9px; border-radius: 8px; font-size: 12.5px;
+  color: var(--nb-warn); background: color-mix(in srgb, var(--nb-warn) 10%, transparent);
+}
+
+/* ══ 成果卡 ══ */
+.msg-tool.honey-card, .msg-tool:has(.honey-result) {
+  border: 1px solid color-mix(in srgb, var(--nb-green) 30%, var(--nb-border));
+  border-left: 3px solid var(--nb-green);
+  border-radius: 12px; background: var(--nb-bg-panel); padding: 0; overflow: hidden;
+}
+.msg-tool .card-kind.kind-honey { color: var(--nb-green); font-weight: 600; }
+.honey-result {
+  padding: 4px 12px 10px; border: 0;
+  color: var(--nb-label-2); white-space: normal; word-break: break-word;
+  font-family: var(--nb-font); font-size: 13.5px; line-height: 1.65;
+}
+.honey-result > :first-child { margin-top: 0; }
+.honey-result > :last-child { margin-bottom: 0; }
+.honey-result.clamped { max-height: 260px; overflow: hidden; position: relative; }
+.honey-result.clamped::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 56px;
+  background: linear-gradient(transparent, var(--nb-bg-panel));
+}
+.md-more {
+  margin: 0 12px 8px; padding: 4px 0; width: fit-content;
+  background: none; border: 0; cursor: pointer;
+  color: var(--nb-accent); font: 12px/1.5 var(--nb-font);
+}
+.md-more:hover { text-decoration: underline; }
+.honey-checks { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
+.honey-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 9px 12px; border-top: 1px solid var(--nb-border); background: var(--nb-bg-panel); }
+.honey-actions .btn-allow, .honey-actions .btn-deny { padding: 4px 14px; font-size: 12.5px; }
+.honey-actions:empty { display: none; }
+.work-context { padding: 8px 12px; color: var(--nb-label-caption); font-size: 12px; border-top: 1px solid var(--nb-border); }
+.work-context summary { cursor: pointer; }
+.work-context pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 340px; overflow: auto; }
+
+/* ══ 状态小徽章（信号种类 / 成果状态 / 任务状态）══ */
+.chip-mini {
+  flex: none; font: 10.5px/1.5 var(--nb-mono); padding: 0 6px; border-radius: 6px;
+  border: 1px solid var(--nb-border); color: var(--nb-label-3);
+  background: var(--nb-bg-panel); white-space: nowrap;
+}
+.chip-mini.ok { color: var(--nb-green); border-color: color-mix(in srgb, var(--nb-green) 45%, transparent); background: color-mix(in srgb, var(--nb-green) 10%, transparent); }
+.chip-mini.bad { color: var(--nb-red); border-color: color-mix(in srgb, var(--nb-red) 45%, transparent); background: color-mix(in srgb, var(--nb-red) 10%, transparent); }
+.chip-mini.warn { color: var(--nb-warn); border-color: color-mix(in srgb, var(--nb-warn) 45%, transparent); background: color-mix(in srgb, var(--nb-warn) 10%, transparent); }
+.chip-mini.accent { color: var(--nb-accent); border-color: color-mix(in srgb, var(--nb-accent) 40%, transparent); background: color-mix(in srgb, var(--nb-accent) 10%, transparent); }
+
+/* ══ 深钻：子任务列表 ══ */
+.drill-children { display: flex; flex-direction: column; gap: 5px; margin: 2px 0 4px; }
+.drill-child {
+  max-width: var(--nb-content-w); width: 100%;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border: 1px solid var(--nb-border); border-radius: 10px;
+  background: var(--nb-bg-panel); cursor: pointer; font-size: 13px; color: var(--nb-label-1);
+}
+.drill-child:hover { border-color: var(--nb-accent); }
+.drill-child .child-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drill-child .child-caret { color: var(--nb-label-caption); }
+.drill-child .chip-mini { flex: none; }
+
+/* ══ 一对一：Bee 头卡里的任务 ══ */
+.bee-tasks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.bee-task {
+  font: 12px/1.6 var(--nb-mono); padding: 1px 8px; border-radius: 8px;
+  border: 1px solid var(--nb-border); background: var(--nb-bg-panel);
+  color: var(--nb-label-2); cursor: pointer;
+}
+.bee-task:hover { border-color: var(--nb-accent); color: var(--nb-label-1); }
+.bee-task-more { font: 11px/1.6 var(--nb-mono); color: var(--nb-label-caption); align-self: center; }
+.bee-task-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.bee-task-actions .btn-ghost {
+  font-size: 12px; padding: 2px 9px; border: 1px solid var(--nb-border);
+  border-radius: 8px; color: var(--nb-label-3);
+}
+.bee-task-actions .btn-ghost:hover { color: var(--nb-label-1); border-color: var(--nb-accent); }
+.bee-task-history { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.bee-task-history[hidden] { display: none; }
+.bee-task-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 10px; cursor: pointer; text-align: left;
+  border: 1px solid var(--nb-border); border-radius: 10px;
+  background: var(--nb-bg-panel); color: var(--nb-label-1); font-size: 12.5px;
+}
+.bee-task-row:hover { border-color: var(--nb-accent); }
+.bee-task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bee-task-time { font: 10.5px/1.4 var(--nb-mono); color: var(--nb-label-caption); white-space: nowrap; }
+
+/* ══ 输入区上方：快捷指令（一行，手机端可横滑）+ 发往哪里 ══ */
+#composer { display: flex; flex-direction: column; }
+.colony-quick {
+  max-width: var(--nb-content-w); margin: 0 auto 7px; width: 100%;
+  display: flex; align-items: center; gap: 6px; flex-wrap: nowrap;
+  overflow-x: auto; scrollbar-width: none;
+}
+.colony-quick::-webkit-scrollbar { display: none; }
+.colony-quick:empty { display: none; }
+.chip-btn {
+  flex: none; display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--nb-border); background: var(--nb-bg-panel);
+  color: var(--nb-label-2); font: 12.5px/1.4 var(--nb-font);
+  cursor: pointer; white-space: nowrap;
+  transition: border-color var(--nb-dur), color var(--nb-dur), background var(--nb-dur);
+}
+.chip-btn:hover { color: var(--nb-label-1); border-color: var(--nb-accent); }
+.chip-btn .chip-ico { font-size: 12px; opacity: .85; line-height: 1; }
+.chip-btn.primary {
+  color: var(--nb-accent); border-color: color-mix(in srgb, var(--nb-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--nb-accent) 10%, transparent);
+}
+.chip-btn.primary:hover { background: color-mix(in srgb, var(--nb-accent) 18%, transparent); }
+.chip-btn.danger {
+  margin-left: auto; color: var(--nb-label-3);
+  border-style: dashed;
+}
+.chip-btn.danger:hover { color: var(--nb-red); border-color: color-mix(in srgb, var(--nb-red) 55%, transparent); }
+.chip-btn[hidden] { display: none; }
+.colony-scope { flex: none; margin-left: auto; font: 11.5px/1.4 var(--nb-mono); color: var(--nb-label-caption); }
+
+/* 长文本折行控制：三行内展示，展开按钮在卡片底部。 */
+.clamp3 {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.md-more { white-space: nowrap; }
+.work-more { flex: none; margin: 0 0 0 auto; }
+
+
+/* 快捷条溢出提示：右侧渐隐，暗示可横滑，而不是被裁切。 */
+.colony-quick {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent 100%);
+}
+@media (min-width: 769px) {
+  .colony-quick { -webkit-mask-image: none; mask-image: none; }
+}
+
+/* ══ 工作卡的操作区：主操作在卡面，低频操作收进「更多」══ */
+.work-actions { align-items: center; }
+.work-actions .card-menu-wrap { position: relative; margin-left: auto; }
+.card-more { padding: 4px 12px; font-size: 12.5px; }
+.card-menu {
+  position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 40;
+  min-width: 168px; padding: 4px;
+  display: flex; flex-direction: column; gap: 1px;
+  background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
+  border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .3);
+}
+.card-menu.hidden { display: none; }
+.card-menu-item {
+  padding: 7px 10px; border: 0; border-radius: 7px; cursor: pointer;
+  background: transparent; color: var(--nb-label-1);
+  font: 13px/1.4 var(--nb-font); text-align: left;
+}
+.card-menu-item:hover { background: var(--nb-bg-panel); }
+
+/* ══ 顶栏的暂停全群 AI：安静，但可见 ══ */
+.pause-btn { color: var(--nb-label-3); font-size: 11px; }
+.pause-btn:hover { color: var(--nb-red); }
+.pause-btn.is-paused { color: var(--nb-green); }
+
+/* 输入区上方渐隐：滚动内容不会像被刀切一样贴着输入框 */
+#composer { position: relative; }
+#composer::before {
+  content: ""; position: absolute; left: 0; right: 0; top: -22px; height: 22px;
+  background: linear-gradient(transparent, var(--nb-bg)); pointer-events: none;
+}
+
+/* ══ 空状态 / 提示 ══ */
+.colony-note {
+  align-self: flex-start; display: flex; align-items: flex-start; gap: 8px;
+  max-width: var(--nb-content-w);
+  color: var(--nb-label-3); font-size: 13px; line-height: 1.6;
+}
+.colony-note .colony-note-ico { flex: none; opacity: .7; }
+.colony-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 48px 0; color: var(--nb-label-3); font-size: 13.5px;
+}
+.colony-empty .btn-allow { padding: 8px 18px; }
+.colony-toast {
+  position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);
+  max-width: min(560px, 80vw);
+  padding: 8px 14px; border-radius: 10px;
+  background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
+  color: var(--nb-label-1); font-size: 13px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .28); z-index: 60;
+}
+.colony-toast.bad { border-color: var(--nb-red); color: var(--nb-red); }
+
+/* ══ 内嵌真实 newbee 会话 ══ */
+.embed-host { flex: 1; min-height: 0; display: flex; }
+.embed-host.hidden { display: none; }
+.embed-host iframe { flex: 1; width: 100%; border: 0; background: var(--nb-bg); }
+
+/* ══ 左侧：Bee 模式 ══ */
+.bee-mode-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 2px 4px 8px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--nb-border);
+}
+.bee-mode-head .bee-back { flex: none; }
+.bee-mode-name {
+  flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; color: var(--nb-label-1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bee-mode-tools { display: flex; gap: 6px; margin-bottom: 6px; }
+.bee-mode-tools .btn-ghost {
+  font-size: 12px; padding: 2px 9px; border: 1px solid var(--nb-border);
+  border-radius: 8px; color: var(--nb-label-3);
+}
+.bee-mode-tools .btn-ghost:hover:not(:disabled) { color: var(--nb-label-1); border-color: var(--nb-accent); }
+.bee-mode-tools .btn-ghost:disabled { opacity: .5; cursor: default; }
+.session-tools.hidden { display: none; }
+
+/* ══ @ 点名（仿微信群）══ */
+.mention {
+  color: var(--nb-accent);
+  background: color-mix(in srgb, var(--nb-accent) 12%, transparent);
+  border-radius: 4px; padding: 0 3px; font-weight: 600;
+}
+.composer-card { position: relative; }
+.mention-pop {
+  position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px);
+  z-index: 30; max-height: 240px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px; padding: 4px;
+  background: var(--nb-bg-panel); border: 1px solid var(--nb-border);
+  border-radius: 12px; box-shadow: 0 8px 26px rgba(0, 0, 0, .28);
+}
+.mention-pop.hidden { display: none; }
+.mention-item {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 10px; border: 0; border-radius: 8px; cursor: pointer; text-align: left;
+  background: transparent; color: var(--nb-label-1); font-size: 13px;
+}
+.mention-item:hover, .mention-item.active { background: var(--nb-bg-elev); }
+.mention-at { color: var(--nb-accent); font-weight: 600; }
+.mention-kind { margin-left: auto; font: 11px/1.4 var(--nb-mono); color: var(--nb-label-caption); }
+
+/* 群头部操作：管理入口只给当前 Queen 显示，成员数保持在最右侧。 */
+.colony-home .session-group-menu-btn {
+  flex: 0 0 auto; width: 30px; height: 30px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 8px;
+  background: transparent; color: var(--nb-label-caption);
+  font: 600 18px/1 var(--nb-font); cursor: pointer;
+}
+.colony-home .session-group-menu-btn:hover {
+  background: var(--nb-bg); border-color: var(--nb-border); color: var(--nb-label-1);
+}
+.colony-home .session-group-menu-btn:focus-visible {
+  outline: 2px solid var(--nb-accent); outline-offset: 2px;
+}
+@media (max-width: 768px) {
+  .colony-home .session-group-menu-btn { width: 34px; height: 34px; }
+}
+
+
+/* ══ 协作控件与弹窗 ══ */
+.member-control {position:absolute;right:34px;top:7px;border:1px solid var(--nb-border);border-radius:5px;background:var(--nb-bg);color:var(--nb-label-caption);font:inherit;font-size:11px;padding:2px 5px;cursor:pointer;}
+.session-child .session-item .t {padding-right:76px;}
+.member-control:focus-visible,.colony-dialog button:focus-visible {outline:2px solid var(--nb-accent);outline-offset:2px;}
+.colony-dialog {width:min(520px,calc(100vw - 32px));max-height:85vh;overflow:auto;border:1px solid var(--nb-border);border-radius:14px;background:var(--nb-bg);color:var(--nb-label-1);padding:20px;box-shadow:0 16px 70px #0004;}
+.colony-dialog::backdrop {background:#0006;}
+.colony-dialog form {display:grid;gap:14px;}
+.colony-dialog h3 {font-size:16px;margin:0 0 4px;}
+.colony-dialog .dialog-target {margin:0;color:var(--nb-label-caption);font-size:13px;line-height:1.5;overflow-wrap:anywhere;}
+.colony-dialog label {display:grid;gap:6px;font-size:13px;}
+.colony-dialog input,.colony-dialog textarea,.colony-dialog select {width:100%;box-sizing:border-box;color:inherit;background:var(--nb-bg);border:1px solid var(--nb-border);border-radius:8px;padding:9px;font:inherit;}
+.colony-dialog textarea {min-height:112px;resize:vertical;}
+.colony-dialog small {color:var(--nb-label-caption);line-height:1.6;}
+.colony-dialog .honey-actions {padding:0;justify-content:flex-end;border:0;background:none;}
+.colony-dialog .colony-dialog-actions {display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:8px;width:min(100%,272px);margin:12px 0 0 auto;padding:0;border:0;background:none;}
+.colony-dialog .colony-dialog-actions > button {box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;width:100%;height:44px;min-height:44px;margin:0;padding:0 14px;line-height:1.35;white-space:nowrap;}
+
+
+/* 下一步：浅引用，不铺灰底；长文本两行内折行，不再硬截断。 */
+.msg-tool .tool-head .diffstat {
+  white-space: normal; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* 待验收的卡片给一点焦点：轻微阴影，和普通动态拉开距离。 */
+.work-card, .honey-card { box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
+.work-card:has(.chip-mini.warn), .honey-card:has(.chip-mini.warn) {
+  border-color: color-mix(in srgb, var(--nb-warn) 40%, var(--nb-border));
+}
+.msg-tool:has(.honey-result) { box-shadow: 0 2px 10px rgba(0, 0, 0, .18); }
+
+/* 快捷条两端与屏幕留出安全间距（不再贴边） */
+.colony-quick { padding: 0 2px; }
+
+/* 低宽度下快捷条只展示常用入口；其余仍可横向滑动查看。 */
+@media (max-width: 420px) {
+  .colony-quick { gap: 5px; padding: 0 8px 1px; margin-left: -8px; width: calc(100% + 16px); }
+  .chip-btn { padding: 5px 10px; }
+}
+
+/* ══ 手机端 ══ */
+@media (max-width: 768px) {
+  .colony-sub { padding: 0 14px 4px; }
+  .colony-scope { display: none; }
+  .colony-quick { margin-bottom: 6px; --nb-content-w: 100%; }
+  .chip-btn { padding: 6px 12px; min-height: 32px; }
+  .review-strip { padding: 8px 12px; gap: 8px; }
+  .review-btn { padding: 6px 12px; min-height: 34px; }
+  .topbar-head .session-title { font-size: 15px; }
+  .session-meta { font-size: 11px; }
+  .work-title { font-size: 13px; }
+  .honey-result.clamped { max-height: 200px; }
+  .msg-tool { font-size: 12px; }
+}
+@media (max-width: 420px) {
+  .chip-btn .chip-ico { display: none; }
+  .chip-btn { padding: 6px 10px; }
+}
+/* ══ 发送按钮：主操作在四种主题里都必须可辨识；拟物主题保留浮起/按下层次。 ══ */
+.colony-home #send.btn-send {
+  background: var(--nb-accent); color: #fff;
+  border: 1px solid color-mix(in srgb, var(--nb-accent) 70%, #000);
+  box-shadow: 0 3px 10px color-mix(in srgb, var(--nb-accent) 28%, transparent);
+}
+.colony-home #send.btn-send:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--nb-accent) 36%, transparent);
+}
+.colony-home #send.btn-send:active:not(:disabled) { transform: scale(.94); box-shadow: none; }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home #send.btn-send {
+  background: var(--nb-accent); color: #fff;
+  box-shadow: var(--nb-neu-small), 0 4px 12px color-mix(in srgb, var(--nb-accent) 30%, transparent);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home #send.btn-send:active:not(:disabled) {
+  box-shadow: var(--nb-neu-inset); transform: scale(.94);
+}
+
+/* ══ 主题与宽度统一层：蜂群页的所有底部控件和输出列使用同一内容轨道 ══ */
+.colony-home #composer { align-items: center; }
+.colony-home #composer > .colony-quick,
+.colony-home #composer > .composer-card,
+.colony-home #composer > #attach-preview { width: 100%; max-width: var(--nb-content-w); box-sizing: border-box; }
+.colony-home #composer > .composer-card { margin-left: auto; margin-right: auto; }
+.colony-home #composer > .composer-card { min-width: 0; }
+.colony-home #composer .composer-row { min-width: 0; }
+.colony-home #composer #input { min-width: 0; }
+.colony-home #topbar { border-bottom: 1px solid var(--nb-border); }
+.colony-home .review-strip {
+  margin: 8px 28px 4px; border: 1px solid var(--nb-border); border-radius: 12px;
+  box-shadow: 0 2px 9px rgba(0, 0, 0, .10);
+}
+.colony-home .work-card,
+.colony-home .msg-tool.honey-card,
+.colony-home .msg-tool:has(.honey-result) {
+  background: var(--nb-bg-panel); border-color: var(--nb-border);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .14);
+}
+.colony-home .card-menu, .colony-home .mention-pop {
+  background: var(--nb-bg-panel); border-color: var(--nb-border);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .20);
+}
+.colony-home .member-control {
+  background: var(--nb-bg-panel); color: var(--nb-label-2); border-color: var(--nb-border);
+}
+.colony-home .colony-dialog {
+  background: var(--nb-bg-panel); color: var(--nb-label-1); border-color: var(--nb-border);
+  box-shadow: 0 16px 56px rgba(0, 0, 0, .24);
+}
+.colony-home .colony-dialog input,
+.colony-home .colony-dialog textarea,
+.colony-home .colony-dialog select { background: var(--nb-bg); color: var(--nb-label-1); border-color: var(--nb-border); }
+.colony-home .attach-item, .colony-home .msg-user-file { background: var(--nb-bg-panel); border-color: var(--nb-border); }
+.colony-home .drop-overlay { background: color-mix(in srgb, var(--nb-accent) 14%, var(--nb-bg-panel)); border-color: var(--nb-accent); color: var(--nb-label-1); }
+
+/* 浅色主题：所有蜂群专属容器显式使用浅色令牌，禁止沿用旧深色阴影/底色。 */
+:is([data-theme="light"], [data-theme="neumorphic"]) .colony-home .work-card,
+:is([data-theme="light"], [data-theme="neumorphic"]) .colony-home .msg-tool.honey-card,
+:is([data-theme="light"], [data-theme="neumorphic"]) .colony-home .msg-tool:has(.honey-result) {
+  box-shadow: 0 3px 12px rgba(37, 51, 72, .12);
+}
+:is([data-theme="light"], [data-theme="neumorphic"]) .colony-home .review-strip {
+  background: color-mix(in srgb, var(--nb-accent) 8%, var(--nb-bg-panel));
+  box-shadow: 0 2px 10px rgba(37, 51, 72, .10);
+}
+:is([data-theme="light"], [data-theme="neumorphic"]) .colony-home .card-menu,
+:is([data-theme="light"], [data-theme="neumorphic"]) .colony-home .mention-pop { box-shadow: 0 10px 28px rgba(37, 51, 72, .16); }
+
+/* 新拟物：蜂群自己定义一套材质，保证顶部、信息流、卡片、输入区和弹层一致。 */
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home #topbar {
+  border-bottom-color: transparent; box-shadow: 0 3px 10px color-mix(in srgb, var(--nb-neu-shadow) 58%, transparent);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .review-strip {
+  background: var(--nb-neu-plate); border-color: var(--nb-neu-edge);
+  box-shadow: var(--nb-neu-small); border-radius: 14px;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home #sidebar {
+  background: var(--nb-neu-plate); border-right-color: transparent;
+  box-shadow: 4px 0 14px color-mix(in srgb, var(--nb-neu-shadow) 65%, transparent);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home #colony-list .session-item {
+  background: var(--nb-neu-plate); border: 1px solid var(--nb-neu-edge);
+  border-radius: 10px; box-shadow: var(--nb-neu-small); margin: 4px 2px;
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home #colony-list .session-item.active {
+  background: var(--nb-neu-plate); box-shadow: var(--nb-neu-inset); border-color: var(--nb-neu-warm);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .work-card,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .msg-tool.honey-card,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .msg-tool:has(.honey-result) {
+  background: var(--nb-neu-plate); border-color: var(--nb-neu-edge);
+  box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .work-context,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .honey-actions {
+  background: color-mix(in srgb, var(--nb-neu-plate) 86%, var(--nb-bg)); border-color: var(--nb-neu-edge);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .chip-btn,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .review-btn,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .member-control {
+  background: var(--nb-neu-plate); border-color: var(--nb-neu-edge); color: var(--nb-label-1);
+  box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .chip-btn:hover,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .review-btn:hover,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .member-control:hover { background: var(--nb-neu-hover); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .chip-btn:active,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .review-btn:active,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .member-control:active { box-shadow: var(--nb-neu-inset); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .card-menu,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .mention-pop,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .colony-dialog {
+  background: var(--nb-neu-plate); border-color: var(--nb-neu-edge); box-shadow: var(--nb-neu-raised);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .colony-dialog input,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .colony-dialog textarea,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .colony-dialog select {
+  background: var(--nb-bg); border-color: var(--nb-neu-edge); box-shadow: var(--nb-neu-inset);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .attach-item,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .msg-user-file {
+  background: var(--nb-neu-plate); border-color: var(--nb-neu-edge); box-shadow: var(--nb-neu-small);
+}
+
+/* 手机：输入卡和快捷条与消息流完全同宽，不再收缩成居中的窄条。 */
+@media (max-width: 768px) {
+  .colony-home #composer { padding-left: 8px; padding-right: 8px; }
+  .colony-home #composer > .colony-quick,
+  .colony-home #composer > .composer-card,
+  .colony-home #composer > #attach-preview { width: 100%; max-width: none; margin-left: 0; margin-right: 0; }
+  .colony-home #composer > .colony-quick { padding-left: 0; padding-right: 0; margin-bottom: 6px; }
+}
+
+@media (max-width: 768px) {
+  .colony-home .review-strip { margin: 8px 8px 4px; }
+}
+
+/* 第二轮组件细节：操作按钮同高，证据路径不再硬裁。 */
+.colony-home .work-actions > button,
+.colony-home .work-actions .card-more,
+.colony-home .honey-actions > button { min-height: 30px; line-height: 1.35; }
+.colony-home .work-actions .card-more { padding: 4px 12px; }
+.colony-home .work-context pre,
+.colony-home .honey-result pre,
+.colony-home .honey-result .md-code,
+.colony-home .honey-result .md-code code { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; white-space: pre-wrap; }
+.colony-home .work-next-text { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.colony-home .honey-actions { align-items: center; }
+.colony-home .review-btn { min-height: 32px; }
+
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .work-actions > button,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .honey-actions > button {
+  background: var(--nb-neu-plate); border-color: var(--nb-neu-edge); box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .work-actions > button:active,
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home .honey-actions > button:active { box-shadow: var(--nb-neu-inset); }
+
+/* 输入槽与主按钮的上下间距固定，避免短屏贴住安全区。 */
+.colony-home #composer { padding-bottom: max(18px, env(safe-area-inset-bottom, 18px)); }
+
+/* 日志行的时间保持在统一右列，正文可以在左侧自然换行。 */
+.colony-home .msg-tool .tool-dur { min-width: 58px; text-align: right; }
+
+
+.colony-home #review-bar { width: 100%; max-width: var(--nb-content-w); margin: 8px auto 4px; box-sizing: border-box; }
+@media (max-width: 768px) { .colony-home #review-bar { width: calc(100% - 16px); max-width: none; margin: 8px 8px 4px; } }
+
+
+/* 最终材质收敛：深色拟物主按钮不能使用浅色蓝灰，快捷条与输入槽明确分区。 */
+.colony-home .colony-quick { margin-bottom: 10px; padding-bottom: 3px; border-bottom: 1px solid var(--nb-border); }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home #send.btn-send {
+  background: var(--nb-neu-warm); color: var(--nb-neu-warm-ink);
+  border-color: var(--nb-neu-edge); box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home #send.btn-send:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--nb-neu-warm) 88%, var(--nb-neu-light));
+  color: var(--nb-neu-warm-ink); box-shadow: var(--nb-neu-small);
+}
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .colony-home #send.btn-send:active:not(:disabled) {
+  background: var(--nb-neu-warm); color: var(--nb-neu-warm-ink); box-shadow: var(--nb-neu-inset);
+}
+@media (max-width: 768px) { .colony-home .colony-quick { margin-bottom: 8px; } }
+
+
+/* 侧栏折叠后的桌面宽列：快捷条和待验收条必须跟输出/输入卡共用 1240px 轨道。 */
+@media (min-width: 769px) {
+  #app.sidebar-collapsed .colony-quick,
+  #app.sidebar-collapsed #review-bar { --nb-content-w: min(1240px, calc(100vw - 96px)); }
+}
+
+
+.colony-home .sidebar-foot .cwd-label { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+
+/* 蜂群按钮尺寸收敛：同一语义同高，弹窗决策按钮同高同宽。 */
+.colony-home {
+  --colony-button-h: 40px;
+  --colony-compact-button-h: 34px;
+  --colony-icon-button-h: 34px;
+  --colony-composer-button-h: 40px;
+  --colony-dialog-button-h: 44px;
+}
+.colony-home button { box-sizing: border-box; }
+
+/* 普通文本操作：取消、保存、继续、通过、打回、任务操作统一 40px。 */
+.colony-home :is(.btn-primary, .btn-ghost, .btn-danger, .btn-allow, .btn-deny) {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: auto; height: var(--colony-button-h); min-height: var(--colony-button-h);
+  padding: 0 16px; line-height: 1.25; white-space: nowrap;
+}
+.colony-home :is(.honey-actions, .work-actions) > button {
+  height: var(--colony-button-h); min-height: var(--colony-button-h);
+}
+
+/* 所有表单型弹窗使用等分网格；三项群操作自动切成三列。 */
+.colony-home .colony-dialog :is(.honey-actions, .colony-dialog-actions) {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch; gap: 8px; width: min(100%, 272px);
+  margin: 12px 0 0 auto; padding: 0; border: 0; background: none;
+}
+.colony-home .colony-dialog .colony-dialog-actions:has(> button:nth-child(3)) {
+  grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(100%, 360px);
+}
+.colony-home .colony-dialog :is(.honey-actions, .colony-dialog-actions) > button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 100%; min-width: 0; height: var(--colony-dialog-button-h);
+  min-height: var(--colony-dialog-button-h); margin: 0; padding: 0 12px;
+  line-height: 1.25; white-space: nowrap;
+}
+
+/* 快捷条和待验收条：同属轻量入口，固定高度但不挤成普通主操作。 */
+.colony-home :is(.chip-btn, .review-btn) {
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; height: var(--colony-compact-button-h);
+  min-height: var(--colony-compact-button-h); padding: 0 12px; line-height: 1.2;
+}
+
+/* 顶栏、侧栏和群头部图标按钮统一为 34px 方形触控目标。 */
+.colony-home :is(.icon-btn, .model-config-btn, .session-group-toggle, .session-group-menu-btn) {
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; width: var(--colony-icon-button-h);
+  min-width: var(--colony-icon-button-h); height: var(--colony-icon-button-h);
+  min-height: var(--colony-icon-button-h); padding: 0;
+}
+.colony-home .sidebar-expand:not(.hidden) {
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; width: var(--colony-icon-button-h);
+  min-width: var(--colony-icon-button-h); height: var(--colony-icon-button-h);
+  min-height: var(--colony-icon-button-h); padding: 0;
+}
+
+/* 输入区三个并列控件始终同高，发送按钮不再因手机断点变成 42/44px。 */
+.colony-home :is(.composer-attach .icon-btn, #effort-btn, #send.btn-icon-round) {
+  box-sizing: border-box; width: var(--colony-composer-button-h);
+  min-width: var(--colony-composer-button-h); height: var(--colony-composer-button-h);
+  min-height: var(--colony-composer-button-h);
+}
+
+/* 会话行的更多、成员控制和左滑操作也使用固定触控高度。 */
+.colony-home .session-item .menu-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 0;
+}
+.colony-home .member-control {
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; width: 54px; min-width: 54px; height: 32px; min-height: 32px; padding: 0 8px;
+  line-height: 1; white-space: nowrap;
+}
+.colony-home .session-child .session-item:has(.member-control) .t { padding-right: 100px; }
+.colony-home .swipe-cell .swipe-action {
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; height: 34px; min-height: 34px; padding: 0 8px;
+}
+
+/* 菜单项和展开/收起操作不再由文字长度决定高度。 */
+.colony-home :is(.card-menu-item, .mention-item) {
+  box-sizing: border-box; height: 36px; min-height: 36px; padding: 0 10px;
+}
+.colony-home .theme-menu-item { box-sizing: border-box; height: 36px; min-height: 36px; padding-top: 0; padding-bottom: 0; }
+.colony-home .effort-seg { box-sizing: border-box; height: 40px; min-height: 40px; }
+.colony-home .attach-remove { box-sizing: border-box; width: 28px; min-width: 28px; height: 28px; min-height: 28px; }
+.colony-home .md-more { display: inline-flex; align-items: center; justify-content: center; height: 32px; min-height: 32px; padding: 0 12px; line-height: 1.2; }
+
+/* 页面级遗漏控件：回到底部和退出登录也纳入同一图标/文字按钮高度。 */
+.colony-home :is(#to-bottom, .logout-btn) {
+  display: inline-flex; align-items: center; justify-content: center;
+  box-sizing: border-box; height: var(--colony-icon-button-h); min-height: var(--colony-icon-button-h);
+}
+.colony-home #to-bottom { width: var(--colony-icon-button-h); min-width: var(--colony-icon-button-h); padding: 0; }
+.colony-home .logout-btn { padding: 0 10px; }
+
+/* Task collaboration: decisions and deliverables above low-level activity. */
+.work-board { margin: 8px 0 24px; min-width: 0; }
+.work-tabs { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 12px; }
+.work-tabs button { white-space: nowrap; flex-shrink: 0; }
+.work-tabs [aria-pressed="true"] { color: var(--accent, #8a651b); outline: 1px solid currentColor; }
+.work-flow-card { padding: 20px; border: 1px solid var(--border, #cbd0d9); border-radius: 16px; background: var(--surface, rgba(255,255,255,.35)); min-width: 0; }
+.work-flow-head { display: flex; align-items: start; gap: 12px; justify-content: space-between; overflow-wrap: anywhere; }
+.work-flow-head strong { font-size: 18px; }
+.work-flow-owner { font-size: 12px; opacity: .75; margin: 8px 0; }
+.work-flow-reason { line-height: 1.6; margin: 12px 0; }
+.work-flow-steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.work-flow-steps span { border-bottom: 2px solid var(--border, #cbd0d9); padding: 4px 10px; font-size: 13px; opacity: .65; }
+.work-flow-steps [aria-current] { color: var(--accent, #8a651b); border-color: currentColor; opacity: 1; font-weight: 700; }
+.work-proposals { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 12px; margin: 16px 0; }
+.work-proposal { border: 1px solid var(--border, #cbd0d9); border-radius: 12px; padding: 14px; min-width: 0; overflow-wrap: anywhere; }
+.work-proposal-person { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.work-proposal-person input { width: 18px; height: 18px; }
+.work-proposal-summary { max-height: 320px; overflow-y: auto; }
+.work-proposal button { margin: 10px 6px 0 0; }
+.work-flow-card details { margin: 12px 0; }
+.work-flow-card details summary { cursor: pointer; font-weight: 600; }
+.work-flow-card details p { overflow-wrap: anywhere; }
+.work-flow-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+.work-assignment { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border, #cbd0d9); }
+.work-flow-next { padding: 10px 12px; border-left: 3px solid var(--accent, #8a651b); line-height: 1.6; }
+@media (max-width: 640px) { .work-flow-card { padding: 12px; } .work-flow-head { flex-wrap: wrap; } .work-flow-actions button { min-height: 40px; } }
+
+
+.work-proposal details .md { max-height: 280px; overflow-y: auto; }
+
+
+.work-jump { position: sticky; top: 4px; z-index: 3; align-self: flex-start; background: var(--bg, #eef1f5); box-shadow: 0 2px 6px #0002; }
+.work-board { scroll-margin-top: 48px; }
+

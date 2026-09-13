@@ -2,7 +2,8 @@
 defmodule Newbee.Web.MobileComposerTest do
   use ExUnit.Case, async: true
 
-  @index "priv/web/index.html"
+  # 会话界面（含移动端详情抽屉）现在挂在工作区表面上。
+  @index "priv/web/workspace.html"
   @css "priv/web/style.css"
   @js "priv/web/app.js"
 

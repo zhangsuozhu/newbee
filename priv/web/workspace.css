@@ -1,0 +1,18 @@
+/* A tool surface renders the original UI; it is never a second home or an extra frame. */
+.workspace-surface #app { display: none !important; }
+.workspace-surface { min-width: 0; }
+/* Modal tools stay transparent so the colony home remains visible behind the dimmed backdrop. */
+html.workspace-surface[data-surface="models"] body,
+html.workspace-surface[data-surface="config"] body,
+html.workspace-surface[data-surface="directory"] body,
+html.workspace-surface[data-surface="qr"] body { min-width: 0; background: transparent !important; }
+/* Tool modals only need room-fitting, never a frame of their own. */
+.workspace-surface .modal { padding: 12px; }
+.workspace-surface .modal-box { max-height: calc(100dvh - 24px); }
+.workspace-surface .mc-tabs { flex-wrap: wrap; }
+/* AI conversations are a leaf view of the colony, never another navigation shell.
+   The terminal panel and Mission Control keep their original sizes (inline panel / 380px sidebar). */
+html:not(.workspace-surface) #sidebar,
+html:not(.workspace-surface) #sidebar-expand,
+html:not(.workspace-surface) #topbar { display: none !important; }
+html:not(.workspace-surface) #app { grid-template-columns: minmax(0, 1fr); }

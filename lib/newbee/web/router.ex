@@ -13,15 +13,31 @@ defmodule Newbee.Web.Router do
   plug(:security_headers)
   plug(:require_auth)
   plug(:match)
+  plug(:member_resource_gate)
   plug(:dispatch)
+
+  defp member_resource_gate(conn, _) do
+    token = case bearer_token(conn) do {:ok, t} -> t; _ -> nil end
+    resource = case conn.path_info do
+      ["api", "upload", sid | _] -> {sid, :write}
+      ["media", sid | _] -> {sid, :read}
+      _ -> nil
+    end
+    case resource do
+      {sid, mode} -> if Newbee.Colony.Membership.session_access(token, sid, mode) == :ok, do: conn, else: unauthorized(conn)
+      _ -> conn
+    end
+  end
 
   get "/ws" do
     conn = fetch_query_params(conn)
     sid = conn.query_params["session"] || ""
 
-    conn
-    |> WebSockAdapter.upgrade(Newbee.Web.Socket, %{assigns: %{session: sid}}, timeout: :infinity)
-    |> halt()
+    token = case bearer_token(conn) do {:ok, t} -> t; _ -> nil end
+    case Newbee.Colony.Membership.session_access(token, sid) do
+      :ok -> conn |> WebSockAdapter.upgrade(Newbee.Web.Socket, %{assigns: %{session: sid, token: token}}, timeout: :infinity) |> halt()
+      _ -> unauthorized(conn)
+    end
   end
 
   post "/api/upload/:sid" do
@@ -103,6 +119,9 @@ defmodule Newbee.Web.Router do
     "/api/auth.",
     "/api/health",
     "/api/xgroup.bridge.",
+    "/api/colony.remote.poll",
+    "/api/colony.remote.attachment",
+    "/api/colony.invite.redeem",
     "/api/webauthn.has_credentials",
     "/api/webauthn.login_challenge",
     "/api/webauthn.login",
@@ -116,7 +135,8 @@ defmodule Newbee.Web.Router do
         {:ok, token} ->
           case Newbee.Web.Auth.check_token(token) do
             :ok -> conn
-            {:error, _} -> unauthorized(conn)
+            {:error, _} ->
+              if (String.starts_with?(conn.request_path, "/api/colony.") or String.starts_with?(conn.request_path, "/api/session.") or String.starts_with?(conn.request_path, "/api/upload/")) and match?({:ok, _, _}, Newbee.Colony.Membership.authenticate(token)), do: conn, else: unauthorized(conn)
           end
 
         :error ->
@@ -315,9 +335,13 @@ defmodule Newbee.Web.Router do
   end
 
   defp security_headers(conn, _opts) do
+    # 默认禁止被第三方页面嵌入（DENY）。
+    # 只有显式声明 ?embed=1 时才放开为 SAMEORIGIN——供同源的蜂群页把真实会话嵌进中间区。
+    frame = if String.contains?(to_string(conn.query_string || ""), "embed=1"), do: "SAMEORIGIN", else: "DENY"
+
     conn
     |> Plug.Conn.put_resp_header("x-content-type-options", "nosniff")
-    |> Plug.Conn.put_resp_header("x-frame-options", "DENY")
+    |> Plug.Conn.put_resp_header("x-frame-options", frame)
     |> Plug.Conn.put_resp_header("referrer-policy", "no-referrer")
   end
 

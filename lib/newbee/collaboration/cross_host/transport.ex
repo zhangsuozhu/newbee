@@ -255,7 +255,7 @@ defmodule Newbee.Collaboration.CrossHost.Transport do
   defp decode_result(_), do: {:error, "bad_response", "远端响应缺少 RPC 结果"}
 
   defp validate_method(method) do
-    if Regex.match?(~r/^xgroup\.bridge\.(join|poll|ack|sync|heartbeat|publish|command|chat)$/, method),
+    if method in ["colony.invite.redeem", "colony.remote.poll", "colony.remote.attachment"] or Regex.match?(~r/^xgroup\.bridge\.(join|poll|ack|sync|heartbeat|publish|command|chat)$/, method),
       do: :ok,
       else: {:error, "forbidden", "不是允许的 Bridge RPC"}
   end

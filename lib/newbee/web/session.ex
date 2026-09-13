@@ -20,6 +20,7 @@ defmodule Newbee.Web.Session do
   @watchdog_retry_minutes 5
 
   defstruct kernel: nil,
+            colony_seen: MapSet.new(),
             sid: nil,
             busy: false,
             # kernel/求值器节点在 init 返回后异步启动（:peer boot 约 1-3s）；
@@ -1442,6 +1443,10 @@ defmodule Newbee.Web.Session do
     {:noreply, dispatch_item(reset_collab_fail(st), make_user_text_item(text, nil), false)}
   end
 
+  def handle_cast(:colony_resume, st) do
+    {:noreply, dispatch_pending(st)}
+  end
+
   def handle_cast(:interrupt, st) do
     if st.kernel && Process.alive?(st.kernel), do: Newbee.Agent.Loop.interrupt(st.kernel)
 
@@ -1583,6 +1588,47 @@ defmodule Newbee.Web.Session do
 
   # 轻量 busy 探测：busy 必须有存活 turn 任务背书，否则视为 stuck-busy 纠偏为 false。
   def handle_call(:peek_busy, _from, st), do: {:reply, st.busy and turn_active?(st), st}
+
+  def handle_call({:colony_received, id}, _from, st) do
+    {:reply, MapSet.member?(st.colony_seen, id), st}
+  end
+
+  def handle_call({:colony_deliver, id, text, images}, _from, st) do
+    cond do
+      MapSet.member?(st.colony_seen, id) ->
+        {:reply, :ok, st}
+
+      Newbee.Colony.Control.blocked_session?(st.sid) ->
+        {:reply, {:error, :paused}, st}
+
+      :queue.len(st.queue) >= @max_queue_items ->
+        {:reply, {:error, :queue_full}, st}
+
+      true ->
+        item = if images == [], do: make_user_text_item(text, id), else: make_user_images_item(images, text, id)
+        {next, _item, fresh} = enqueue_item(st, item)
+
+        receipt =
+          Newbee.Colony.Store.update("deliveries", id, nil, fn delivery ->
+            {:ok,
+             Map.merge(delivery, %{
+               "status" => "accepted",
+               "accepted_at" => System.system_time(:millisecond),
+               "session_id" => st.sid
+             })}
+          end)
+
+        case receipt do
+          {:ok, delivery} ->
+            trace_colony_acceptance(delivery)
+            next = %{next | colony_seen: MapSet.put(next.colony_seen, id)}
+            {:reply, :ok, if(fresh, do: dispatch_pending(next), else: next)}
+
+          error ->
+            {:reply, error, st}
+        end
+    end
+  end
 
   # 兼容旧调用：仅 modelId（保持当前 provider）
   def handle_call({:switch_model, model_id}, _from, st) when is_binary(model_id) do
@@ -1746,6 +1792,25 @@ defmodule Newbee.Web.Session do
 
       broadcast(st.sid, :effort_changed, %{effort: effort, applied: true})
       {:reply, {:ok, %{applied: true}}, dispatch_pending(reset_collab_fail(%{st | client: client}))}
+    end
+  end
+
+  defp trace_colony_acceptance(delivery) do
+    with {:ok, task} <- Newbee.Colony.Store.get_task(delivery["task_id"]),
+         {:ok, bee} <- Newbee.Colony.Store.get_bee(delivery["bee_id"]),
+         {:ok, _} <-
+           Newbee.Colony.Store.append_trace(%{
+             "colony_id" => delivery["colony_id"],
+             "task_id" => task["id"],
+             "bee_id" => bee["id"],
+             "type" => "message",
+             "channel" => "colony",
+             "text" => "「" <> bee["display"] <> "」已接受任务「" <> task["title"] <> "」，正在处理",
+             "data" => %{"delivery_id" => delivery["id"], "status" => "accepted"}
+           }) do
+      :ok
+    else
+      _ -> :ok
     end
   end
 
@@ -2431,22 +2496,31 @@ defmodule Newbee.Web.Session do
 
   defp btw_question(_text), do: :none
 
-  defp dispatch_item(st, %{kind: "preempt_request"} = item, queued?) do
+  defp dispatch_item(st, item, queued?) do
+    if Newbee.Colony.Control.blocked_session?(st.sid) do
+      {next, _item, _fresh} = enqueue_item(st, item)
+      next
+    else
+      dispatch_item_unpaused(st, item, queued?)
+    end
+  end
+
+  defp dispatch_item_unpaused(st, %{kind: "preempt_request"} = item, queued?) do
     dispatch_item_regular(stat_inc(st, :preempt_served), item, queued?)
   end
 
-  defp dispatch_item(st, %{kind: "watchdog_recovery"} = item, queued?) do
+  defp dispatch_item_unpaused(st, %{kind: "watchdog_recovery"} = item, queued?) do
     dispatch_item_regular(st, item, queued?)
   end
 
-  defp dispatch_item(st, %{kind: "text", text: text} = item, queued?) do
+  defp dispatch_item_unpaused(st, %{kind: "text", text: text} = item, queued?) do
     case btw_question(text) do
       {:ok, question} -> start_btw(st, question, item.id)
       :none -> dispatch_item_regular(st, item, queued?)
     end
   end
 
-  defp dispatch_item(st, item, queued?), do: dispatch_item_regular(st, item, queued?)
+  defp dispatch_item_unpaused(st, item, queued?), do: dispatch_item_regular(st, item, queued?)
 
   defp dispatch_item_regular(st, %{id: id, kind: kind} = item, queued?) do
     current = %{
@@ -2489,7 +2563,11 @@ defmodule Newbee.Web.Session do
 
   # 调度：head 通道（任务分派/结果 + wake 消息）优先取下一轮，但不注入当前轮、
   # 不打断工具调用；连续服务到上限后给普通通道让路。claim/ack 语义不变。
-  defp dispatch_pending(%{queue: q} = st) do
+  defp dispatch_pending(st) do
+    if Newbee.Colony.Control.blocked_session?(st.sid), do: st, else: dispatch_pending_unpaused(st)
+  end
+
+  defp dispatch_pending_unpaused(%{queue: q} = st) do
     st = ensure_runtime_id(st)
 
     case dequeue_next(q, Map.get(st, :head_streak, 0)) do

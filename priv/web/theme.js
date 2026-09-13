@@ -35,6 +35,21 @@
     button.setAttribute("aria-expanded", "false");
     if (restoreFocus) button.focus();
   }
+  function notifyParent(theme) {
+    if (window.parent !== window) {
+      try { window.parent.postMessage({ newbeeTheme: theme }, location.origin); } catch (_) {}
+    }
+  }
+
+  function receiveTheme(event) {
+    if (event.origin !== location.origin) return;
+    const theme = event.data && event.data.newbeeTheme;
+    if (!themes.includes(theme)) return;
+    apply(theme, false);
+    window.dispatchEvent(new Event("newbee:theme"));
+  }
+
+  window.addEventListener("message", receiveTheme);
 
   function placeMenu(button, menu) {
     menu.classList.remove("hidden");
@@ -46,12 +61,15 @@
     const top = below + menuRect.height <= innerHeight - 8
       ? below
       : Math.max(8, buttonRect.top - menuRect.height - gap);
+
+
     menu.style.left = `${Math.round(left)}px`;
     menu.style.top = `${Math.round(top)}px`;
   }
 
   function chooseTheme(theme, button, menu) {
     apply(theme, true);
+    notifyParent(theme);
     window.dispatchEvent(new Event("newbee:theme"));
     closeMenu(button, menu, true);
   }
@@ -114,9 +132,10 @@
     document.querySelectorAll("[data-theme-picker]").forEach(picker => {
       picker.addEventListener("change", () => {
         apply(picker.value, true);
+        notifyParent(picker.value);
         window.dispatchEvent(new Event("newbee:theme"));
       });
-    });
+      });
     document.querySelectorAll("[data-theme-button]").forEach(bindIconMenu);
   });
 })();

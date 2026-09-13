@@ -2,7 +2,8 @@ defmodule Newbee.Web.ModelConfigUiTest do
   use ExUnit.Case, async: true
 
   test "模型配置表单只生成规范 API 值并提交逐模型覆盖" do
-    html = File.read!("priv/web/index.html")
+    # AI 对话界面（含终端/模型配置）现在是工作区表面，蜂群主页只负责导航与工具入口。
+    html = File.read!("priv/web/workspace.html")
     js = File.read!("priv/web/app.js")
 
     assert html =~ ~s(option value="openai-completions")
@@ -17,7 +18,7 @@ defmodule Newbee.Web.ModelConfigUiTest do
   end
 
   test "终端入口包含面板和 WebSocket 命令协议" do
-    html = File.read!("priv/web/index.html")
+    html = File.read!("priv/web/workspace.html")
     js = File.read!("priv/web/app.js")
 
     assert html =~ ~s|id="terminal-toggle"|

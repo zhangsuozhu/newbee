@@ -1175,6 +1175,15 @@ defmodule Newbee.Agent.Loop do
   # 步数不设硬上限（§8 放行+审计：硬杀会误伤长任务，如自改代码）。
   # 失控保护 = 每 25 步审计告警（事件流可见，用户可 Ctrl-C）。
   defp run_turn(state, step) do
+    if Newbee.Colony.Control.loop_blocked?(state.render) do
+      emit(state, {:interrupted, "蜂群执行已在安全边界暂停"})
+      {{:interrupted, "蜂群执行已在安全边界暂停"}, state}
+    else
+      run_turn_unpaused(state, step)
+    end
+  end
+
+  defp run_turn_unpaused(state, step) do
     if rem(step, 25) == 0 do
       Newbee.DebugLog.log(:turn, "step #{step}: long turn (uncapped, audited)")
       emit(state, {:turn_long, step})
@@ -1332,7 +1341,7 @@ defmodule Newbee.Agent.Loop do
       blocks
       |> Enum.with_index(1)
       |> Enum.reduce_while({state, []}, fn {code, index}, {st, acc} ->
-        if Newbee.LLM.Client.interrupted?(st.client) do
+        if (Newbee.LLM.Client.interrupted?(st.client) or Newbee.Colony.Control.loop_blocked?(st.render)) do
           emit(st, {:interrupted, nil})
           {:halt, {:halt, {:interrupted, nil}, st}}
         else
@@ -1355,7 +1364,7 @@ defmodule Newbee.Agent.Loop do
           tool_started_at = System.monotonic_time(:millisecond)
           eval_result = eval_fallback(st, code)
 
-          if Newbee.LLM.Client.interrupted?(st.client) or eval_interrupted?(eval_result) do
+          if (Newbee.LLM.Client.interrupted?(st.client) or Newbee.Colony.Control.loop_blocked?(st.render)) or eval_interrupted?(eval_result) do
             emit(st, {:interrupted, nil})
             {:halt, {:halt, {:interrupted, nil}, st}}
           else
@@ -1504,7 +1513,7 @@ defmodule Newbee.Agent.Loop do
 
   defp execute_calls(calls, state) do
     Enum.reduce_while(calls, {:cont, state}, fn call, {:cont, state} ->
-      if Newbee.LLM.Client.interrupted?(state.client) do
+      if (Newbee.LLM.Client.interrupted?(state.client) or Newbee.Colony.Control.loop_blocked?(state.render)) do
         # Esc 中断发生在工具执行阶段：不再发起下一个工具调用
         {:halt, {:halt, {:interrupted, nil}, state}}
       else
@@ -2005,7 +2014,7 @@ defmodule Newbee.Agent.Loop do
 
     {state, eval_result} = reconcile_eval_cwd(state, eval_result)
 
-    if Newbee.LLM.Client.interrupted?(state.client) or eval_interrupted?(eval_result) do
+    if (Newbee.LLM.Client.interrupted?(state.client) or Newbee.Colony.Control.loop_blocked?(state.render)) or eval_interrupted?(eval_result) do
       Newbee.DebugLog.log(:tool, "eval interrupted title_bytes=#{byte_size(title)} #{tool_log_meta(state)}")
       emit(state, {:interrupted, nil})
       {:halt, {:halt, {:interrupted, nil}, state}}

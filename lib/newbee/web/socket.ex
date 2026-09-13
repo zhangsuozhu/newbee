@@ -19,14 +19,20 @@ defmodule Newbee.Web.Socket do
   @max_terminal_input_bytes 64_000
 
   @impl true
-  def init(%{assigns: %{session: sid}}) do
+  def init(%{assigns: %{session: sid} = assigns}) do
     Newbee.Bus.subscribe()
     {:ok, _pid, _sid} = WSession.ensure(sid)
-    {:ok, %{sid: sid, terminal: nil}}
+    {:ok, %{sid: sid, terminal: nil, token: Map.get(assigns, :token)}}
   end
 
   @impl true
-  def handle_in({text, [opcode: :text]}, st) do
+  def handle_in(frame, st) do
+    if Newbee.Colony.Membership.session_access(st[:token], st.sid, :write) == :ok,
+      do: dispatch_in(frame, st),
+      else: {:ok, st}
+  end
+
+  defp dispatch_in({text, [opcode: :text]}, st) do
     case Jason.decode(text) do
       {:ok, %{"type" => "terminal_open"}} ->
         terminal_open(st)
@@ -127,24 +133,40 @@ defmodule Newbee.Web.Socket do
     end
   end
 
-  def handle_in(_, st), do: {:ok, st}
+  defp dispatch_in(_, st), do: {:ok, st}
 
   @impl true
-  def handle_info({:newbee_event, :terminal_event, {:terminal_event, sid, event, payload}}, %{sid: sid} = st) do
+  def handle_info(event, st) do
+    member = match?({:ok, _, _}, Newbee.Colony.Membership.authenticate(st[:token]))
+
+    scoped =
+      case event do
+        {:newbee_event, topic, _} when topic in [:web_event, :terminal_event] -> true
+        _ -> false
+      end
+
+    cond do
+      Newbee.Colony.Membership.session_access(st[:token], st.sid) != :ok -> {:stop, :normal, st}
+      member and not scoped -> {:ok, st}
+      true -> dispatch_info(event, st)
+    end
+  end
+
+  defp dispatch_info({:newbee_event, :terminal_event, {:terminal_event, sid, event, payload}}, %{sid: sid} = st) do
     frame = terminal_frame(event, payload)
     {:push, [{:text, frame}], st}
   end
 
-  def handle_info({:newbee_event, :web_event, {:web_event, sid, kind, payload}}, %{sid: sid} = st) do
+  defp dispatch_info({:newbee_event, :web_event, {:web_event, sid, kind, payload}}, %{sid: sid} = st) do
     frame = Jason.encode_to_iodata!(%{type: "event", sessionId: sid, kind: to_string(kind), payload: payload})
     {:push, [{:text, frame}], st}
   end
 
-  def handle_info(
-        {:newbee_event, :collab_event, %{"session_ids" => session_ids} = event},
-        %{sid: sid} = st
-      )
-      when is_list(session_ids) do
+  defp dispatch_info(
+         {:newbee_event, :collab_event, %{"session_ids" => session_ids} = event},
+         %{sid: sid} = st
+       )
+       when is_list(session_ids) do
     if sid in session_ids do
       frame =
         Jason.encode_to_iodata!(%{
@@ -170,7 +192,7 @@ defmodule Newbee.Web.Socket do
                   snapshot_created snapshot_restored
                   generation_switched generation_switch_failed)a
 
-  def handle_info({:newbee_event, topic, payload}, st) when topic in @evo_topics do
+  defp dispatch_info({:newbee_event, topic, payload}, st) when topic in @evo_topics do
     frame =
       Jason.encode_to_iodata!(%{
         type: "system",
@@ -182,8 +204,8 @@ defmodule Newbee.Web.Socket do
   end
 
   # 其它会话的事件、以及总线上其它事件，直接忽略
-  def handle_info({:newbee_event, _, _}, st), do: {:ok, st}
-  def handle_info(_, st), do: {:ok, st}
+  defp dispatch_info({:newbee_event, _, _}, st), do: {:ok, st}
+  defp dispatch_info(_, st), do: {:ok, st}
 
   @impl true
   def terminate(_reason, st) do

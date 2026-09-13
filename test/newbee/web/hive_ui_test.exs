@@ -5,7 +5,6 @@ defmodule Newbee.Web.HiveUiTest do
 
   test "Web 协作 UI 只使用 Hive Board 合同" do
     js = File.read!(@app_path)
-    html = File.read!(Path.expand("priv/web/index.html"))
 
     for method <- [
           ~s|rpc("hive.board"|,
@@ -18,6 +17,7 @@ defmodule Newbee.Web.HiveUiTest do
         ] do
       assert js =~ method
     end
+
     refute js =~ ~s|rpc("group.task.list"|
     refute js =~ ~s|rpc("group.task.create"|
     refute js =~ ~s|rpc("group.task.claim"|
@@ -39,13 +39,38 @@ defmodule Newbee.Web.HiveUiTest do
     assert js =~ "已清理半成品组"
     assert js =~ "renderSubmission"
     assert js =~ "collab_task_updated"
+  end
 
-    assert html =~ ~s|id="mc-task-conflicts"|
-    assert html =~ ~s|id="delegate-acceptance-list"|
-    assert html =~ ~s|id="delegate-persona"|
-    assert html =~ ~s|id="delegate-fork-turns"|
-    assert html =~ ~s|id="delegate-depends"|
-    assert html =~ ~s|id="delegate-write-scope"|
+  # 蜂群是登录后的唯一主页：旧工作组/跨主机建群的可见入口与其对话框全部移除，
+  # 原会话界面作为工作区表面继续提供终端、模型、目录、监控等能力。
+  test "蜂群主页取代旧工作组入口，会话界面退居工作区表面" do
+    home = File.read!(Path.expand("priv/web/index.html"))
+    surface = File.read!(Path.expand("priv/web/workspace.html"))
+
+    assert home =~ ~s|id="colony-list"|
+    assert home =~ ~s|id="model-label"|
+    assert home =~ ~s|id="cwd-label"|
+    assert home =~ ~s|id="terminal-toggle"|
+    assert home =~ ~s|id="mc-expand"|
+    assert home =~ "colony/app.js"
+    assert home =~ "colony/shell.css"
+    # 主页的输入框是蜂群群聊用的；会话界面独有的元素不出现。
+    refute home =~ ~s|id="session-list"|, "主页不再内嵌会话列表"
+    refute home =~ ~s|id="mission-control"|, "Mission Control 跟随 AI 对话"
+
+    for page <- [home, surface] do
+      for id <- ~w(group-modal delegate-modal task-modal xcreate-modal xjoin-modal xmanage-modal) do
+        refute page =~ ~s|id="#{id}"|, "#{id} 应已移除"
+      end
+
+      refute page =~ ~s|id="delegate-session"|
+      refute page =~ ~s|id="colony-entry"|
+      refute page =~ ~s|id="session-menu-remove-group"|
+      refute page =~ ~s|选择会话组成工作组|
+    end
+
+    assert surface =~ ~s|id="input"|
+    assert surface =~ ~s|id="terminal-panel"|
   end
 
   test "Bun 执行真实 Hive UI helper 与 CAS mutation 行为" do
@@ -271,5 +296,18 @@ defmodule Newbee.Web.HiveUiTest do
 
         assert status == 0, output
     end
+  end
+
+  test "群头部提供群管理操作且成员数保持在右侧" do
+    sidebar = File.read!("priv/web/colony/sidebar.js")
+    manage = File.read!("priv/web/colony/manage.js")
+    css = File.read!("priv/web/colony/colony.css")
+
+    assert sidebar =~ "session-group-menu-btn"
+    assert sidebar =~ "renameColony"
+    assert sidebar =~ "dissolveColony"
+    assert manage =~ "colony.rename"
+    assert manage =~ "colony.dissolve"
+    assert css =~ ".session-group-menu-btn"
   end
 end

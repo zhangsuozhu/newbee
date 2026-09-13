@@ -121,4 +121,32 @@ defmodule Newbee.MediaWebE2ETest do
     assert docs =~ "Markdown 直接渲染"
     assert docs =~ "show/2"
   end
+
+  test "protected image requires credentials and accepts an authenticated request" do
+    sid = "protected-media-#{System.unique_integer([:positive])}"
+    dir = Path.join(System.tmp_dir!(), sid)
+    File.mkdir_p!(dir)
+    source = Path.join(dir, "image.png")
+    File.write!(source, <<137, 80, 78, 71>>)
+    {:ok, media} = Newbee.Media.show(sid, source)
+    Newbee.Web.Router.set_bind_ip({0, 0, 0, 0})
+
+    on_exit(fn ->
+      Newbee.Web.Router.set_bind_ip({127, 0, 0, 1})
+      Newbee.Session.delete(sid)
+      File.rm_rf!(dir)
+    end)
+
+    opts = Newbee.Web.Router.init([])
+    assert Plug.Test.conn(:get, media.url) |> Newbee.Web.Router.call(opts) |> Map.fetch!(:status) == 401
+    {:ok, token} = Newbee.Web.Auth.issue_token()
+
+    conn =
+      Plug.Test.conn(:get, media.url)
+      |> Plug.Conn.put_req_header("authorization", "Bearer " <> token)
+      |> Newbee.Web.Router.call(opts)
+
+    assert conn.status == 200
+    assert conn.resp_body == <<137, 80, 78, 71>>
+  end
 end

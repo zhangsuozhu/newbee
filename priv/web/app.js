@@ -1,6 +1,28 @@
 /* newbee WebUI 前端（移植 dsh client/web 会话 shell 语义，无构建依赖原生 JS）。
  * 信道：REST RPC（POST /api/<method>）+ WebSocket 事件下行（/ws?session=）。 */
 (() => {
+  // 嵌入在蜂群主页里的会话：宿主只能开关面板（终端 / Mission Control），别的都不许动。
+  function embedMode() { return new URLSearchParams(location.search).get("embed") === "1"; }
+  function notifyEmbedPanel(panel, open) {
+    if (!embedMode() || window.parent === window) return;
+    window.parent.postMessage({newbeeWorkspace: "panel", panel, open, sessionId: state.sid}, location.origin);
+  }
+  function initEmbedPanels() {
+    window.addEventListener("message", (event) => {
+      if (event.origin !== location.origin) return;
+      const data = event.data || {};
+      if (data.newbeeCommand !== "panel") return;
+      if (data.sessionId && data.sessionId !== state.sid) return;
+      if (data.panel === "terminal") setTerminalPanel(!!data.open);
+      if (data.panel === "monitor") setMCOpen(!!data.open);
+    });
+    workspaceNotify("ready");
+  }
+
+  const workspaceSurface = new URLSearchParams(location.search).get("surface");
+  function workspaceNotify(type, payload = {}) {
+    if (window.parent !== window) window.parent.postMessage({newbeeWorkspace: type, ...payload}, location.origin);
+  }
   const ICO_FOLDER = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><path d="M3 8V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><path d="M3 8l2.4 9.1A2 2 0 0 0 7.3 19h12.2a1 1 0 0 0 1-1.3L18 11H5L3 8z"/></svg>';
   const ICO_SIDEBAR_COLLAPSE = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg>';
   const ICO_SIDEBAR_EXPAND = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg>';
@@ -738,6 +760,7 @@ const flow = $("flow");
     if (!panel || !toggle) return;
 
     state.terminal.open = open;
+    notifyEmbedPanel("terminal", open);
     panel.classList.toggle("hidden", !open);
     toggle.classList.toggle("is-active", open);
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -1348,6 +1371,7 @@ case "goal_round": break;
   }
 
   function line(kind, text, md) {
+    if (workspaceSurface && kind === "error") workspaceNotify("error", {message: String(text)});
     const d = el(`msg-${kind}`, text || "", md);
     scrollBottom();
     return d;
@@ -4428,6 +4452,7 @@ case "goal_round": break;
   $("dir-confirm").addEventListener("click", async () => {
     const picked = dirState.cur;
     if (!picked) return;
+    if (!state.sid) { closeDirPicker(); return; }
     closeDirPicker();
     try {
       const updated = await rpc("session.cwd", { sessionId: state.sid, cwd: picked });
@@ -4435,6 +4460,7 @@ case "goal_round": break;
       updateCwdLabel(state.cwd);
       await loadSessions();
       line("notice", "当前会话工作目录已切换为 " + state.cwd);
+      workspaceNotify("changed");
     } catch (err) {
       line("error", "切换工作目录失败: " + err.message);
     }
@@ -4917,7 +4943,7 @@ case "goal_round": break;
     }
     if (kind === "image") {
       const img = document.createElement("img");
-      img.src = p.url + (p.url.includes("?") ? "&" : "?") + "_t=" + Date.now();
+      loadMediaElement(p, img, body);
       img.alt = p.caption || p.name || "媒体";
       img.className = "nb-zoomable";
       img.addEventListener("click", (e) => { e.stopPropagation(); openLightbox(img.src, img.alt); });
@@ -4926,13 +4952,13 @@ case "goal_round": break;
       const au = document.createElement("audio");
       au.controls = true;
       au.preload = "metadata";
-      au.src = p.url + "?_t=" + Date.now();
+      loadMediaElement(p, au, body);
       body.appendChild(au);
     } else if (kind === "video") {
       const vd = document.createElement("video");
       vd.controls = true;
       vd.preload = "metadata";
-      vd.src = p.url + "?_t=" + Date.now();
+      loadMediaElement(p, vd, body);
       body.appendChild(vd);
     } else if (kind === "text") {
       // 实时事件带正文；历史记录只带元数据，因此由受保护的媒体 URL 补读正文。
@@ -4945,11 +4971,55 @@ case "goal_round": break;
     scrollBottom();
   }
 
+  async function fetchMediaBlob(p) {
+    const url = new URL(p.url, location.href);
+    if (url.origin !== location.origin || !url.pathname.startsWith('/media/')) {
+      throw new Error('Invalid media URL');
+    }
+    const headers = {};
+    if (state.token) headers.authorization = "Bearer " + state.token;
+    const response = await fetch(url.href, {credentials: 'same-origin', headers});
+    if (!response.ok) throw new Error('Media request failed: ' + response.status);
+    return response.blob();
+  }
+
+  async function loadMediaElement(p, element, body) {
+    try {
+      const blob = await fetchMediaBlob(p);
+      if (!body.isConnected) return;
+      const url = URL.createObjectURL(blob);
+      element.src = url;
+      // Keep the URL valid for playback and lightbox; release it when the card leaves the DOM.
+      const observer = new MutationObserver(() => {
+        if (!element.isConnected) { URL.revokeObjectURL(url); observer.disconnect(); }
+      });
+      observer.observe(flow, {childList: true, subtree: true});
+    } catch (_) {
+      if (!body.isConnected) return;
+      const error = document.createElement('p');
+      error.textContent = '媒体加载失败，请检查登录状态后重试。';
+      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试加载';
+      retry.onclick = () => { error.remove(); retry.remove(); loadMediaElement(p, element, body); };
+      body.append(error, retry);
+    }
+  }
+
   function appendMediaDownload(p, body) {
+
     body.className = "media-body";
     body.innerHTML = "";
     const a = document.createElement("a");
-    a.href = p.url;
+    a.href = '#';
+    a.addEventListener('click', async event => {
+      event.preventDefault();
+      try {
+        const url = URL.createObjectURL(await fetchMediaBlob(p));
+        const download = document.createElement('a');
+        download.href = url; download.download = p.name || 'file';
+        document.body.append(download); download.click(); download.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      } catch (_) { a.textContent = '下载失败，请检查登录状态后重试'; }
+    });
     a.download = p.name || "file";
     a.className = "media-download";
     a.textContent = "下载 " + (p.name || "文件");
@@ -5780,7 +5850,8 @@ case "goal_round": break;
     $("model-confirm").onclick = async () => {
       if (!pending.provider || !pending.model) return;
       try {
-        await rpc("session.selectModel", { sessionId: state.sid, provider: pending.provider, model: pending.model });
+        await rpc(state.sid ? "session.selectModel" : "llm.selectDefault", { sessionId: state.sid, provider: pending.provider, model: pending.model });
+        workspaceNotify("changed");
         $("model-label").textContent = pending.provider + "/" + pending.model;
         $("model-modal").classList.add("hidden");
       } catch (e) {
@@ -6511,6 +6582,7 @@ case "goal_round": break;
       MCFG.roles = data.roles || {};
       mcfgRenderList(); mcfgFlush();
       mcfgState("已保存", "saved");
+      workspaceNotify("changed");
       line("notice", "模型配置已保存");
       const def = MCFG.roles.default;
       if (def) $("model-label").textContent = def.provider + "/" + def.model;
@@ -7320,6 +7392,7 @@ case "goal_round": break;
 
   function setMCOpen(open) {
     MC.open = open;
+    notifyEmbedPanel("monitor", open);
     const panel = $("mission-control");
     const expandBtn = $("mc-expand");
     if (open) {
@@ -7860,7 +7933,7 @@ case "goal_round": break;
       // Ctrl+N: 新会话
       if (mod && e.key === "n") {
         e.preventDefault();
-        newSession();
+        workspaceNotify("new-conversation");
       }
 
       // Ctrl+1/2/3/4: 切换 MC tab（MC 打开时）
@@ -8126,6 +8199,7 @@ case "goal_round": break;
   }
 
   function showLogin() {
+    workspaceNotify("login");
     const ov = $("login-overlay");
     if (ov) ov.classList.remove("hidden");
     refreshCaptcha();
@@ -8560,28 +8634,68 @@ case "goal_round": break;
   }
 
   // 实际启动逻辑（登录成功后或免认证时调用）
+  // 工作区组件只打开指定功能；登录和打开主页不会自动新建 AI 会话。
   async function bootApp() {
     initTheme();
     initSound();
+    if (workspaceSurface === "auth") {
+      workspaceNotify("authenticated");
+      return;
+    }
     initSidebar();
     initEvolution();
     initMissionControl();
-    initCmdPalette();
     initTerminal();
+    state.sid = null;
+    const sid = new URLSearchParams(location.search).get("session");
+    if (sid) await resume(sid);
+    if (embedMode()) initEmbedPanels();
+    if (workspaceSurface) {
+      let target;
+      if (workspaceSurface === "models") {
+        await openModels(); target = $("model-modal");
+      } else if (workspaceSurface === "config") {
+        await openModelConfig(); target = $("mcfg-modal");
+      } else if (workspaceSurface === "directory") {
+        await openDirPicker(); target = $("dir-modal");
+        if (!sid) {
+          $("dir-confirm").textContent = "关闭";
+          $("dir-confirm").onclick = () => workspaceNotify("closed");
+          $("dir-new-btn").classList.add("hidden");
+          $("dir-new-name").classList.add("hidden");
+        }
+      } else if (workspaceSurface === "qr") {
+        openQuickAccess(); target = $("qa-overlay");
+      } else {
+        workspaceNotify("error", {message: "未知功能"});
+        return;
+      }
+      // 关闭一律由原界面自己的按钮触发；Esc 与点击空白处同样关闭，不留第二层壳。
+      document.addEventListener("keydown", event => {
+        if (event.key === "Escape") workspaceNotify("closed");
+      });
+      if (target) {
+        if (target.classList.contains("modal")) {
+          target.addEventListener("mousedown", event => {
+            if (event.target === target) workspaceNotify("closed");
+          });
+        }
+        const observer = new MutationObserver(() => {
+          if (target.classList.contains("hidden")) {
+            observer.disconnect(); workspaceNotify("closed");
+          }
+        });
+        observer.observe(target, {attributes: true, attributeFilter: ["class"]});
+      }
+      workspaceNotify("ready");
+      return;
+    }
+    if (!sid) throw new Error("请从蜂群中打开一个 AI 对话");
+    initCmdPalette();
     initGlobalKeys();
     initAtComplete();
-    initGroups();
-    await loadGroups();
-    const host = await rpc("host.describe", {});
-    $("model-label").textContent = host.model || "(no model)";
-    if (!state.sid) {
-      await newSession();
-    } else {
-      await resume(state.sid);
-    }
-    loadSessions();
+    applySidebar(true, false);
     startStats();
-    startUnreadPoll();
   }
 
   // ── 启动 ──
@@ -8600,7 +8714,10 @@ case "goal_round": break;
       }
 
       hideLogin();
-      await bootApp();
+      try { await bootApp(); } catch (error) {
+        if (workspaceSurface) workspaceNotify("error", {message: error.message});
+        else line("error", error.message);
+      }
     } catch (e) {
       showLogin();
       loginError(`无法确认登录状态: ${e.message}`);
