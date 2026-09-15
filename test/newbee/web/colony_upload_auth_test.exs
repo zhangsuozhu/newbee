@@ -562,9 +562,13 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       sidebar = File.read!("priv/web/colony/sidebar.js")
 
       assert api =~ "const MEMBER_TOKEN_KEY = \"newbee.member_token\";"
+      assert api =~ "sessionStorage.getItem(MEMBER_TOKEN_KEY)"
+      assert api =~ "if (member) return member;"
       assert api =~ "result.error.code === \"unauthorized\" && !isMemberSession()"
       assert api =~ "if (method === \"auth.status\")"
-      assert manage =~ "markMemberSession();"
+      assert api =~ "markMemberSession(t);"
+      assert manage =~ "markMemberSession(result.token);"
+      refute manage =~ "localStorage.setItem('newbee.token', result.token);"
       assert store =~ "invalidateMemberSession();"
       assert store =~ "成员凭据已失效，请重新加入蜂群"
       assert shell =~ "forgetAuthToken(); location.assign('/')"

@@ -4,15 +4,34 @@ import { $ } from "./util.js";
 const TOKEN_KEY = "newbee.token";
 const MEMBER_TOKEN_KEY = "newbee.member_token";
 
-export function isMemberSession() {
-  try { return localStorage.getItem(MEMBER_TOKEN_KEY) === "1"; } catch (_) { return false; }
+function memberToken() {
+  try {
+    const current = sessionStorage.getItem(MEMBER_TOKEN_KEY);
+    if (current) return current;
+    // Migrate the pre-tab-scoped marker once, before it can be mistaken for a host token.
+    if (localStorage.getItem(MEMBER_TOKEN_KEY) === "1") {
+      const legacy = localStorage.getItem(TOKEN_KEY) || "";
+      if (legacy) sessionStorage.setItem(MEMBER_TOKEN_KEY, legacy);
+      localStorage.removeItem(MEMBER_TOKEN_KEY);
+      localStorage.removeItem(TOKEN_KEY);
+      return legacy;
+    }
+  } catch (_) {}
+  return "";
 }
 
-export function markMemberSession() {
-  try { localStorage.setItem(MEMBER_TOKEN_KEY, "1"); } catch (_) {}
+export function isMemberSession() {
+  return !!memberToken();
+}
+
+export function markMemberSession(token) {
+  try {
+    if (typeof token === "string" && token) sessionStorage.setItem(MEMBER_TOKEN_KEY, token);
+  } catch (_) {}
 }
 
 function clearMemberSession() {
+  try { sessionStorage.removeItem(MEMBER_TOKEN_KEY); } catch (_) {}
   try { localStorage.removeItem(MEMBER_TOKEN_KEY); } catch (_) {}
 }
 
@@ -24,12 +43,16 @@ export function authToken() {
     try { localStorage.setItem(TOKEN_KEY, fromUrl); } catch (_) {}
     return fromUrl;
   }
+  const member = memberToken();
+  if (member) return member;
   try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (_) { return ""; }
 }
 // 清除失效令牌（令牌被服务端拒绝时调用）。
 // 同时抹掉 URL 上的 ?token=：否则 authToken() 每次都会把那个坏令牌又存回来。
 export function forgetAuthToken() {
-  try { localStorage.removeItem(TOKEN_KEY); } catch (_) {}
+  if (!isMemberSession()) {
+    try { localStorage.removeItem(TOKEN_KEY); } catch (_) {}
+  }
   clearMemberSession();
   try {
     const url = new URL(location.href);
@@ -66,7 +89,7 @@ if (result.error) {
   }
   const value = result.ok;
   if (method === "auth.status") {
-    if (value?.host_owner === false) markMemberSession();
+    if (value?.host_owner === false) markMemberSession(t);
     else if (value?.host_owner === true || !t) clearMemberSession();
   }
   return value;

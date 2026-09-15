@@ -108,8 +108,7 @@ export async function redeemInvitation() {
   if (!value) return;
   try {
     const result = await rpc('colony.invite.redeem', {code, display:value.display});
-    localStorage.setItem('newbee.token', result.token);
-    markMemberSession();
+    markMemberSession(result.token);
     history.replaceState(null, '', location.pathname);
     state.colonyId = result.colony.id;
   } catch (error) {
