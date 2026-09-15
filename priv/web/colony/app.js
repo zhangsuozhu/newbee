@@ -213,11 +213,16 @@ function render(force = false) {
   if (!state.colonyId) {
     if (state.lastError) {
       const memberExpired = state.lastError === '成员凭据已失效，请重新加入蜂群';
+      const left = state.lastError === '已退出蜂群';
       const failed = document.createElement("div");
       failed.className = "colony-empty";
-      const message = memberExpired ? '成员凭据已失效，请使用新的邀请链接重新加入蜂群。' : `暂时无法加载蜂群：${state.lastError}`;
+      const message = memberExpired
+        ? '成员凭据已失效，请使用新的邀请链接重新加入蜂群。'
+        : left
+          ? '已退出蜂群，可使用新的邀请链接重新加入。'
+          : `暂时无法加载蜂群：${state.lastError}`;
       failed.innerHTML = `<div>${message}</div>`;
-      if (!memberExpired) {
+      if (!memberExpired && !left) {
         const retry = document.createElement("button");
         retry.className = "btn-allow";
         retry.textContent = "重试";
@@ -320,12 +325,13 @@ function renderSyncStatus() {
   }
   const error = state.lastError;
   const memberExpired = error === '成员凭据已失效，请重新加入蜂群';
-  bar.hidden = memberExpired || (!error && (!state.refreshing || !!state.data));
-  bar.classList.toggle('error', !!error && !memberExpired);
-  const message = memberExpired ? '' : error ? `更新失败：${error}。${state.data ? '当前显示上次成功加载的内容。' : ''}` : '正在加载…';
+  const left = error === '已退出蜂群';
+  bar.hidden = memberExpired || left || (!error && (!state.refreshing || !!state.data));
+  bar.classList.toggle('error', !!error && !memberExpired && !left);
+  const message = memberExpired || left ? '' : error ? `更新失败：${error}。${state.data ? '当前显示上次成功加载的内容。' : ''}` : '正在加载…';
   if (bar.dataset.message !== message) {
     bar.dataset.message = message; bar.textContent = message;
-    if (error && !memberExpired) {
+    if (error && !memberExpired && !left) {
       const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试';
       retry.onclick = () => ctx.refreshNow(); bar.append(retry);
     }

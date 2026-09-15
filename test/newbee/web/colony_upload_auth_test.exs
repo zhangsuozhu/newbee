@@ -572,9 +572,13 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert store =~ "invalidateMemberSession();"
       assert store =~ "成员凭据已失效，请重新加入蜂群"
       assert shell =~ "forgetAuthToken(); location.assign('/')"
+      assert manage =~ "state.lastError = '已退出蜂群';"
+      assert manage =~ "toast('已退出蜂群，可用新的邀请链接重新加入')"
       assert app =~ "const memberExpired = state.lastError === '成员凭据已失效，请重新加入蜂群'"
-      assert app =~ "if (error && !memberExpired)"
+      assert app =~ "const left = state.lastError === '已退出蜂群'"
+      assert app =~ "if (!memberExpired && !left)"
       assert sidebar =~ "成员凭据已失效，请使用新的邀请链接重新加入蜂群"
+      assert sidebar =~ "已退出蜂群，可使用新的邀请链接重新加入蜂群"
     end
   end
 end

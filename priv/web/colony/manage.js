@@ -1,4 +1,4 @@
-import {rpc, toast, markMemberSession} from './api.js';
+import {rpc, toast, markMemberSession, forgetAuthToken} from './api.js';
 import {state, refresh, loadColonies, selectColony} from './store.js';
 import {form} from './forms.js';
 
@@ -71,7 +71,15 @@ export async function manage() {
         return;
       }
       const value = await form('退出蜂群', owner ? [{name:'handoverTo',label:'交接给哪位成员',options:handover.map(b=>({value:b.display,label:b.display})),required:true,help:'管理员退出前需要交接；已有工作和成果会保留。'}] : [], '退出');
-      if (value) {await rpc('colony.bee.leave', {colonyId:state.colonyId, beeId:state.data.actor_bee_id, handoverTo:value.handoverTo}); await selectColony(null);}
+      if (value) {
+        await rpc('colony.bee.leave', {colonyId:state.colonyId, beeId:state.data.actor_bee_id, handoverTo:value.handoverTo});
+        await selectColony(null);
+        forgetAuthToken();
+        state.colonies = [];
+        state.lastError = '已退出蜂群';
+        toast('已退出蜂群，可用新的邀请链接重新加入');
+        return;
+      }
     } else if (choice.action === 'dissolve') {
       return dissolveColony();
     }
