@@ -43,6 +43,13 @@ defmodule Newbee.Web.EvolutionUxTest do
     assert js =~ "MC.evoUnread"
   end
 
+  test "进化长列表只布局可视内容" do
+    css = File.read!(Path.join([File.cwd!(), "priv", "web", "style.css"]))
+
+    assert Regex.match?(~r/\.evo-change \{[^}]*content-visibility: auto;[^}]*contain-intrinsic-size: auto 180px;/, css)
+    assert Regex.match?(~r/\.evo-event \{[^}]*content-visibility: auto;[^}]*contain-intrinsic-size: auto 48px;/, css)
+  end
+
   test "进化面板有人话骨架：intro/guide/decide/progress/history" do
     # 会话界面（Mission Control 进化面板所在处）现在是工作区表面。
     html = File.read!(Path.join([File.cwd!(), "priv", "web", "workspace.html"]))
