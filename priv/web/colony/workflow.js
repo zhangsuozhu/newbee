@@ -13,7 +13,15 @@ function button(label, fn, primary = false) {
 function paragraph(text, cls = '') { const el = document.createElement('p'); el.className = cls; el.textContent = text; return el; }
 const guard = (fn) => async () => { try { await fn(); } catch (e) { toast(e.message || '操作失败', true); } };
 const guardMenu = (items) => items.map(([label, fn]) => [label, guard(fn)]);
-async function act(t, action, attrs = {}) { await rpc('colony.work.flow', {colonyId:state.colonyId,taskId:t.id,revision:t.revision,action,...attrs}); await refresh(); }
+async function act(t, action, attrs = {}) {
+  // 直接按钮（选它执行/再互评/重试/分工）不经过 guardMenu，失败必须在界面上可见。
+  try {
+    await rpc('colony.work.flow', {colonyId:state.colonyId,taskId:t.id,revision:t.revision,action,...attrs});
+    await refresh();
+  } catch (e) {
+    toast(e.message || '操作失败', true);
+  }
+}
 export function workflowLabel(t) {
   if (terminal(t) || t.status === 'pending_review') return statusLabel(t.status);
   return t.control_state && t.control_state !== 'running' ? '已暂停' : phases[t.workflow?.phase] || statusLabel(t.status);
@@ -95,7 +103,7 @@ export function buildWorkflowCard(t, ctx) {
       const discuss = button('再互评一轮',() => act(t,'discuss')); discuss.disabled = w.round >= 2; actions.append(discuss);
     }
     if(w.phase === 'triage' && t.status === 'blocked') actions.append(button('重试初步分析',() => act(t,'retry')));
-    if(['executing','integrating'].includes(w.phase) && t.status === 'blocked' && t.waiting_for !== 'children') actions.append(button('答复并继续',async () => { const input = await form('继续实施',[{name:'text',label:t.next_step || '补充要求',multiline:true,required:true}]); if(input) { await rpc('colony.work.continue',{colonyId:state.colonyId,taskId:t.id,revision:t.revision,text:input.text}); await refresh(); } }));
+    if(['executing','integrating'].includes(w.phase) && t.status === 'blocked' && t.waiting_for !== 'children') actions.append(button('答复并继续',async () => { const input = await form('继续实施',[{name:'text',label:t.next_step || '补充要求',multiline:true,required:true}]); if(input) await guard(() => rpc('colony.work.continue',{colonyId:state.colonyId,taskId:t.id,revision:t.revision,text:input.text}).then(refresh))(); }));
     const paused = t.control_state && t.control_state !== 'running';
     // 低频操作收进「更多」，卡面上只留你此刻要做的决定。
     const lowFreq = [['工作详情', () => ctx.openTask(t.id, t.title)]];

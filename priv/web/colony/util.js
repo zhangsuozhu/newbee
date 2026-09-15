@@ -1,4 +1,5 @@
-// 蜂群前端 · 通用工具（无依赖）
+// 蜂群前端 · 通用工具。只依赖 api.js 的 toast 做失败反馈（api.js 只从本文件取 $，函数级引用不会成环）。
+import { toast } from "./api.js";
 export function $(sel, root = document) { return root.querySelector(sel); }
 export function $$(sel, root = document) { return Array.from(root.querySelectorAll(sel)); }
 
@@ -137,7 +138,7 @@ export function cardMenu(items, label = "更多 ▾") {
   for (const [text, fn] of items) {
     const item = document.createElement("button");
     item.type = "button"; item.className = "card-menu-item"; item.textContent = text;
-    item.onclick = async () => { pop.classList.add("hidden"); try { await fn(); } catch (error) { console.error("[colony] menu action failed", error); } };
+    item.onclick = async () => { pop.classList.add("hidden"); try { await fn(); } catch (error) { console.error("[colony] menu action failed", error); toast(error.message || "操作失败，请重试", true); } };
     pop.appendChild(item);
   }
   btn.onclick = (event) => { event.stopPropagation(); pop.classList.toggle("hidden"); };

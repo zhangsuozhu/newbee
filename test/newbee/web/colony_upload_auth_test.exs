@@ -391,4 +391,21 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       refute app =~ "navigator.clipboard.writeText(fileViewer.content)"
     end
   end
+
+  describe "动作失败要可见" do
+    test "菜单与直接按钮都把错误提示出来，而不是只进控制台" do
+      util = File.read!("priv/web/colony/util.js")
+      taskcard = File.read!("priv/web/colony/taskcard.js")
+      workflow = File.read!("priv/web/colony/workflow.js")
+
+      # 回归：cardMenu 的 catch 只 console.error；workflow 的 act / 答复并继续、
+      # taskcard 的 我来处理 / 提交成果 / 继续 都不走 guard → 失败时界面毫无反应。
+      assert util =~ "toast(error.message || \"操作失败，请重试\", true)"
+      assert workflow =~ "async function act(t, action, attrs = {}) {"
+      assert workflow =~ "guard(() => rpc('colony.work.continue'"
+      assert taskcard =~ "guard(() => rpc('colony.task.transition'"
+      assert taskcard =~ "guard(() => rpc('colony.work.submit'"
+      assert taskcard =~ "guard(() => rpc('colony.work.continue'"
+    end
+  end
 end

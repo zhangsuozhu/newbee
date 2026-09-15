@@ -84,15 +84,15 @@ ${Array.isArray(value) ? value.map(v => typeof v === 'string' ? v : JSON.stringi
     }
     if (task.approval_required || ['blocked', 'pending_review'].includes(task.status)) actions.append(action(task.mode === 'proposal' ? '采纳方案并实施' : '答复并继续', async () => {
       const answer = await form(task.question?.question || '继续这项工作', [{name:'text', label:'决定或补充要求', multiline:true, required:true, value:task.mode === 'proposal' ? '按该方案实施，完成后给出验证证据。' : ''}], '继续');
-      if (answer) await rpc('colony.work.continue', {colonyId:state.colonyId, taskId:task.id, revision:task.revision, text:answer.text}).then(refresh);
+      if (answer) await guard(() => rpc('colony.work.continue', {colonyId:state.colonyId, taskId:task.id, revision:task.revision, text:answer.text}).then(refresh))();
     }));
     menu.push(['补充要求', () => revise(task)]);
     if (state.data?.can_manage) menu.push(['请成员协作', () => collaborate(task)]);
     if (task.owner_kind === 'human' && task.assigned_bee_id === state.data?.actor_bee_id) {
-      if (task.status === 'pending') actions.append(action('我来处理', () => rpc('colony.task.transition', {colonyId:state.colonyId, taskId:task.id, event:'start'}).then(refresh)));
+      if (task.status === 'pending') actions.append(action('我来处理', guard(() => rpc('colony.task.transition', {colonyId:state.colonyId, taskId:task.id, event:'start'}).then(refresh))));
       actions.append(action('提交成果', async () => {
         const result = await form('提交工作成果', [{name:'content', label:'成果、验证方法与结果', required:true, multiline:true}, {name:'content_ref', label:'成果位置或版本'}, {name:'limitations', label:'未验证范围', multiline:true}], '提交验收');
-        if (result) { result.limitations = result.limitations.split('\n').filter(Boolean); await rpc('colony.work.submit', {colonyId:state.colonyId, taskId:task.id, result}); await refresh(); }
+        if (result) { result.limitations = result.limitations.split('\n').filter(Boolean); await guard(() => rpc('colony.work.submit', {colonyId:state.colonyId, taskId:task.id, result}).then(refresh))(); }
       }));
     }
   }
