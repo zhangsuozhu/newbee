@@ -603,8 +603,13 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert app =~ "frame.focus({ preventScroll: true });"
       assert app =~ "lastRoute = route;"
       assert app =~ "const input = frame.contentDocument?.getElementById(\"input\");"
-      assert app =~ "if (input) input.focus({ preventScroll: true });"
-      assert app =~ "frame.addEventListener(\"load\", focusEmbed, { once: true });"
+      assert app =~ "const frame = $(\"#embed-frame\");"
+      assert app =~ "if (input) {"
+      assert app =~ "input.focus({ preventScroll: true });"
+      assert app =~ "const route = JSON.stringify([state.colonyId, state.view, state.conversationId,"
+      assert app =~ "const focusEmbed = (attempt = 0) =>"
+      assert app =~ "setTimeout(() => focusEmbed(attempt + 1), 50);"
+      assert app =~ "frame.addEventListener(\"load\", () => focusEmbed(), { once: true });"
     end
   end
 

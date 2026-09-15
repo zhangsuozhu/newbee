@@ -184,17 +184,31 @@ function render(force = false) {
   if (embedHost) embedHost.classList.toggle("hidden", !embedding);
 
   if (embedding) {
-    const route = JSON.stringify([state.colonyId, state.view, state.stack, state.groupTab]);
+    const route = JSON.stringify([state.colonyId, state.view, state.conversationId, state.stack, state.groupTab]);
     const changedRoute = route !== lastRoute;
     const conversationId = state.conversationId;
     const frame = $("#embed-frame");
-    const focusEmbed = () => {
+    if (!frame) {
+      setTimeout(() => {
+        if (state.view === "conversation" && state.conversationId === conversationId && document.querySelector("#embed-frame")) render(true);
+      }, 0);
+      return;
+    }
+    // iframe load 可能早于工作区脚本挂载；有界重试把焦点交给真正输入框。
+    const focusEmbed = (attempt = 0) => {
       if (state.view !== "conversation" || state.conversationId !== conversationId || frame.hidden) return;
       const input = frame.contentDocument?.getElementById("input");
-      if (input) input.focus({ preventScroll: true });
-      else frame.focus({ preventScroll: true });
+      if (input) {
+        input.focus({ preventScroll: true });
+        return;
+      }
+      if (attempt < 40) {
+        setTimeout(() => focusEmbed(attempt + 1), 50);
+        return;
+      }
+      frame.focus({ preventScroll: true });
     };
-    if (changedRoute && lastRoute !== null) frame.addEventListener("load", focusEmbed, { once: true });
+    if (changedRoute && lastRoute !== null) frame.addEventListener("load", () => focusEmbed(), { once: true });
     const src = `/workspace.html?session=${encodeURIComponent(conversationId)}&embed=1`;
     if (frame.dataset.src !== src) {
       frame.dataset.src = src;
