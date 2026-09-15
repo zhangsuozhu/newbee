@@ -266,6 +266,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert js =~ "let preset = {display:'研发助手', capabilities:'edit,shell,research'};"
       assert js =~ "while (!added) {"
       assert js =~ "preset = {display:value.display, capabilities:value.capabilities};"
+      assert js =~ "if (owner && !handover.length) {"
+      assert js =~ "当前没有可交接的真人成员，请先邀请一位真人成员"
     end
   end
 
@@ -525,6 +527,18 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert workflow =~ "rpc('colony.workspace.cleanup'"
       assert api =~ "colony.workspace.cleanup"
       assert engine =~ "只有已结束任务才能清理工作区"
+    end
+  end
+
+  describe "对话框关闭焦点" do
+    test "form、确认框和侧栏选择框都恢复触发控件" do
+      forms = File.read!("priv/web/colony/forms.js")
+      sidebar = File.read!("priv/web/colony/sidebar.js")
+
+      assert forms =~ "export function restoreFocus(previousFocus)"
+      assert forms =~ "dialog.remove(); restoreFocus(previousFocus);"
+      assert sidebar =~ "import { form, confirmAction, restoreFocus } from './forms.js';"
+      assert sidebar =~ "dialog.remove(); restoreFocus(previousFocus);"
     end
   end
 end

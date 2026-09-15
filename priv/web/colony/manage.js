@@ -65,7 +65,12 @@ export async function manage() {
       const value = await form('移出成员', [{name:'beeId',label:'成员',options:members.map(b=>({value:b.id,label:b.display})),help:'吊销访问。未完成的工作保留并等待重新安排，不自动重放外部操作。'}], '移出');
       if (value) await rpc('colony.bee.remove', {colonyId:state.colonyId, beeId:value.beeId});
     } else if (choice.action === 'leave') {
-      const value = await form('退出蜂群', owner ? [{name:'handoverTo',label:'交接给哪位成员',options:(state.data?.members || []).filter(b=>b.kind==='human' && b.id!==state.data?.actor_bee_id).map(b=>({value:b.display,label:b.display})),required:true,help:'管理员退出前需要交接；已有工作和成果会保留。'}] : [], '退出');
+      const handover = (state.data?.members || []).filter(b => b.kind === 'human' && b.id !== state.data?.actor_bee_id);
+      if (owner && !handover.length) {
+        toast('当前没有可交接的真人成员，请先邀请一位真人成员', true);
+        return;
+      }
+      const value = await form('退出蜂群', owner ? [{name:'handoverTo',label:'交接给哪位成员',options:handover.map(b=>({value:b.display,label:b.display})),required:true,help:'管理员退出前需要交接；已有工作和成果会保留。'}] : [], '退出');
       if (value) {await rpc('colony.bee.leave', {colonyId:state.colonyId, beeId:state.data.actor_bee_id, handoverTo:value.handoverTo}); await selectColony(null);}
     } else if (choice.action === 'dissolve') {
       return dissolveColony();

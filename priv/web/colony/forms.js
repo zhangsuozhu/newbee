@@ -1,8 +1,16 @@
 import { copyToClipboard } from "./util.js";
 
 // Small accessible dialogs use the existing application controls and theme.
+
+export function restoreFocus(previousFocus) {
+  if (!previousFocus || previousFocus === document.body) return;
+  queueMicrotask(() => {
+    if (document.body.contains(previousFocus)) previousFocus.focus({preventScroll: true});
+  });
+}
 export function form(title, fields, submitLabel = '保存') {
   return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
     const dialog = document.createElement('dialog');
     dialog.className = 'colony-dialog';
     const node = document.createElement('form');
@@ -61,13 +69,14 @@ export function form(title, fields, submitLabel = '保存') {
       result = Object.fromEntries([...inputs].map(([key, input]) => [key, input.value.trim()]));
       dialog.close();
     };
-    dialog.onclose = () => { dialog.remove(); resolve(result); };
+    dialog.onclose = () => { dialog.remove(); restoreFocus(previousFocus); resolve(result); };
     dialog.showModal();
   });
 }
 
 export function confirmAction(title, message, confirmLabel = '确认') {
   return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
     const dialog = document.createElement('dialog');
     dialog.className = 'colony-dialog';
     dialog.setAttribute('role', 'alertdialog');
@@ -81,7 +90,7 @@ export function confirmAction(title, message, confirmLabel = '确认') {
     cancel.onclick = () => dialog.close('cancel');
     confirm.onclick = () => dialog.close('confirm');
     actions.append(cancel, confirm); node.append(heading, body, actions); dialog.append(node); document.body.append(dialog);
-    dialog.onclose = () => { dialog.remove(); resolve(dialog.returnValue === 'confirm'); };
+    dialog.onclose = () => { dialog.remove(); restoreFocus(previousFocus); resolve(dialog.returnValue === 'confirm'); };
     dialog.showModal();
     cancel.focus();
   });

@@ -255,6 +255,7 @@ function render(force = false) {
       if (i >= 0) details.open = remaining.splice(i, 1)[0][1];
     }
   }
+  const overview = state.view === 'chat' && state.groupTab !== 'messages';
   const startAtTop = state.view === 'drill' || overview;
   if (!sameRoute) transcript.scrollTop = startAtTop ? 0 : transcript.scrollHeight;
   else if (wasNearBottom && !startAtTop) scrollBottom();

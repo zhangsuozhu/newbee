@@ -1,7 +1,7 @@
 // 蜂群前端 · 左侧列表：蜂群（会话组样式）+ 成员（会话项样式），完全复用主界面组件类
 import { esc, statusLabel, kindLabel } from "./util.js";
 import { state, currentBeeId, refresh, openBeeTrail } from "./store.js";
-import { form } from './forms.js';
+import { form, confirmAction, restoreFocus } from './forms.js';
 import { rpc, toast } from './api.js';
 import {renameColony, dissolveColony} from './manage.js';
 
@@ -278,6 +278,7 @@ function attachSwipe(cell, item) {
 }
 function pick(title, actions, target = "") {
   return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
     const dialog = document.createElement("dialog");
     dialog.className = "colony-dialog";
     const node = document.createElement("div");
@@ -309,40 +310,11 @@ function pick(title, actions, target = "") {
     node.append(row);
     dialog.append(node);
     document.body.append(dialog);
-    dialog.onclose = () => { const value = dialog.returnValue; dialog.remove(); resolve(value === "" || value === undefined ? null : value); };
+    dialog.onclose = () => { const value = dialog.returnValue; dialog.remove(); restoreFocus(previousFocus); resolve(value === "" || value === undefined ? null : value); };
     dialog.showModal();
   });
 }
 
-function confirmAction(title, text, confirmLabel) {
-  return new Promise((resolve) => {
-    const dialog = document.createElement("dialog");
-    dialog.className = "colony-dialog";
-    const node = document.createElement("div");
-    const heading = document.createElement("h3");
-    heading.textContent = title;
-    const body = document.createElement("p");
-    body.textContent = text;
-    const actions = document.createElement("div");
-    actions.className = "colony-dialog-actions";
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.className = "btn-ghost";
-    cancel.textContent = "取消";
-    cancel.onclick = () => dialog.close("cancel");
-    const ok = document.createElement("button");
-    ok.type = "button";
-    ok.className = "btn-deny";
-    ok.textContent = confirmLabel;
-    ok.onclick = () => dialog.close("confirm");
-    actions.append(cancel, ok);
-    node.append(heading, body, actions);
-    dialog.append(node);
-    document.body.append(dialog);
-    dialog.onclose = () => { const value = dialog.returnValue; dialog.remove(); resolve(value === "confirm"); };
-    dialog.showModal();
-  });
-}
 async function conversationMenu(bee, conversation) {
   const target = conversation.title || "新对话";
   const choice = await pick("对话操作", [
