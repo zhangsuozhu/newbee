@@ -583,4 +583,16 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert sidebar =~ "已退出蜂群，可使用新的邀请链接重新加入蜂群"
     end
   end
+
+  describe "工作流超时确认" do
+    test "超时后给出结果可能已处理提示并主动刷新" do
+      api = File.read!("priv/web/colony/api.js")
+      workflow = File.read!("priv/web/colony/workflow.js")
+
+      assert api =~ "timeout.code = 'timeout';"
+      assert workflow =~ "if (e?.code === 'timeout')"
+      assert workflow =~ "void refresh();"
+      assert workflow =~ "请求超时；结果可能已处理，正在刷新工作卡"
+    end
+  end
 end

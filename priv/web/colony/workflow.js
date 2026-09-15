@@ -19,6 +19,11 @@ async function act(t, action, attrs = {}) {
     await rpc('colony.work.flow', {colonyId:state.colonyId,taskId:t.id,revision:t.revision,action,...attrs});
     await refresh();
   } catch (e) {
+    if (e?.code === 'timeout') {
+      toast('请求超时；结果可能已处理，正在刷新工作卡', true);
+      void refresh();
+      return;
+    }
     toast(e.message || '操作失败', true);
   }
 }

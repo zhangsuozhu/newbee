@@ -72,7 +72,11 @@ export async function rpc(method, payload = {}, {timeoutMs = 30000} = {}) {
     headers,
     body: JSON.stringify({ rpcId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, method, payload }),
   }).catch(error => {
-    if (error.name === 'TimeoutError' || error.name === 'AbortError') throw new Error('请求超时；结果可能已处理，请刷新确认后再操作');
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+      const timeout = new Error('请求超时；结果可能已处理，请刷新确认后再操作');
+      timeout.code = 'timeout';
+      throw timeout;
+    }
     throw error;
   });
 
