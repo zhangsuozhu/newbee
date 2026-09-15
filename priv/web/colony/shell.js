@@ -244,10 +244,20 @@ export function initShell() {
   });
   window.addEventListener('keydown', event => {
     if (layer && !layer.hidden) return;
+    const modalOpen = document.querySelector('dialog[open], .modal:not(.hidden), #qa-overlay:not(.hidden), #login-overlay:not(.hidden), #cmd-palette:not(.hidden)');
+    if (event.key === 'Escape' && matchMedia('(max-width: 768px)').matches &&
+        !$('app').classList.contains('sidebar-collapsed') && !modalOpen &&
+        !event.target?.closest?.('dialog')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      collapseSidebar(true);
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'm') { event.preventDefault(); toggleConversationPanel('monitor'); }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); $('new-colony').click(); }
   });
   window.addEventListener('message', event => {
+
     if (event.origin !== location.origin) return;
     const isTool = frame && event.source === frame.contentWindow;
     const isConversation = event.source === $('embed-frame')?.contentWindow;

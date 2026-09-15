@@ -364,6 +364,10 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert shell =~ "if (focusToggle) $('sidebar-toggle')?.focus({preventScroll:true});"
       assert shell =~ "else if (localStorage.getItem('newbee.sidebar') !== '1')"
       assert shell =~ "collapseSidebar(false, false);"
+      assert shell =~ "event.key === 'Escape' && matchMedia('(max-width: 768px)').matches"
+      assert shell =~ "event.stopImmediatePropagation();"
+      assert shell =~ "collapseSidebar(true);"
+      assert shell =~ "dialog[open]"
     end
   end
 
