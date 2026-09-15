@@ -68,5 +68,31 @@ defmodule Newbee.Colony.InteractionTargetTest do
     # 关键：消息本身必须落到群聊轨迹里（前端据此显示）
     texts = Store.trace_for_colony(ctx.cid, channel: "colony") |> Enum.map(& &1["text"])
     assert "大家好" in texts
+    # 「继续」这类指令不该被当成新约束塞进 task.constraints（会被当要求喂给执行器）。
+    assert {:ok, cont} =
+             Interaction.say(ctx.cid, "继续", actor_bee_id: ctx.actor, context: %{"taskId" => task["id"]})
+
+    assert cont["reply"] =~ "工作已暂停"
+    assert elem(Newbee.Colony.Store.get_task(task["id"]), 1)["constraints"] in [nil, []]
+  end
+
+  # 「继续」在方案阶段会被 Work.continue 拒绝；以前这个错误直接冒到 API，
+  # 前端弹红 toast——但消息其实已经记进群聊了（R117 的同类问题，另一条分支）。
+  test "方案阶段说「继续」不再是发送失败，而是给出可走的下一步", ctx do
+    {:ok, task} =
+      Newbee.Colony.Work.create(ctx.cid, %{
+        "title" => "方案阶段的工作",
+        "description" => "尚未进入实施",
+        "workflow" => true,
+        "assigned_bee_id" => ctx.a["id"],
+        "actor_bee_id" => ctx.actor
+      })
+
+    # 造一个「受阻、等决策」的任务，让它落进 continue_latest 的候选。
+    :ok = Newbee.Colony.Store.put_task(Map.put(task, "status", "blocked"))
+
+    assert {:ok, res} = Interaction.say(ctx.cid, "继续", actor_bee_id: ctx.actor)
+    assert is_binary(res["reply"])
+    assert res["reply"] =~ "消息已记录在群聊"
   end
 end

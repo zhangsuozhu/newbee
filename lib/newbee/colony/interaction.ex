@@ -142,26 +142,32 @@ defmodule Newbee.Colony.Interaction do
         else: if(length(tasks) == 1, do: hd(tasks))
 
     if current do
-      case Work.revise(
-             cid,
-             current["id"],
-             %{"constraints" => (current["constraints"] || []) ++ [text]},
-             actor
-           ) do
-        {:ok, task} ->
-          response("已记录新要求。工作保持暂停，恢复前会应用最新约束。", [task])
+      # 「继续/开工」这类指令不是新约束：以前会被当要求拼进 task.constraints，
+      # 把「继续」这种词喂给执行器（用户想说的是“接着干”，只是工作被暂停了）。
+      if Regex.match?(~r/^(继续|同意|按这个做|开始吧|开工|好的|收到)[！!。.\s]*$/u, text) do
+        response("工作已暂停；先在任务卡的「更多 ▾ → 恢复任务」恢复（或说「恢复执行」），我再接着做。", [current])
+      else
+        case Work.revise(
+               cid,
+               current["id"],
+               %{"constraints" => (current["constraints"] || []) ++ [text]},
+               actor
+             ) do
+          {:ok, task} ->
+            response("已记录新要求。工作保持暂停，恢复前会应用最新约束。", [task])
 
-        # 方案/讨论/选择阶段不接受「补充约束」。但消息已经记进群聊（trace 在上面就写了），
-        # 这里再报失败会让用户以为没发出去（暂停 + 有待选方案时每句话都红一次）。
-        {:error, "workflow_decision_required", _msg} ->
-          response(
-            "消息已记录在群聊。当前工作处于方案阶段，请在工作卡里讨论或选择方案" <>
-              "（若显示「已暂停」，先在卡片的「更多 ▾ → 恢复任务」恢复）。",
-            [current]
-          )
+          # 方案/讨论/选择阶段不接受「补充约束」。但消息已经记进群聊（trace 在上面就写了），
+          # 这里再报失败会让用户以为没发出去（暂停 + 有待选方案时每句话都红一次）。
+          {:error, "workflow_decision_required", _msg} ->
+            response(
+              "消息已记录在群聊。当前工作处于方案阶段，请在工作卡里讨论或选择方案" <>
+                "（若显示「已暂停」，先在卡片的「更多 ▾ → 恢复任务」恢复）。",
+              [current]
+            )
 
-        other ->
-          other
+          other ->
+            other
+        end
       end
     else
       key = Enum.join([cid, actor, tid || "group"], ":")
@@ -278,8 +284,16 @@ defmodule Newbee.Colony.Interaction do
     case tasks do
       [task] ->
         case Work.continue(cid, task["id"], text, actor) do
-          {:ok, task} -> response("已继续这项工作。", [task])
-          error -> error
+          {:ok, task} ->
+            response("已继续这项工作。", [task])
+
+          # 方案阶段不能直接「继续」（要么先在工作卡里选择/讨论，要么工作被暂停）：
+          # 消息已经记进群聊，别把它报成发送失败。
+          {:error, "workflow_decision_required", msg} ->
+            response(msg <> "（消息已记录在群聊）", [task])
+
+          error ->
+            error
         end
 
       [] ->
