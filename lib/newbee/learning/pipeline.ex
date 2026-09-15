@@ -91,14 +91,14 @@ defmodule Newbee.Learning.Pipeline do
         tag = "p" <> Integer.to_string(n + 1)
         attempt_id = id <> "-" <> tag
 
-        {state, _receipt} =
+        {state, attempt_receipt} =
           attempt([next], root, id, state["learning_head"], model_fun, tag, state, 3, 6000)
 
         verdict =
-          get_in(state, ["attempts", attempt_id, "verdict"]) || get_in(receipt_receipts(state, attempt_id), ["verdict"])
+          get_in(state, ["attempts", attempt_id, "verdict"]) || attempt_receipt[:verdict] || "unknown"
 
         lesson = %{
-          "claim" => "practice for " <> next["id"] <> " completed with verdict " <> (verdict || "unknown"),
+          "claim" => "practice for " <> next["id"] <> " completed with verdict " <> verdict,
           "scope" => "elixir-fixtures",
           "preconditions" => ["fixture " <> next["id"]],
           "counterexample" => "not applicable outside fixture scope",
@@ -112,7 +112,6 @@ defmodule Newbee.Learning.Pipeline do
     end
   end
 
-  defp receipt_receipts(_state, _attempt_id), do: %{}
 
   defp attempt([fx | _], root, experiment_id, memory, model_fun, tag, state, calls, tokens) do
     attempt_id = experiment_id <> "-" <> tag
@@ -141,7 +140,8 @@ defmodule Newbee.Learning.Pipeline do
       })
 
     s5 = command(s4, tag <> "-fin", "finish_attempt", %{"attempt_id" => attempt_id, "verdict" => verdict})
-    {s5, %{attempt_id: attempt_id, verdict: verdict}}
+    s6 = command(s5, tag <> "-reconcile", "reconcile_budget", %{"attempt_id" => attempt_id, "cost" => cost_for(result)})
+    {s6, %{attempt_id: attempt_id, verdict: verdict}}
   end
 
   defp arm_memory(_state, baseline, "baseline"), do: baseline["memory_m0"]
@@ -172,6 +172,12 @@ defmodule Newbee.Learning.Pipeline do
   defp status_of(%{error: _}), do: "unknown"
   defp result_usage_tokens(%{usage: %{"tokens" => t}}), do: t
   defp result_usage_tokens(_), do: 0
+
+  defp cost_for(%{usage: usage}) do
+    %{"calls" => Map.get(usage, "calls", 0), "tokens" => Map.get(usage, "tokens", 0)}
+  end
+
+  defp cost_for(_), do: %{"calls" => 0, "tokens" => 0}
 
   defp command(state, id, type, payload) do
     {:ok, next, _receipt} =
