@@ -5268,14 +5268,21 @@ case "goal_round": break;
     btn.id = "load-more";
     btn.innerHTML = `<button class="btn-ghost" style="margin:8px auto;display:block;font-size:12px">↑ 加载更早 ${remaining} 条消息</button>`;
     const button = btn.querySelector("button");
-    if (button) button.addEventListener("mousedown", (event) => event.preventDefault());
+    if (button) {
+      button.addEventListener("focus", () => { historyButtonFocused = true; });
+      button.addEventListener("blur", () => { historyButtonFocused = false; });
+      button.addEventListener("mousedown", (event) => event.preventDefault());
+    }
     btn.addEventListener("click", () => loadEarlier());
     flowEl.insertBefore(btn, flowEl.firstChild);
   }
+  let historyButtonFocused = false;
   let loadingEarlier = false; // 防重入
   async function loadEarlier() {
     if (loadingEarlier || historyOffset <= 0) return;
     loadingEarlier = true;
+    const restoreHistoryFocus = historyButtonFocused;
+    historyButtonFocused = false;
     const stickBottom = state.stickBottom;
     state.stickBottom = false;
     let transcriptEl = null;
@@ -5328,6 +5335,9 @@ case "goal_round": break;
       } else {
         transcriptEl.scrollTop = Math.max(0, oldScrollTop + transcriptEl.scrollHeight - oldHeight);
       }
+      if (restoreHistoryFocus && historyOffset > 0) {
+        document.querySelector("#load-more button")?.focus({ preventScroll: true });
+      }
     } finally {
       if (transcriptEl) {
         transcriptEl.style.scrollBehavior = behavior;
@@ -5345,7 +5355,8 @@ case "goal_round": break;
     t.dataset.infinityBound = "1";
     t.addEventListener("scroll", () => {
       if (historyOffset <= 0 || loadingEarlier || state.busy) return;
-      if (t.scrollTop <= 40) loadEarlier();
+      const manual = historyButtonFocused || document.activeElement?.closest?.("#load-more");
+      if (t.scrollTop <= 40 && !manual) loadEarlier();
     });
   }
 
