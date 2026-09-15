@@ -5,6 +5,16 @@ import { cardMenu, esc, statusLabel } from './util.js';
 import { renderMarkdown } from './md.js';
 const phases = {triage:'判断投入',proposing:'独立提案',discussing:'讨论方案',choosing:'等你决定',executing:'实施修改',integrating:'集成验证'};
 const openFolds = new Set();
+const openDetails = new Set();
+function rememberDetails(details, taskId, key) {
+  const id = `${taskId}:${key}`;
+  details.addEventListener('toggle', () => {
+    if (details.open) openDetails.add(id);
+    else openDetails.delete(id);
+  });
+  details.open = openDetails.has(id);
+  return details;
+}
 const terminal = t => ['done','failed','cancelled'].includes(t.status);
 const name = id => memberById(id)?.display || '已离开的成员';
 function button(label, fn, primary = false) {
@@ -63,7 +73,13 @@ export function buildWorkflowCard(t, ctx) {
   const head = document.createElement('div'); head.className = 'work-flow-head'; head.innerHTML = `<strong>${esc(t.title)}</strong><span class="chip-mini accent">${esc(workflowLabel(t))}</span>`;
   card.append(head,paragraph(`${name(t.assigned_bee_id)} 负责 · 互评 ${w.round}/2 轮`,'work-flow-owner'));
   // 判断依据默认收起：卡面上先给结论，想追原因再展开。
-  if (w.reason) { const why = document.createElement('details'); why.className = 'work-why'; const whyTitle = document.createElement('summary'); whyTitle.textContent = '为什么这么安排'; why.append(whyTitle,paragraph(w.reason,'work-flow-reason')); card.append(why); }
+  if (w.reason) {
+    const why = document.createElement('details'); why.className = 'work-why';
+    const whyTitle = document.createElement('summary'); whyTitle.textContent = '为什么这么安排';
+    why.append(whyTitle,paragraph(w.reason,'work-flow-reason'));
+    rememberDetails(why, t.id, 'why');
+    card.append(why);
+  }
   // 七个阶段不再平铺，收成一条进度：当前在哪一步、还剩几步。
   const order = Object.keys(phases);
   const index = Math.max(0, order.indexOf(w.phase));
@@ -88,7 +104,15 @@ export function buildWorkflowCard(t, ctx) {
       more.onclick = () => { const on = summary.classList.toggle('folded-summary'); more.textContent = on ? '展开完整方案' : '收起'; };
       item.append(more);
     }
-    (p.reviews || []).forEach((review,i) => { const details = document.createElement('details'); details.open = false; const title = document.createElement('summary'); title.textContent = `第 ${i+1} 轮互评`; const body = document.createElement('div'); body.className = 'md'; body.innerHTML = renderMarkdown(review); details.append(title,body); item.append(details); });
+    (p.reviews || []).forEach((review, i) => {
+      const details = document.createElement('details');
+      const key = `review:${p.task_id || p.bee_id || 'member'}:${i}`;
+      const title = document.createElement('summary'); title.textContent = `第 ${i + 1} 轮互评`;
+      const body = document.createElement('div'); body.className = 'md'; body.innerHTML = renderMarkdown(review);
+      details.append(title, body);
+      rememberDetails(details, t.id, key);
+      item.append(details);
+    });
     if(child?.status === 'blocked') {
       item.append(paragraph(child.next_step || '这只 Bee 需要帮助','work-ask'));
       if(manage) item.append(button('补充并重试',async () => { const input = await form('继续当前阶段',[{name:'text',label:'答复或补充说明',multiline:true,required:true}],'重试'); if(input) await act(t,'retry_member',{memberTaskId:p.task_id,text:input.text}); }));
@@ -100,13 +124,27 @@ export function buildWorkflowCard(t, ctx) {
   if(proposals.childElementCount) {
     if(['executing','integrating'].includes(w.phase) || terminal(t)) {
       const history = document.createElement('details'); const title = document.createElement('summary');
-      title.textContent = `查看已确认的方案与互评 · ${w.proposals.length}`; history.append(title,proposals); card.append(history);
+      title.textContent = `查看已确认的方案与互评 · ${w.proposals.length}`;
+      history.append(title, proposals);
+      rememberDetails(history, t.id, 'history');
+      card.append(history);
     } else card.append(proposals);
   }
   for(const id of w.children || []) { const child = (state.data?.tasks || []).find(c => c.id === id); if(!child) continue; const row = document.createElement('div'); row.className = 'work-assignment'; row.append(paragraph(`${name(child.assigned_bee_id)} · ${child.title} · ${child.integration_required && child.status === 'pending_review' ? '已提交，待负责人集成' : statusLabel(child.status)}`),button('查看分工',() => ctx.openTask(child.id,child.title))); card.append(row); }
   if(t.next_step && t.status === 'blocked') card.append(paragraph(t.next_step,'work-flow-next'));
-  if((w.comments || []).length) { const details = document.createElement('details'); const title = document.createElement('summary'); title.textContent = `人的补充 · ${w.comments.length}`; details.append(title); w.comments.forEach(c => details.append(paragraph(`${name(c.by)}：${c.text}`))); card.append(details); }
-  if(t.workspace?.path) { const details = document.createElement('details'); const title = document.createElement('summary'); title.textContent = '工作目录与交付位置'; details.append(title,paragraph(t.workspace.path)); card.append(details); }
+  if((w.comments || []).length) {
+    const details = document.createElement('details'); const title = document.createElement('summary');
+    title.textContent = `人的补充 · ${w.comments.length}`;
+    details.append(title); w.comments.forEach(c => details.append(paragraph(`${name(c.by)}：${c.text}`)));
+    rememberDetails(details, t.id, 'comments');
+    card.append(details);
+  }
+  if(t.workspace?.path) {
+    const details = document.createElement('details'); const title = document.createElement('summary');
+    title.textContent = '工作目录与交付位置'; details.append(title, paragraph(t.workspace.path));
+    rememberDetails(details, t.id, 'workspace');
+    card.append(details);
+  }
   const actions = document.createElement('div'); actions.className = 'work-flow-actions';
   if(!terminal(t) && !['executing','integrating'].includes(w.phase)) actions.append(button('补充讨论意见',async () => { const input = await form('给任务补充意见',[{name:'text',label:'约束、分歧或希望的方案',multiline:true,required:true}],'发送'); if(input) await act(t,'comment',input); }));
   if(manage) {

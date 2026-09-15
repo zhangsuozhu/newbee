@@ -1,6 +1,12 @@
 // 蜂群前端 · 顶部标题与面包屑（主界面 topbar 的标题行 + 一行小字）
 import { esc } from "./util.js";
 import { state, gotoLevel, resetToChat, memberById, exitBeeMode, openBeeTrail } from "./store.js";
+function focusChatRegion() {
+  const main = document.getElementById('transcript') || document.getElementById('main');
+  if (!main) return;
+  if (!main.hasAttribute('tabindex')) main.setAttribute('tabindex', '-1');
+  main.focus({preventScroll: true});
+}
 
 export function renderBreadcrumbs() {
   const title = document.getElementById("session-title");
@@ -19,7 +25,10 @@ export function renderBreadcrumbs() {
     const topDrill = drills[drills.length - 1];
     title.textContent = topDrill ? (topDrill.entry.title || "任务") : (bee.display || "Bee");
     if (!sub) return;
-    sub.appendChild(crumb("蜂群", false, () => exitBeeMode()));
+    sub.appendChild(crumb("蜂群", false, async () => {
+      await exitBeeMode();
+      setTimeout(focusChatRegion, 0);
+    }));
     sub.appendChild(sep());
     sub.appendChild(crumb(bee.display || "Bee", !inConversation && drills.length === 0, () => openBeeTrail(bee.id)));
     if (inConversation) {

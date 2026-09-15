@@ -584,6 +584,16 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     end
   end
 
+  describe "Bee 对话返回焦点" do
+    test "从执行过程列表返回蜂群时接管 transcript 焦点" do
+      breadcrumbs = File.read!("priv/web/colony/breadcrumbs.js")
+
+      assert breadcrumbs =~ "function focusChatRegion()"
+      assert breadcrumbs =~ "await exitBeeMode();"
+      assert breadcrumbs =~ "setTimeout(focusChatRegion, 0);"
+    end
+  end
+
   describe "一次性邀请码错误恢复" do
     test "已使用邀请码清掉 hash 后回到可用蜂群界面" do
       js = File.read!("priv/web/colony/manage.js")
@@ -633,6 +643,10 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert workflow =~ "const openFolds = new Set();"
       assert workflow =~ "folded.addEventListener('toggle'"
       assert workflow =~ "folded.open = openFolds.has(t.id);"
+      assert workflow =~ "const openDetails = new Set();"
+      assert workflow =~ "function rememberDetails(details, taskId, key)"
+      assert workflow =~ "rememberDetails(details, t.id, key);"
+      assert workflow =~ "rememberDetails(history, t.id, 'history');"
     end
   end
 
