@@ -77,9 +77,14 @@ const ctx = {
       toast(e.message || "打不开它的任务", true);
     }
   },
-  // 头部「＋ 新任务」：预填任务指令，1:1 里发出去就是直接派给这只 Bee
+  // 头部「＋ 新任务」：给这只 Bee 派活。成员层级里打字只会进它的（1:1）对话，
+  // 创建不了群任务（服务端对 AI 的 1:1 固定返回 conversation_required）；
+  // 真能「直接派给它」的路径是群聊 @点名——服务端按 @ 把这句话派给被点名的 Bee。
   prefillTask: () => {
-    prefill("建个任务：");
+    const bee = state.beeModeId ? memberById(state.beeModeId) : null;
+    resetToChat();
+    state.groupTab = "messages"; // 派活这句话落在群聊记录里，别把用户留在工作台
+    prefill(bee ? `@${bee.display} 建个任务：` : "建个任务：");
   },
   // 点 Bee：左侧换成它的对话列表；有对话就直接打开最近一条（真实 newbee 会话）
   enterBeeMode: async (beeId) => {

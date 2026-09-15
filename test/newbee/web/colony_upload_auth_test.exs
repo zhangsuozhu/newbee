@@ -432,4 +432,16 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert app =~ "if (inDoc) return;"
     end
   end
+
+  describe "成员层级的「＋新任务」" do
+    test "走群聊 @点名，而不是把话发进 1:1（那里建不了群任务）" do
+      app = File.read!("priv/web/colony/app.js")
+
+      # 回归：按钮承诺「直接派给它」，但成员层级里 colony.say 走 1:1 通道会被拒。
+      # 真正能派给指定 Bee 的路径是群聊 @点名（服务端按 @ 直投）。
+      assert app =~ "prefill(bee ? `@${bee.display} 建个任务：` : \"建个任务：\");"
+      assert app =~ "state.groupTab = \"messages\";"
+      assert app =~ "resetToChat();"
+    end
+  end
 end
