@@ -21,7 +21,10 @@ defmodule Newbee.Web.EvolutionUxTest do
     # 人话必须包含动作指引：批准 / 回退 / 建议 之一
     assert res["autonomy_explain"] =~ "批准" or res["autonomy_explain"] =~ "回退" or
              res["autonomy_explain"] =~ "建议"
+
     assert Map.has_key?(res, "changes")
+    assert is_list(res["approval_groups"])
+    assert is_list(res["approval_history"])
     assert Map.has_key?(res, "engine")
   end
 
@@ -52,6 +55,8 @@ defmodule Newbee.Web.EvolutionUxTest do
     assert html =~ "mc-badge-steps"
     assert html =~ "mc-badge-evolution"
     assert html =~ "当前生效版本"
+    assert html =~ "自动处理记录"
+    assert html =~ "evo-approvals"
     refute html =~ "ACTIVE ENVIRONMENT"
     js = File.read!(Path.join([File.cwd!(), "priv", "web", "app.js"]))
     assert js =~ "换一种说法"
@@ -62,5 +67,8 @@ defmodule Newbee.Web.EvolutionUxTest do
     assert js =~ "批准，用上这个改进"
     assert js =~ "再想想"
     assert js =~ "evoRingExplain"
+    assert js =~ "evolution.approve_group"
+    assert js =~ "evolution.retract"
+    assert js =~ "renderEvoApprovals"
   end
 end

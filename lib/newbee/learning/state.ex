@@ -46,6 +46,7 @@ defmodule Newbee.Learning.State do
       m0 = baseline["memory_m0"]
 
       state = %{
+        "id" => Map.get(spec, "id", baseline["id"]),
         "schema_version" => Contracts.schema_version(),
         "revision" => 0,
         "status" => "active",
