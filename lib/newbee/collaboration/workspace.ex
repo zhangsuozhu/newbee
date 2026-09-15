@@ -454,6 +454,17 @@ defmodule Newbee.Collaboration.Workspace do
     end
   end
 
+  defp remove_workspace(%{"kind" => "git_worktree", "root" => root, "path" => path}) do
+    with :ok <- ensure_workspace_path(root, path),
+         :ok <- File.rm(base_snapshot_path(path)),
+         :ok <- remove_git_worktree(root, path) do
+      :ok
+    else
+      {:error, :enoent} -> remove_git_worktree(root, path)
+      error -> error
+    end
+  end
+
   defp remove_workspace(%{"root" => root, "path" => path}) do
     with :ok <- ensure_workspace_path(root, path) do
       File.rm(base_snapshot_path(path))
@@ -466,6 +477,15 @@ defmodule Newbee.Collaboration.Workspace do
   end
 
   defp remove_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
+
+  defp remove_git_worktree(root, path) do
+    case System.cmd("git", ["worktree", "remove", "--force", path], cd: Path.expand(root), stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, _status} -> {:error, "workspace_cleanup_failed", String.trim(output)}
+    end
+  rescue
+    error in ErlangError -> {:error, "workspace_cleanup_failed", Exception.message(error)}
+  end
 
   @doc false
   def snapshot(root, opts \\ [])
