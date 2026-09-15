@@ -636,6 +636,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert app =~ "const savedConversationRoute = conversationRouteFromUrl();"
       assert app =~ "async function restoreConversationRoute(route)"
       assert app =~ "await enterBeeMode(route.beeId);"
+      assert app =~ "const conversation = (state.trail?.conversations || []).find"
+      assert app =~ "if (!conversation) { resetToChat(); return; }"
       assert app =~ "await openConversation(route.conversationId, route.beeId);"
       assert app =~ "await restoreConversationRoute(savedConversationRoute);"
     end

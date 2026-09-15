@@ -459,6 +459,8 @@ async function restoreConversationRoute(route) {
   if (state.colonyId !== route.colonyId) await selectColony(route.colonyId);
   if (!memberById(route.beeId)) { resetToChat(); return; }
   await enterBeeMode(route.beeId);
+  const conversation = (state.trail?.conversations || []).find((item) => item.id === route.conversationId);
+  if (!conversation) { resetToChat(); return; }
   await openConversation(route.conversationId, route.beeId);
   revealConversation();
   render(true);
