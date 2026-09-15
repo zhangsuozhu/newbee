@@ -170,6 +170,19 @@ defmodule Newbee.Collaboration.WorkspaceTest do
     refute worktrees =~ workspace["path"]
   end
 
+  test "旧快照缺少 mode 仍可读取，非法 mode 被拒绝", %{root: root} do
+    assert {:ok, snapshot} = Workspace.snapshot(root)
+    legacy = Map.update!(snapshot, "base.txt", &Map.delete(&1, "mode"))
+    target = Path.join(System.tmp_dir!(), "newbee-legacy-snapshot-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(target) end)
+
+    assert :ok = Workspace.materialize_snapshot(legacy, target)
+    assert :erlang.band(File.stat!(Path.join(target, "base.txt")).mode, 0o777) == 0o644
+
+    invalid = put_in(snapshot, ["base.txt", "mode"], 0o1000)
+    assert {:error, "workspace_snapshot_invalid", _} = Workspace.materialize_snapshot(invalid, target)
+  end
+
   defp terminal_task(workspace, review_status) do
     %{"status" => "succeeded", "workspace" => Map.put(workspace, "review_status", review_status)}
   end
