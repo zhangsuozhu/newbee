@@ -23,6 +23,7 @@ defmodule Newbee.Memory do
 
   @doc "写一条记忆（自动脱敏）。opts: ttl_days（默认 90）、pin（默认 false）。"
   def write(topic, content, opts \\ []) do
+    Newbee.Learning.Context.production_write!()
     File.mkdir_p!(@dir)
     File.write!(Path.join(@dir, sanitize_topic(topic) <> ".md"), redact(content))
 

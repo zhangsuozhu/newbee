@@ -32,6 +32,8 @@ defmodule Newbee.Environment.Antibodies do
   failure = %{input, error, release_id, revision, external_effects, task}
   """
   def observe(id, failure, opts \\ []) do
+    Newbee.Learning.Context.production_write!()
+
     entry = %{
       "id" => to_string(id),
       "state" => "observed_failure",

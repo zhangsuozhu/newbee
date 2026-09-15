@@ -41,6 +41,8 @@ defmodule Newbee.Environment.Coordinator do
   @default_eval_timeout 120_000
 
   defstruct manifest: nil,
+            learning: %{},
+            learning_root: nil,
             changes: %{},
             event_store: nil,
             eval_tasks: %{},
@@ -69,6 +71,16 @@ defmodule Newbee.Environment.Coordinator do
 
   @doc "全部 change（含历史）。"
   def changes(server \\ __MODULE__), do: GenServer.call(server, :changes, 60_000)
+
+  @doc "Create an isolated learning lineage; production releases are unchanged."
+  def learning_start(server, spec), do: GenServer.call(server, {:learning_start, spec}, 30_000)
+
+  @doc "Apply a CAS learning command and acknowledge only after durable append."
+  def learning_command(server, id, command), do: GenServer.call(server, {:learning_command, id, command}, 30_000)
+
+  @doc "Read a learning lineage or all lineages without consuming them."
+  def learning_get(server, id), do: GenServer.call(server, {:learning_get, id})
+  def learning_list(server), do: GenServer.call(server, :learning_list)
 
   @doc """
   提议变更（worker/adapter/system 均可发起）。
@@ -147,9 +159,14 @@ defmodule Newbee.Environment.Coordinator do
     # 打开即推进 checkpoint（快照与事件流不一致时以事件流为准）
     persist_manifest(manifest, store)
 
+    learning_root = Path.join(Store.dir(:evaluations), "learning")
+    learning = recover_learning(learning_root)
+
     {:ok,
      %__MODULE__{
        manifest: manifest,
+       learning: learning,
+       learning_root: learning_root,
        changes: changes,
        event_store: store,
        autonomy: Keyword.get(opts, :autonomy) || Autonomy.get(),
@@ -221,9 +238,81 @@ defmodule Newbee.Environment.Coordinator do
     |> Map.new(&{&1.change_id, &1})
   end
 
+  defp persist_learning(state, id, next, reply) do
+    root = Path.join(state.learning_root, "objects")
+
+    with {:ok, digest} <- Newbee.Learning.Store.put(root, next),
+         {:ok, _event} <-
+           Newbee.EventStore.append_sync(state.event_store, :learning_committed, %{
+             "lineage_id" => id,
+             "state_hash" => digest
+           }) do
+      {:reply, reply, %{state | learning: Map.put(state.learning, id, next)}}
+    else
+      {:error, reason} -> {:reply, {:error, {:learning_persistence, reason}}, state}
+    end
+  end
+
+  defp recover_learning(root) do
+    Newbee.EventStore.replay(Store.path(:events), 0)
+    |> Enum.reduce(%{}, fn
+      %{topic: :learning_committed, data: %{"lineage_id" => id, "state_hash" => hash}}, acc ->
+        case Newbee.Learning.Store.get(Path.join(root, "objects"), hash) do
+          {:ok, restored} -> Map.put(acc, id, restored)
+          {:error, reason} -> raise "learning recovery failed for " <> id <> ": " <> inspect(reason)
+        end
+
+      _, acc ->
+        acc
+    end)
+  end
+
   # ── propose ──
 
   @impl true
+  def handle_call(:learning_list, _from, state), do: {:reply, Map.values(state.learning), state}
+
+  def handle_call({:learning_get, id}, _from, state) do
+    {:reply, Map.fetch(state.learning, id), state}
+  end
+
+  def handle_call({:learning_start, spec}, _from, state) do
+    case Newbee.Learning.State.new(spec) do
+      {:ok, candidate} ->
+        id = candidate["id"]
+
+        case Map.fetch(state.learning, id) do
+          {:ok, existing} ->
+            if existing["spec_hash"] == Newbee.Learning.Store.hash(spec) do
+              {:reply, {:ok, existing}, state}
+            else
+              {:reply, {:error, :lineage_conflict}, state}
+            end
+
+          :error ->
+            candidate = Map.put(candidate, "spec_hash", Newbee.Learning.Store.hash(spec))
+            persist_learning(state, id, candidate, {:ok, candidate})
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:learning_command, id, command}, _from, state) do
+    with {:ok, current} <- Map.fetch(state.learning, id),
+         {:ok, next, receipt} <- Newbee.Learning.State.apply(current, command) do
+      if current == next do
+        {:reply, {:ok, receipt}, state}
+      else
+        persist_learning(state, id, next, {:ok, receipt})
+      end
+    else
+      :error -> {:reply, {:error, :lineage_not_found}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:propose_change, attrs}, _from, state) do
     change =
       Change.new(
@@ -256,7 +345,6 @@ defmodule Newbee.Environment.Coordinator do
         {:reply, {:error, :change_not_found}, state}
     end
   end
-
 
   # ── candidate_ready（去重 + 异步评测）──
 
@@ -298,6 +386,7 @@ defmodule Newbee.Environment.Coordinator do
               usage: Map.get(release, :usage),
               ring: Autonomy.ring_of(release.kind)
             })
+
             state = put_change(state, change)
 
             append_event(state, :change_building, %{
@@ -1220,7 +1309,6 @@ defmodule Newbee.Environment.Coordinator do
   end
 
   # ── helpers ──
-
 
   defp check_expected_version(%Change{expected_version: nil}, _state), do: :ok
 
