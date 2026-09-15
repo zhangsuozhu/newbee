@@ -666,6 +666,16 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     end
   end
 
+  describe "思考强度菜单焦点" do
+    test "选择档位或按 Escape 后把焦点还给按钮" do
+      app = File.read!("priv/web/app.js")
+
+      assert app =~ "const closeEffort = (focus = false) =>"
+      assert app =~ "if (focus) effortBtn.focus({ preventScroll: true });"
+      assert app =~ "closeEffort(true);"
+    end
+  end
+
   describe "工作流超时确认" do
     test "超时后给出结果可能已处理提示并主动刷新" do
       api = File.read!("priv/web/colony/api.js")

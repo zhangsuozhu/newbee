@@ -6215,9 +6215,10 @@ case "goal_round": break;
    const effortBtn = $("effort-btn");
    const effortBtnText = $("effort-btn-text");
    if (effortWrap && effortBtn) {
-     const closeEffort = () => {
+     const closeEffort = (focus = false) => {
        effortWrap.classList.add("hidden");
        effortBtn.setAttribute("aria-expanded", "false");
+       if (focus) effortBtn.focus({ preventScroll: true });
      };
      const renderSegs = (active) => {
        effortWrap.innerHTML = "";
@@ -6232,7 +6233,7 @@ case "goal_round": break;
          b.onclick = async (e) => {
            e.stopPropagation();
            renderSegs(lv);
-           closeEffort();
+           closeEffort(true);
            if (!state.sid) return;
            try {
              await rpc("session.setEffort", { sessionId: state.sid, effort: lv });
@@ -6257,7 +6258,7 @@ case "goal_round": break;
        else closeEffort();
      };
      document.addEventListener("click", (e) => { if (!e.target.closest(".effort-pick")) closeEffort(); });
-     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEffort(); });
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEffort(true); });
      // resume 时按会话恢复选中档（nil → medium，兼容旧 auto/off）
      window.__restoreEffort = (effort) => renderSegs(effort === "off" ? "none" : (effort === "auto" ? "medium" : (effort || "medium")));
      renderSegs("medium");
