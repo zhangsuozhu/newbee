@@ -1,6 +1,6 @@
 // One navigation shell. Tools open as their own original surfaces, with no extra wrapper.
 import { rpc, toast, forgetAuthToken } from './api.js';
-import { state } from './store.js';
+import { state, resetToChat } from './store.js';
 
 const $ = id => document.getElementById(id);
 let hostOwner = false, contextKey, infoSeq = 0, audio;
@@ -273,6 +273,13 @@ export function initShell() {
     if (isConversation && message.newbeeWorkspace === 'panel') {
       panels[message.panel] = !!message.open;
       syncPanelButtons();
+    }
+    if (isConversation && message.newbeeWorkspace === 'closed') {
+      panels.terminal = false;
+      panels.monitor = false;
+      resetToChat();
+      syncPanelButtons();
+      return;
     }
     if (isConversation && message.newbeeWorkspace === 'ready' && (panels.terminal || panels.monitor)) {
       // 对话界面刚就绪：把宿主已打开的面板补发一次，避免点太快丢指令。

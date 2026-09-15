@@ -333,6 +333,10 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert shell =~ "newbeeCommand:'send'"
       assert shell =~ "newbeeWorkspace === 'sent'"
       assert workspace =~ "newbeeWorkspace: \"sent\", commandId: data.commandId"
+      assert workspace =~ "iframe 会吞掉键盘事件"
+      assert workspace =~ "workspaceNotify(\"closed\");"
+      assert shell =~ "message.newbeeWorkspace === 'closed'"
+      assert shell =~ "resetToChat();"
       # 提示文案不再承诺一个发不出去的地址
       assert composer =~ "将转入 ${bee.display} 的对话"
     end

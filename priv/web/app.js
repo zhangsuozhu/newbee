@@ -31,6 +31,30 @@
         window.parent.postMessage({newbeeWorkspace: "sent", commandId: data.commandId}, location.origin);
       }
     });
+    // iframe 会吞掉键盘事件；对话无弹窗/面板/忙碌任务时，把 Escape 交回宿主返回上一级。
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const modalOpen = document.querySelector("dialog[open], .modal:not(.hidden), #cmd-palette:not(.hidden), #qa-overlay:not(.hidden), #login-overlay:not(.hidden)");
+      if (modalOpen || !embedMode()) return;
+      const effortMenu = $("effort-segments");
+      if (effortMenu && !effortMenu.classList.contains("hidden")) return;
+      if (MC.open) {
+        event.preventDefault();
+        event.stopPropagation();
+        setMCOpen(false);
+        return;
+      }
+      if (state.terminal?.open) {
+        event.preventDefault();
+        event.stopPropagation();
+        $("terminal-close")?.click();
+        return;
+      }
+      if (state.busy || (event.target !== $("input") && event.target !== document.body)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      workspaceNotify("closed");
+    }, true);
     workspaceNotify("ready");
   }
 
