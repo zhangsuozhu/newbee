@@ -549,6 +549,7 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert js =~ "if (error.code !== 'invalid_invite') throw error;"
       assert js =~ "history.replaceState(null, '', location.pathname);"
       assert js =~ "邀请码已使用或过期，请让邀请方重新生成"
+      assert js =~ "await selectColony(result.colony.id);"
     end
   end
 

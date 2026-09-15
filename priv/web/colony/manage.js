@@ -119,7 +119,7 @@ export async function redeemInvitation() {
     const result = await rpc('colony.invite.redeem', {code, display:value.display});
     markMemberSession(result.token);
     history.replaceState(null, '', location.pathname);
-    state.colonyId = result.colony.id;
+    await selectColony(result.colony.id);
   } catch (error) {
     if (error.code !== 'invalid_invite') throw error;
     history.replaceState(null, '', location.pathname);
