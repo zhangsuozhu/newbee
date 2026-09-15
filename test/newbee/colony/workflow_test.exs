@@ -43,6 +43,20 @@ defmodule Newbee.Colony.WorkflowTest do
   defp act(ctx, root, action, attrs \\ %{}),
     do: Workflow.act(ctx.cid, root["id"], action, Map.put(attrs, "revision", root["revision"]), ctx.actor)
 
+  test "提案子任务标题带负责人（两个提案在任务树里可区分）", ctx do
+    root = create(ctx)
+    {:ok, root} = complete(root, Jason.encode!(%{route: "discuss", reason: "需比较兼容路径", participants: ctx.bees}))
+
+    titles = Enum.map(root["workflow"]["proposals"], &get(&1["task_id"])["title"])
+
+    assert length(titles) == 2
+
+    # 以前两只 Bee 的子任务都叫「方案 · <主任务>」，而深钻子任务行只显示标题 → 两行一模一样。
+    assert length(Enum.uniq(titles)) == 2
+    assert Enum.any?(titles, &(&1 =~ "方案甲"))
+    assert Enum.any?(titles, &(&1 =~ "方案乙"))
+  end
+
   test "simple work analyzes first and creates exactly one execution delivery", ctx do
     root = create(ctx)
     assert root["mode"] == "triage"

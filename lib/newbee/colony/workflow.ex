@@ -207,7 +207,11 @@ defmodule Newbee.Colony.Workflow do
     else
       {data, proposals} =
         Enum.reduce(bees, {data, []}, fn bee, {acc, list} ->
-          child = child(root, bee, "方案 · " <> root["title"], root["description"], "proposal")
+          # 标题里带上负责人：两个提案子任务只差负责人时，任务树/深钻只显示标题，
+          # 两行同名会让用户分不清谁在提什么（成员重名同属一类歧义）。
+          child =
+            child(root, bee, "方案 · " <> root["title"] <> " · @" <> bee["display"], root["description"], "proposal")
+
           {acc, child} = enqueue(acc, child, "请针对共同任务独立提出修改方案。")
           {acc, list ++ [%{"task_id" => child["id"], "bee_id" => bee["id"], "summary" => nil, "reviews" => []}]}
         end)
