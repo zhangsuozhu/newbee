@@ -414,6 +414,9 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       # 失败也显示「已复制」（有的连 execCommand 都不试）。
       assert app =~ "function copyToClipboard(text)"
       assert app =~ "function copyWithFeedback(btn, text, label)"
+      assert app =~ "const restoreFocus = btn && document.activeElement === btn ? btn : null;"
+      assert app =~ "document.body.contains(restoreFocus)"
+      assert app =~ "restoreFocus.focus({ preventScroll: true });"
       assert cutil =~ "export async function copyToClipboard(text)"
       assert md =~ "copyToClipboard(code).then((ok) => {"
       assert forms =~ "const ok = await copyToClipboard(input.value);"

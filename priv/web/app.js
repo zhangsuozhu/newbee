@@ -89,7 +89,12 @@
   // 复制按钮统一反馈：成功「已复制」，失败「复制失败」+ 一行提示，然后还原标签。
   function copyWithFeedback(btn, text, label) {
     const restore = label != null ? label : btn ? btn.textContent : "";
+    const restoreFocus = btn && document.activeElement === btn ? btn : null;
     copyToClipboard(text).then((ok) => {
+      // execCommand fallback temporarily focuses a hidden textarea; return focus only if the user stayed on this button.
+      if (restoreFocus && document.activeElement === document.body && document.body.contains(restoreFocus)) {
+        restoreFocus.focus({ preventScroll: true });
+      }
       if (btn) btn.textContent = ok ? "已复制" : "复制失败";
       if (!ok) line("notice", "复制失败：浏览器不允许写入剪贴板，请手动选中复制");
       setTimeout(() => { if (btn) btn.textContent = restore; }, 1500);
