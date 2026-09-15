@@ -110,19 +110,26 @@ defmodule Newbee.Colony.Store do
   def append_trace(entry), do: append("trace", entry)
   def put_signal(entry), do: append("signals", entry)
 
+  # 在已有事务里追加一条记录：调用方已经拿着 data，再调 append_trace/1 会嵌套事务
+  # （各自快照，可能互相覆盖），所以给一个纯函数版本。
+  def put_entry(data, table, %{"colony_id" => cid} = entry) when is_binary(cid) do
+    seq = data["sequence"] + 1
+    id = cid <> ":" <> Integer.to_string(seq)
+    now = System.system_time(:millisecond)
+
+    entry =
+      entry
+      |> Map.put("seq", seq)
+      |> Map.put_new("id", id)
+      |> Map.put_new("created_at", now)
+      |> Map.put_new("ts", now)
+
+    {data |> Map.put("sequence", seq) |> put_in([table, id], entry), entry}
+  end
+
   defp append(table, %{"colony_id" => cid} = entry) when is_binary(cid) do
     transaction(fn data ->
-      seq = data["sequence"] + 1
-      id = cid <> ":" <> Integer.to_string(seq)
-
-      entry =
-        entry
-        |> Map.put("seq", seq)
-        |> Map.put_new("id", id)
-        |> Map.put_new("created_at", System.system_time(:millisecond))
-        |> Map.put_new("ts", System.system_time(:millisecond))
-
-      next = data |> Map.put("sequence", seq) |> put_in([table, id], entry)
+      {next, entry} = put_entry(data, table, entry)
       {:ok, {:ok, entry}, next}
     end)
   end

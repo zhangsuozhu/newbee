@@ -300,7 +300,21 @@ defmodule Newbee.Colony.Work do
                 "revision" => task["revision"] + 1
               })
 
-            next = data |> put_in(["tasks", tid], task) |> put_in(["honey", honey["id"]], honey)
+            # 人提交也要留痕：以前只有 engine 的 AI 提交路径写 trace，
+            # 结果任务详情（只渲染 trace）看起来「没有工作记录」。
+            {next, _entry} =
+              data
+              |> put_in(["tasks", tid], task)
+              |> put_in(["honey", honey["id"]], honey)
+              |> Store.put_entry("trace", %{
+                "colony_id" => cid,
+                "bee_id" => actor,
+                "task_id" => tid,
+                "type" => "honey",
+                "text" => "产出成果「#{honey["title"]}」（待验收）",
+                "data" => %{"honey_id" => honey["id"], "review_state" => "pending_review"}
+              })
+
             {:ok, {:ok, honey}, next}
         end
       end)
@@ -368,6 +382,23 @@ defmodule Newbee.Colony.Work do
                   else
                     next
                   end
+
+                # 人验收也要留痕（与 engine 的 AI 验收路径一致）：只靠 honey 状态变化时，
+                # 任务轨迹里看不到「谁验收了、结论是什么」。
+                {next, _entry} =
+                  Store.put_entry(next, "trace", %{
+                    "colony_id" => cid,
+                    "bee_id" => actor,
+                    "task_id" => task["id"],
+                    "type" => "honey",
+                    "text" =>
+                      "成果「#{reviewed["title"]}」" <>
+                        if(verdict == "accept", do: "已验收通过 ✅", else: "被打回 ↩"),
+                    "data" => %{
+                      "honey_id" => hid,
+                      "review_state" => get_in(reviewed, ["review", "state"])
+                    }
+                  })
 
                 {:ok, {:ok, reviewed}, next}
 
