@@ -99,8 +99,18 @@ export function collapseSidebar(collapsed, persist = true) {
   $('app').classList.toggle('sidebar-collapsed', collapsed);
   $('sidebar-expand').classList.toggle('hidden', !collapsed);
   $('sidebar-toggle').setAttribute('aria-expanded', String(!collapsed));
+  // 侧栏收起时整体在屏幕外：里面的控件如果还能 Tab 到，键盘用户会停在一个看不见的按钮上
+  // （实测 #sidebar-toggle 在 left:-72、#model-config-btn 在 left:-110 时仍可聚焦）。
+  // inert 会把整棵子树移出 Tab 顺序与无障碍树，展开时再恢复。
+  const sidebar = $('sidebar');
+  if (sidebar) {
+    sidebar.inert = collapsed;
+    if (collapsed) sidebar.setAttribute('aria-hidden', 'true');
+    else sidebar.removeAttribute('aria-hidden');
+  }
   if (persist) localStorage.setItem('newbee.sidebar', collapsed ? '1' : '0');
 }
+
 function ensureLayer() {
   if (layer) return;
   layer = document.createElement('div');

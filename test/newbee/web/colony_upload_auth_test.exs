@@ -348,4 +348,16 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert js =~ "last ? () => {} : () => gotoLevel(d.index)"
     end
   end
+
+  describe "键盘可达性" do
+    test "侧栏收起时不让屏外控件留在 Tab 顺序里" do
+      shell = File.read!("priv/web/colony/shell.js")
+
+      # 回归：侧栏收起后 #sidebar-toggle(left:-72)、#model-config-btn(left:-110)
+      # 仍在屏幕外可聚焦，键盘用户会停在一个看不见的按钮上。
+      assert shell =~ "sidebar.inert = collapsed;"
+      assert shell =~ "sidebar.setAttribute('aria-hidden', 'true')"
+      assert shell =~ "sidebar.removeAttribute('aria-hidden')"
+    end
+  end
 end
