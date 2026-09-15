@@ -6874,7 +6874,8 @@ case "goal_round": break;
       $("evo-autonomy").textContent = st.autonomy_label || st.autonomy || "-";
       const axEl = $("evo-autonomy-explain");
       if (axEl) { axEl.textContent = st.autonomy_explain || ""; axEl.title = st.autonomy_explain || ""; }
-      const decideCount = (st.changes || []).filter((c) => c.can_approve).length;
+      const changes = Array.isArray(st.changes) ? st.changes : [];
+      const decideCount = changes.filter((c) => c.can_approve).length;
       $("evo-open-count").textContent = coordinator ? (decideCount || coordinator.open_count || 0) : "-";
       $("evo-release-count").textContent = coordinator ? coordinator.active_count || 0 : "-";
       $("evo-signal-count").textContent = (st.pending_signals || []).length;
@@ -6886,7 +6887,12 @@ case "goal_round": break;
       health.textContent = !online ? "离线" : degraded ? "已退化" : "健康";
       health.className = "evo-health-pill " + (!online || degraded ? "degraded" : "healthy");
 
-      renderEvoChanges(st.changes || []);
+      // 轮询只更新状态时保留卡片节点，避免滚动和已展开的详情被重置。
+      const changeSignature = JSON.stringify(changes);
+      if (MC.evoChangesSignature !== changeSignature) {
+        MC.evoChangesSignature = changeSignature;
+        renderEvoChanges(changes);
+      }
       renderEvoSignals(st.pending_signals || []);
       renderEvoReleases(st.active_releases || []);
 

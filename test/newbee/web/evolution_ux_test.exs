@@ -50,6 +50,14 @@ defmodule Newbee.Web.EvolutionUxTest do
     assert Regex.match?(~r/\.evo-event \{[^}]*content-visibility: auto;[^}]*contain-intrinsic-size: auto 48px;/, css)
   end
 
+  test "进化状态轮询不重建未变化的卡片" do
+    js = File.read!(Path.join([File.cwd!(), "priv", "web", "app.js"]))
+
+    assert js =~ "const changeSignature = JSON.stringify(changes);"
+    assert js =~ "if (MC.evoChangesSignature !== changeSignature)"
+    refute js =~ "renderEvoChanges(st.changes || [])"
+  end
+
   test "进化面板有人话骨架：intro/guide/decide/progress/history" do
     # 会话界面（Mission Control 进化面板所在处）现在是工作区表面。
     html = File.read!(Path.join([File.cwd!(), "priv", "web", "workspace.html"]))
