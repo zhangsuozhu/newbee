@@ -432,6 +432,9 @@ export function updateScope() {
     const bee = currentBeeId() ? memberById(currentBeeId()) : null;
     const taskId = currentTaskId();
     if (taskId) hint.textContent = `发给 ${t.label}`;
+    // 成员层级里对 AI 说话：这句话会被转进它自己的对话（colony.say 走 1:1 会被拒），
+    // 提示要写成「将转入对话」，不然等于承诺了一个发不出去的地址。
+    else if (bee && bee.kind === "ai" && state.view === "dm") hint.textContent = `将转入 ${bee.display} 的对话`;
     else if (bee) hint.textContent = `发给 ${bee.display}`;
     else hint.textContent = "发到群聊 · Enter 发送，Shift+Enter 换行";
   }
@@ -497,6 +500,22 @@ async function doSend(ctx, text) {
   const uploadIds = state.attachments.map((a) => a.id);
   if (!text && !uploadIds.length) return;
   if (!state.colonyId) { toast('请先选择蜂群', true); return; }
+  // 成员层级里给 AI 成员打字：colony.say 带 context.beeId 会走 1:1 会话通道，
+  // 而 AI 的 1:1 只能在内嵌对话里进行——服务端固定返回 conversation_required。
+  // 既然产品语义是「和这只 Bee 交流」，就直接把话转进它的对话，而不是让用户撞报错。
+  if (state.view === "dm" && state.beeModeId) {
+    const member = memberById(state.beeModeId);
+    if (member && member.kind === "ai") {
+      if (uploadIds.length) { toast("附件请打开它自己的对话再发", true); return; }
+      const input = document.getElementById("input");
+      if (ctx.deliverToConversation) {
+        if (input && input.value === text) { input.value = ""; state.draft = ""; autosize(input); }
+        await ctx.deliverToConversation(member, text);
+        return;
+      }
+    }
+  }
+
 
   // 建群/切群还在路上时别把消息发进旧群（send 用的是此刻的 state.colonyId）。
   if (state.switching) { toast('正在创建蜂群，请稍候再发送', true); return; }

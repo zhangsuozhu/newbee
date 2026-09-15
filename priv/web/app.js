@@ -8,13 +8,28 @@
     window.parent.postMessage({newbeeWorkspace: "panel", panel, open, sessionId: state.sid}, location.origin);
   }
   function initEmbedPanels() {
+    let lastCommandId = null;
     window.addEventListener("message", (event) => {
       if (event.origin !== location.origin) return;
       const data = event.data || {};
-      if (data.newbeeCommand !== "panel") return;
       if (data.sessionId && data.sessionId !== state.sid) return;
-      if (data.panel === "terminal") setTerminalPanel(!!data.open);
-      if (data.panel === "monitor") setMCOpen(!!data.open);
+      // 宿主的蜂群页只允许开关面板，以及把用户在成员视图里写的话转进来。
+      if (data.newbeeCommand === "panel") {
+        if (data.panel === "terminal") setTerminalPanel(!!data.open);
+        if (data.panel === "monitor") setMCOpen(!!data.open);
+      }
+      if (data.newbeeCommand === "send" && typeof data.text === "string" && data.text.trim()) {
+        // 宿主会重发直到收到回执（iframe 刚挂上时可能还没绑定会话）；
+        // 同一个 commandId 只执行一次，重发只补回执，不会把这句话发两遍。
+        if (data.commandId && data.commandId === lastCommandId) {
+          window.parent.postMessage({newbeeWorkspace: "sent", commandId: data.commandId}, location.origin);
+          return;
+        }
+        if (!state.sid) return; // 会话还没就绪，等宿主下一次重发
+        lastCommandId = data.commandId || null;
+        send(data.text);
+        window.parent.postMessage({newbeeWorkspace: "sent", commandId: data.commandId}, location.origin);
+      }
     });
     workspaceNotify("ready");
   }

@@ -3,7 +3,7 @@
 // 本页只负责「蜂群 = 会话组 + 成员」的数据映射。
 import { esc } from "./util.js";
 import { form } from './forms.js';
-import { initShell, ensureAuthenticated, updateWorkspaceContext, collapseSidebar, selectedWorkspaceCwd } from './shell.js';
+import { initShell, ensureAuthenticated, updateWorkspaceContext, collapseSidebar, selectedWorkspaceCwd, sendIntoConversation } from './shell.js';
 import { redeemInvitation } from './manage.js';
 import { rpc, toast } from "./api.js";
 import {
@@ -103,8 +103,26 @@ const ctx = {
       toast(e.message || "新建对话失败", true);
     }
   },
+  // 成员层级里给 AI 成员打字：colony.say 带 context.beeId 会走 1:1 会话通道，
+  // 而 AI 的 1:1 只能在内嵌对话里进行（服务端固定返回 conversation_required）。
+  // 与其让用户撞报错并丢掉这句话，不如把它直接转进这个 AI 的对话里发出。
+  deliverToConversation: async (bee, text) => {
+    try {
+      let sid = bee.session_id;
+      if (!sid) {
+        const res = await rpc("colony.bee.conversation.new", { colonyId: state.colonyId, beeId: bee.id });
+        sid = res.sessionId;
+        await refresh();
+      }
+      await openConversation(sid, bee.id);
+      sendIntoConversation(text);
+      toast(`已转到 ${bee.display} 的对话`);
+    } catch (e) {
+      toast(e.message || "打开对话失败", true);
+    }
+  },
   refreshNow: async () => {
-    await refresh();
+
     render(true);
   },
   render: (force) => render(force),

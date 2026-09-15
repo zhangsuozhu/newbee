@@ -314,4 +314,25 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert css =~ ".colony-sub .crumb-link {\n  background: none; border: 0; padding: 0; cursor: pointer;"
     end
   end
+
+  describe "成员视图对 AI 成员的输入" do
+    test "会转进它的对话，而不是撞 conversation_required" do
+      composer = File.read!("priv/web/colony/composer.js")
+      app = File.read!("priv/web/colony/app.js")
+      shell = File.read!("priv/web/colony/shell.js")
+      workspace = File.read!("priv/web/app.js")
+
+      # 回归：成员层级里给 AI 打字，colony.say 会走 1:1 通道并被服务端拒绝
+      # （conversation_required），用户只看到报错，这句话也发不出去。
+      assert composer =~ "await ctx.deliverToConversation(member, text);"
+      assert app =~ "deliverToConversation: async (bee, text) =>"
+      assert shell =~ "export function sendIntoConversation(text)"
+      # 宿主重发直到 embed 回执；embed 用 commandId 幂等 + 回执，避免发两遍
+      assert shell =~ "newbeeCommand:'send'"
+      assert shell =~ "newbeeWorkspace === 'sent'"
+      assert workspace =~ "newbeeWorkspace: \"sent\", commandId: data.commandId"
+      # 提示文案不再承诺一个发不出去的地址
+      assert composer =~ "将转入 ${bee.display} 的对话"
+    end
+  end
 end

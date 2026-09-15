@@ -50,6 +50,31 @@ function postPanel(panel) {
   if (!frame || !frame.contentWindow) return toast('对话还没打开，稍后再试', true);
   frame.contentWindow.postMessage({newbeeCommand:'panel', panel, open: panels[panel], sessionId: sessionId()}, location.origin);
 }
+// 成员层级里给 AI 成员打字：宿主把这句话转进它的内嵌对话。
+// iframe 刚挂上时它可能还没绑定会话，postMessage 会被丢掉，所以带 commandId 重发直到它回执；
+// 回执 + 幂等判断保证同一句话不会发两遍。
+let pendingSend = null;
+export function sendIntoConversation(text) {
+  if (pendingSend && pendingSend.timer) clearInterval(pendingSend.timer);
+  const commandId = 'send-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+  const entry = { commandId, text, tries: 0, timer: null };
+  pendingSend = entry;
+  const attempt = () => {
+    const frame = $('embed-frame');
+    const win = frame && frame.contentWindow;
+    entry.tries += 1;
+    if (!win || !sessionId() || entry.tries > 15) {
+      clearInterval(entry.timer);
+      if (pendingSend === entry) pendingSend = null;
+      return;
+    }
+    win.postMessage({newbeeCommand:'send', text: entry.text, commandId, sessionId: sessionId()}, location.origin);
+  };
+  attempt();
+  entry.timer = setInterval(attempt, 350);
+  return true;
+}
+
 function syncPanelButtons() {
   const sid = sessionId();
   const local = sid && conversationVisibility() === 'private';
@@ -223,6 +248,15 @@ export function initShell() {
       if (panels.terminal) postPanel('terminal');
       if (panels.monitor) postPanel('monitor');
     }
+    if (isConversation && message.newbeeWorkspace === 'sent') {
+      // 对话已回执：停止重发，避免同一句话发两遍。
+      if (pendingSend && pendingSend.commandId === message.commandId) {
+        clearInterval(pendingSend.timer);
+        pendingSend = null;
+      }
+    }
+
+
     if (!isTool) return;
     if (message.newbeeWorkspace === 'authenticated') {
       locked = false;
