@@ -626,6 +626,16 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     end
   end
 
+  describe "工作流折叠状态" do
+    test "重绘后保留用户打开的工作详情" do
+      workflow = File.read!("priv/web/colony/workflow.js")
+
+      assert workflow =~ "const openFolds = new Set();"
+      assert workflow =~ "folded.addEventListener('toggle'"
+      assert workflow =~ "folded.open = openFolds.has(t.id);"
+    end
+  end
+
   describe "工作流超时确认" do
     test "超时后给出结果可能已处理提示并主动刷新" do
       api = File.read!("priv/web/colony/api.js")

@@ -4,6 +4,7 @@ import { form, confirmAction } from './forms.js';
 import { cardMenu, esc, statusLabel } from './util.js';
 import { renderMarkdown } from './md.js';
 const phases = {triage:'判断投入',proposing:'独立提案',discussing:'讨论方案',choosing:'等你决定',executing:'实施修改',integrating:'集成验证'};
+const openFolds = new Set();
 const terminal = t => ['done','failed','cancelled'].includes(t.status);
 const name = id => memberById(id)?.display || '已离开的成员';
 function button(label, fn, primary = false) {
@@ -161,5 +162,10 @@ export function buildWorkflowCard(t, ctx) {
   line.className = 'work-flow-fold-head';
   line.innerHTML = head.innerHTML;
   folded.append(line, card);
+  folded.addEventListener('toggle', () => {
+    if (folded.open) openFolds.add(t.id);
+    else openFolds.delete(t.id);
+  });
+  folded.open = openFolds.has(t.id);
   return folded;
 }
