@@ -771,6 +771,10 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .colony-home :is(.card-menu-item, .mention-item) {
   box-sizing: border-box; height: 36px; min-height: 36px; padding: 0 10px;
 }
+/* 手机端：@ 候选行与卡片菜单项都是手指点的列表项，加高到 44px 减少误触。 */
+@media (max-width: 768px) {
+  .colony-home :is(.card-menu-item, .mention-item) { height: 44px; min-height: 44px; }
+}
 .colony-home .theme-menu-item { box-sizing: border-box; height: 36px; min-height: 36px; padding-top: 0; padding-bottom: 0; }
 .colony-home .effort-seg { box-sizing: border-box; height: 40px; min-height: 40px; }
 .colony-home .attach-remove { box-sizing: border-box; width: 28px; min-width: 28px; height: 28px; min-height: 28px; }

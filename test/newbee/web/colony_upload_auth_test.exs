@@ -444,4 +444,14 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert app =~ "resetToChat();"
     end
   end
+
+  describe "手机端 @ 候选与卡片菜单行高" do
+    test "≤768px 时加到 44px，桌面保持 36px" do
+      css = File.read!("priv/web/colony/colony.css")
+
+      # 回归：@ 候选行与卡片菜单项 36px，手机上是手指点的列表项，误触率高。
+      assert css =~ ".colony-home :is(.card-menu-item, .mention-item) { height: 44px; min-height: 44px; }"
+      assert css =~ "box-sizing: border-box; height: 36px; min-height: 36px; padding: 0 10px;"
+    end
+  end
 end
