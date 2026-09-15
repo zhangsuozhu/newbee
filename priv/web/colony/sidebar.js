@@ -95,6 +95,13 @@ function renderBeeConversations(root, ctx) {
       if (isSession) ctx.openConversation(c.id, bee.id);
       else ctx.openDM(bee.id);
     };
+    item.tabIndex = 0;
+    item.setAttribute("role", "button");
+    item.onkeydown = (event) => {
+      if (event.target !== item || !["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      item.click();
+    };
     cell.appendChild(item);
 
     if (isSession) {

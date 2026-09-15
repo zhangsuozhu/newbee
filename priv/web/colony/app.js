@@ -184,12 +184,23 @@ function render(force = false) {
   if (embedHost) embedHost.classList.toggle("hidden", !embedding);
 
   if (embedding) {
+    const route = JSON.stringify([state.colonyId, state.view, state.stack, state.groupTab]);
+    const changedRoute = route !== lastRoute;
+    const conversationId = state.conversationId;
     const frame = $("#embed-frame");
-    const src = `/workspace.html?session=${encodeURIComponent(state.conversationId)}&embed=1`;
+    const src = `/workspace.html?session=${encodeURIComponent(conversationId)}&embed=1`;
     if (frame.dataset.src !== src) {
       frame.dataset.src = src;
       frame.src = src;
     }
+    if (changedRoute && lastRoute !== null) {
+      setTimeout(() => {
+        if (state.view === "conversation" && state.conversationId === conversationId && !frame.hidden) {
+          frame.focus({ preventScroll: true });
+        }
+      }, 0);
+    }
+    lastRoute = route;
     $("#review-bar").classList.add("hidden");
     renderTopMeta();
     renderWorkspaceContext();

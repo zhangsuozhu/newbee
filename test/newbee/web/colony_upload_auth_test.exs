@@ -367,6 +367,17 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     end
   end
 
+  describe "Bee 会话键盘操作" do
+    test "历史会话行可用 Enter 或 Space 打开" do
+      sidebar = File.read!("priv/web/colony/sidebar.js")
+
+      assert sidebar =~ "item.tabIndex = 0;"
+      assert sidebar =~ "item.setAttribute(\"role\", \"button\");"
+      assert sidebar =~ "[\"Enter\", \" \"].includes(event.key)"
+      assert sidebar =~ "event.preventDefault();"
+    end
+  end
+
   describe "卡片菜单的键盘操作" do
     test "Esc 关闭菜单并把焦点还给触发按钮" do
       util = File.read!("priv/web/colony/util.js")
@@ -581,6 +592,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert app =~ "let dialogEscape = false;"
       assert app =~ "dialogEscape = true;"
       assert app =~ "if (dialogEscape || e.target?.closest?.('dialog')) return;"
+      assert app =~ "frame.focus({ preventScroll: true });"
+      assert app =~ "lastRoute = route;"
     end
   end
 
