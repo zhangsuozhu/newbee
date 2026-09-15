@@ -359,6 +359,9 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert shell =~ "sidebar.inert = collapsed;"
       assert shell =~ "sidebar.setAttribute('aria-hidden', 'true')"
       assert shell =~ "sidebar.removeAttribute('aria-hidden')"
+      assert shell =~ "const focusExpand = collapsed"
+      assert shell =~ "if (focusExpand) $('sidebar-expand')?.focus({preventScroll:true});"
+      assert shell =~ "if (focusToggle) $('sidebar-toggle')?.focus({preventScroll:true});"
     end
   end
 
