@@ -5262,25 +5262,36 @@ case "goal_round": break;
     btn.className = "load-more-btn";
     btn.id = "load-more";
     btn.innerHTML = `<button class="btn-ghost" style="margin:8px auto;display:block;font-size:12px">↑ 加载更早 ${remaining} 条消息</button>`;
+    const button = btn.querySelector("button");
+    if (button) button.addEventListener("mousedown", (event) => event.preventDefault());
     btn.addEventListener("click", () => loadEarlier());
     flowEl.insertBefore(btn, flowEl.firstChild);
   }
-
   let loadingEarlier = false; // 防重入
   async function loadEarlier() {
     if (loadingEarlier || historyOffset <= 0) return;
     loadingEarlier = true;
+    const stickBottom = state.stickBottom;
+    state.stickBottom = false;
+    let transcriptEl = null;
+    let overflowAnchor = "";
+    let behavior = "";
     try {
       const flowEl = $("flow");
-      const transcriptEl = $("transcript");
+      transcriptEl = $("transcript");
+      behavior = transcriptEl.style.scrollBehavior;
+      transcriptEl.style.scrollBehavior = "auto";
+      overflowAnchor = transcriptEl.style.overflowAnchor;
+      transcriptEl.style.overflowAnchor = "none";
       const oldHeight = transcriptEl.scrollHeight;
+      const oldScrollTop = transcriptEl.scrollTop;
 
-      // 先摘走旧按钮（避免被当旧内容一起摘走）
+      // 先记录旧按钮仍在场时的锚点，再移除按钮避免把它当历史内容复挂。
       const oldBtn = $("load-more");
+      const oldNodes = Array.from(flowEl.childNodes).filter((node) => node !== oldBtn);
+      const anchor = oldNodes.find((node) => node.nodeType === 1 && node.classList.contains("msg"));
+      const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
       if (oldBtn) oldBtn.remove();
-
-      // 把当前已显示的内容整体摘下来（顺序保持）
-      const oldNodes = Array.from(flowEl.childNodes);
       flowEl.innerHTML = ""; // 清空 flow 本身保留
 
       const newSkip = Math.max(0, historyOffset - HISTORY_PAGE);
@@ -5296,14 +5307,28 @@ case "goal_round": break;
       // 把原有内容整体挂回末尾（更早的在顶部，旧内容在下方）
       oldNodes.forEach((n) => flowEl.appendChild(n));
 
-      // 补偿高度差，视觉上当前内容不动
-      requestAnimationFrame(() => {
-        transcriptEl.scrollTop = transcriptEl.scrollHeight - oldHeight;
-      });
-
       // 仍有更早消息则在最前放按钮
       if (historyOffset > 0) renderLoadMoreBtn(historyOffset);
+
+      // 等新节点完成布局，按旧锚点校正；没有元素锚点时才退回高度差。
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (anchor && anchor.isConnected && anchorTop != null) {
+        const correctAnchor = (base) => {
+          transcriptEl.scrollTop = Math.max(0, base + anchor.getBoundingClientRect().top - anchorTop);
+        };
+        correctAnchor(oldScrollTop);
+        // 浏览器可能在校正帧提交前完成一次 scroll anchoring，再补一次实际误差。
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        correctAnchor(transcriptEl.scrollTop);
+      } else {
+        transcriptEl.scrollTop = Math.max(0, oldScrollTop + transcriptEl.scrollHeight - oldHeight);
+      }
     } finally {
+      if (transcriptEl) {
+        transcriptEl.style.scrollBehavior = behavior;
+        transcriptEl.style.overflowAnchor = overflowAnchor;
+      }
+      state.stickBottom = stickBottom;
       loadingEarlier = false;
     }
   }
