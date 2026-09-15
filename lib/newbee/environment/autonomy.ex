@@ -69,6 +69,24 @@ defmodule Newbee.Environment.Autonomy do
   end
 
   def set(level) when is_atom(level), do: {:error, :invalid_level}
+  @doc "Persist the conservative initial autonomy level without calling back into a running Coordinator."
+  def reset do
+    cfg =
+      case File.read(@config) do
+        {:ok, body} ->
+          case Jason.decode(body) do
+            {:ok, map} when is_map(map) -> map
+            _ -> %{}
+          end
+
+        _ ->
+          %{}
+      end
+
+    File.mkdir_p!(Path.dirname(@config))
+    File.write!(@config, Jason.encode!(Map.put(cfg, "autonomy", to_string(@default)), pretty: true))
+    :ok
+  end
 
   defp sync_coordinator(level) do
     coordinator = Newbee.Environment.Coordinator

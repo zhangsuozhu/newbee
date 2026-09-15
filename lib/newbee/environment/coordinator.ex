@@ -81,6 +81,15 @@ defmodule Newbee.Environment.Coordinator do
   @doc "Read a learning lineage or all lineages without consuming them."
   def learning_get(server, id), do: GenServer.call(server, {:learning_get, id})
   def learning_list(server), do: GenServer.call(server, :learning_list)
+  @doc "Reset active self-learning lineages to their initial baseline without deleting audit history."
+  def learning_reset(server \\ __MODULE__, reason \\ "用户要求恢复初始状态") do
+    GenServer.call(server, {:learning_reset, reason}, 30_000)
+  end
+
+  @doc "Reset self-evolution to the initial baseline while retaining every audit record."
+  def reset_evolution(server \\ __MODULE__, reason \\ "用户要求自我净化并恢复初始状态") do
+    GenServer.call(server, {:reset_evolution, reason}, 600_000)
+  end
 
   @doc """
   提议变更（worker/adapter/system 均可发起）。
@@ -102,6 +111,16 @@ defmodule Newbee.Environment.Coordinator do
   @doc "manual 档下人工授权（§8.1：带签名的授权事件，进 Event Store，可审计）。"
   def approve(server \\ __MODULE__, change_id, approver \\ "user") do
     GenServer.call(server, {:approve, change_id, approver}, 60_000)
+  end
+
+  @doc "Approve one grouped human decision and advance all compatible changes in one revision."
+  def approve_group(server \\ __MODULE__, group_id, approver \\ "user") do
+    GenServer.call(server, {:approve_group, group_id, approver}, 60_000)
+  end
+
+  @doc "Retract the latest active change and return the environment to its recorded base revision."
+  def retract(server \\ __MODULE__, change_id, reason \\ "用户撤回这项自动改进", actor \\ "user") do
+    GenServer.call(server, {:retract, change_id, reason, actor}, 60_000)
   end
 
   @doc "将基线过期的候选绑定到当前 revision 并重新运行完整验证。"
@@ -256,6 +275,9 @@ defmodule Newbee.Environment.Coordinator do
   defp recover_learning(root) do
     Newbee.EventStore.replay(Store.path(:events), 0)
     |> Enum.reduce(%{}, fn
+      %{topic: :learning_reset}, _acc ->
+        %{}
+
       %{topic: :learning_committed, data: %{"lineage_id" => id, "state_hash" => hash}}, acc ->
         case Newbee.Learning.Store.get(Path.join(root, "objects"), hash) do
           {:ok, restored} -> Map.put(acc, id, restored)
@@ -274,6 +296,93 @@ defmodule Newbee.Environment.Coordinator do
 
   def handle_call({:learning_get, id}, _from, state) do
     {:reply, Map.fetch(state.learning, id), state}
+  end
+
+  def handle_call({:learning_reset, reason}, _from, state) do
+    lineage_ids = Map.keys(state.learning)
+
+    append_event(state, :learning_reset, %{
+      "lineage_ids" => lineage_ids,
+      "reason" => reason,
+      "reset_to" => "initial_baseline",
+      "at" => now_iso()
+    })
+
+    {:reply, {:ok, %{reset: true, lineage_ids: lineage_ids}}, %{state | learning: %{}}}
+  end
+
+  def handle_call({:reset_evolution, reason}, _from, state) do
+    pending =
+      state.changes
+      |> Map.values()
+      |> Enum.filter(&(&1.status in [:requested, :building, :evaluating, :canary]))
+
+    active = Enum.filter(Map.values(state.changes), &(&1.status == :active))
+    lineage_ids = Map.keys(state.learning)
+
+    state_result =
+      if state.manifest.revision > 0 do
+        do_rollback(state, {:revision, 0}, "自我净化：恢复内置初始环境", [])
+      else
+        {:ok, nil, state}
+      end
+
+    case state_result do
+      {:ok, rollback_change, state} ->
+        state =
+          Enum.reduce(pending, state, fn change, acc ->
+            rejected = Change.transition(change, :rejected)
+
+            rejected = %{
+              rejected
+              | evaluation_result: Map.put(change.evaluation_result || %{}, "rejected_reason", reason)
+            }
+
+            put_change(acc, rejected)
+          end)
+
+        state =
+          Enum.reduce(active, state, fn change, acc ->
+            rolled_back =
+              change
+              |> Change.transition(:rolled_back)
+              |> Map.merge(%{retracted_at: now_iso(), retraction_reason: reason})
+
+            put_change(acc, rolled_back)
+          end)
+
+        append_event(state, :learning_reset, %{
+          "lineage_ids" => lineage_ids,
+          "reason" => reason,
+          "reset_to" => "initial_baseline",
+          "at" => now_iso()
+        })
+
+        append_event(state, :self_evolution_reset, %{
+          "reason" => reason,
+          "reset_to" => "initial_baseline",
+          "pending_rejected" => length(pending),
+          "active_retracted" => length(active),
+          "lineages_cleared" => length(lineage_ids),
+          "rollback_change_id" => rollback_change && rollback_change.change_id,
+          "at" => now_iso()
+        })
+
+        Autonomy.reset()
+
+        {:reply,
+         {:ok,
+          %{
+            reset: true,
+            pending_rejected: length(pending),
+            active_retracted: length(active),
+            lineages_cleared: length(lineage_ids),
+            rollback_change_id: rollback_change && rollback_change.change_id
+          }}, %{state | learning: %{}, autonomy: Autonomy.default()}}
+
+      {:error, rollback_reason, state} ->
+        {:reply, {:error, {:reset_rollback_failed, rollback_reason}}, state}
+    end
   end
 
   def handle_call({:learning_start, spec}, _from, state) do
@@ -318,7 +427,8 @@ defmodule Newbee.Environment.Coordinator do
       Change.new(
         Map.merge(attrs, %{
           base_revision: state.manifest.revision,
-          deadline: attrs[:deadline] || default_deadline()
+          deadline: attrs[:deadline] || attrs["deadline"] || default_deadline(),
+          approval_group: attrs[:approval_group] || attrs["approval_group"]
         })
       )
       |> attach_template_brief(%{})
@@ -415,16 +525,91 @@ defmodule Newbee.Environment.Coordinator do
         {:reply, {:error, :change_not_found}, state}
 
       {:ok, change} ->
-        append_event(state, :change_approved, %{
-          "change_id" => change_id,
-          "approver" => approver,
-          "at" => now_iso()
-        })
+        append_event(
+          state,
+          :change_approved,
+          Map.merge(Newbee.Environment.ApprovalAudit.human_summary(change), %{
+            "change_id" => change_id,
+            "approver" => approver,
+            "decision" => "human",
+            "decision_label" => "人工批准",
+            "at" => now_iso()
+          })
+        )
 
         # 授权即尝试激活
         case do_activate(state, change, approved: true) do
           {:ok, state} -> {:reply, :ok, state}
           {:error, reason, state} -> {:reply, {:error, reason}, state}
+        end
+    end
+  end
+
+  def handle_call({:retract, change_id, reason, actor}, _from, state) do
+    with {:ok, change} <- Map.fetch(state.changes, change_id),
+         :ok <- ensure_retractable(change, state) do
+      case do_rollback(state, {:revision, change.base_revision}, reason, []) do
+        {:ok, rollback_change, next_state} ->
+          original =
+            change
+            |> Change.transition(:rolled_back)
+            |> Map.merge(%{
+              retracted_at: now_iso(),
+              retraction_reason: reason
+            })
+
+          next_state = put_change(next_state, original)
+
+          append_event(
+            next_state,
+            :change_retracted,
+            Map.merge(Newbee.Environment.ApprovalAudit.human_summary(change), %{
+              "change_id" => change_id,
+              "rollback_change_id" => rollback_change.change_id,
+              "actor" => actor,
+              "reason" => reason,
+              "target_revision" => change.base_revision,
+              "at" => now_iso()
+            })
+          )
+
+          {:reply,
+           {:ok,
+            %{
+              change_id: change_id,
+              rollback_change_id: rollback_change.change_id,
+              target_revision: change.base_revision
+            }}, next_state}
+
+        {:error, rollback_reason, next_state} ->
+          {:reply, {:error, rollback_reason}, next_state}
+      end
+    else
+      :error -> {:reply, {:error, :change_not_found}, state}
+      {:error, error} -> {:reply, {:error, error}, state}
+    end
+  end
+
+  def handle_call({:approve_group, group_id, approver}, _from, state) do
+    members =
+      state.changes
+      |> Map.values()
+      |> Enum.filter(fn change ->
+        Newbee.Environment.ApprovalAudit.group_key(change) == group_id and
+          change.status in [:canary, :evaluating] and is_map(change.evaluation_result)
+      end)
+
+    cond do
+      members == [] ->
+        {:reply, {:error, :approval_group_not_found}, state}
+
+      Enum.any?(members, &(&1.base_revision != state.manifest.revision)) ->
+        {:reply, {:error, :approval_group_stale}, state}
+
+      true ->
+        case activate_group(state, members, group_id, approver) do
+          {:ok, next_state, result} -> {:reply, {:ok, result}, next_state}
+          {:error, reason, next_state} -> {:reply, {:error, reason}, next_state}
         end
     end
   end
@@ -846,12 +1031,104 @@ defmodule Newbee.Environment.Coordinator do
   end
 
   # 激活主流程（§7.3 通知语义）
+  defp activate_group(state, changes, group_id, approver) do
+    with {:ok, pairs} <- group_candidates(state, changes),
+         :ok <- ensure_group_plugins_unique(pairs) do
+      group_change_id = "approval_" <> String.replace(to_string(group_id), ~r/[^a-zA-Z0-9_.-]/, "_")
+      delta = Map.new(pairs, fn {_change, release} -> {release.plugin_id, release.release_id} end)
+      manifest = Manifest.advance(state.manifest, delta, group_change_id)
+      revision = manifest.revision
+
+      next_state =
+        Enum.reduce(pairs, %{state | manifest: manifest}, fn {change, _release}, acc ->
+          active =
+            change
+            |> Change.transition(:active)
+            |> Map.merge(%{activated_revision: revision, approval_mode: "human_group"})
+
+          put_change(acc, active)
+        end)
+
+      append_event(next_state, :revision_advanced, %{
+        "revision" => Revision.to_map(Revision.new(revision, manifest.active, group_change_id)),
+        "change_ids" => Enum.map(changes, & &1.change_id),
+        "approval_group" => group_id
+      })
+
+      append_event(next_state, :change_approved_group, %{
+        "group_id" => group_id,
+        "change_ids" => Enum.map(changes, & &1.change_id),
+        "approver" => approver,
+        "decision" => "human_group",
+        "decision_label" => "人工一次批准一组相同改进",
+        "summaries" => Enum.map(changes, &Newbee.Environment.ApprovalAudit.human_summary/1),
+        "at" => now_iso()
+      })
+
+      next_state =
+        Enum.reduce(pairs, next_state, fn {change, release}, acc ->
+          append_event(acc, :change_activated, %{
+            "change_id" => change.change_id,
+            "release_id" => release.release_id,
+            "via" => "human_group",
+            "revision" => revision,
+            "approval_group" => group_id
+          })
+
+          notice = %{
+            change_id: change.change_id,
+            plugin_id: release.plugin_id,
+            release_id: release.release_id,
+            revision: revision,
+            usage: release.usage,
+            contract_version: release.contract_version,
+            evaluation_summary: summarize_evaluation(change.evaluation_result)
+          }
+
+          notify(acc, :module_ready, notice)
+          %{acc | pending_notices: [notice | acc.pending_notices]}
+        end)
+
+      persist_manifest(next_state.manifest, next_state.event_store)
+      after_revision_change(next_state)
+      {:ok, next_state, %{group_id: group_id, change_ids: Enum.map(changes, & &1.change_id), revision: revision}}
+    else
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp group_candidates(state, changes) do
+    Enum.reduce_while(changes, {:ok, []}, fn change, {:ok, acc} ->
+      with :ok <- check_change_activatable(change),
+           :ok <- check_stale_base(change, state),
+           {:ok, release} <- fetch_candidate(change),
+           {:allow, _via} <- activation_gate(release, change, state, approved: true) do
+        {:cont, {:ok, [{change, release} | acc]}}
+      else
+        {:deny, reason} -> {:halt, {:error, reason}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  defp ensure_group_plugins_unique(pairs) do
+    plugin_ids = Enum.map(pairs, fn {_change, release} -> release.plugin_id end)
+
+    if length(plugin_ids) == length(Enum.uniq(plugin_ids)),
+      do: :ok,
+      else: {:error, :conflicting_approval_group}
+  end
+
   defp activate_change(state, %Change{} = change, %Release{} = release, via) do
     delta = %{release.plugin_id => release.release_id}
     manifest = Manifest.advance(state.manifest, delta, change.change_id)
     rev = manifest.revision
 
-    change = Change.transition(change, :active)
+    change =
+      change
+      |> Change.transition(:active)
+      |> Map.merge(%{activated_revision: rev, approval_mode: to_string(via)})
+
     state = %{state | manifest: manifest} |> put_change(change)
 
     # ① 更新 active revision（durable 事件 + 快照）
@@ -865,6 +1142,10 @@ defmodule Newbee.Environment.Coordinator do
       "via" => to_string(via),
       "revision" => rev
     })
+
+    if via == :autonomous do
+      append_event(state, :change_auto_approved, Newbee.Environment.ApprovalAudit.auto_record(change, via, rev))
+    end
 
     persist_manifest(state.manifest, state.event_store)
 
@@ -891,6 +1172,23 @@ defmodule Newbee.Environment.Coordinator do
   end
 
   # ── 内部：回退（§8.4 graph 级）──
+
+  defp ensure_retractable(%Change{status: :active, activated_revision: activated, base_revision: base}, state)
+       when is_integer(activated) and is_integer(base) do
+    cond do
+      activated != state.manifest.revision ->
+        {:error, {:retract_requires_latest_change, activated, state.manifest.revision}}
+
+      base < 0 or base >= activated ->
+        {:error, {:invalid_retract_target, base}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp ensure_retractable(%Change{status: status}, _state),
+    do: {:error, {:change_not_active, status}}
 
   defp do_rollback(state, {:revision, target_rev}, reason, _opts) when is_integer(target_rev) do
     change =

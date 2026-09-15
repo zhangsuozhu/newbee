@@ -6732,6 +6732,26 @@ case "goal_round": break;
       };
     }
 
+const resetBtn = $("evo-reset");
+    if (resetBtn) {
+      resetBtn.onclick = () => confirmDialog(
+        "这会把自我进化恢复到最初基线：待处理改进会停止，当前生效改进会撤回，学习记忆会清空。所有记录和原因仍然保留，可继续查看。确定继续吗？",
+        async () => {
+          resetBtn.disabled = true;
+          try {
+            await rpc("evolution.reset_learning", { confirm: true, reason: "用户在进化面板执行恢复初始状态" });
+            await refreshEvolution();
+          } catch (e) {
+            line("error", "恢复初始状态失败: " + e.message);
+          } finally {
+            resetBtn.disabled = false;
+          }
+        },
+        { confirmLabel: "恢复初始状态", cancelLabel: "先不操作", confirmClass: "btn-allow" }
+      );
+    }
+
+
     setInterval(() => {
       if (MC.open && MC.tab === "evolution") refreshEvoStatus();
     }, 10_000);
@@ -6771,9 +6791,10 @@ case "goal_round": break;
       health.textContent = !online ? "离线" : degraded ? "已退化" : "健康";
       health.className = "evo-health-pill " + (!online || degraded ? "degraded" : "healthy");
 
-      renderEvoChanges(st.changes || []);
+      renderEvoChanges(st.changes || [], st.approval_groups || []);
       renderEvoSignals(st.pending_signals || []);
       renderEvoReleases(st.active_releases || []);
+      renderEvoApprovals(st.approval_history || []);
 
       const bytes = engine.event_store_bytes || 0;
       $("evo-events-size").textContent = formatBytes(bytes) + " · project store";
@@ -6818,7 +6839,7 @@ case "goal_round": break;
     }).join("") + "</div>";
   }
 
-  function renderEvoChanges(changes) {
+  function renderEvoChanges(changes, approvalGroups) {
     const decideBox = $("evo-decide-list");
     const progressBox = $("evo-progress-list");
     const compatBox = $("evo-changes-list");
@@ -6838,7 +6859,19 @@ case "goal_round": break;
       if (!decide.length && !reeval.length) {
         decideBox.innerHTML = '<div class="evo-empty evo-celebrate">✓ 暂无需要你决定的改进，环境稳定运行中。<br>有新的验证通过的改进时，这里会出现“批准并激活”按钮。</div>';
       } else {
-        decideBox.innerHTML = [...decide, ...reeval].map(renderEvoDecideCard).join("");
+        const groupById = new Map((Array.isArray(approvalGroups) ? approvalGroups : []).map((g) => [g.group_id, g]));
+        const groupedIds = new Set();
+        const grouped = [];
+        groupById.forEach((group) => {
+          const members = decide.filter((change) => group.change_ids && group.change_ids.includes(change.change_id));
+          if (members.length > 1) {
+            members.forEach((change) => groupedIds.add(change.change_id));
+            grouped.push(renderEvoApprovalGroup(group, members));
+          }
+        });
+        const singles = decide.filter((change) => !groupedIds.has(change.change_id)).map(renderEvoDecideCard);
+        decideBox.innerHTML = [...grouped, ...singles, ...reeval.map(renderEvoDecideCard)].join("");
+        decideBox.querySelectorAll(".evo-approve-group").forEach((b) => { b.onclick = () => approveEvolutionGroup(b.dataset.groupId, b); });
         decideBox.querySelectorAll(".evo-approve").forEach((b) => { b.onclick = () => approveEvolutionChange(b.dataset.changeId, b); });
         decideBox.querySelectorAll(".evo-explain").forEach((b) => { b.onclick = () => explainBrief(b.dataset.changeId, b); });
         decideBox.querySelectorAll(".evo-reevaluate").forEach((b) => { b.onclick = () => reevaluateEvolutionChange(b.dataset.changeId, b); });
@@ -6860,6 +6893,22 @@ case "goal_round": break;
     const status = change.derived_status || change.status || "requested";
     return `<article class="evo-change ${escapeHtml(status)}">${inner}</article>`;
   }
+
+function renderEvoApprovalGroup(group, members) {
+    const groupId = escapeHtml(group.group_id || "");
+    const title = escapeHtml(group.title || "合并审批");
+    const improvements = (group.improvements || []).map(escapeHtml).join("；") || "暂无改进说明";
+    const reason = escapeHtml(group.reason || "暂无原因说明");
+    const impact = escapeHtml(group.impact_scope || "影响范围未记录");
+    return `<article class="evo-change awaiting_approval">
+      <div class="evo-change-head"><div class="evo-change-title"><strong>${title}</strong><span>${members.length} 项相同改进</span></div><span class="evo-status-tag">合并审批</span></div>
+      <div class="evo-story"><b>改进</b><span>${improvements}</span></div>
+      <div class="evo-story"><b>为什么</b><span>${reason}</span></div>
+      <div class="evo-story"><b>影响范围</b><span>${impact}；旧版本保留，可以撤回。</span></div>
+      <div class="evo-change-foot"><span class="evo-change-next">一次批准后，系统会把这一组一起生效</span><button class="evo-approve evo-approve-group" data-group-id="${groupId}">批准这一组</button></div>
+    </article>`;
+  }
+
 
   function renderEvoDecideCard(change) {
     const changeId = escapeHtml(change.change_id || "");
@@ -6996,6 +7045,23 @@ case "goal_round": break;
     }, { confirmLabel: "批准，用上这个改进", cancelLabel: "再想想", confirmClass: "btn-allow" });
   }
 
+async function approveEvolutionGroup(groupId, button) {
+    if (!groupId) return;
+    confirmDialog("这组改进已经合并展示。批准后会一次性生效，旧版本保留，可以撤回。", async () => {
+      button.disabled = true;
+      button.textContent = "激活中";
+      try {
+        await rpc("evolution.approve_group", { groupId });
+        await refreshEvolution();
+      } catch (e) {
+        line("error", "批准改进组失败: " + e.message);
+        button.disabled = false;
+        button.textContent = "重试批准";
+      }
+    }, { confirmLabel: "批准这一组", cancelLabel: "再想想", confirmClass: "btn-allow" });
+  }
+
+
   async function reevaluateEvolutionChange(changeId, button) {
     if (!changeId) return;
     button.disabled = true;
@@ -7051,6 +7117,50 @@ case "goal_round": break;
     events.forEach((event) => box.appendChild(evoEventEl(event)));
   }
 
+function renderEvoApprovals(records) {
+    const box = $("evo-approvals");
+    if (!box) return;
+    const list = Array.isArray(records) ? records : [];
+    if (!list.length) {
+      box.innerHTML = '<div class="evo-empty">暂无自动处理记录。系统每次自动通过或人工批准，都会在这里留下说明。</div>';
+      return;
+    }
+    const retracted = new Set(list.filter((r) => r.topic === "change_retracted").map((r) => r.change_id));
+    box.innerHTML = list.slice(0, 30).map((r) => {
+      const id = escapeHtml(r.change_id || "");
+      const isRetracted = retracted.has(r.change_id) || r.topic === "change_retracted";
+      const automatic = r.topic === "change_auto_approved";
+      const title = escapeHtml(r.summary || "环境改进");
+      const decision = escapeHtml(r.decision || (automatic ? "系统自动通过" : "人工批准"));
+      const action = automatic && !isRetracted && id
+        ? `<button class="evo-retract" data-change-id="${id}" title="撤回这次自动改进">撤回这次改进</button>`
+        : "";
+      return `<article class="evo-approval-record ${isRetracted ? "retracted" : ""}">
+        <div class="evo-approval-record-head"><strong>${decision} · ${title}</strong><span>${escapeHtml(formatEvolutionTime(r.at))}</span></div>
+        <p><b>改了什么：</b>${escapeHtml(r.improvement || "暂无说明")}</p>
+        <p><b>为什么：</b>${escapeHtml(r.reason || "暂无说明")}</p>
+        <p><b>影响范围：</b>${escapeHtml(r.impact_scope || "未记录")} · ${isRetracted ? "已撤回" : (r.reversible ? "可以撤回" : "不可撤回")}</p>
+        <div class="evo-approval-meta">记录编号：${escapeHtml(r.id || r.change_id || "-")}</div>${action}
+      </article>`;
+    }).join("");
+    box.querySelectorAll(".evo-retract").forEach((button) => {
+      button.onclick = () => retractEvolutionChange(button.dataset.changeId, button);
+    });
+  }
+
+  async function retractEvolutionChange(changeId, button) {
+    if (!window.confirm("确定撤回这次自动改进吗？系统会恢复到它生效前的版本。")) return;
+    if (button) button.disabled = true;
+    try {
+      await rpc("evolution.retract", { changeId, reason: "用户查看审计记录后撤回" });
+      await refreshEvolution();
+    } catch (e) {
+      window.alert("撤回失败：" + (e.message || e));
+      if (button) button.disabled = false;
+    }
+  }
+
+
   function evoEventEl(event) {
     const row = document.createElement("details");
     const kind = event.topic || "event";
@@ -7078,6 +7188,8 @@ case "goal_round": break;
       change_evaluated: passed ? "验证通过" : "验证失败",
       change_canary: "进入门控",
       change_approved: "人工已批准",
+      change_auto_approved: "系统自动通过",
+      change_retracted: "自动改进已撤回",
       change_activated: "变更已激活",
       change_rejected: "候选已拒绝",
       change_rolled_back: "变更已回退",
@@ -7103,6 +7215,8 @@ case "goal_round": break;
       case "change_evaluated": return `${identity} · 静态、确定性与回放门已完成`;
       case "change_canary": return `${identity} · 等待 canary 或人工批准`;
       case "change_approved": return `${identity} · 批准者 ${p.approver || "user"}`;
+      case "change_auto_approved": return `${identity} · ${p.reason || "固定规则全部通过，系统自动放行"} · ${p.impact_scope || "影响范围见记录"}`;
+      case "change_retracted": return `${identity} · ${p.reason || "已恢复改进前版本"}`;
       case "change_activated": return `${identity} · active 环境已切换`;
       case "change_rejected": return `${identity} · ${p.reason || "未越过验证门"}`;
       case "change_rolled_back": return `${identity} · ${p.reason || "已恢复 known-good"}`;
