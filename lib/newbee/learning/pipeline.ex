@@ -112,7 +112,6 @@ defmodule Newbee.Learning.Pipeline do
     end
   end
 
-
   defp attempt([fx | _], root, experiment_id, memory, model_fun, tag, state, calls, tokens) do
     attempt_id = experiment_id <> "-" <> tag
     contract = Fixtures.version()
