@@ -379,6 +379,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert util =~ "const opening = !pop.classList.toggle(\"hidden\");"
       assert util =~ "const viewportWidth = document.documentElement.clientWidth || innerWidth;"
       assert util =~ "pop.style.left = `${margin - wrapRect.left}px`;"
+      assert util =~ "if (pop.contains(event.target) || trigger?.contains(event.target)) return;"
+      assert util =~ "document.body.contains(trigger)"
     end
   end
 

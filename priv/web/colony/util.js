@@ -108,8 +108,17 @@ let cardMenuBound = false;
 function bindCardMenuDismiss() {
   if (cardMenuBound) return;
   cardMenuBound = true;
-  document.addEventListener("click", () => {
-    document.querySelectorAll(".card-menu:not(.hidden)").forEach((pop) => pop.classList.add("hidden"));
+  document.addEventListener("click", (event) => {
+    document.querySelectorAll(".card-menu:not(.hidden)").forEach((pop) => {
+      const trigger = pop.parentElement?.querySelector(".card-more");
+      if (pop.contains(event.target) || trigger?.contains(event.target)) return;
+      pop.classList.add("hidden");
+      setTimeout(() => {
+        if (trigger && document.body.contains(trigger) && !trigger.disabled && trigger.getClientRects().length) {
+          trigger.focus({preventScroll: true});
+        }
+      }, 0);
+    });
   });
   // 键盘用户：菜单打开后按 Esc 应该能关掉，并把焦点还给触发按钮
   // （其它浮层——弹窗、工作台层——都支持 Esc，这里原来只有鼠标点击能关）。
