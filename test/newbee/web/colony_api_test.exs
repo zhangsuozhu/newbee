@@ -225,6 +225,90 @@ defmodule Newbee.Web.ColonyApiTest do
     assert unchanged["workspace"]["review_status"] == "waiting"
   end
 
+  test "parent workspace waits for nested children and releases after them", %{cid: cid, actor: actor} do
+    source = Path.join(System.tmp_dir!(), "colony-parent-workspace-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(source)
+    on_exit(fn -> File.rm_rf!(source) end)
+    ai = Store.bees_for_colony(cid) |> Enum.find(&(&1["kind"] == "ai"))
+
+    {:ok, parent} =
+      Work.create(cid, %{
+        "title" => "父工作",
+        "workflow" => true,
+        "assigned_bee_id" => ai["id"],
+        "actor_bee_id" => actor,
+        "workspace_source" => source
+      })
+
+    assert {:ok, parent_path} = Newbee.Colony.Workspace.ensure(parent, source)
+    {:ok, parent_stored} = Store.get_task(parent["id"])
+
+    {:ok, child} =
+      Work.create(cid, %{
+        "title" => "子工作",
+        "workflow" => true,
+        "assigned_bee_id" => ai["id"],
+        "actor_bee_id" => actor,
+        "workspace_source" => parent_path
+      })
+
+    assert {:ok, child_path} = Newbee.Colony.Workspace.ensure(child, parent_path)
+    assert {:ok, _} = Store.update("tasks", parent["id"], nil, &{:ok, Map.put(&1, "status", "done")})
+    assert {:ok, _} = Store.update("tasks", child["id"], nil, &{:ok, Map.put(&1, "status", "done")})
+
+    assert %{"error" => %{"code" => "workspace_in_use"}} =
+             rpc("colony.workspace.cleanup", %{"colonyId" => cid, "taskId" => parent["id"]})
+
+    assert File.dir?(parent_path)
+    assert File.dir?(child_path)
+    assert %{"ok" => _} = rpc("colony.workspace.cleanup", %{"colonyId" => cid, "taskId" => child["id"]})
+    refute File.exists?(child_path)
+    assert File.dir?(parent_path)
+
+    assert %{"ok" => _} = rpc("colony.workspace.cleanup", %{"colonyId" => cid, "taskId" => parent["id"]})
+    refute File.exists?(parent_path)
+    assert parent_stored["workspace"]["kind"] == "filesystem_copy"
+  end
+
+  test "cleanup marks terminal tasks that share one workspace path", %{cid: cid, actor: actor} do
+    source = Path.join(System.tmp_dir!(), "colony-shared-workspace-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(source)
+    on_exit(fn -> File.rm_rf!(source) end)
+    ai = Store.bees_for_colony(cid) |> Enum.find(&(&1["kind"] == "ai"))
+
+    {:ok, first} =
+      Work.create(cid, %{
+        "title" => "共享工作一",
+        "workflow" => true,
+        "assigned_bee_id" => ai["id"],
+        "actor_bee_id" => actor,
+        "workspace_source" => source
+      })
+
+    assert {:ok, path} = Newbee.Colony.Workspace.ensure(first, source)
+    {:ok, first_stored} = Store.get_task(first["id"])
+
+    {:ok, second} =
+      Work.create(cid, %{
+        "title" => "共享工作二",
+        "workflow" => true,
+        "assigned_bee_id" => ai["id"],
+        "actor_bee_id" => actor
+      })
+
+    assert {:ok, _} =
+             Store.update("tasks", second["id"], nil, &{:ok, Map.put(&1, "workspace", first_stored["workspace"])})
+
+    assert {:ok, _} = Store.update("tasks", first["id"], nil, &{:ok, Map.put(&1, "status", "done")})
+    assert {:ok, _} = Store.update("tasks", second["id"], nil, &{:ok, Map.put(&1, "status", "done")})
+
+    assert %{"ok" => _} = rpc("colony.workspace.cleanup", %{"colonyId" => cid, "taskId" => first["id"]})
+    refute File.exists?(path)
+    assert {:ok, second_cleaned} = Store.get_task(second["id"])
+    assert second_cleaned["workspace"]["review_status"] == "cleaned"
+    assert %{"ok" => _} = rpc("colony.workspace.cleanup", %{"colonyId" => cid, "taskId" => second["id"]})
+  end
+
   test "member identity cannot be forged and is isolated to its colony", %{cid: cid, actor: actor} do
     {:ok, invite} = Newbee.Colony.Membership.invite(cid, actor, %{})
     {:ok, enrollment} = Newbee.Colony.Membership.redeem(invite["code"], "同事")

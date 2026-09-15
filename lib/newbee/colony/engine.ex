@@ -105,22 +105,23 @@ defmodule Newbee.Colony.Engine do
          :ok <- require_queen(colony, actor),
          {:ok, task} <- fetch_task(task_id),
          :ok <- task_belongs_to(task, colony_id),
-         :ok <- terminal_for_cleanup(task) do
+         :ok <- terminal_for_cleanup(task),
+         :ok <- workspace_available_for_cleanup(colony_id, task) do
       if get_in(task, ["workspace", "review_status"]) == "cleaned" do
         # 旧标签页可能在刷新前再次提交；幂等返回，但不重复制造审计记录。
+        _ = release_workspace_root(colony, task_id, task["workspace"])
         {:ok, Task.public(task)}
       else
         with :ok <- Newbee.Colony.Workspace.cleanup(task),
-             {:ok, updated} <-
-               Store.update("tasks", task_id, nil, fn current ->
-                 workspace = Map.put(current["workspace"], "review_status", "cleaned")
-                 {:ok, Map.put(current, "workspace", workspace)}
-               end) do
+             {:ok, updated} <- mark_workspace_cleaned(colony_id, task_id, task["workspace"]) do
+          root_release = release_workspace_root(colony, task_id, task["workspace"])
+
           trace(colony_id, %{
             "type" => "command",
             "bee_id" => actor,
             "task_id" => task_id,
-            "text" => "已清理任务「#{task["title"]}」的隔离工作区"
+            "text" => "已清理任务「#{task["title"]}」的隔离工作区",
+            "data" => %{"workspace_root_released" => root_release == :released}
           })
 
           {:ok, Task.public(updated)}
@@ -1681,6 +1682,131 @@ defmodule Newbee.Colony.Engine do
       do: :ok,
       else: {:error, "task_not_terminal", "只有已结束任务才能清理工作区"}
   end
+
+  defp workspace_available_for_cleanup(colony_id, task) do
+    case workspace_path(task["workspace"]) do
+      nil ->
+        :ok
+
+      path ->
+        conflict =
+          Store.tasks_for_colony(colony_id)
+          |> Enum.find(fn other ->
+            other["id"] != task["id"] and workspace_conflict?(other, path)
+          end)
+
+        if conflict,
+          do: {:error, "workspace_in_use", "该工作区仍被其他未清理任务使用，请先清理子任务"},
+          else: :ok
+    end
+  end
+
+  defp mark_workspace_cleaned(colony_id, task_id, workspace) do
+    path = workspace_path(workspace)
+
+    Store.transaction(fn data ->
+      current = get_in(data, ["tasks", task_id])
+
+      if current == nil do
+        {:error, :not_found}
+      else
+        next =
+          Enum.reduce(data["tasks"], data, fn {id, candidate}, acc ->
+            if candidate["colony_id"] == colony_id and
+                 workspace_needs_cleanup?(candidate) and
+                 workspace_path(candidate["workspace"]) == path do
+              candidate_workspace = Map.put(candidate["workspace"], "review_status", "cleaned")
+
+              updated =
+                candidate
+                |> Map.put("workspace", candidate_workspace)
+                |> Map.put("revision", (Map.get(candidate, "revision") || 0) + 1)
+                |> Map.put("updated_at", now_ms())
+
+              put_in(acc, ["tasks", id], updated)
+            else
+              acc
+            end
+          end)
+
+        {:ok, {:ok, get_in(next, ["tasks", task_id])}, next}
+      end
+    end)
+  end
+
+  defp release_workspace_root(colony, task_id, workspace) when is_map(workspace) do
+    root = workspace["root"]
+    kind = workspace["kind"]
+
+    cond do
+      kind not in ["filesystem_copy", "git_worktree"] or not is_binary(root) ->
+        :skipped
+
+      not managed_workspace_root?(colony["cwd"], root) ->
+        :skipped
+
+      workspace_root_in_use?(colony["id"], task_id, root) ->
+        :skipped
+
+      true ->
+        case Newbee.Collaboration.Workspace.discard_orphan(%{
+               "kind" => kind,
+               "root" => colony["cwd"],
+               "path" => root
+             }) do
+          :ok -> :released
+          _ -> :failed
+        end
+    end
+  end
+
+  defp release_workspace_root(_colony, _task_id, _workspace), do: :skipped
+
+  defp workspace_root_in_use?(colony_id, task_id, root) do
+    root = Path.expand(root)
+
+    Store.tasks_for_colony(colony_id)
+    |> Enum.any?(fn task -> task["id"] != task_id and workspace_conflict?(task, root) end)
+  end
+
+  defp managed_workspace_root?(project_root, candidate)
+       when is_binary(project_root) and is_binary(candidate) do
+    base = Path.join(Path.expand(project_root), ".newbee/workspaces")
+    relative = Path.relative_to(Path.expand(candidate), base)
+
+    relative != "." and not String.starts_with?(relative, "..") and Path.dirname(relative) == "."
+  end
+
+  defp managed_workspace_root?(_project_root, _candidate), do: false
+
+  defp workspace_conflict?(task, path) do
+    workspace_conflict =
+      case task["workspace"] do
+        %{} = workspace ->
+          needs_cleanup = workspace_needs_cleanup?(task)
+          same_path = workspace_path(workspace) == path
+          child_uses_path = workspace_path(%{"path" => workspace["root"]}) == path
+
+          (needs_cleanup and same_path and not Task.terminal?(task)) or
+            (needs_cleanup and child_uses_path)
+
+        _ ->
+          false
+      end
+
+    source_conflict =
+      not Task.terminal?(task) and
+        workspace_path(%{"path" => task["workspace_source"]}) == path
+
+    workspace_conflict or source_conflict
+  end
+
+  defp workspace_needs_cleanup?(%{"workspace" => %{"review_status" => "cleaned"}}), do: false
+  defp workspace_needs_cleanup?(%{"workspace" => workspace}) when is_map(workspace), do: true
+  defp workspace_needs_cleanup?(_task), do: false
+
+  defp workspace_path(%{"path" => path}) when is_binary(path), do: Path.expand(path)
+  defp workspace_path(_workspace), do: nil
 
   defp fetch_honey(id) do
     case Store.get_honey(id) do

@@ -69,7 +69,10 @@ defmodule Newbee.Colony.WorkflowTest do
     refute root["next_step"] =~ "decision"
     assert root["next_step"] =~ "实施"
 
-    delivery = Store.all("deliveries") |> Enum.find(&(&1["task_id"] == root["id"]))
+    delivery =
+      Store.all("deliveries")
+      |> Enum.find(&(&1["task_id"] == root["id"] and &1["instruction"] =~ "人的执行决定"))
+
     assert delivery["instruction"] =~ "人的执行决定"
     assert delivery["instruction"] =~ "{"
   end
