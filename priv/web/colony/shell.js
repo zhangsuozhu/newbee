@@ -235,7 +235,13 @@ export function initShell() {
     if (matchMedia('(max-width: 768px)').matches && event.target.closest('#main') && !$('app').classList.contains('sidebar-collapsed')) collapseSidebar(true, false);
   });
   const mobileMq = matchMedia('(max-width: 768px)');
-  mobileMq.addEventListener('change', e => { if (e.matches && !$('app').classList.contains('sidebar-collapsed')) collapseSidebar(true, false); });
+  mobileMq.addEventListener('change', e => {
+    if (e.matches) {
+      if (!$('app').classList.contains('sidebar-collapsed')) collapseSidebar(true, false);
+    } else if (localStorage.getItem('newbee.sidebar') !== '1') {
+      collapseSidebar(false, false);
+    }
+  });
   window.addEventListener('keydown', event => {
     if (layer && !layer.hidden) return;
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'm') { event.preventDefault(); toggleConversationPanel('monitor'); }

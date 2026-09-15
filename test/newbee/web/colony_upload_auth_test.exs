@@ -362,6 +362,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert shell =~ "const focusExpand = collapsed"
       assert shell =~ "if (focusExpand) $('sidebar-expand')?.focus({preventScroll:true});"
       assert shell =~ "if (focusToggle) $('sidebar-toggle')?.focus({preventScroll:true});"
+      assert shell =~ "else if (localStorage.getItem('newbee.sidebar') !== '1')"
+      assert shell =~ "collapseSidebar(false, false);"
     end
   end
 
