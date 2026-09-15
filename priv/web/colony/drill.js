@@ -16,8 +16,11 @@ export function renderDrillView(flow, ctx) {
 
   // 成果：任务详情此前只渲染 Trace，而人的提交（colony.work.submit）不一定留下
   // 任务级 Trace，于是「已提交、待验收」的任务在详情里显示「还没有工作记录」。
-  // 成果本来就在 state.data.honey.recent 里，按 task_id 取出来（下面按轨迹去重后渲染）。
-  const honeys = (((state.data || {}).honey || {}).recent || []).filter((h) => h.task_id === task.id);
+  // 服务端 drill 现在直接给出该子树的成果；老接口缺这个字段时退回本群视图的 recent。
+  const honeys = ((drill.honey || []).length
+    ? drill.honey
+    : (((state.data || {}).honey || {}).recent || [])
+  ).filter((h) => h.task_id === task.id);
   const children = (drill.tasks || []).filter((t) => t.parent_task_id === task.id);
   if (children.length) {
     const box = document.createElement("div");

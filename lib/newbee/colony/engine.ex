@@ -1057,6 +1057,12 @@ defmodule Newbee.Colony.Engine do
          "subtree" => Task.tree(Enum.filter(tasks, &(&1["id"] in ids))),
          "tasks" => Enum.map(subtree_tasks, &Task.public(&1, now)),
          "trace" => Store.trace_for_colony(colony_id, task_id: task_id, limit: 100),
+         # 该子树的成果：人的提交不一定写任务级 Trace，只给 trace 会让「已提交、待验收」
+         # 的任务在详情里看起来「没有工作记录」。这里把成果一并给出，前端按 task_id 渲染。
+         "honey" =>
+           Store.honey_for_colony(colony_id)
+           |> Enum.filter(&(&1["task_id"] in ids))
+           |> Enum.map(&Honey.public/1),
          "children_trace" =>
            Enum.flat_map(subtree_tasks, fn t ->
              if t["id"] == task_id,
