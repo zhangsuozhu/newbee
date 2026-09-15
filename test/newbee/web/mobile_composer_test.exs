@@ -36,6 +36,7 @@ defmodule Newbee.Web.MobileComposerTest do
     assert Regex.match?(~r/\.mobile-details\.open \{ max-height: 168px; \}/, css)
     assert Regex.match?(~r/\.composer-card \{ order: 3; \}/, css)
     assert Regex.match?(~r/#composer \{ display: flex; flex-direction: column; \}/, css)
+    assert Regex.match?(~r/\.msg-boxed \{.*?overflow-wrap: anywhere; word-break: break-word;/s, css)
   end
 
   test "the drawer opens by drag or tap, and only on mobile", %{js: js} do

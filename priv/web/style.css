@@ -362,6 +362,7 @@ body {
   padding: 12px 56px 12px 16px;
   margin: 6px 0;
   max-width: var(--nb-content-w); width: 100%; align-self: flex-start;
+  overflow-wrap: anywhere; word-break: break-word;
 }
 .msg-copy {
   position: absolute; top: 6px; right: 8px;
