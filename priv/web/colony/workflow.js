@@ -1,6 +1,6 @@
 import { state, memberById, refresh } from './store.js';
 import { rpc, toast } from './api.js';
-import { form } from './forms.js';
+import { form, confirmAction } from './forms.js';
 import { cardMenu, esc, statusLabel } from './util.js';
 import { renderMarkdown } from './md.js';
 const phases = {triage:'判断投入',proposing:'独立提案',discussing:'讨论方案',choosing:'等你决定',executing:'实施修改',integrating:'集成验证'};
@@ -21,6 +21,14 @@ async function act(t, action, attrs = {}) {
   } catch (e) {
     toast(e.message || '操作失败', true);
   }
+}
+
+async function cleanupWorkspace(task) {
+  const yes = await confirmAction('清理隔离工作区', '这会删除该任务的隔离目录和其中未提交的改动；原项目不会被修改。', '清理');
+  if (!yes) return;
+  await rpc('colony.workspace.cleanup', {colonyId: state.colonyId, taskId: task.id});
+  await refresh();
+  toast('隔离工作区已清理');
 }
 export function workflowLabel(t) {
   if (terminal(t) || t.status === 'pending_review') return statusLabel(t.status);
@@ -120,8 +128,10 @@ export function buildWorkflowCard(t, ctx) {
     }]);
     actions.append(cardMenu(guardMenu(lowFreq)));
   }
+  const cleanableWorkspace = state.data?.can_manage && terminal(t) && t.workspace &&
+    ['filesystem_copy', 'git_worktree'].includes(t.workspace.kind) && t.workspace.review_status !== 'cleaned';
+  if (cleanableWorkspace) actions.append(cardMenu(guardMenu([['清理工作区', () => cleanupWorkspace(t)]])));
   card.append(actions);
-  // 不需要你现在决定的协作任务折成一行，真正等你拍板的才整卡铺开。
   if (t.status === 'blocked' || t.status === 'pending_review' || w.phase === 'choosing') return card;
   head.remove();
   const folded = document.createElement('details');

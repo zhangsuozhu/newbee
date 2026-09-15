@@ -2,7 +2,7 @@ import { buildWorkflowCard } from './workflow.js';
 import { cardMenu, esc, absTime, fmtAgo, statusLabel } from './util.js';
 import { state, memberById, refresh } from './store.js';
 import { rpc, toast } from './api.js';
-import { form } from './forms.js';
+import { form, confirmAction } from './forms.js';
 import { renderInline, renderMarkdown } from './md.js';
 
 export function isTerminal(status) { return ['done', 'failed', 'cancelled'].includes(status); }
@@ -73,6 +73,16 @@ ${Array.isArray(value) ? value.map(v => typeof v === 'string' ? v : JSON.stringi
   const menu = [];
   menu.push(['查看工作', () => ctx.openTask(task.id, task.title)]);
   if (task.session_id) menu.push(['打开执行会话', () => ctx.openConversation(task.session_id, task.assigned_bee_id)]);
+  const cleanableWorkspace = task.workspace && ['filesystem_copy', 'git_worktree'].includes(task.workspace.kind) && task.workspace.review_status !== 'cleaned';
+  if (state.data?.can_manage && isTerminal(task.status) && cleanableWorkspace) {
+    menu.push(['清理工作区', async () => {
+      const yes = await confirmAction('清理隔离工作区', '这会删除该任务的隔离目录和其中未提交的改动；原项目不会被修改。', '清理');
+      if (!yes) return;
+      await rpc('colony.workspace.cleanup', {colonyId: state.colonyId, taskId: task.id});
+      await refresh();
+      toast('隔离工作区已清理');
+    }]);
+  }
 
   if (!isTerminal(task.status)) {
     if (state.data?.can_manage) {

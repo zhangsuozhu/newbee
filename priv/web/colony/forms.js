@@ -66,5 +66,26 @@ export function form(title, fields, submitLabel = '保存') {
   });
 }
 
+export function confirmAction(title, message, confirmLabel = '确认') {
+  return new Promise((resolve) => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'colony-dialog';
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('aria-modal', 'true');
+    const node = document.createElement('div');
+    const heading = document.createElement('h3'); heading.textContent = title;
+    const body = document.createElement('p'); body.textContent = message;
+    const actions = document.createElement('div'); actions.className = 'honey-actions';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn-ghost'; cancel.textContent = '取消';
+    const confirm = document.createElement('button'); confirm.type = 'button'; confirm.className = 'btn-deny'; confirm.textContent = confirmLabel;
+    cancel.onclick = () => dialog.close('cancel');
+    confirm.onclick = () => dialog.close('confirm');
+    actions.append(cancel, confirm); node.append(heading, body, actions); dialog.append(node); document.body.append(dialog);
+    dialog.onclose = () => { dialog.remove(); resolve(dialog.returnValue === 'confirm'); };
+    dialog.showModal();
+    cancel.focus();
+  });
+}
+
 
 

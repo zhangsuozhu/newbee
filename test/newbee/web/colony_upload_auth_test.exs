@@ -498,4 +498,21 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert js =~ "const stillPaused = !!(fresh && fresh.control_state && fresh.control_state !== 'running');"
     end
   end
+
+  describe "终态任务的隔离工作区清理" do
+    test "前端有确认对话框并调用 Queen 专属清理 RPC" do
+      forms = File.read!("priv/web/colony/forms.js")
+      taskcard = File.read!("priv/web/colony/taskcard.js")
+      workflow = File.read!("priv/web/colony/workflow.js")
+      api = File.read!("lib/newbee/web/colony_api.ex")
+
+      engine = File.read!("lib/newbee/colony/engine.ex")
+
+      assert forms =~ "export function confirmAction(title, message, confirmLabel = '确认')"
+      assert taskcard =~ "rpc('colony.workspace.cleanup'"
+      assert workflow =~ "rpc('colony.workspace.cleanup'"
+      assert api =~ "colony.workspace.cleanup"
+      assert engine =~ "只有已结束任务才能清理工作区"
+    end
+  end
 end

@@ -96,6 +96,33 @@ defmodule Newbee.Colony.Engine do
     |> Enum.map(fn c -> %{"colony" => c, "stats" => colony_stats(c["id"])} end)
   end
 
+  @doc "清理已结束任务的隔离工作区（Queen 专属）。"
+  def cleanup_workspace(colony_id, task_id, opts \\ []) do
+    actor = Keyword.get(opts, :actor_bee_id)
+
+    with {:ok, colony} <- fetch_colony(colony_id),
+         :ok <- ensure_active(colony),
+         :ok <- require_queen(colony, actor),
+         {:ok, task} <- fetch_task(task_id),
+         :ok <- task_belongs_to(task, colony_id),
+         :ok <- terminal_for_cleanup(task),
+         :ok <- Newbee.Colony.Workspace.cleanup(task),
+         {:ok, updated} <-
+           Store.update("tasks", task_id, nil, fn current ->
+             workspace = Map.put(current["workspace"], "review_status", "cleaned")
+             {:ok, Map.put(current, "workspace", workspace)}
+           end) do
+      trace(colony_id, %{
+        "type" => "command",
+        "bee_id" => actor,
+        "task_id" => task_id,
+        "text" => "已清理任务「#{task["title"]}」的隔离工作区"
+      })
+
+      {:ok, Task.public(updated)}
+    end
+  end
+
   # ───────────────────────── Bee ─────────────────────────
 
   @doc "加入一只 Bee（人或 AI）。attrs: kind?, display, capabilities?, session_id?, bind_session?, garden_id?"
@@ -1638,6 +1665,15 @@ defmodule Newbee.Colony.Engine do
       {:ok, t} -> {:ok, t}
       {:error, :not_found} -> {:error, "not_found", "任务不存在"}
     end
+  end
+
+  defp task_belongs_to(%{"colony_id" => colony_id}, colony_id), do: :ok
+  defp task_belongs_to(_, _), do: {:error, "not_found", "任务不在当前群"}
+
+  defp terminal_for_cleanup(task) do
+    if Task.terminal?(task),
+      do: :ok,
+      else: {:error, "task_not_terminal", "只有已结束任务才能清理工作区"}
   end
 
   defp fetch_honey(id) do

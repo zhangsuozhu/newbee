@@ -26,6 +26,15 @@ defmodule Newbee.Colony.Workspace do
     end
   end
 
+  @doc "清理已结束任务的隔离目录；共享目录和缺失工作区不会被误删。"
+  def cleanup(%{"workspace" => %{"review_status" => "cleaned"}}), do: :ok
+
+  def cleanup(%{"workspace" => %{"kind" => kind} = workspace})
+      when kind in ["filesystem_copy", "git_worktree"],
+      do: Newbee.Collaboration.Workspace.discard_orphan(workspace)
+
+  def cleanup(_), do: {:error, "workspace_missing", "任务没有可清理的隔离工作区"}
+
   # The snapshot is the current source (including dirty/untracked files), not only HEAD.
   # Checkout the index without touching files, then overlay that snapshot. No commit or push.
   defp attach_git(snapshot, source) do

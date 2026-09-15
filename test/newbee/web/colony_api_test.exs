@@ -149,6 +149,38 @@ defmodule Newbee.Web.ColonyApiTest do
     assert {:ok, %{"status" => "done"}} = Store.get_task(task["id"])
   end
 
+  test "Queen can explicitly clean an ended task workspace", %{cid: cid, actor: actor} do
+    root = Path.join(System.tmp_dir!(), "colony-cleanup-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    ai = Store.bees_for_colony(cid) |> Enum.find(&(&1["kind"] == "ai"))
+
+    {:ok, task} =
+      Work.create(cid, %{
+        "title" => "可清理任务",
+        "workflow" => true,
+        "assigned_bee_id" => ai["id"],
+        "actor_bee_id" => actor,
+        "workspace_source" => root
+      })
+
+    assert {:ok, workspace_path} = Newbee.Colony.Workspace.ensure(task, root)
+    {:ok, stored} = Store.get_task(task["id"])
+    :ok = Store.update("tasks", task["id"], nil, &{:ok, Map.put(&1, "status", "done")}) |> elem(0)
+    assert File.dir?(workspace_path)
+
+    assert %{"ok" => %{"task" => cleaned}} =
+             rpc("colony.workspace.cleanup", %{"colonyId" => cid, "taskId" => task["id"]})
+
+    assert cleaned["workspace"]["review_status"] == "cleaned"
+    refute File.exists?(workspace_path)
+    refute File.exists?(workspace_path <> ".base_snapshot.term")
+    assert {:ok, after_cleanup} = Store.get_task(task["id"])
+    assert after_cleanup["workspace"]["review_status"] == "cleaned"
+    assert stored["workspace"]["kind"] == "filesystem_copy"
+  end
+
   test "member identity cannot be forged and is isolated to its colony", %{cid: cid, actor: actor} do
     {:ok, invite} = Newbee.Colony.Membership.invite(cid, actor, %{})
     {:ok, enrollment} = Newbee.Colony.Membership.redeem(invite["code"], "同事")

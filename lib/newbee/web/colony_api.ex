@@ -10,7 +10,7 @@ defmodule Newbee.Web.ColonyApi do
 
   alias Newbee.Colony.Engine
 
-  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.dissolve colony.view colony.drill colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow)
+  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.dissolve colony.view colony.drill colony.workspace.cleanup colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow)
 
   @doc "dispatch/2 返回 {:ok, value} | {:error, code, message}。"
   def dispatch("colony.invite.redeem", p),
@@ -248,7 +248,7 @@ defmodule Newbee.Web.ColonyApi do
 
   defp authorize_request(method, p, actor, role) do
     owner_only =
-      ~w(colony.create colony.bootstrap colony.dissolve colony.rename colony.bee.add colony.bee.remove colony.control colony.invite.create colony.remote.join colony.honey.review colony.task.claim colony.task.decompose colony.honey.add colony.signal.emit)
+      ~w(colony.create colony.bootstrap colony.dissolve colony.rename colony.bee.add colony.bee.remove colony.control colony.invite.create colony.remote.join colony.honey.review colony.task.claim colony.task.decompose colony.honey.add colony.workspace.cleanup colony.signal.emit)
 
     cond do
       method not in @methods ->
@@ -331,6 +331,13 @@ defmodule Newbee.Web.ColonyApi do
              {:ok, tid} <- need(payload, "taskId"),
              {:ok, drill} <- Engine.drill(cid, tid) do
           {:ok, drill}
+        end
+
+      "colony.workspace.cleanup" ->
+        with {:ok, cid} <- need(payload, "colonyId"),
+             {:ok, tid} <- need(payload, "taskId"),
+             {:ok, task} <- Engine.cleanup_workspace(cid, tid, actor_bee_id: g(payload, "actorBeeId")) do
+          {:ok, %{"task" => task}}
         end
 
       "colony.bee.trail" ->
