@@ -460,6 +460,9 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
   .colony-scope { display: none; }
   .colony-quick { margin-bottom: 6px; --nb-content-w: 100%; }
   .chip-btn { padding: 6px 12px; min-height: 32px; }
+  /* 历史任务行是可点的导航项：手机上加到 44px，避免列表里误触打开别的任务。 */
+  .bee-task-row { padding: 12px; }
+
   .review-strip { padding: 8px 12px; gap: 8px; }
   .review-btn { padding: 6px 12px; min-height: 34px; }
   .topbar-head .session-title { font-size: 15px; }

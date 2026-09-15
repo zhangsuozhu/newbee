@@ -293,4 +293,15 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert js =~ "} else if (inDrill) {"
     end
   end
+
+  describe "移动端触控目标" do
+    test "历史任务行在手机宽度下加高到 44px" do
+      css = File.read!("priv/web/colony/colony.css")
+
+      # 回归：.bee-task-row 桌面默认 6px 内边距（约 32px 高），手机端误触率高；
+      # 现有移动端约定（.group-view-tabs button）用 44px。
+      assert css =~ ".bee-task-row { padding: 12px; }"
+      assert css =~ "@media (max-width: 768px) {"
+    end
+  end
 end
