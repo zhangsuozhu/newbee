@@ -656,14 +656,16 @@ defmodule Newbee.LLM.Client do
           {false, 0, 0}
       end
 
-    Newbee.Environment.UsageTracker.observe_plugin("provider.openrouter", %{
-      success: success,
-      latency_ms: System.monotonic_time(:millisecond) - started_at,
-      tokens: tokens,
-      output_bytes: output_bytes,
-      model: client.model,
-      task_type: task_type
-    })
+    unless Newbee.Learning.Context.experimental?() do
+      Newbee.Environment.UsageTracker.observe_plugin("provider.openrouter", %{
+        success: success,
+        latency_ms: System.monotonic_time(:millisecond) - started_at,
+        tokens: tokens,
+        output_bytes: output_bytes,
+        model: client.model,
+        task_type: task_type
+      })
+    end
   rescue
     _ -> :ok
   end

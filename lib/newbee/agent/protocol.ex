@@ -70,6 +70,8 @@ defmodule Newbee.Agent.Protocol do
   payload 含 message_id/request_id/project_id/sender/created_at。
   """
   def send_message(kind, sender, payload) when kind in @kinds do
+    Newbee.Learning.Context.production_write!()
+
     message = %{
       "message_id" => gen_message_id(sender),
       "request_id" => payload[:request_id] || payload["request_id"],
