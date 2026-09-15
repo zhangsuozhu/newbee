@@ -152,7 +152,27 @@ export function cardMenu(items, label = "更多 ▾") {
     };
     pop.appendChild(item);
   }
-  btn.onclick = (event) => { event.stopPropagation(); pop.classList.toggle("hidden"); };
+  btn.onclick = (event) => {
+    event.stopPropagation();
+    const opening = !pop.classList.toggle("hidden");
+    if (!opening) return;
+    pop.style.left = "";
+    pop.style.right = "0";
+    const margin = 8;
+    const wrapRect = wrap.getBoundingClientRect();
+    const menuWidth = pop.getBoundingClientRect().width;
+    const viewportWidth = document.documentElement.clientWidth || innerWidth;
+    if (wrapRect.left + menuWidth <= viewportWidth - margin) {
+      pop.style.left = "0";
+      pop.style.right = "auto";
+    } else if (wrapRect.right - menuWidth >= margin) {
+      pop.style.left = "auto";
+      pop.style.right = "0";
+    } else {
+      pop.style.left = `${margin - wrapRect.left}px`;
+      pop.style.right = "auto";
+    }
+  };
   wrap.append(btn, pop);
   return wrap;
 }

@@ -376,6 +376,9 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert util =~ "pop.parentElement && pop.parentElement.querySelector(\".card-more\")"
       assert util =~ "if (trigger) trigger.focus();"
       assert util =~ "btn.focus({preventScroll: true});"
+      assert util =~ "const opening = !pop.classList.toggle(\"hidden\");"
+      assert util =~ "const viewportWidth = document.documentElement.clientWidth || innerWidth;"
+      assert util =~ "pop.style.left = `${margin - wrapRect.left}px`;"
     end
   end
 

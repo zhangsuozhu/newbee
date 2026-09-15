@@ -299,7 +299,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .card-menu-wrap { position: relative; }
 .card-menu {
   position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 40;
-  min-width: 168px; padding: 4px;
+  min-width: 168px; max-width: calc(100vw - 16px); box-sizing: border-box; padding: 4px;
   display: flex; flex-direction: column; gap: 1px;
   background: var(--nb-bg-elev); border: 1px solid var(--nb-border);
   border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .3);
