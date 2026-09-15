@@ -542,4 +542,14 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert sidebar =~ "dialog.remove(); restoreFocus(previousFocus);"
     end
   end
+
+  describe "一次性邀请码错误恢复" do
+    test "已使用邀请码清掉 hash 后回到可用蜂群界面" do
+      js = File.read!("priv/web/colony/manage.js")
+
+      assert js =~ "if (error.code !== 'invalid_invite') throw error;"
+      assert js =~ "history.replaceState(null, '', location.pathname);"
+      assert js =~ "邀请码已使用或过期，请让邀请方重新生成"
+    end
+  end
 end

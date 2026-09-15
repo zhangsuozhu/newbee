@@ -106,10 +106,16 @@ export async function redeemInvitation() {
   if (!code) return;
   const value = await form('加入蜂群', [{name:'display',label:'你的名字',required:true}], '加入');
   if (!value) return;
-  const result = await rpc('colony.invite.redeem', {code, display:value.display});
-  localStorage.setItem('newbee.token', result.token);
-  history.replaceState(null, '', location.pathname);
-  state.colonyId = result.colony.id;
+  try {
+    const result = await rpc('colony.invite.redeem', {code, display:value.display});
+    localStorage.setItem('newbee.token', result.token);
+    history.replaceState(null, '', location.pathname);
+    state.colonyId = result.colony.id;
+  } catch (error) {
+    if (error.code !== 'invalid_invite') throw error;
+    history.replaceState(null, '', location.pathname);
+    toast('邀请码已使用或过期，请让邀请方重新生成', true);
+  }
 }
 export async function help() {
   await form('在蜂群里能做什么', [{name:'help',label:'直接说需求，也可以使用这些入口',value:'群聊：说要完成什么，系统选择一名负责人。\n@成员：指定负责人；@all 讨论：最多三名 AI 提方案。\n工作卡：查看进度和证据、补要求、答复并继续、请成员协作。\n暂停：可分别暂停全群 AI、某个 AI、某项工作；不会阻止人说话。\n点 AI：打开原来的对话界面，附件、模型和思考设置仍在那里。\n点同事：私聊。群设置：邀请、移出、退出和解散。',multiline:true,readonly:true,copy:true}], '知道了');
