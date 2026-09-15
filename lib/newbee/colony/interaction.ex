@@ -154,7 +154,11 @@ defmodule Newbee.Colony.Interaction do
         # 方案/讨论/选择阶段不接受「补充约束」。但消息已经记进群聊（trace 在上面就写了），
         # 这里再报失败会让用户以为没发出去（暂停 + 有待选方案时每句话都红一次）。
         {:error, "workflow_decision_required", _msg} ->
-          response("消息已记录在群聊。当前工作处于方案阶段，请在工作卡里讨论或选择方案。", [current])
+          response(
+            "消息已记录在群聊。当前工作处于方案阶段，请在工作卡里讨论或选择方案" <>
+              "（若显示「已暂停」，先在卡片的「更多 ▾ → 恢复任务」恢复）。",
+            [current]
+          )
 
         other ->
           other
