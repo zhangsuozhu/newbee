@@ -478,7 +478,7 @@ function detailText(t) {
 }
 
 // ── 成果卡：内容 + 验收（内联通过 / 打回）──
-function honeyNode(t, ctx) {
+export function honeyNode(t, ctx) {
   const live = (state.data?.honey?.recent || []).find(h => h.id === t.data?.honey_id);
   const d = {...(t.data || {}), ...(live || {})};
   const reviewState = d.review_state || "pending_review";

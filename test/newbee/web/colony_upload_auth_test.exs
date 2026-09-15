@@ -454,4 +454,19 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert css =~ "box-sizing: border-box; height: 36px; min-height: 36px; padding: 0 10px;"
     end
   end
+
+  describe "任务深钻里的成果" do
+    test "按 task_id 补出成果卡（含验收按钮），并按轨迹去重" do
+      chat = File.read!("priv/web/colony/chat.js")
+      drill = File.read!("priv/web/colony/drill.js")
+
+      # 回归：人的提交（colony.work.submit）不一定写任务级 Trace，深钻只渲染 Trace，
+      # 于是「已提交、待验收」的任务在详情里显示「还没有工作记录」，也验收不了。
+      assert chat =~ "export function honeyNode(t, ctx) {"
+      assert drill =~ "import { traceNode, honeyNode } from \"./chat.js\";"
+      assert drill =~ "filter((h) => h.task_id === task.id)"
+      assert drill =~ "if (tracedHoneyIds.has(h.id)) continue;"
+      assert drill =~ "成果见上方成果卡"
+    end
+  end
 end
