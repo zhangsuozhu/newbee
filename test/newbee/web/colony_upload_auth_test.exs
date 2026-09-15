@@ -509,7 +509,9 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       engine = File.read!("lib/newbee/colony/engine.ex")
 
       assert forms =~ "export function confirmAction(title, message, confirmLabel = '确认')"
+      assert taskcard =~ "if (!yes) return;"
       assert taskcard =~ "rpc('colony.workspace.cleanup'"
+      assert workflow =~ "if (!yes) return;"
       assert workflow =~ "rpc('colony.workspace.cleanup'"
       assert api =~ "colony.workspace.cleanup"
       assert engine =~ "只有已结束任务才能清理工作区"

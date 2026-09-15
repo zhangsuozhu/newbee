@@ -181,6 +181,43 @@ defmodule Newbee.Web.ColonyApiTest do
     assert stored["workspace"]["kind"] == "filesystem_copy"
   end
 
+  test "workspace cleanup rejects active tasks and non-Queen members", %{cid: cid, actor: actor} do
+    root = Path.join(System.tmp_dir!(), "colony-cleanup-boundary-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    ai = Store.bees_for_colony(cid) |> Enum.find(&(&1["kind"] == "ai"))
+
+    {:ok, task} =
+      Work.create(cid, %{
+        "title" => "不可提前清理",
+        "workflow" => true,
+        "assigned_bee_id" => ai["id"],
+        "actor_bee_id" => actor,
+        "workspace_source" => root
+      })
+
+    assert {:ok, workspace_path} = Newbee.Colony.Workspace.ensure(task, root)
+
+    assert %{"error" => %{"code" => "task_not_terminal"}} =
+             rpc("colony.workspace.cleanup", %{"colonyId" => cid, "taskId" => task["id"]})
+
+    assert File.dir?(workspace_path)
+    {:ok, invite} = Newbee.Colony.Membership.invite(cid, actor, %{})
+    {:ok, enrollment} = Newbee.Colony.Membership.redeem(invite["code"], "清理成员")
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             rpc(
+               "colony.workspace.cleanup",
+               %{"colonyId" => cid, "taskId" => task["id"]},
+               enrollment["token"]
+             )
+
+    assert File.dir?(workspace_path)
+    assert {:ok, unchanged} = Store.get_task(task["id"])
+    assert unchanged["workspace"]["review_status"] == "waiting"
+  end
+
   test "member identity cannot be forged and is isolated to its colony", %{cid: cid, actor: actor} do
     {:ok, invite} = Newbee.Colony.Membership.invite(cid, actor, %{})
     {:ok, enrollment} = Newbee.Colony.Membership.redeem(invite["code"], "同事")
