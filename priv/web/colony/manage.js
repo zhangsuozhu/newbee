@@ -1,5 +1,5 @@
 import {rpc, toast, markMemberSession, forgetAuthToken} from './api.js';
-import {state, refresh, loadColonies, selectColony} from './store.js';
+import {state, refresh, loadColonies, selectColony, emit} from './store.js';
 import {form} from './forms.js';
 
 export async function renameColony() {
@@ -77,6 +77,7 @@ export async function manage() {
         forgetAuthToken();
         state.colonies = [];
         state.lastError = '已退出蜂群';
+        emit();
         toast('已退出蜂群，可用新的邀请链接重新加入');
         return;
       }
