@@ -1,5 +1,5 @@
 // One navigation shell. Tools open as their own original surfaces, with no extra wrapper.
-import { rpc, toast } from './api.js';
+import { rpc, toast, forgetAuthToken } from './api.js';
 import { state } from './store.js';
 
 const $ = id => document.getElementById(id);
@@ -224,7 +224,7 @@ export function initShell() {
   soundUI();
   $('logout-btn').onclick = async () => {
     try { await rpc('auth.logout'); } catch (_) {}
-    localStorage.removeItem('newbee.token'); location.assign('/');
+    forgetAuthToken(); location.assign('/');
   };
   document.addEventListener('click', event => {
     if (matchMedia('(max-width: 768px)').matches && event.target.closest('#main') && !$('app').classList.contains('sidebar-collapsed')) collapseSidebar(true, false);

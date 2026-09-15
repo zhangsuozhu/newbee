@@ -1,5 +1,5 @@
 // 蜂群前端 · 状态中心（订阅 + 轮询）
-import { rpc, toast } from "./api.js";
+import { rpc, toast, isMemberSession } from "./api.js";
 
 const listeners = new Set();
 let refreshSequence = 0;
@@ -42,12 +42,30 @@ export function emit() {
   }
 }
 
+function invalidateMemberSession() {
+  state.colonies = [];
+  state.colonyId = null;
+  state.data = null;
+  state.trail = null;
+  state.drill = null;
+  state.stack = [];
+  state.mode = "colony";
+  state.beeModeId = null;
+  state.conversationId = null;
+  state.lastError = "成员凭据已失效，请重新加入蜂群";
+}
+
 export async function loadColonies() {
   let res;
   try {
     res = await rpc("colony.list");
     authRetryUsed = false;
   } catch (error) {
+    if (error?.code === "unauthorized" && isMemberSession()) {
+      invalidateMemberSession();
+      emit();
+      return state.colonies;
+    }
     // 加载失败时不要清空已有列表、也不要让界面退回「还没有蜂群」的引导态：
     // 那会让用户以为数据丢了（真实场景：令牌过期后本地模式也会被拒）。
     state.lastError = error.message || String(error);
@@ -119,6 +137,10 @@ export async function refresh() {
     }
   } catch (e) {
     if (!current()) return;
+    if (e?.code === "unauthorized" && isMemberSession()) {
+      invalidateMemberSession();
+      return;
+    }
     if (e && e.code === "dissolved") {
       // 蜂群可能在别的标签 / 别的设备上被解散：localStorage 里的 active 还指着它，
       // 不处理就会永远显示一个幽灵蜂群并对着它空转轮询。

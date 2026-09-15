@@ -86,11 +86,10 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       app = File.read!("priv/web/colony/app.js")
       sidebar = File.read!("priv/web/colony/sidebar.js")
 
-      # store: 失败时设置 lastError、不清空列表、有界重试
+      # store: 普通失败保留列表、有界重试；成员凭据失效另行清空旧视图
       assert store =~ "state.lastError = error.message || String(error);"
       assert store =~ "if (!authRetryUsed) {"
       assert store =~ "setTimeout(() => { void loadColonies(); }, 600);"
-      refute store =~ "state.colonies = [];"
 
       # app: 引导分支必须先排除加载失败
       assert app =~ "if (state.lastError) {"
@@ -550,6 +549,28 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert js =~ "if (error.code !== 'invalid_invite') throw error;"
       assert js =~ "history.replaceState(null, '', location.pathname);"
       assert js =~ "邀请码已使用或过期，请让邀请方重新生成"
+    end
+  end
+
+  describe "成员令牌失效隔离" do
+    test "无效成员令牌不被清掉并清空旧蜂群视图" do
+      api = File.read!("priv/web/colony/api.js")
+      store = File.read!("priv/web/colony/store.js")
+      manage = File.read!("priv/web/colony/manage.js")
+      shell = File.read!("priv/web/colony/shell.js")
+      app = File.read!("priv/web/colony/app.js")
+      sidebar = File.read!("priv/web/colony/sidebar.js")
+
+      assert api =~ "const MEMBER_TOKEN_KEY = \"newbee.member_token\";"
+      assert api =~ "result.error.code === \"unauthorized\" && !isMemberSession()"
+      assert api =~ "if (method === \"auth.status\")"
+      assert manage =~ "markMemberSession();"
+      assert store =~ "invalidateMemberSession();"
+      assert store =~ "成员凭据已失效，请重新加入蜂群"
+      assert shell =~ "forgetAuthToken(); location.assign('/')"
+      assert app =~ "const memberExpired = state.lastError === '成员凭据已失效，请重新加入蜂群'"
+      assert app =~ "if (error && !memberExpired)"
+      assert sidebar =~ "成员凭据已失效，请使用新的邀请链接重新加入蜂群"
     end
   end
 end

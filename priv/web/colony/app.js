@@ -212,15 +212,18 @@ function render(force = false) {
 
   if (!state.colonyId) {
     if (state.lastError) {
-      // 加载失败 ≠ 没有蜂群：不要把用户引到「创建一个蜂群」，那会让人以为数据丢了。
+      const memberExpired = state.lastError === '成员凭据已失效，请重新加入蜂群';
       const failed = document.createElement("div");
       failed.className = "colony-empty";
-      failed.innerHTML = `<div>暂时无法加载蜂群：${state.lastError}</div>`;
-      const retry = document.createElement("button");
-      retry.className = "btn-allow";
-      retry.textContent = "重试";
-      retry.onclick = async () => { await loadColonies(); await refresh(); render(true); };
-      failed.appendChild(retry);
+      const message = memberExpired ? '成员凭据已失效，请使用新的邀请链接重新加入蜂群。' : `暂时无法加载蜂群：${state.lastError}`;
+      failed.innerHTML = `<div>${message}</div>`;
+      if (!memberExpired) {
+        const retry = document.createElement("button");
+        retry.className = "btn-allow";
+        retry.textContent = "重试";
+        retry.onclick = async () => { await loadColonies(); await refresh(); render(true); };
+        failed.appendChild(retry);
+      }
       flow.appendChild(failed);
       renderTopMeta();
       return;
@@ -316,12 +319,13 @@ function renderSyncStatus() {
     document.getElementById('transcript')?.before(bar);
   }
   const error = state.lastError;
-  bar.hidden = !error && (!state.refreshing || !!state.data);
-  bar.classList.toggle('error', !!error);
-  const message = error ? `更新失败：${error}。${state.data ? '当前显示上次成功加载的内容。' : ''}` : '正在加载…';
+  const memberExpired = error === '成员凭据已失效，请重新加入蜂群';
+  bar.hidden = memberExpired || (!error && (!state.refreshing || !!state.data));
+  bar.classList.toggle('error', !!error && !memberExpired);
+  const message = memberExpired ? '' : error ? `更新失败：${error}。${state.data ? '当前显示上次成功加载的内容。' : ''}` : '正在加载…';
   if (bar.dataset.message !== message) {
     bar.dataset.message = message; bar.textContent = message;
-    if (error) {
+    if (error && !memberExpired) {
       const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试';
       retry.onclick = () => ctx.refreshNow(); bar.append(retry);
     }

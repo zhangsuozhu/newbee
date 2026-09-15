@@ -1,4 +1,4 @@
-import {rpc, toast} from './api.js';
+import {rpc, toast, markMemberSession} from './api.js';
 import {state, refresh, loadColonies, selectColony} from './store.js';
 import {form} from './forms.js';
 
@@ -109,6 +109,7 @@ export async function redeemInvitation() {
   try {
     const result = await rpc('colony.invite.redeem', {code, display:value.display});
     localStorage.setItem('newbee.token', result.token);
+    markMemberSession();
     history.replaceState(null, '', location.pathname);
     state.colonyId = result.colony.id;
   } catch (error) {

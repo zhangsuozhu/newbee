@@ -28,9 +28,11 @@ export function renderSidebar(root, ctx) {
     empty.className = "session-empty";
     empty.textContent = state.colonies.length
       ? "没有匹配的蜂群"
-      : state.lastError
-        ? "蜂群列表加载失败，点上方重试"
-        : "还没有蜂群，点右上角 + 建一个";
+      : state.lastError === '成员凭据已失效，请重新加入蜂群'
+        ? "成员凭据已失效，请使用新的邀请链接重新加入蜂群"
+        : state.lastError
+          ? "蜂群列表加载失败，点上方重试"
+          : "还没有蜂群，点右上角 + 建一个";
     root.appendChild(empty);
     return;
   }
