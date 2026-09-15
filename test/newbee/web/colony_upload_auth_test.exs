@@ -373,6 +373,7 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert util =~ "document.addEventListener(\"keydown\", (event) => {"
       assert util =~ "pop.parentElement && pop.parentElement.querySelector(\".card-more\")"
       assert util =~ "if (trigger) trigger.focus();"
+      assert util =~ "btn.focus({preventScroll: true});"
     end
   end
 
@@ -553,6 +554,7 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
   describe "对话框关闭焦点" do
     test "form、确认框和侧栏选择框都恢复触发控件" do
       forms = File.read!("priv/web/colony/forms.js")
+      app = File.read!("priv/web/colony/app.js")
       sidebar = File.read!("priv/web/colony/sidebar.js")
 
       assert forms =~ "export function restoreFocus(previousFocus)"
@@ -560,6 +562,18 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert forms =~ "dialog.remove(); restoreFocus(previousFocus);"
       assert sidebar =~ "import { form, confirmAction, restoreFocus } from './forms.js';"
       assert sidebar =~ "dialog.remove(); restoreFocus(previousFocus);"
+      assert forms =~ "const menuTrigger = previousFocus.closest?.('.card-menu-wrap')?.querySelector('.card-more');"
+
+      assert forms =~
+               "const target = focusable(previousFocus) ? previousFocus : focusable(menuTrigger) ? menuTrigger : main;"
+
+      assert forms =~ "setTimeout(() => {"
+      assert forms =~ "  }, 50);"
+
+      assert app =~ "if (document.querySelector('dialog[open]')) return;"
+      assert app =~ "let dialogEscape = false;"
+      assert app =~ "dialogEscape = true;"
+      assert app =~ "if (dialogEscape || e.target?.closest?.('dialog')) return;"
     end
   end
 

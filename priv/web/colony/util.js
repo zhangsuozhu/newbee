@@ -138,7 +138,18 @@ export function cardMenu(items, label = "更多 ▾") {
   for (const [text, fn] of items) {
     const item = document.createElement("button");
     item.type = "button"; item.className = "card-menu-item"; item.textContent = text;
-    item.onclick = async () => { pop.classList.add("hidden"); try { await fn(); } catch (error) { console.error("[colony] menu action failed", error); toast(error.message || "操作失败，请重试", true); } };
+    item.onclick = async () => {
+      pop.classList.add("hidden");
+      btn.focus({preventScroll: true});
+      try {
+        await fn();
+      } catch (error) {
+        console.error("[colony] menu action failed", error);
+        toast(error.message || "操作失败，请重试", true);
+      } finally {
+        if (document.body.contains(btn) && !btn.hidden && btn.getClientRects().length && !btn.disabled) btn.focus({preventScroll: true});
+      }
+    };
     pop.appendChild(item);
   }
   btn.onclick = (event) => { event.stopPropagation(); pop.classList.toggle("hidden"); };

@@ -281,6 +281,7 @@ function render(force = false) {
 // 有新消息时给一个可见入口：不管你在看工作还是别的对话，都不会漏掉群里的发言。
 let seenRoute = null;
 let seenSeq = 0;
+let dialogEscape = false;
 
 function currentFeed() {
   if (state.view === 'drill') return (state.drill && state.drill.trace) || [];
@@ -443,8 +444,15 @@ async function boot() {
   renderComposer(ctx);
   render(true);
   window.addEventListener("resize", () => render(true));
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !e.target?.closest?.("dialog")) return;
+    dialogEscape = true;
+    setTimeout(() => { dialogEscape = false; }, 0);
+  }, true);
   window.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if (dialogEscape || e.target?.closest?.('dialog')) return;
+    if (document.querySelector('dialog[open]')) return;
     if (document.activeElement && document.activeElement.id === "input") return;
     if (!state.stack.length) return;
     resetToChat();

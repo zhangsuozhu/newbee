@@ -2,11 +2,20 @@ import { copyToClipboard } from "./util.js";
 
 // Small accessible dialogs use the existing application controls and theme.
 
+function focusable(element) {
+  return !!(element && element !== document.body && document.body.contains(element) &&
+    !element.hidden && !element.disabled && element.getClientRects().length && !element.closest('[inert]'));
+}
 export function restoreFocus(previousFocus) {
   if (!previousFocus || previousFocus === document.body) return;
-  queueMicrotask(() => {
-    if (document.body.contains(previousFocus)) previousFocus.focus({preventScroll: true});
-  });
+  setTimeout(() => {
+    const menuTrigger = previousFocus.closest?.('.card-menu-wrap')?.querySelector('.card-more');
+    const main = document.getElementById('transcript') || document.getElementById('main');
+    const target = focusable(previousFocus) ? previousFocus : focusable(menuTrigger) ? menuTrigger : main;
+    if (!target) return;
+    if ((target.id === 'transcript' || target.id === 'main') && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+    target.focus({preventScroll: true});
+  }, 50);
 }
 export function form(title, fields, submitLabel = '保存') {
   return new Promise((resolve) => {
