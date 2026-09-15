@@ -139,4 +139,9 @@ defmodule Newbee.Learning.Actor do
         error
     end
   end
+
+  @doc "Default model call used when no model_fun is injected (real-model pilot)."
+  def default_model(messages, opts) do
+    complete(messages, opts)
+  end
 end

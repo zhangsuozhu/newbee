@@ -614,7 +614,7 @@ defmodule Newbee.Learning.Fixtures do
   evaluation protocols as the fixture cohort version.
   """
   @spec version() :: binary()
-  def version, do: Evaluation.hash(@fixtures)
+  def version, do: Evaluation.hash(%{"fixtures" => Enum.map(@fixtures, &public_descriptor/1), "schema" => 1})
 
   @doc "Number of fixtures per split."
   @spec counts() :: map()

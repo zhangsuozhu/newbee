@@ -178,8 +178,11 @@ defmodule Newbee.Learning.StateStoreTest do
   end
 
   defp finish_pass!(state, id, attempt_id) do
-    {state, _} = apply!(state, id <> ":run", "record_execution", %{"attempt_id" => attempt_id, "execution_status" => "running"})
-    {state, _} = apply!(state, id <> ":sub", "record_execution", %{"attempt_id" => attempt_id, "execution_status" => "submitted"})
+    {state, _} =
+      apply!(state, id <> ":run", "record_execution", %{"attempt_id" => attempt_id, "execution_status" => "running"})
+
+    {state, _} =
+      apply!(state, id <> ":sub", "record_execution", %{"attempt_id" => attempt_id, "execution_status" => "submitted"})
 
     {state, _} =
       apply!(state, id <> ":term", "record_execution", %{
@@ -234,7 +237,14 @@ defmodule Newbee.Learning.StateStoreTest do
   describe "command envelope and CAS" do
     test "expected_revision mismatch is a revision conflict" do
       state = new_state()
-      command = %{"id" => "c1", "type" => "stop_learning", "expected_revision" => 5, "payload" => %{"reason" => "stalled"}}
+
+      command = %{
+        "id" => "c1",
+        "type" => "stop_learning",
+        "expected_revision" => 5,
+        "payload" => %{"reason" => "stalled"}
+      }
+
       assert {:error, :revision_conflict} = State.apply(state, command)
     end
 
@@ -242,7 +252,12 @@ defmodule Newbee.Learning.StateStoreTest do
       state = new_state()
 
       assert {:error, {:invalid_field, "command.type", _}} =
-               State.apply(state, %{"id" => "c1", "type" => "forge_admission", "expected_revision" => 0, "payload" => %{}})
+               State.apply(state, %{
+                 "id" => "c1",
+                 "type" => "forge_admission",
+                 "expected_revision" => 0,
+                 "payload" => %{}
+               })
 
       assert {:error, {:missing_field, "payload"}} =
                State.apply(state, %{"id" => "c1", "type" => "stop_learning", "expected_revision" => 0})
@@ -252,7 +267,9 @@ defmodule Newbee.Learning.StateStoreTest do
       state = new_state()
       {next, receipt} = apply!(state, "c1", "stop_learning", %{"reason" => "saturated"})
 
-      assert {:ok, replayed_state, replayed} = State.apply(next, cmd(next, "c1", "stop_learning", %{"reason" => "saturated"}))
+      assert {:ok, replayed_state, replayed} =
+               State.apply(next, cmd(next, "c1", "stop_learning", %{"reason" => "saturated"}))
+
       assert replayed == receipt
       assert replayed_state == next
       assert replayed_state["revision"] == 1
@@ -268,11 +285,19 @@ defmodule Newbee.Learning.StateStoreTest do
 
     test "wire duality: decimal text expected_revision is normalized to a number" do
       state = new_state()
-      command = %{"id" => "c1", "type" => "stop_learning", "expected_revision" => "0", "payload" => %{"reason" => "stalled"}}
+
+      command = %{
+        "id" => "c1",
+        "type" => "stop_learning",
+        "expected_revision" => "0",
+        "payload" => %{"reason" => "stalled"}
+      }
+
       assert {:ok, next, _} = State.apply(state, command)
       assert next["revision"] == 1
     end
   end
+
   # ── attempt lifecycle: execution, verdict, admission are separate ──
 
   describe "attempt lifecycle" do
@@ -292,22 +317,28 @@ defmodule Newbee.Learning.StateStoreTest do
       {state, _, _} = start_attempt!(state, "s1", "att-1")
 
       assert {:error, :attempt_exists} =
-               State.apply(state, cmd(state, "s2", "start_attempt", %{
-                 "attempt_id" => "att-1",
-                 "input_memory_id" => "mem-m0",
-                 "contract_hash" => "c"
-               }))
+               State.apply(
+                 state,
+                 cmd(state, "s2", "start_attempt", %{
+                   "attempt_id" => "att-1",
+                   "input_memory_id" => "mem-m0",
+                   "contract_hash" => "c"
+                 })
+               )
     end
 
     test "attempts can only start from a known admitted memory" do
       state = new_state()
 
       assert {:error, {:unknown_memory, "mem-nope"}} =
-               State.apply(state, cmd(state, "s1", "start_attempt", %{
-                 "attempt_id" => "att-1",
-                 "input_memory_id" => "mem-nope",
-                 "contract_hash" => "c"
-               }))
+               State.apply(
+                 state,
+                 cmd(state, "s1", "start_attempt", %{
+                   "attempt_id" => "att-1",
+                   "input_memory_id" => "mem-nope",
+                   "contract_hash" => "c"
+                 })
+               )
     end
 
     test "execution transitions are monotone; terminal requires a reason" do
@@ -315,15 +346,27 @@ defmodule Newbee.Learning.StateStoreTest do
       {state, _, _} = start_attempt!(state, "s1", "att-1")
 
       assert {:error, {:invalid_field, "payload.execution_reason", _}} =
-               State.apply(state, cmd(state, "e1", "record_execution", %{"attempt_id" => att_id = "att-1", "execution_status" => "terminal"}))
+               State.apply(
+                 state,
+                 cmd(state, "e1", "record_execution", %{
+                   "attempt_id" => att_id = "att-1",
+                   "execution_status" => "terminal"
+                 })
+               )
 
       assert {:error, {:invalid_execution_transition, "queued", "queued"}} =
-               State.apply(state, cmd(state, "e2", "record_execution", %{"attempt_id" => att_id, "execution_status" => "queued"}))
+               State.apply(
+                 state,
+                 cmd(state, "e2", "record_execution", %{"attempt_id" => att_id, "execution_status" => "queued"})
+               )
 
       {state, _} = apply!(state, "e3", "record_execution", %{"attempt_id" => att_id, "execution_status" => "running"})
 
       assert {:error, {:invalid_execution_transition, "running", "queued"}} =
-               State.apply(state, cmd(state, "e4", "record_execution", %{"attempt_id" => att_id, "execution_status" => "queued"}))
+               State.apply(
+                 state,
+                 cmd(state, "e4", "record_execution", %{"attempt_id" => att_id, "execution_status" => "queued"})
+               )
     end
 
     test "verdict requires terminal+completed and is recorded once" do
@@ -401,7 +444,6 @@ defmodule Newbee.Learning.StateStoreTest do
       effect = Enum.find(receipt["effects"], &(&1["kind"] == "head_advanced"))
       assert effect["from"] == "mem-m0"
       assert effect["to"] == new_head
-
     end
 
     test "admit requires the exact proposed lesson (no forged swap)" do
@@ -467,10 +509,18 @@ defmodule Newbee.Learning.StateStoreTest do
 
       # att-2 was dispatched with M0 but the head is now Mn+1.
       {state, _} = finish_pass!(state, "f2", "att-2")
-      {state, _} = apply!(state, "p2", "propose_lesson", %{"attempt_id" => "att-2", "lesson" => lesson(%{"claim" => "second lesson"})})
+
+      {state, _} =
+        apply!(state, "p2", "propose_lesson", %{
+          "attempt_id" => "att-2",
+          "lesson" => lesson(%{"claim" => "second lesson"})
+        })
 
       assert {:error, :stale_attempt} =
-               State.apply(state, cmd(state, "a2", "admit", %{"attempt_id" => "att-2", "lesson" => lesson(%{"claim" => "second lesson"})}))
+               State.apply(
+                 state,
+                 cmd(state, "a2", "admit", %{"attempt_id" => "att-2", "lesson" => lesson(%{"claim" => "second lesson"})})
+               )
 
       assert state["attempts"]["att-2"]["admission"] == "candidate"
     end
@@ -513,24 +563,30 @@ defmodule Newbee.Learning.StateStoreTest do
       assert state["budget"]["reserved"]["calls"] == 3
 
       assert {:error, {:budget_exhausted, "calls"}} =
-               State.apply(state, cmd(state, "s2", "start_attempt", %{
-                 "attempt_id" => "att-2",
-                 "input_memory_id" => "mem-m0",
-                 "contract_hash" => "c",
-                 "reserve" => %{"calls" => 2}
-               }))
+               State.apply(
+                 state,
+                 cmd(state, "s2", "start_attempt", %{
+                   "attempt_id" => "att-2",
+                   "input_memory_id" => "mem-m0",
+                   "contract_hash" => "c",
+                   "reserve" => %{"calls" => 2}
+                 })
+               )
     end
 
     test "practice may not consume the evaluation reserve" do
       state = budgeted_state()
 
       assert {:error, {:budget_exhausted, "eval_reserve"}} =
-               State.apply(state, cmd(state, "s1", "start_attempt", %{
-                 "attempt_id" => "att-1",
-                 "input_memory_id" => "mem-m0",
-                 "contract_hash" => "c",
-                 "reserve" => %{"eval_reserve" => 1}
-               }))
+               State.apply(
+                 state,
+                 cmd(state, "s1", "start_attempt", %{
+                   "attempt_id" => "att-1",
+                   "input_memory_id" => "mem-m0",
+                   "contract_hash" => "c",
+                   "reserve" => %{"eval_reserve" => 1}
+                 })
+               )
     end
 
     test "reconcile releases the reservation and settles actual cost" do
@@ -539,7 +595,8 @@ defmodule Newbee.Learning.StateStoreTest do
       {state, _, attempt} = finish_pass_with_state(state, "f", "att-1")
       assert attempt["reserved"]["calls"] == 2
 
-      {state, receipt} = apply!(state, "rec1", "reconcile_budget", %{"attempt_id" => "att-1", "cost" => %{"calls" => 1, "tokens" => 480}})
+      {state, receipt} =
+        apply!(state, "rec1", "reconcile_budget", %{"attempt_id" => "att-1", "cost" => %{"calls" => 1, "tokens" => 480}})
 
       assert state["budget"]["reserved"]["calls"] == 0
       assert state["budget"]["spent"]["calls"] == 1
@@ -553,15 +610,24 @@ defmodule Newbee.Learning.StateStoreTest do
       {state, _, _} = start_attempt!(state, "s1", "att-1", %{"reserve" => %{"calls" => 2}})
 
       {state, receipt} =
-        apply!(state, "amb1", "record_ambiguous_call", %{"attempt_id" => "att-1", "kind" => "host_crash_after_model_call"})
+        apply!(state, "amb1", "record_ambiguous_call", %{
+          "attempt_id" => "att-1",
+          "kind" => "host_crash_after_model_call"
+        })
 
-      assert Enum.any?(receipt["effects"], &(&1["kind"] == "ambiguous_call_recorded" and &1["reservation"] == "retained"))
+      assert Enum.any?(
+               receipt["effects"],
+               &(&1["kind"] == "ambiguous_call_recorded" and &1["reservation"] == "retained")
+             )
 
       {state, _, _} = finish_pass_with_state(state, "f", "att-1")
 
       # reconcile without release is refused while ambiguity is pending
       assert {:error, {:ambiguous_calls_pending, _}} =
-               State.apply(state, cmd(state, "rec1", "reconcile_budget", %{"attempt_id" => "att-1", "cost" => %{"calls" => 1}}))
+               State.apply(
+                 state,
+                 cmd(state, "rec1", "reconcile_budget", %{"attempt_id" => "att-1", "cost" => %{"calls" => 1}})
+               )
 
       {state, _} =
         apply!(state, "rec2", "reconcile_budget", %{
@@ -579,8 +645,11 @@ defmodule Newbee.Learning.StateStoreTest do
       {state, _, _} = start_attempt!(state, "s1", "att-1", %{"reserve" => %{"calls" => 2}})
       {state, _, _} = finish_pass_with_state(state, "f", "att-1")
 
-      {state, _} = apply!(state, "c1", "record_cost", %{"attempt_id" => "att-1", "cost" => %{"calls" => 1, "tokens" => 200}})
-      {state, _} = apply!(state, "c2", "record_cost", %{"attempt_id" => "att-1", "cost" => %{"tokens" => 50}, "estimated" => true})
+      {state, _} =
+        apply!(state, "c1", "record_cost", %{"attempt_id" => "att-1", "cost" => %{"calls" => 1, "tokens" => 200}})
+
+      {state, _} =
+        apply!(state, "c2", "record_cost", %{"attempt_id" => "att-1", "cost" => %{"tokens" => 50}, "estimated" => true})
 
       attempt = state["attempts"]["att-1"]
       assert attempt["cost"]["calls"] == 1
@@ -594,7 +663,10 @@ defmodule Newbee.Learning.StateStoreTest do
       {state, _, _} = start_attempt!(state, "s1", "att-1", %{"reserve" => %{"calls" => 1}})
 
       assert {:error, {:not_terminal, "att-1"}} =
-               State.apply(state, cmd(state, "c1", "record_cost", %{"attempt_id" => "att-1", "cost" => %{"calls" => 1}}))
+               State.apply(
+                 state,
+                 cmd(state, "c1", "record_cost", %{"attempt_id" => "att-1", "cost" => %{"calls" => 1}})
+               )
     end
 
     test "cancel releases the reservation and locks verdict to unknown" do
@@ -609,7 +681,11 @@ defmodule Newbee.Learning.StateStoreTest do
       assert attempt["execution_reason"] == "cancelled"
       assert attempt["verdict"] == "unknown"
       assert state["budget"]["reserved"]["calls"] == 0
-      assert Enum.any?(receipt["effects"], &(&1["kind"] == "attempt_cancelled" and &1["reservation_released"] == %{"calls" => 2}))
+
+      assert Enum.any?(
+               receipt["effects"],
+               &(&1["kind"] == "attempt_cancelled" and &1["reservation_released"] == %{"calls" => 2})
+             )
 
       assert {:error, {:already_terminal, "att-1"}} =
                State.apply(state, cmd(state, "x2", "cancel", %{"attempt_id" => "att-1"}))

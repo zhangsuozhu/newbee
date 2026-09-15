@@ -478,6 +478,7 @@ defmodule Newbee.Learning.Evaluation do
   end
 
   defp score("pass"), do: 1
+  defp score("fail"), do: 0
 
   defp classify(diff) when diff > 0, do: "improvement"
   defp classify(diff) when diff < 0, do: "regression"
@@ -490,7 +491,9 @@ defmodule Newbee.Learning.Evaluation do
     by_arm =
       Map.new(@arms, fn arm ->
         arm_cells = Enum.filter(cells, &(&1["arm"] == arm))
-        {arm, %{
+
+        {arm,
+         %{
            "planned" => length(arm_cells),
            "semantic" => Enum.count(arm_cells, &(&1["status"] in ["pass", "fail"])),
            "unresolved" => Enum.count(arm_cells, &(&1["status"] in @unresolved))

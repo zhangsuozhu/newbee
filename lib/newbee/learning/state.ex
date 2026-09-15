@@ -285,12 +285,14 @@ defmodule Newbee.Learning.State do
   defp record_execution(state, p) do
     with :ok <- Contracts.require_fields(p, ["attempt_id", "execution_status"]),
          {:ok, attempt} <- fetch_attempt(state, p["attempt_id"]),
-         :ok <- Contracts.validate_enum(p["execution_status"], Contracts.execution_statuses(), "payload.execution_status"),
+         :ok <-
+           Contracts.validate_enum(p["execution_status"], Contracts.execution_statuses(), "payload.execution_status"),
          :ok <- validate_execution_transition(attempt, p),
          {:ok, attempt} <- apply_execution_transition(attempt, p) do
       next = state |> put_in(["attempts", attempt["id"]], attempt) |> bump()
 
-      {:ok, next, [%{"kind" => "execution_recorded", "attempt_id" => attempt["id"], "status" => attempt["execution_status"]}]}
+      {:ok, next,
+       [%{"kind" => "execution_recorded", "attempt_id" => attempt["id"], "status" => attempt["execution_status"]}]}
     end
   end
 
@@ -302,7 +304,9 @@ defmodule Newbee.Learning.State do
         {:error, {:invalid_execution_transition, attempt["execution_status"], to}}
 
       to == "terminal" and p["execution_reason"] not in Contracts.execution_reasons() ->
-        {:error, {:invalid_field, "payload.execution_reason", "terminal requires completed/infra_error/cancelled/budget_exhausted"}}
+        {:error,
+         {:invalid_field, "payload.execution_reason",
+          "terminal requires completed/infra_error/cancelled/budget_exhausted"}}
 
       to != "terminal" and Map.has_key?(p, "execution_reason") ->
         {:error, {:invalid_field, "payload.execution_reason", "only a terminal transition carries a reason"}}
@@ -380,9 +384,14 @@ defmodule Newbee.Learning.State do
 
   defp optional_submission(p) do
     case {Map.get(p, "submission_id"), Map.get(p, "submission_hash")} do
-      {nil, nil} -> :ok
-      {id, hash} when is_binary(id) and is_binary(hash) -> :ok
-      _ -> {:error, {:invalid_field, "payload.submission", "submission_id and submission_hash must be provided together"}}
+      {nil, nil} ->
+        :ok
+
+      {id, hash} when is_binary(id) and is_binary(hash) ->
+        :ok
+
+      _ ->
+        {:error, {:invalid_field, "payload.submission", "submission_id and submission_hash must be provided together"}}
     end
   end
 
@@ -548,7 +557,8 @@ defmodule Newbee.Learning.State do
         |> update_in(["budget", "spent"], &add_budget(&1, cost))
         |> bump()
 
-      {:ok, next, [%{"kind" => "cost_recorded", "attempt_id" => attempt["id"], "cost" => cost, "estimated" => estimated}]}
+      {:ok, next,
+       [%{"kind" => "cost_recorded", "attempt_id" => attempt["id"], "cost" => cost, "estimated" => estimated}]}
     end
   end
 
@@ -594,7 +604,8 @@ defmodule Newbee.Learning.State do
     if attempt["ambiguous_calls"] == [] or Map.get(p, "release_ambiguous", false) do
       :ok
     else
-      {:error, {:ambiguous_calls_pending, "reconcile requires release_ambiguous=true while ambiguous calls are unreconciled"}}
+      {:error,
+       {:ambiguous_calls_pending, "reconcile requires release_ambiguous=true while ambiguous calls are unreconciled"}}
     end
   end
 
@@ -648,6 +659,7 @@ defmodule Newbee.Learning.State do
       end
     end
   end
+
   defp ensure_terminal(attempt) do
     if attempt["execution_status"] == "terminal" do
       :ok
@@ -658,7 +670,9 @@ defmodule Newbee.Learning.State do
 
   defp optional_budget(p, field) do
     case Map.get(p, field) do
-      nil -> {:ok, %{}}
+      nil ->
+        {:ok, %{}}
+
       budget ->
         case Contracts.validate_budget_map(budget, "payload.#{field}") do
           :ok -> {:ok, budget}
@@ -678,14 +692,15 @@ defmodule Newbee.Learning.State do
   # ── evaluation (frozen comparison, design §11) ──
 
   defp record_evaluation(state, p) do
-    with :ok <- Contracts.require_fields(p, [
-           "evaluation_id",
-           "baseline_snapshot_id",
-           "candidate_snapshot_id",
-           "locked_cohort_hash",
-           "outcomes",
-           "conclusion"
-         ]),
+    with :ok <-
+           Contracts.require_fields(p, [
+             "evaluation_id",
+             "baseline_snapshot_id",
+             "candidate_snapshot_id",
+             "locked_cohort_hash",
+             "outcomes",
+             "conclusion"
+           ]),
          :ok <- Contracts.validate_id(p["evaluation_id"], "payload.evaluation_id"),
          :ok <- ensure_absent(state["evaluations"], p["evaluation_id"], :evaluation_exists),
          :ok <- validate_outcomes(p["outcomes"]),
@@ -713,7 +728,8 @@ defmodule Newbee.Learning.State do
         |> update_in(["budget", "spent"], &add_budget(&1, cost))
         |> bump()
 
-      {:ok, next, [%{"kind" => "evaluation_recorded", "evaluation_id" => evaluation["id"], "conclusion" => p["conclusion"]}]}
+      {:ok, next,
+       [%{"kind" => "evaluation_recorded", "evaluation_id" => evaluation["id"], "conclusion" => p["conclusion"]}]}
     end
   end
 
@@ -839,7 +855,9 @@ defmodule Newbee.Learning.State do
     admissible =
       attempts
       |> Enum.filter(&(&1["admission"] == "candidate"))
-      |> Enum.sort_by(fn a -> Enum.find_index(wave["branch_order"], &(&1 == a["id"])) || length(wave["branch_order"]) end)
+      |> Enum.sort_by(fn a ->
+        Enum.find_index(wave["branch_order"], &(&1 == a["id"])) || length(wave["branch_order"])
+      end)
 
     {accepted, conflicts} = split_conflicts(admissible)
 
@@ -909,7 +927,12 @@ defmodule Newbee.Learning.State do
 
     entries =
       Enum.map(accepted, fn a ->
-        %{"experience_id" => "xp-" <> a["id"], "attempt_id" => a["id"], "lesson" => a["lesson"], "wave_id" => wave["id"]}
+        %{
+          "experience_id" => "xp-" <> a["id"],
+          "attempt_id" => a["id"],
+          "lesson" => a["lesson"],
+          "wave_id" => wave["id"]
+        }
       end)
 
     entry_hashes = Enum.map(entries, &Store.hash/1)
@@ -971,7 +994,8 @@ defmodule Newbee.Learning.State do
           |> update_in(["budget", "reserved"], &subtract_budget(&1, released))
           |> bump()
 
-        {:ok, next, [%{"kind" => "attempt_cancelled", "attempt_id" => attempt["id"], "reservation_released" => released}]}
+        {:ok, next,
+         [%{"kind" => "attempt_cancelled", "attempt_id" => attempt["id"], "reservation_released" => released}]}
       end
     end
   end
@@ -1008,7 +1032,9 @@ defmodule Newbee.Learning.State do
 
   defp optional_hash_list(p, field) do
     case Map.get(p, field) do
-      nil -> {:ok, []}
+      nil ->
+        {:ok, []}
+
       values when is_list(values) ->
         case Contracts.require_hash_list(values, "payload.#{field}") do
           :ok -> {:ok, values}

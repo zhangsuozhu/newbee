@@ -363,7 +363,6 @@ defmodule Newbee.Learning.Sandbox do
     end
   end
 
-
   defp resolve_link(link, target) do
     if Path.type(target) == :absolute do
       target
@@ -382,29 +381,65 @@ defmodule Newbee.Learning.Sandbox do
       "--unshare-all",
       "--die-with-parent",
       "--new-session",
-      "--symlink", "usr/bin", "/bin",
-      "--symlink", "usr/lib", "/lib",
-      "--symlink", "usr/lib64", "/lib64"
+      "--symlink",
+      "usr/bin",
+      "/bin",
+      "--symlink",
+      "usr/lib",
+      "/lib",
+      "--symlink",
+      "usr/lib64",
+      "/lib64"
     ] ++
       mounts ++
       [
-        "--dev", "/dev",
-        "--ro-bind", tc.elixir_root, tc.elixir_root,
-        "--ro-bind", tc.otp_root, tc.otp_root,
-        "--ro-bind", prep.in_dir, "/sandbox/input",
-        "--ro-bind", prep.runner_path, "/sandbox/runner.sh",
-        "--bind", prep.out_dir, "/sandbox/out",
-        "--tmpfs", "/tmp",
-        "--chdir", "/sandbox/out",
-        "--setenv", "PATH", tc.path,
-        "--setenv", "HOME", "/sandbox",
-        "--setenv", "SANDBOX_OUT", "/sandbox/out",
-        "--setenv", "SANDBOX_INPUT", "/sandbox/input",
-        "--setenv", "SANDBOX_USER_PATH", "/sandbox/input/user.exs",
-        "--setenv", "SANDBOX_MEMORY_PATH", "/sandbox/input/memory.txt",
-        "--setenv", "SANDBOX_ELIXIR", tc.elixir,
-        "--setenv", "ELIXIR_ERL_OPTIONS", "+fnu",
-        "/usr/bin/sh", "/sandbox/runner.sh"
+        "--dev",
+        "/dev",
+        "--ro-bind",
+        tc.elixir_root,
+        tc.elixir_root,
+        "--ro-bind",
+        tc.otp_root,
+        tc.otp_root,
+        "--ro-bind",
+        prep.in_dir,
+        "/sandbox/input",
+        "--ro-bind",
+        prep.runner_path,
+        "/sandbox/runner.sh",
+        "--bind",
+        prep.out_dir,
+        "/sandbox/out",
+        "--tmpfs",
+        "/tmp",
+        "--chdir",
+        "/sandbox/out",
+        "--setenv",
+        "PATH",
+        tc.path,
+        "--setenv",
+        "HOME",
+        "/sandbox",
+        "--setenv",
+        "SANDBOX_OUT",
+        "/sandbox/out",
+        "--setenv",
+        "SANDBOX_INPUT",
+        "/sandbox/input",
+        "--setenv",
+        "SANDBOX_USER_PATH",
+        "/sandbox/input/user.exs",
+        "--setenv",
+        "SANDBOX_MEMORY_PATH",
+        "/sandbox/input/memory.txt",
+        "--setenv",
+        "SANDBOX_ELIXIR",
+        tc.elixir,
+        "--setenv",
+        "ELIXIR_ERL_OPTIONS",
+        "+fnu",
+        "/usr/bin/sh",
+        "/sandbox/runner.sh"
       ]
   end
 

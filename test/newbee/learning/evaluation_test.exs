@@ -4,6 +4,7 @@ defmodule Newbee.Learning.EvaluationTest do
 
   defp spec do
     heldout = Fixtures.list(:heldout) |> Enum.take(2) |> Enum.map(& &1["id"])
+
     %{
       "source" => %{"tree_hash" => String.duplicate("a", 64), "dependencies_hash" => String.duplicate("b", 64)},
       "release_map" => %{},
@@ -27,7 +28,10 @@ defmodule Newbee.Learning.EvaluationTest do
   test "summarize retains unresolved outcomes and refuses duplicates" do
     {:ok, protocol} = Evaluation.lock(spec())
     [first | rest] = protocol["plan"]
-    outcome = Map.merge(first, %{"status" => "pass", "protocol_hash" => protocol["protocol_hash"], "cost" => %{"tokens" => 3}})
+
+    outcome =
+      Map.merge(first, %{"status" => "pass", "protocol_hash" => protocol["protocol_hash"], "cost" => %{"tokens" => 3}})
+
     assert {:error, {:duplicate_attempt, _}} = Evaluation.summarize(protocol, [outcome, outcome])
     missing = Enum.map(rest, &Map.merge(&1, %{"status" => "missing", "protocol_hash" => protocol["protocol_hash"]}))
     assert {:ok, report} = Evaluation.summarize(protocol, [outcome | missing])

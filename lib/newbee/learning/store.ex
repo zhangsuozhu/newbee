@@ -49,7 +49,7 @@ defmodule Newbee.Learning.Store do
     :crypto.hash(:sha256, canonical(value)) |> Base.encode16(case: :lower)
   end
 
-defp normalize(value) when is_map(value) do
+  defp normalize(value) when is_map(value) do
     unless Enum.all?(Map.keys(value), &is_binary/1) do
       raise ArgumentError, "JSON object keys must be UTF-8 strings"
     end
@@ -58,7 +58,6 @@ defp normalize(value) when is_map(value) do
     |> Enum.sort_by(fn {k, _v} -> k end)
     |> Map.new(fn {k, v} -> {normalize_text(k), normalize(v)} end)
   end
-
 
   defp normalize(value) when is_list(value), do: Enum.map(value, &normalize/1)
   defp normalize(value) when is_binary(value), do: normalize_text(value)
@@ -80,7 +79,6 @@ defp normalize(value) when is_map(value) do
 
   defp normalize_text(other),
     do: raise(ArgumentError, "store keys and strings must be text, got: " <> inspect(other))
-
 
   # ── store operations ──
 
