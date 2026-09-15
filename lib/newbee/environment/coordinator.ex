@@ -1019,6 +1019,7 @@ defmodule Newbee.Environment.Coordinator do
     Autonomy.activation_decision(release.kind, state.autonomy,
       approved: Keyword.get(opts, :approved, false),
       canary_done: change.status == :canary,
+      certain: Autonomy.automatic_confidence?(release, change.evaluation_result),
       rollback: change.rollback_of != nil
     )
   end
