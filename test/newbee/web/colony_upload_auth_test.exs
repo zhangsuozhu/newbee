@@ -502,11 +502,18 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
   describe "「恢复任务」的反馈" do
     test "蜂群整体仍暂停时不谎报「已恢复」" do
       js = File.read!("priv/web/colony/workflow.js")
+      composer = File.read!("priv/web/colony/composer.js")
 
       # 回归：scope=work 恢复成功，但蜂群级还暂停着时任务其实没跑起来，
       # 以前照样 toast「已恢复这项工作」，用户以为在跑了。
       assert js =~ "但蜂群整体仍在暂停，请先恢复全群"
       assert js =~ "const stillPaused = !!(fresh && fresh.control_state && fresh.control_state !== 'running');"
+
+      assert composer =~
+               "const settled = running ? state.data?.control_state === 'paused' : state.data?.control_state === 'running';"
+
+      assert composer =~ "已请求暂停全群 AI，等待执行器确认（人仍可发言）"
+      assert composer =~ "已请求恢复全群 AI，等待执行器确认"
     end
   end
 

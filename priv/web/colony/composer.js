@@ -399,7 +399,11 @@ function bindPause() {
     try {
       await rpc('colony.control', {colonyId:state.colonyId, scope:'colony', targetId:state.colonyId, action: running ? 'pause' : 'resume'});
       await refresh();
-      toast(running ? '已暂停全群 AI（人仍可发言）' : '已恢复全群 AI');
+      const settled = running ? state.data?.control_state === 'paused' : state.data?.control_state === 'running';
+      const message = running
+        ? settled ? '已暂停全群 AI（人仍可发言）' : '已请求暂停全群 AI，等待执行器确认（人仍可发言）'
+        : settled ? '已恢复全群 AI' : '已请求恢复全群 AI，等待执行器确认';
+      toast(message);
     } catch (error) {
       toast(error.message || '操作失败', true);
     } finally {
