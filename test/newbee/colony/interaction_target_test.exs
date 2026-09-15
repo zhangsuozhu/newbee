@@ -45,4 +45,28 @@ defmodule Newbee.Colony.InteractionTargetTest do
     assert res["tasks"] == []
     assert res["reply"] =~ "@ 列表"
   end
+
+  # 暂停 + 有待决方案时，群聊里的普通消息以前会返回 workflow_decision_required（消息其实
+  # 已经记进群聊），前端弹红 toast、用户以为没发出去。
+  test "暂停且工作处于方案阶段时，消息仍算发送成功并被记录", ctx do
+    {:ok, task} =
+      Newbee.Colony.Work.create(ctx.cid, %{
+        "title" => "TRIAGE 任务",
+        "description" => "处于方案阶段的工作",
+        "workflow" => true,
+        "assigned_bee_id" => ctx.a["id"],
+        "actor_bee_id" => ctx.actor
+      })
+
+    assert task["workflow"]["phase"] == "triage"
+    {:ok, _} = Newbee.Colony.Control.set(ctx.cid, "work", task["id"], "pause", actor_bee_id: ctx.actor)
+
+    assert {:ok, res} = Interaction.say(ctx.cid, "大家好", actor_bee_id: ctx.actor, context: %{"taskId" => task["id"]})
+    assert is_binary(res["reply"])
+    assert res["reply"] =~ "消息已记录在群聊"
+
+    # 关键：消息本身必须落到群聊轨迹里（前端据此显示）
+    texts = Store.trace_for_colony(ctx.cid, channel: "colony") |> Enum.map(& &1["text"])
+    assert "大家好" in texts
+  end
 end

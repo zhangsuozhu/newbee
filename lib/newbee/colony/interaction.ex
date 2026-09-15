@@ -72,8 +72,15 @@ defmodule Newbee.Colony.Interaction do
 
         is_binary(tid) ->
           case continue_or_discuss(cid, tid, core, actor, targets) do
-            {:ok, task} -> response("已补充到当前工作，执行器会使用最新上下文继续。", [task])
-            error -> error
+            {:ok, task} ->
+              response("已补充到当前工作，执行器会使用最新上下文继续。", [task])
+
+            # 方案阶段不接受直接指令：消息已经记进群聊，别报成发送失败。
+            {:error, "workflow_decision_required", msg} ->
+              response(msg <> "（消息已记录在群聊）", [])
+
+            error ->
+              error
           end
 
         Regex.match?(~r/^(继续|同意|按这个做|开始吧|开工)/u, core) ->
@@ -135,14 +142,22 @@ defmodule Newbee.Colony.Interaction do
         else: if(length(tasks) == 1, do: hd(tasks))
 
     if current do
-      with {:ok, task} <-
-             Work.revise(
-               cid,
-               current["id"],
-               %{"constraints" => (current["constraints"] || []) ++ [text]},
-               actor
-             ) do
-        response("已记录新要求。工作保持暂停，恢复前会应用最新约束。", [task])
+      case Work.revise(
+             cid,
+             current["id"],
+             %{"constraints" => (current["constraints"] || []) ++ [text]},
+             actor
+           ) do
+        {:ok, task} ->
+          response("已记录新要求。工作保持暂停，恢复前会应用最新约束。", [task])
+
+        # 方案/讨论/选择阶段不接受「补充约束」。但消息已经记进群聊（trace 在上面就写了），
+        # 这里再报失败会让用户以为没发出去（暂停 + 有待选方案时每句话都红一次）。
+        {:error, "workflow_decision_required", _msg} ->
+          response("消息已记录在群聊。当前工作处于方案阶段，请在工作卡里讨论或选择方案。", [current])
+
+        other ->
+          other
       end
     else
       key = Enum.join([cid, actor, tid || "group"], ":")
