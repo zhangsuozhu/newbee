@@ -363,4 +363,23 @@ defmodule Newbee.Colony.EngineTest do
     assert {:ok, %{"name" => "持久化蜂群"}} = Store.get_colony(cid)
     assert {:ok, %{"colony" => %{"name" => "持久化蜂群"}}} = Engine.view(cid)
   end
+
+  test "同一群内成员名必须唯一（@提及与派活都按名字解析）", %{cid: cid, colony: colony} do
+    # 建群自带一只「研发助手」；允许重名会让 @研发助手 永远只指向先加入的那只。
+    assert {:error, "duplicate_display", msg} =
+             Engine.add_bee(cid, %{"display" => "研发助手", "kind" => "ai"})
+
+    assert msg =~ "研发助手"
+
+    # 前后空格按 trim 归一化，同样视为重名
+    assert {:error, "duplicate_display", _} =
+             Engine.add_bee(cid, %{"display" => " 研发助手 ", "kind" => "ai"})
+
+    assert {:ok, _} = Engine.add_bee(cid, %{"display" => "审计助手", "kind" => "ai"})
+
+    # 邀请加入走同一条约束；失败的尝试不消耗邀请码
+    {:ok, invite} = Newbee.Colony.Membership.invite(cid, colony["queen_bee_id"], %{"kind" => "ai"})
+    assert {:error, "duplicate_display", _} = Newbee.Colony.Membership.redeem(invite["code"], "审计助手")
+    assert {:ok, _} = Newbee.Colony.Membership.redeem(invite["code"], "合规助手")
+  end
 end

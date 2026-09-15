@@ -34,6 +34,11 @@ defmodule Newbee.Colony.Membership do
         String.trim(display) == "" or byte_size(display) > 200 ->
           {:error, "bad_request", "请填写有效的成员名称"}
 
+        Enum.any?(data["bees"], fn {_id, b} ->
+          b["colony_id"] == invite["colony_id"] and Map.get(b, "display") == String.trim(display)
+        end) ->
+          {:error, "duplicate_display", "蜂群已有成员叫「#{String.trim(display)}」，请换一个名字：@提及按名字派活"}
+
         true ->
           bee =
             Bee.new(%{

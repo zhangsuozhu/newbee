@@ -258,4 +258,14 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert composer =~ "if (state.switching) { toast('正在创建蜂群，请稍候再发送', true); return; }"
     end
   end
+
+  describe "添加成员的失败恢复" do
+    test "重名失败后保留已填内容并重开对话框" do
+      js = File.read!("priv/web/colony/manage.js")
+
+      assert js =~ "let preset = {display:'研发助手', capabilities:'edit,shell,research'};"
+      assert js =~ "while (!added) {"
+      assert js =~ "preset = {display:value.display, capabilities:value.capabilities};"
+    end
+  end
 end

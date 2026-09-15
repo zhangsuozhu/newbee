@@ -100,7 +100,10 @@ defmodule Newbee.Colony.Engine do
 
   @doc "加入一只 Bee（人或 AI）。attrs: kind?, display, capabilities?, session_id?, bind_session?, garden_id?"
   def add_bee(colony_id, attrs) do
-    with {:ok, _colony} <- fetch_colony(colony_id) do
+    with {:ok, _colony} <- fetch_colony(colony_id),
+         # @提及与派活都按名字解析（find_bee_by_display 先精确后包含匹配），
+         # 允许重名会让另一只永远指不到，所以成员名在群内必须唯一。
+         :ok <- ensure_unique_display(colony_id, Map.get(attrs, "display")) do
       display = blank_to_nil(Map.get(attrs, "display")) || "bee"
       kind = normalize_kind(Map.get(attrs, "kind"), display)
 
@@ -121,6 +124,25 @@ defmodule Newbee.Colony.Engine do
       })
 
       {:ok, bee}
+    end
+  end
+
+  # 名称在群内唯一：@提及、@all 讨论与派活都按 display 解析。
+  defp ensure_unique_display(_colony_id, display) when not is_binary(display), do: :ok
+
+  defp ensure_unique_display(colony_id, display) do
+    name = String.trim(display)
+
+    if name == "" do
+      :ok
+    else
+      taken? = Enum.any?(Store.bees_for_colony(colony_id), &(Map.get(&1, "display") == name))
+
+      if taken? do
+        {:error, "duplicate_display", "蜂群已有成员叫「#{name}」，请换一个名字：@提及按名字派活"}
+      else
+        :ok
+      end
     end
   end
 

@@ -44,8 +44,22 @@ export async function manage() {
       const value = ai ? 'newbee-colony:' + btoa(JSON.stringify(invite)) : `${location.origin}/colony.html#invite=${encodeURIComponent(invite.code)}`;
       await form(ai ? '邀请另一台环境' : '邀请同事', [{name:'invite',label:ai ? '在另一台 newbee 的「加入蜂群」中粘贴' : '发送给同事的邀请链接', value, multiline:true, readonly:true, copy:true, help:'一小时内有效，只能使用一次。只允许访问当前蜂群。'}], '关闭');
     } else if (choice.action === 'add') {
-      const value = await form('添加本地 AI', [{name:'display',label:'名称',required:true,value:'研发助手'}, {name:'capabilities',label:'能力（逗号分隔）',value:'edit,shell,research'}], '添加');
-      if (value) await rpc('colony.bee.add', {colonyId:state.colonyId, display:value.display, kind:'ai', capabilities:value.capabilities.split(',').map(s=>s.trim()).filter(Boolean), bindSession:false});
+      // 名称在群内必须唯一（@提及按名字派活）。失败时重开对话框并保留已填内容，
+      // 否则用户改了名还得从头再填一遍。
+      let preset = {display:'研发助手', capabilities:'edit,shell,research'};
+      let added = false;
+      while (!added) {
+        const value = await form('添加本地 AI', [{name:'display',label:'名称',required:true,value:preset.display}, {name:'capabilities',label:'能力（逗号分隔）',value:preset.capabilities}], '添加');
+        if (!value) return;
+        try {
+          await rpc('colony.bee.add', {colonyId:state.colonyId, display:value.display, kind:'ai', capabilities:value.capabilities.split(',').map(s=>s.trim()).filter(Boolean), bindSession:false});
+          added = true;
+        } catch (error) {
+          toast(error.message, true);
+          preset = {display:value.display, capabilities:value.capabilities};
+        }
+      }
+
     } else if (choice.action === 'remove') {
       const members = (state.data?.members || []).filter(b => b.id !== state.data?.actor_bee_id);
       const value = await form('移出成员', [{name:'beeId',label:'成员',options:members.map(b=>({value:b.id,label:b.display})),help:'吊销访问。未完成的工作保留并等待重新安排，不自动重放外部操作。'}], '移出');
