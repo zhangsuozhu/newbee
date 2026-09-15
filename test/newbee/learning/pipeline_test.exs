@@ -51,7 +51,7 @@ defmodule Newbee.Learning.PipelineTest do
 
   test "stub model passes reproduction and practice, evaluation runs both arms" do
     # Actor input must carry fixture_id: Pipeline injects it into the public task map.
-    model_fun = fn messages, opts ->
+    model_fun = fn messages, _opts ->
       body = hd(Enum.reverse(messages))["content"]
       decoded = Jason.decode!(body)
       id = decoded["task"]["fixture_id"]
