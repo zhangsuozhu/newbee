@@ -255,9 +255,9 @@ function render(force = false) {
       if (i >= 0) details.open = remaining.splice(i, 1)[0][1];
     }
   }
-  const overview = state.view === 'chat' && state.groupTab !== 'messages';
-  if (!sameRoute) transcript.scrollTop = overview ? 0 : transcript.scrollHeight;
-  else if (wasNearBottom && !overview) scrollBottom();
+  const startAtTop = state.view === 'drill' || overview;
+  if (!sameRoute) transcript.scrollTop = startAtTop ? 0 : transcript.scrollHeight;
+  else if (wasNearBottom && !startAtTop) scrollBottom();
   else transcript.scrollTop = scrollTop;
   // 跳转（面包屑 / 任务卡 / 验收条）后键盘用户的焦点会掉到 body，接着 Tab 就得从页首重来。
   // 只在「不是第一次渲染」且焦点已经落空（body）或落在被替换掉的节点上时才接管，

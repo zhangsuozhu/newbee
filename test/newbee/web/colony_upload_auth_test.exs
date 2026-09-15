@@ -477,6 +477,16 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     end
   end
 
+  describe "任务深钻首屏滚动" do
+    test "进入深钻先显示任务头卡，不被长轨迹推到底" do
+      app = File.read!("priv/web/colony/app.js")
+
+      assert app =~ "const startAtTop = state.view === 'drill' || overview;"
+      assert app =~ "if (!sameRoute) transcript.scrollTop = startAtTop ? 0 : transcript.scrollHeight;"
+      assert app =~ "else if (wasNearBottom && !startAtTop) scrollBottom();"
+    end
+  end
+
   describe "工具卡详情" do
     test "未枚举的字段也兜底展示（出错时点开能看到原因）" do
       chat = File.read!("priv/web/colony/chat.js")
