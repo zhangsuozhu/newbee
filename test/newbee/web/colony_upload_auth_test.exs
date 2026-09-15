@@ -283,14 +283,15 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
   end
 
   describe "成员层级的第三层面包屑" do
-    test "从成员层级深钻任务时，标题与面包屑显示任务名" do
+    test "从成员层级深钻任务时，标题与面包屑显示任务名（支持嵌套）" do
       js = File.read!("priv/web/colony/breadcrumbs.js")
 
       # 回归：成员层级只处理了「对话」子层，从历史任务/侧栏深钻任务时
       # 标题仍停在成员名，用户看不出点进了哪里。
-      assert js =~ "const inDrill = state.view === \"drill\";"
-      assert js =~ "title.textContent = inDrill ? drillTitle : (bee.display || \"Bee\");"
-      assert js =~ "} else if (inDrill) {"
+      assert js =~ "const topDrill = drills[drills.length - 1];"
+      assert js =~ "title.textContent = topDrill ? (topDrill.entry.title || \"任务\") : (bee.display || \"Bee\");"
+      # 父任务 → 子任务要同时画出来（否则回不到父任务）
+      assert js =~ "if (entry.type === \"drill\") drills.push({ entry, index });"
     end
   end
 
@@ -333,6 +334,18 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert workspace =~ "newbeeWorkspace: \"sent\", commandId: data.commandId"
       # 提示文案不再承诺一个发不出去的地址
       assert composer =~ "将转入 ${bee.display} 的对话"
+    end
+  end
+
+  describe "成员层级里的嵌套深钻" do
+    test "面包屑给出父任务层级，可点回父任务" do
+      js = File.read!("priv/web/colony/breadcrumbs.js")
+
+      # 回归：bee 模式只渲染最后一层 drill，从子任务回不到父任务
+      # （state.stack 里其实已有父任务，只是没画出来）。
+      assert js =~ "const drills = [];"
+      assert js =~ "if (entry.type === \"drill\") drills.push({ entry, index });"
+      assert js =~ "last ? () => {} : () => gotoLevel(d.index)"
     end
   end
 end

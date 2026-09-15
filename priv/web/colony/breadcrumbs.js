@@ -10,26 +10,30 @@ export function renderBreadcrumbs() {
   if (sub) sub.innerHTML = "";
   if (state.mode === "bee" && state.beeModeId) {
     const bee = memberById(state.beeModeId) || (state.trail && state.trail.bee) || {};
+    const stack = state.stack || [];
+    // 成员层级里也会嵌套深钻（父任务 → 子任务）：栈里每一层都要给出来，
+    // 否则从子任务回不到父任务，只能绕回成员层级再找一遍。
+    const drills = [];
+    stack.forEach((entry, index) => { if (entry.type === "drill") drills.push({ entry, index }); });
     const inConversation = state.view === "conversation";
-    // 成员层级里也可能深钻任务（历史任务 / 侧栏「›」）：那已经是第三层，
-    // 标题必须显示任务名，否则用户看不出自己点进了哪里。
-    const inDrill = state.view === "drill";
-    const drillTitle = (state.drill && state.drill.task && state.drill.task.title) || "任务";
-    title.textContent = inDrill ? drillTitle : (bee.display || "Bee");
+    const topDrill = drills[drills.length - 1];
+    title.textContent = topDrill ? (topDrill.entry.title || "任务") : (bee.display || "Bee");
     if (!sub) return;
     sub.appendChild(crumb("蜂群", false, () => exitBeeMode()));
     sub.appendChild(sep());
-    sub.appendChild(crumb(bee.display || "Bee", !inConversation && !inDrill, () => openBeeTrail(bee.id)));
+    sub.appendChild(crumb(bee.display || "Bee", !inConversation && drills.length === 0, () => openBeeTrail(bee.id)));
     if (inConversation) {
       sub.appendChild(sep());
       sub.appendChild(crumb(conversationTitle(state.conversationId), true, () => {}));
-    } else if (inDrill) {
-      sub.appendChild(sep());
-      sub.appendChild(crumb(drillTitle, true, () => {}));
+    } else {
+      drills.forEach((d, i) => {
+        sub.appendChild(sep());
+        const last = i === drills.length - 1;
+        sub.appendChild(crumb(d.entry.title || "任务", last, last ? () => {} : () => gotoLevel(d.index)));
+      });
     }
     return;
   }
-
 
   const stack = state.stack || [];
   const top = stack[stack.length - 1];
