@@ -466,6 +466,10 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert drill =~ "import { traceNode, honeyNode } from \"./chat.js\";"
       assert drill =~ "filter((h) => h.task_id === task.id)"
       assert drill =~ "if (tracedHoneyIds.has(h.id)) continue;"
+      # 提交/验收各写一条成果事件，而卡片渲染的是「当前」状态：不按 honey_id 去重
+      # 就会出现两张一模一样、状态相同的卡。
+      assert drill =~ "const seenHoneyCards = new Set();"
+      assert drill =~ "if (hid && seenHoneyCards.has(hid)) return false;"
       assert drill =~ "成果见上方成果卡"
     end
   end

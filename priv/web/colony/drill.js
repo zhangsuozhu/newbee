@@ -34,10 +34,19 @@ export function renderDrillView(flow, ctx) {
   // 所以：① 被深钻任务自己的事件由上面那张头卡承载，不再重复；
   //       ② 其余任务每个最多渲染一张，避免同一张卡出现两三次。
   const seenTaskCards = new Set();
+  // 成果同理：卡片渲染的是该成果的「当前」状态与正文，提交/验收两条事件
+  // 各画一张就是两张一模一样、状态还相同的卡（群聊里那是一条时间线，这里不是）。
+  const seenHoneyCards = new Set();
   const entries = dedupe([
     ...(drill.trace || []),
     ...(drill.children_trace || []),
   ]).filter((t) => {
+    if (t.type === "honey") {
+      const hid = t.data && t.data.honey_id;
+      if (hid && seenHoneyCards.has(hid)) return false;
+      if (hid) seenHoneyCards.add(hid);
+      return true;
+    }
     if (t.type !== "task") return true;
     const id = taskEventId(t);
     if (!id || id === task.id) return false;
@@ -45,7 +54,6 @@ export function renderDrillView(flow, ctx) {
     seenTaskCards.add(id);
     return true;
   });
-  // 轨迹里若已经带了这些成果事件（AI 提交路径会写 Trace），就别再画一遍。
   const tracedHoneyIds = new Set(entries.map((e) => e.data && e.data.honey_id).filter(Boolean));
   for (const h of honeys) {
     if (tracedHoneyIds.has(h.id)) continue;
