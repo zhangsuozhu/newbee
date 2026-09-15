@@ -188,18 +188,19 @@ function render(force = false) {
     const changedRoute = route !== lastRoute;
     const conversationId = state.conversationId;
     const frame = $("#embed-frame");
+    const focusEmbed = () => {
+      if (state.view !== "conversation" || state.conversationId !== conversationId || frame.hidden) return;
+      const input = frame.contentDocument?.getElementById("input");
+      if (input) input.focus({ preventScroll: true });
+      else frame.focus({ preventScroll: true });
+    };
+    if (changedRoute && lastRoute !== null) frame.addEventListener("load", focusEmbed, { once: true });
     const src = `/workspace.html?session=${encodeURIComponent(conversationId)}&embed=1`;
     if (frame.dataset.src !== src) {
       frame.dataset.src = src;
       frame.src = src;
     }
-    if (changedRoute && lastRoute !== null) {
-      setTimeout(() => {
-        if (state.view === "conversation" && state.conversationId === conversationId && !frame.hidden) {
-          frame.focus({ preventScroll: true });
-        }
-      }, 0);
-    }
+    if (changedRoute && lastRoute !== null) setTimeout(focusEmbed, 0);
     lastRoute = route;
     $("#review-bar").classList.add("hidden");
     renderTopMeta();

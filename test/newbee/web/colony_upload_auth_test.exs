@@ -594,6 +594,9 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert app =~ "if (dialogEscape || e.target?.closest?.('dialog')) return;"
       assert app =~ "frame.focus({ preventScroll: true });"
       assert app =~ "lastRoute = route;"
+      assert app =~ "const input = frame.contentDocument?.getElementById(\"input\");"
+      assert app =~ "if (input) input.focus({ preventScroll: true });"
+      assert app =~ "frame.addEventListener(\"load\", focusEmbed, { once: true });"
     end
   end
 
