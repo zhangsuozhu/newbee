@@ -676,6 +676,17 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     end
   end
 
+  describe "嵌入 Mission Control 焦点" do
+    test "面板开关在宿主与 iframe 间交接焦点" do
+      app = File.read!("priv/web/app.js")
+
+      assert app =~ "const focusTarget = $(\"mc-collapse\");"
+      assert app =~ "if (focusTarget) focusTarget.focus({ preventScroll: true });"
+      assert app =~ "window.parent.document.getElementById(\"mc-expand\")"
+      assert app =~ "focusTarget.focus({ preventScroll: true });"
+    end
+  end
+
   describe "工作流超时确认" do
     test "超时后给出结果可能已处理提示并主动刷新" do
       api = File.read!("priv/web/colony/api.js")

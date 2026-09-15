@@ -7441,6 +7441,8 @@ case "goal_round": break;
     if (open) {
       panel.classList.remove("hidden");
       expandBtn.classList.add("hidden");
+      const focusTarget = $("mc-collapse");
+      if (focusTarget) focusTarget.focus({ preventScroll: true });
       refreshMCFiles();
       if (MC.tab === "evolution") refreshEvolution();
       if (MC.tab === "overview") refreshMCOverview();
@@ -7450,6 +7452,12 @@ case "goal_round": break;
     } else {
       panel.classList.add("hidden");
       expandBtn.classList.remove("hidden");
+      const focusTarget = embedMode() && window.parent !== window
+        ? window.parent.document.getElementById("mc-expand")
+        : expandBtn;
+      if (focusTarget && !focusTarget.hidden && focusTarget.getClientRects().length) {
+        focusTarget.focus({ preventScroll: true });
+      }
       stopDebugPolling();
     }
     try { localStorage.setItem("newbee-mc-open", open ? "1" : "0"); } catch (e) {}
