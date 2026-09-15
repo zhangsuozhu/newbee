@@ -108,7 +108,16 @@ export function buildWorkflowCard(t, ctx) {
     // 低频操作收进「更多」，卡面上只留你此刻要做的决定。
     const lowFreq = [['工作详情', () => ctx.openTask(t.id, t.title)]];
     if (t.session_id) lowFreq.push(['查看执行过程', () => ctx.openConversation(t.session_id, t.assigned_bee_id)]);
-    lowFreq.push([paused ? '恢复任务' : '暂停任务', async () => { await rpc('colony.control',{colonyId:state.colonyId,scope:'work',targetId:t.id,action:paused?'resume':'pause'}); await refresh(); toast(paused ? '已恢复这项工作' : '已暂停这项工作（人仍可发言）'); }]);
+    lowFreq.push([paused ? '恢复任务' : '暂停任务', async () => {
+      await rpc('colony.control',{colonyId:state.colonyId,scope:'work',targetId:t.id,action:paused?'resume':'pause'});
+      await refresh();
+      if (!paused) { toast('已暂停这项工作（人仍可发言）'); return; }
+      // 蜂群整体（或该成员）还暂停着时，恢复这一项并不会让它跑起来：
+      // 以前照样报「已恢复这项工作」，用户以为在跑了。
+      const fresh = (state.data?.tasks || []).find(x => x.id === t.id);
+      const stillPaused = !!(fresh && fresh.control_state && fresh.control_state !== 'running');
+      toast(stillPaused ? '已恢复这项工作，但蜂群整体仍在暂停，请先恢复全群' : '已恢复这项工作', stillPaused);
+    }]);
     actions.append(cardMenu(guardMenu(lowFreq)));
   }
   card.append(actions);
