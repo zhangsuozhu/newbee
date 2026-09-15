@@ -536,6 +536,7 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       sidebar = File.read!("priv/web/colony/sidebar.js")
 
       assert forms =~ "export function restoreFocus(previousFocus)"
+      assert forms =~ "node.noValidate = true;"
       assert forms =~ "dialog.remove(); restoreFocus(previousFocus);"
       assert sidebar =~ "import { form, confirmAction, restoreFocus } from './forms.js';"
       assert sidebar =~ "dialog.remove(); restoreFocus(previousFocus);"

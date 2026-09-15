@@ -14,6 +14,7 @@ export function form(title, fields, submitLabel = '保存') {
     const dialog = document.createElement('dialog');
     dialog.className = 'colony-dialog';
     const node = document.createElement('form');
+    node.noValidate = true;
     const heading = document.createElement('h3'); heading.textContent = title; node.append(heading);
     const inputs = new Map();
     for (const field of fields) {
