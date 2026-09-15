@@ -462,6 +462,11 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
   .chip-btn { padding: 6px 12px; min-height: 32px; }
   /* 历史任务行是可点的导航项：手机上加到 44px，避免列表里误触打开别的任务。 */
   .bee-task-row { padding: 12px; }
+  /* 触控目标：面包屑是手机端的主要返回入口，轨迹任务条目也是可点导航项，
+     文字本身只有 18~23px 高，手指很难点准。只加高不加宽，避免面包屑多折一行。 */
+  .colony-sub .crumb-link { display: inline-flex; align-items: center; min-height: 32px; }
+  .bee-task { display: inline-flex; align-items: center; min-height: 32px; padding: 4px 8px; }
+
 
   .review-strip { padding: 8px 12px; gap: 8px; }
   .review-btn { padding: 6px 12px; min-height: 34px; }

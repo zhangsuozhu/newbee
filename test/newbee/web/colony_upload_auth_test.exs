@@ -303,5 +303,15 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert css =~ ".bee-task-row { padding: 12px; }"
       assert css =~ "@media (max-width: 768px) {"
     end
+
+    test "面包屑与轨迹任务条在手机宽度下加高到 32px（桌面不变）" do
+      css = File.read!("priv/web/colony/colony.css")
+
+      # 实测 320 宽：面包屑 18px、轨迹任务条 23px，都是可点导航项，手指点不准。
+      assert css =~ ".colony-sub .crumb-link { display: inline-flex; align-items: center; min-height: 32px; }"
+      assert css =~ ".bee-task { display: inline-flex; align-items: center; min-height: 32px; padding: 4px 8px; }"
+      # 只在移动端媒体查询里生效：基础样式保持原来的紧凑尺寸
+      assert css =~ ".colony-sub .crumb-link {\n  background: none; border: 0; padding: 0; cursor: pointer;"
+    end
   end
 end
