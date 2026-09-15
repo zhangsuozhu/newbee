@@ -215,9 +215,9 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     test "任务卡的控制动作有成功反馈" do
       js = File.read!("priv/web/colony/taskcard.js")
 
-      assert js =~ "pause:'已暂停这项工作（人仍可发言）'"
-      assert js =~ "resume:'已恢复这项工作'"
-      assert js =~ "interrupt:'已中止这项工作'"
+      assert js =~ "const settled = fresh?.control_state === (command === 'resume' ? 'running' : 'paused');"
+      assert js =~ "已请求暂停这项工作，等待执行器确认（人仍可发言）"
+      assert js =~ "已请求中止这项工作，等待执行器确认"
     end
   end
 
@@ -404,11 +404,17 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert util =~ "toast(error.message || \"操作失败，请重试\", true)"
       assert workflow =~ "async function act(t, action, attrs = {}) {"
       assert workflow =~ "guard(() => rpc('colony.work.continue'"
+      assert workflow =~ "if (t.owner_kind !== 'human' && ['executing','integrating'].includes(w.phase)"
+      assert workflow =~ "立即中止"
+      assert workflow =~ "name:'reason',label:'停止原因',multiline:true,required:true"
+      assert workflow =~ "已请求中止这项工作，等待执行器确认"
       assert taskcard =~ "guard(() => rpc('colony.task.transition'"
       assert taskcard =~ "guard(() => rpc('colony.work.submit'"
       assert taskcard =~ "guard(() => rpc('colony.work.continue'"
       assert taskcard =~ "if (task.approval_required || task.status === 'blocked')"
       assert taskcard =~ "if (task.status !== 'pending_review') actions.append(action('提交成果'"
+      assert taskcard =~ "name:'reason', label:'停止原因', multiline:true, required:true"
+      assert taskcard =~ "已请求中止这项工作，等待执行器确认"
     end
   end
 

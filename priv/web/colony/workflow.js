@@ -124,14 +124,26 @@ export function buildWorkflowCard(t, ctx) {
     const lowFreq = [['工作详情', () => ctx.openTask(t.id, t.title)]];
     if (t.session_id) lowFreq.push(['查看执行过程', () => ctx.openConversation(t.session_id, t.assigned_bee_id)]);
     lowFreq.push([paused ? '恢复任务' : '暂停任务', async () => {
-      await rpc('colony.control',{colonyId:state.colonyId,scope:'work',targetId:t.id,action:paused?'resume':'pause'});
+      const action = paused ? 'resume' : 'pause';
+      await rpc('colony.control',{colonyId:state.colonyId,scope:'work',targetId:t.id,action});
       await refresh();
-      if (!paused) { toast('已暂停这项工作（人仍可发言）'); return; }
-      // 蜂群整体（或该成员）还暂停着时，恢复这一项并不会让它跑起来：
-      // 以前照样报「已恢复这项工作」，用户以为在跑了。
       const fresh = (state.data?.tasks || []).find(x => x.id === t.id);
       const stillPaused = !!(fresh && fresh.control_state && fresh.control_state !== 'running');
-      toast(stillPaused ? '已恢复这项工作，但蜂群整体仍在暂停，请先恢复全群' : '已恢复这项工作', stillPaused);
+      const settled = action === 'resume' ? !stillPaused : fresh?.control_state === 'paused';
+      const message = action === 'pause'
+        ? settled ? '已暂停这项工作（人仍可发言）' : '已请求暂停这项工作，等待执行器确认（人仍可发言）'
+        : action === 'resume' && stillPaused
+          ? '已恢复这项工作，但蜂群整体仍在暂停，请先恢复全群'
+          : settled ? '已恢复这项工作' : '已请求恢复这项工作，等待执行器确认';
+      toast(message);
+    }]);
+    if (t.owner_kind !== 'human' && ['executing','integrating'].includes(w.phase) && t.status !== 'blocked') lowFreq.push(['立即中止', async () => {
+      const input = await form('中止这项工作', [{name:'reason',label:'停止原因',multiline:true,required:true,help:'停止执行进程；已发生的文件修改和外部操作不会自动撤回。'}], '立即中止');
+      if (!input) return;
+      await rpc('colony.control',{colonyId:state.colonyId,scope:'work',targetId:t.id,action:'interrupt'});
+      await refresh();
+      const fresh = (state.data?.tasks || []).find(x => x.id === t.id);
+      toast(fresh?.control_state === 'paused' ? '已中止这项工作' : '已请求中止这项工作，等待执行器确认');
     }]);
     actions.append(cardMenu(guardMenu(lowFreq)));
   }

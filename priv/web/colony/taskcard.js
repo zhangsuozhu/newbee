@@ -88,7 +88,7 @@ ${Array.isArray(value) ? value.map(v => typeof v === 'string' ? v : JSON.stringi
     if (state.data?.can_manage) {
       menu.push([paused ? '恢复这项工作' : '暂停这项工作', () => control(task, paused ? 'resume' : 'pause')]);
       if (task.owner_kind !== 'human' && (task.status === 'running' || task.control_state === 'pausing')) menu.push(['立即中止', async () => {
-        const yes = await form('中止这项工作', [{name:'reason', label:'停止原因', multiline:true, help:'停止执行进程；已发生的文件修改和外部操作不会自动撤回。'}], '立即中止');
+        const yes = await form('中止这项工作', [{name:'reason', label:'停止原因', multiline:true, required:true, help:'停止执行进程；已发生的文件修改和外部操作不会自动撤回。'}], '立即中止');
         if (yes) await control(task, 'interrupt');
       }]);
     }
@@ -124,7 +124,18 @@ ${Array.isArray(value) ? value.map(v => typeof v === 'string' ? v : JSON.stringi
 
 const guard = (fn) => async () => { try { await fn(); } catch (error) { toast(error.message || '操作失败', true); } };
 const guardMenu = (items) => items.map(([label, fn]) => [label, guard(fn)]);
-async function control(task, command) { await rpc('colony.control', {colonyId:state.colonyId, scope:'work', targetId:task.id, action:command}); await refresh(); const said = {pause:'已暂停这项工作（人仍可发言）', resume:'已恢复这项工作', interrupt:'已中止这项工作'}[command]; if (said) toast(said); }
+async function control(task, command) {
+  await rpc('colony.control', {colonyId:state.colonyId, scope:'work', targetId:task.id, action:command});
+  await refresh();
+  const fresh = (state.data?.tasks || []).find(t => t.id === task.id);
+  const settled = fresh?.control_state === (command === 'resume' ? 'running' : 'paused');
+  const message = command === 'pause'
+    ? settled ? '已暂停这项工作（人仍可发言）' : '已请求暂停这项工作，等待执行器确认（人仍可发言）'
+    : command === 'resume'
+      ? settled ? '已恢复这项工作' : '已请求恢复这项工作，等待执行器确认'
+      : settled ? '已中止这项工作' : '已请求中止这项工作，等待执行器确认';
+  toast(message);
+}
 async function revise(task) {
   const result = await form('补充工作要求', [{name:'constraints', label:'约束（每行一条）', multiline:true, value:(task.constraints || []).join('\n')}, {name:'acceptance', label:'验收标准（每行一条）', multiline:true, value:(task.acceptance || []).join('\n')}]);
   if (!result) return;
