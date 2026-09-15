@@ -378,8 +378,6 @@ defmodule Newbee.Colony.Workflow do
 
       if length(selections) == 1 do
         [selection] = selections
-        proposal = Enum.find(root["workflow"]["proposals"], &(&1["bee_id"] == selection["bee_id"]))
-        source = get_in(data, ["tasks", proposal["task_id"]])
 
         root =
           root
@@ -387,8 +385,7 @@ defmodule Newbee.Colony.Workflow do
           |> Map.merge(%{
             "assigned_bee_id" => selection["bee_id"],
             "session_id" => nil,
-            "mode" => "execution",
-            "workspace" => source["workspace"]
+            "mode" => "execution"
           })
 
         {data, root} = enqueue(data, root, instruction, "按讨论决定实施：先核对约束与工作目录，完成后提交成果待验收。")

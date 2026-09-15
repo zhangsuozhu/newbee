@@ -179,6 +179,13 @@ defmodule Newbee.Web.ColonyApiTest do
     assert {:ok, after_cleanup} = Store.get_task(task["id"])
     assert after_cleanup["workspace"]["review_status"] == "cleaned"
     assert stored["workspace"]["kind"] == "filesystem_copy"
+    trace_count = length(Store.trace_for_colony(cid))
+
+    assert %{"ok" => %{"task" => cleaned_again}} =
+             rpc("colony.workspace.cleanup", %{"colonyId" => cid, "taskId" => task["id"]})
+
+    assert cleaned_again["task"]["revision"] == cleaned["task"]["revision"]
+    assert length(Store.trace_for_colony(cid)) == trace_count
   end
 
   test "workspace cleanup rejects active tasks and non-Queen members", %{cid: cid, actor: actor} do

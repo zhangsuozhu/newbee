@@ -105,21 +105,27 @@ defmodule Newbee.Colony.Engine do
          :ok <- require_queen(colony, actor),
          {:ok, task} <- fetch_task(task_id),
          :ok <- task_belongs_to(task, colony_id),
-         :ok <- terminal_for_cleanup(task),
-         :ok <- Newbee.Colony.Workspace.cleanup(task),
-         {:ok, updated} <-
-           Store.update("tasks", task_id, nil, fn current ->
-             workspace = Map.put(current["workspace"], "review_status", "cleaned")
-             {:ok, Map.put(current, "workspace", workspace)}
-           end) do
-      trace(colony_id, %{
-        "type" => "command",
-        "bee_id" => actor,
-        "task_id" => task_id,
-        "text" => "已清理任务「#{task["title"]}」的隔离工作区"
-      })
+         :ok <- terminal_for_cleanup(task) do
+      if get_in(task, ["workspace", "review_status"]) == "cleaned" do
+        # 旧标签页可能在刷新前再次提交；幂等返回，但不重复制造审计记录。
+        {:ok, Task.public(task)}
+      else
+        with :ok <- Newbee.Colony.Workspace.cleanup(task),
+             {:ok, updated} <-
+               Store.update("tasks", task_id, nil, fn current ->
+                 workspace = Map.put(current["workspace"], "review_status", "cleaned")
+                 {:ok, Map.put(current, "workspace", workspace)}
+               end) do
+          trace(colony_id, %{
+            "type" => "command",
+            "bee_id" => actor,
+            "task_id" => task_id,
+            "text" => "已清理任务「#{task["title"]}」的隔离工作区"
+          })
 
-      {:ok, Task.public(updated)}
+          {:ok, Task.public(updated)}
+        end
+      end
     end
   end
 

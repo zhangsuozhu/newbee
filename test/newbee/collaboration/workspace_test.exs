@@ -168,6 +168,7 @@ defmodule Newbee.Collaboration.WorkspaceTest do
     assert {:ok, _} = Workspace.cleanup(terminal_task(workspace, "rejected"))
     {worktrees, 0} = System.cmd("git", ["worktree", "list", "--porcelain"], cd: git_root, stderr_to_stdout: true)
     refute worktrees =~ workspace["path"]
+    assert :ok = Workspace.discard_orphan(workspace)
   end
 
   test "旧快照缺少 mode 仍可读取，非法 mode 被拒绝", %{root: root} do

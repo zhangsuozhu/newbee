@@ -479,12 +479,46 @@ defmodule Newbee.Collaboration.Workspace do
   defp remove_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
 
   defp remove_git_worktree(root, path) do
-    case System.cmd("git", ["worktree", "remove", "--force", path], cd: Path.expand(root), stderr_to_stdout: true) do
-      {_output, 0} -> :ok
-      {output, _status} -> {:error, "workspace_cleanup_failed", String.trim(output)}
+    expanded_path = Path.expand(path)
+
+    case System.cmd("git", ["worktree", "list", "--porcelain"],
+           cd: Path.expand(root),
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        registered? =
+          output
+          |> String.split("\n")
+          |> Enum.any?(fn line -> String.trim(line) == "worktree " <> expanded_path end)
+
+        if registered? do
+          remove_registered_git_worktree(root, expanded_path)
+        else
+          remove_unregistered_workspace(expanded_path)
+        end
+
+      {output, _status} ->
+        {:error, "workspace_cleanup_failed", String.trim(output)}
     end
   rescue
     error in ErlangError -> {:error, "workspace_cleanup_failed", Exception.message(error)}
+  end
+
+  defp remove_registered_git_worktree(root, path) do
+    case System.cmd("git", ["worktree", "remove", "--force", path],
+           cd: Path.expand(root),
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} -> :ok
+      {output, _status} -> {:error, "workspace_cleanup_failed", String.trim(output)}
+    end
+  end
+
+  defp remove_unregistered_workspace(path) do
+    case File.rm_rf(path) do
+      {:ok, _} -> :ok
+      {:error, reason, _} -> {:error, "workspace_cleanup_failed", inspect(reason)}
+    end
   end
 
   @doc false

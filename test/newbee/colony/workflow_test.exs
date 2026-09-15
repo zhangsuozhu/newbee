@@ -111,6 +111,27 @@ defmodule Newbee.Colony.WorkflowTest do
     assert {:error, "workflow_decision_required", _} = Work.continue(ctx.cid, root["id"], "直接开工", ctx.actor)
   end
 
+  test "single execution keeps the coordinator workspace separate from its proposal", ctx do
+    root = choose(ctx)
+    proposal_id = root["workflow"]["proposals"] |> hd() |> Map.fetch!("task_id")
+    root_workspace = %{"kind" => "git_worktree", "root" => "/tmp/root", "path" => "/tmp/root/.newbee/workspaces/root"}
+
+    proposal_workspace = %{
+      "kind" => "git_worktree",
+      "root" => "/tmp/root",
+      "path" => "/tmp/root/.newbee/workspaces/proposal"
+    }
+
+    assert {:ok, _} = Store.update("tasks", root["id"], nil, &{:ok, Map.put(&1, "workspace", root_workspace)})
+    assert {:ok, _} = Store.update("tasks", proposal_id, nil, &{:ok, Map.put(&1, "workspace", proposal_workspace)})
+
+    {:ok, executing} =
+      act(ctx, get(root["id"]), "execute", %{"assignments" => [%{"bee_id" => hd(ctx.bees)}]})
+
+    assert executing["workspace"] == root_workspace
+    assert get(proposal_id)["workspace"] == proposal_workspace
+  end
+
   test "comments are shared context but only managers decide; stale concurrent selection loses", ctx do
     root = choose(ctx)
     {:ok, member} = Engine.add_bee(ctx.cid, %{"display" => "同事", "kind" => "human"})
