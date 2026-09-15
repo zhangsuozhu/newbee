@@ -117,6 +117,20 @@ defmodule Newbee.Collaboration.WorkspaceTest do
     assert message =~ "source-link.txt"
   end
 
+  test "文件快照保留可执行权限，物化副本不会把 755 降成 644", %{root: root} do
+    script = Path.join(root, "run.sh")
+    File.write!(script, "#!/bin/sh\necho ok\n")
+    :ok = File.chmod(script, 0o755)
+
+    assert {:ok, snapshot} = Workspace.snapshot(root)
+    assert snapshot["run.sh"]["mode"] == 0o755
+
+    target = Path.join(System.tmp_dir!(), "newbee-materialized-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(target) end)
+    assert :ok = Workspace.materialize_snapshot(snapshot, target)
+    assert :erlang.band(File.stat!(Path.join(target, "run.sh")).mode, 0o777) == 0o755
+  end
+
   defp terminal_task(workspace, review_status) do
     %{"status" => "succeeded", "workspace" => Map.put(workspace, "review_status", review_status)}
   end
