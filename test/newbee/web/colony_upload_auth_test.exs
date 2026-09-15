@@ -281,4 +281,16 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       refute js =~ "if (send.sending) return;"
     end
   end
+
+  describe "成员层级的第三层面包屑" do
+    test "从成员层级深钻任务时，标题与面包屑显示任务名" do
+      js = File.read!("priv/web/colony/breadcrumbs.js")
+
+      # 回归：成员层级只处理了「对话」子层，从历史任务/侧栏深钻任务时
+      # 标题仍停在成员名，用户看不出点进了哪里。
+      assert js =~ "const inDrill = state.view === \"drill\";"
+      assert js =~ "title.textContent = inDrill ? drillTitle : (bee.display || \"Bee\");"
+      assert js =~ "} else if (inDrill) {"
+    end
+  end
 end
