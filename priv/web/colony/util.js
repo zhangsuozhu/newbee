@@ -145,3 +145,32 @@ export function cardMenu(items, label = "更多 ▾") {
   return wrap;
 }
 
+
+// 复制到剪贴板：优先 Clipboard API；不安全上下文（例如 http://局域网IP 打开）里
+// navigator.clipboard 不存在，退回 execCommand。两条路都失败必须如实返回 false——
+// 以前是失败也显示「已复制」，用户以为复制成功，粘出来还是旧内容。
+export async function copyToClipboard(text) {
+  const value = String(text == null ? "" : text);
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch (_) { /* 落到下面的兜底 */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch (_) {
+    return false;
+  }
+}
+

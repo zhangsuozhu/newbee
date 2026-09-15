@@ -142,7 +142,7 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
 
       # 回归：邀请链接是只读 textarea，之前只能手动选中复制。
       assert forms =~ "if (field.copy) {"
-      assert forms =~ "navigator.clipboard.writeText(input.value)"
+      assert forms =~ "const ok = await copyToClipboard(input.value);"
 
       invites = manage |> String.split("copy:true") |> length()
       # 邀请（同事/另一台环境）+ 帮助
@@ -369,6 +369,26 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert util =~ "document.addEventListener(\"keydown\", (event) => {"
       assert util =~ "pop.parentElement && pop.parentElement.querySelector(\".card-more\")"
       assert util =~ "if (trigger) trigger.focus();"
+    end
+  end
+
+  describe "复制到剪贴板" do
+    test "统一走 copyToClipboard，失败如实反馈" do
+      app = File.read!("priv/web/app.js")
+      cutil = File.read!("priv/web/colony/util.js")
+      md = File.read!("priv/web/colony/md.js")
+      forms = File.read!("priv/web/colony/forms.js")
+
+      # 回归：以前 8 处复制各自调 navigator.clipboard，无 catch、无不安全上下文兜底，
+      # 失败也显示「已复制」（有的连 execCommand 都不试）。
+      assert app =~ "function copyToClipboard(text)"
+      assert app =~ "function copyWithFeedback(btn, text, label)"
+      assert cutil =~ "export async function copyToClipboard(text)"
+      assert md =~ "copyToClipboard(code).then((ok) => {"
+      assert forms =~ "const ok = await copyToClipboard(input.value);"
+      refute md =~ ".then(done, done)"
+      refute app =~ "navigator.clipboard.writeText(raw)"
+      refute app =~ "navigator.clipboard.writeText(fileViewer.content)"
     end
   end
 end

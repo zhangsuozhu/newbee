@@ -34,6 +34,45 @@
     workspaceNotify("ready");
   }
 
+  // 复制文本：优先 Clipboard API；不安全上下文（例如用 http://局域网IP 打开）里
+  // navigator.clipboard 不存在，退回 execCommand；两条路都失败必须如实返回 false——
+  // 以前是无条件显示「已复制」，失败时用户以为复制成功，粘贴出来还是旧内容。
+  async function copyToClipboard(text) {
+    const value = String(text == null ? "" : text);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch (_) { /* 落到下面的兜底 */ }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 复制按钮统一反馈：成功「已复制」，失败「复制失败」+ 一行提示，然后还原标签。
+  function copyWithFeedback(btn, text, label) {
+    const restore = label != null ? label : btn ? btn.textContent : "";
+    copyToClipboard(text).then((ok) => {
+      if (btn) btn.textContent = ok ? "已复制" : "复制失败";
+      if (!ok) line("notice", "复制失败：浏览器不允许写入剪贴板，请手动选中复制");
+      setTimeout(() => { if (btn) btn.textContent = restore; }, 1500);
+    });
+  }
+
+
   const workspaceSurface = new URLSearchParams(location.search).get("surface");
   function workspaceNotify(type, payload = {}) {
     if (window.parent !== window) window.parent.postMessage({newbeeWorkspace: type, ...payload}, location.origin);
@@ -1362,13 +1401,7 @@ case "goal_round": break;
     btn.className = "msg-copy";
     btn.title = "复制整条回复";
     btn.textContent = "⧉";
-    btn.onclick = () => {
-      const raw = d.dataset.raw || d.innerText || "";
-      navigator.clipboard.writeText(raw).then(() => {
-        btn.textContent = "已复制";
-        setTimeout(() => (btn.textContent = "⧉"), 1500);
-      });
-    };
+    btn.onclick = () => copyWithFeedback(btn, d.dataset.raw || d.innerText || "", "\u29C9");
     d.appendChild(btn);
     return d;
   }
@@ -1663,10 +1696,7 @@ case "goal_round": break;
     btn.textContent = "⧉";
     btn.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      navigator.clipboard.writeText(btn.dataset.text || "").then(() => {
-        btn.textContent = "已复制";
-        setTimeout(() => (btn.textContent = "⧉"), 1200);
-      });
+      copyWithFeedback(btn, btn.dataset.text || "", "\u29C9");
     });
     return btn;
   }
@@ -3363,9 +3393,7 @@ case "goal_round": break;
   function xOpen(id) { const el = document.getElementById(id); if (el) el.classList.remove("hidden"); }
   function xClose(id) { const el = document.getElementById(id); if (el) el.classList.add("hidden"); }
   function xCopy(text, btn) {
-    const done = () => { if (btn) { const o = btn.textContent; btn.textContent = "已复制"; setTimeout(() => { btn.textContent = o; }, 1200); } };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
-    else { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); } catch (e) {} ta.remove(); done(); }
+    copyWithFeedback(btn, text);
   }
   // ── 群卡片 ─────────────────────────────────────────────────────────────
   // 一眼看懂：谁在线（x/y 在线）、几个会话几个任务、下一步点哪里。
@@ -5441,7 +5469,7 @@ case "goal_round": break;
       cBtn.className = "msg-copy";
       cBtn.title = "复制消息";
       cBtn.textContent = "\u29C9";
-      cBtn.onclick = () => { navigator.clipboard.writeText(text).then(() => { cBtn.textContent = "已复制"; setTimeout(() => cBtn.textContent = "\u29C9", 1500); }); };
+      cBtn.onclick = () => copyWithFeedback(cBtn, text, "\u29C9");
       d.appendChild(cBtn);
     }
     scrollBottom();
@@ -6169,12 +6197,7 @@ case "goal_round": break;
     root.querySelectorAll(".md-copy").forEach((btn) => {
       if (btn.dataset.bound) return;
       btn.dataset.bound = "1";
-      btn.onclick = () => {
-        navigator.clipboard.writeText(btn.dataset.code || "").then(() => {
-          btn.textContent = "已复制";
-          setTimeout(() => (btn.textContent = "复制"), 1500);
-        });
-      };
+      btn.onclick = () => copyWithFeedback(btn, btn.dataset.code || "", "复制");
     });
   }
 
@@ -8051,11 +8074,7 @@ case "goal_round": break;
     renderFileViewer();
   });
   $("file-viewer-copy").addEventListener("click", () => {
-    navigator.clipboard.writeText(fileViewer.content).then(() => {
-      const button = $("file-viewer-copy");
-      button.textContent = "已复制";
-      setTimeout(() => { button.textContent = "复制"; }, 1200);
-    });
+    copyWithFeedback($("file-viewer-copy"), fileViewer.content, "复制");
   });
   $("file-viewer-diff").addEventListener("click", () => {
     if (!fileViewer.path) return;

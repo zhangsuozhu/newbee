@@ -1,3 +1,5 @@
+import { copyToClipboard } from "./util.js";
+
 // Small accessible dialogs use the existing application controls and theme.
 export function form(title, fields, submitLabel = '保存') {
   return new Promise((resolve) => {
@@ -25,14 +27,9 @@ export function form(title, fields, submitLabel = '保存') {
         copy.className = "btn-ghost form-copy";
         copy.textContent = "复制";
         copy.onclick = async () => {
-          try {
-            await navigator.clipboard.writeText(input.value);
-          } catch (_) {
-            input.focus();
-            input.select();
-            try { document.execCommand("copy"); } catch (_) {}
-          }
-          copy.textContent = "已复制";
+          const ok = await copyToClipboard(input.value);
+          if (!ok) { input.focus(); input.select(); }
+          copy.textContent = ok ? "已复制" : "复制失败";
           clearTimeout(copy._t);
           copy._t = setTimeout(() => { copy.textContent = "复制"; }, 1500);
         };

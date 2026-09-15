@@ -1,3 +1,6 @@
+import { copyToClipboard } from "./util.js";
+import { toast } from "./api.js";
+
 // 蜂群前端 · Markdown 渲染。
 // 与主界面 app.js 的 renderMarkdown 同一套语法（标题/代码块/引用/列表/任务列表/表格/分割线/行内标记），
 // 输出同一批 md-* 类名，直接复用 style.css 里的排版——群聊与成果报告不再是一坨纯文本。
@@ -132,8 +135,11 @@ export function bindMarkdownCopy() {
     const btn = event.target.closest && event.target.closest(".md-copy");
     if (!btn) return;
     const code = btn.dataset.code || "";
-    const done = () => { const old = btn.textContent; btn.textContent = "已复制"; setTimeout(() => { btn.textContent = old || "复制"; }, 1400); };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(done, done);
-    else done();
+    const old = btn.textContent;
+    copyToClipboard(code).then((ok) => {
+      btn.textContent = ok ? "已复制" : "复制失败";
+      if (!ok) toast("复制失败：浏览器不允许写剪贴板，请手动选中复制", true);
+      setTimeout(() => { btn.textContent = old || "复制"; }, 1400);
+    });
   });
 }
