@@ -46,6 +46,17 @@ defmodule Newbee.Environment.AutonomyTest do
     assert {:allow, :manual_approved} = Autonomy.activation_decision(:stateful_service, :autonomous, approved: true)
   end
 
+  test "低风险且确定性验证全过时可自动放行" do
+    release = %{kind: :tool, effects: []}
+    evaluation = %{} |> Map.put(:passed, true) |> Map.put(:failed_layers, []) |> Map.put(:layers, %{static: %{passed: true}, deterministic: %{passed: true}})
+
+    assert Autonomy.automatic_confidence?(release, evaluation)
+    refute Autonomy.automatic_confidence?(%{kind: :tool, effects: [:network]}, evaluation)
+    assert {:allow, :autonomous} = Autonomy.activation_decision(:tool, :manual, certain: true)
+    assert {:deny, :needs_approval} = Autonomy.activation_decision(:provider, :manual, certain: true)
+  end
+
+
   test "挣来的自治（§8.1）：证据不足不建议升档" do
     refute Autonomy.suggest_upgrade?(%{verified_antibodies: 0, replay_coverage: 0.0, recent_changes: []})
 

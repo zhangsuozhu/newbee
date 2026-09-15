@@ -126,6 +126,25 @@ defmodule Newbee.Environment.Autonomy do
     end
   end
 
+  @doc "Whether a low-risk release is fully covered by deterministic checks and may skip human approval."
+  def automatic_confidence?(release, evaluation) when is_map(evaluation) do
+    kind = Map.get(release, :kind) || Map.get(release, "kind")
+    effects = Map.get(release, :effects) || Map.get(release, "effects") || []
+    layers = Map.get(evaluation, :layers) || Map.get(evaluation, "layers") || %{}
+    passed = Map.get(evaluation, :passed) || Map.get(evaluation, "passed")
+    failed = Map.get(evaluation, :failed_layers) || Map.get(evaluation, "failed_layers") || []
+
+    ring_of(kind) == 3 and kind in [:tool, :workflow, :projection] and effects == [] and passed == true and
+      failed == [] and layer_passed?(layers, :static) and layer_passed?(layers, :deterministic)
+  end
+
+  def automatic_confidence?(_, _), do: false
+
+  defp layer_passed?(layers, key) do
+    result = Map.get(layers, key) || Map.get(layers, Atom.to_string(key)) || %{}
+    Map.get(result, :passed) || Map.get(result, "passed") || false
+  end
+
   @doc """
   激活判定（合取）：{:allow, via} | {:deny, reason}。
   `via` ∈ :autonomous | :manual_approved | :canary。
@@ -156,19 +175,24 @@ defmodule Newbee.Environment.Autonomy do
 
       true ->
         cap = Map.get(@kind_caps, kind, :manual)
+        certain? = Keyword.get(opts, :certain, false)
 
-        case {cap, autonomy} do
-          {:manual, _} ->
-            if approved?, do: {:allow, :manual_approved}, else: {:deny, :needs_approval}
+        if certain? and ring_of(kind) == 3 and cap == :autonomous do
+          {:allow, :autonomous}
+        else
+          case {cap, autonomy} do
+            {:manual, _} ->
+              if approved?, do: {:allow, :manual_approved}, else: {:deny, :needs_approval}
 
-          {_, :manual} ->
-            if approved?, do: {:allow, :manual_approved}, else: {:deny, :needs_approval}
+            {_, :manual} ->
+              if approved?, do: {:allow, :manual_approved}, else: {:deny, :needs_approval}
 
-          {:autonomous, :autonomous} ->
-            {:allow, :autonomous}
+            {:autonomous, :autonomous} ->
+              {:allow, :autonomous}
 
-          {:autonomous_canary, :autonomous} ->
-            if canary_done?, do: {:allow, :autonomous}, else: {:allow, :canary}
+            {:autonomous_canary, :autonomous} ->
+              if canary_done?, do: {:allow, :autonomous}, else: {:allow, :canary}
+          end
         end
     end
   end
