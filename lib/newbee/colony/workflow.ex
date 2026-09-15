@@ -391,7 +391,7 @@ defmodule Newbee.Colony.Workflow do
             "workspace" => source["workspace"]
           })
 
-        {data, root} = enqueue(data, root, instruction)
+        {data, root} = enqueue(data, root, instruction, "按讨论决定实施：先核对约束与工作目录，完成后提交成果待验收。")
         ok(event(data, root, actor, "已选定执行者，按讨论决定实施。"), root)
       else
         {data, ids} =
@@ -402,7 +402,9 @@ defmodule Newbee.Colony.Workflow do
               child(root, bee, selection["title"], selection["scope"], "execution")
               |> Map.put("integration_required", true)
 
-            {acc, child} = enqueue(acc, child, instruction <> "\n你的独立分工：" <> selection["scope"])
+            {acc, child} =
+              enqueue(acc, child, instruction <> "\n你的独立分工：" <> selection["scope"], "按已确认分工实施；完成后提交成果，由负责人集成验证。")
+
             {acc, ids ++ [child["id"]]}
           end)
 
@@ -534,7 +536,7 @@ defmodule Newbee.Colony.Workflow do
     end
   end
 
-  defp enqueue(data, task, instruction) do
+  defp enqueue(data, task, instruction, next_step \\ nil) do
     task =
       task
       |> bump()
@@ -544,7 +546,9 @@ defmodule Newbee.Colony.Workflow do
         "question" => nil,
         "approval_required" => false,
         "completed_at" => nil,
-        "next_step" => instruction,
+        # next_step 是渲染给用户看的（工作卡「下一步」、答复表单的 label）：
+        # 机器指令（可能是十几 KB 的决策 JSON）只放进 delivery 给执行器，别塞进这里。
+        "next_step" => next_step || instruction,
         "context_revision" => task["context_revision"] + 1
       })
 

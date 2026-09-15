@@ -57,6 +57,23 @@ defmodule Newbee.Colony.WorkflowTest do
     assert Enum.any?(titles, &(&1 =~ "方案乙"))
   end
 
+  test "决策后 next_step 是人话，机器指令只留在 delivery 里", ctx do
+    root = choose(ctx)
+
+    {:ok, root} =
+      act(ctx, root, "execute", %{"assignments" => [%{"bee_id" => hd(ctx.bees), "title" => "执行"}]})
+
+    # 回归：以前 enqueue 把整段决策 JSON 塞进 next_step，而 next_step 会渲染在工作卡
+    # 「下一步」和「答复并继续」表单的 label 上（实测十几 KB 的 JSON 直接上屏）。
+    refute root["next_step"] =~ "{"
+    refute root["next_step"] =~ "decision"
+    assert root["next_step"] =~ "实施"
+
+    delivery = Store.all("deliveries") |> Enum.find(&(&1["task_id"] == root["id"]))
+    assert delivery["instruction"] =~ "人的执行决定"
+    assert delivery["instruction"] =~ "{"
+  end
+
   test "simple work analyzes first and creates exactly one execution delivery", ctx do
     root = create(ctx)
     assert root["mode"] == "triage"
