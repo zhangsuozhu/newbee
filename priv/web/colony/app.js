@@ -18,6 +18,18 @@ import { renderComposer, updateScope, updateReviewBar, send, prefill } from "./c
 import { bindMarkdownCopy } from "./md.js";
 
 const $ = (sel) => document.querySelector(sel);
+// 跳转后接管焦点：只在焦点已经落空（body）或落在被替换掉的节点上时才动，
+// 免得把用户正在操作的控件（例如输入框）抢走。
+function focusMainRegion() {
+  const active = document.activeElement;
+  const inDoc = active && active !== document.body && document.body.contains(active);
+  if (inDoc) return;
+  const main = document.getElementById("transcript") || document.getElementById("main");
+  if (!main) return;
+  if (!main.hasAttribute("tabindex")) main.setAttribute("tabindex", "-1");
+  main.focus({ preventScroll: true });
+}
+
 let lastSig = null;
 let lastRoute = null;
 
@@ -242,6 +254,10 @@ function render(force = false) {
   if (!sameRoute) transcript.scrollTop = overview ? 0 : transcript.scrollHeight;
   else if (wasNearBottom && !overview) scrollBottom();
   else transcript.scrollTop = scrollTop;
+  // 跳转（面包屑 / 任务卡 / 验收条）后键盘用户的焦点会掉到 body，接着 Tab 就得从页首重来。
+  // 只在「不是第一次渲染」且焦点已经落空（body）或落在被替换掉的节点上时才接管，
+  // 免得抢用户正在操作的控件（例如输入框）。
+  if (!sameRoute && lastRoute !== null) focusMainRegion();
   lastRoute = route;
   updateNewMsgHint(route, wasNearBottom);
   updateScope();

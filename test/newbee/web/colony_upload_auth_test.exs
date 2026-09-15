@@ -419,4 +419,17 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert composer =~ "if (++tries < 12) setTimeout(grab, 120);"
     end
   end
+
+  describe "跳转后的焦点管理" do
+    test "路由变化且焦点落空时交给主区域" do
+      app = File.read!("priv/web/colony/app.js")
+
+      # 回归：面包屑/标签/任务卡跳转后焦点掉到 body，键盘用户接着 Tab 得从页首重来。
+      assert app =~ "function focusMainRegion() {"
+      assert app =~ "if (!sameRoute && lastRoute !== null) focusMainRegion();"
+      assert app =~ "main.focus({ preventScroll: true });"
+      # 不能抢正在操作的控件：只有焦点已落空/节点已被替换才动
+      assert app =~ "if (inDoc) return;"
+    end
+  end
 end
