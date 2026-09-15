@@ -482,7 +482,17 @@ function autosize(input) {
   input.style.height = Math.min(input.scrollHeight, 160) + "px";
 }
 
-export async function send(ctx, text) {
+// 串行化发送：上一条还在飞就排队，而不是静默丢弃。
+// 之前发送中会直接 return，快速连按 Enter / 连点发送时第二条被无声丢掉
+// 第二条会被无声丢掉（实测 4 次尝试只发出 2 个 colony.say，用户看到「什么都没发生」）。
+export function send(ctx, text) {
+  const run = () => doSend(ctx, text);
+  const next = (send.queue || Promise.resolve()).then(run, run);
+  send.queue = next.catch(() => {});
+  return next;
+}
+
+async function doSend(ctx, text) {
   text = (text || "").trim();
   const uploadIds = state.attachments.map((a) => a.id);
   if (!text && !uploadIds.length) return;
@@ -491,7 +501,7 @@ export async function send(ctx, text) {
   // 建群/切群还在路上时别把消息发进旧群（send 用的是此刻的 state.colonyId）。
   if (state.switching) { toast('正在创建蜂群，请稍候再发送', true); return; }
   if (state.uploading > 0) { toast("请等待文件上传完成", true); return; }
-  if (send.sending) return;
+  // 队列已保证串行，这里不需要再丢弃并发提交。
 
   const input = document.getElementById('input');
   const button = document.getElementById('send');

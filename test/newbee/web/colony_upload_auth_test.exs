@@ -268,4 +268,17 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert js =~ "preset = {display:value.display, capabilities:value.capabilities};"
     end
   end
+
+  describe "发送串行化" do
+    test "并发提交排队而不是静默丢弃" do
+      js = File.read!("priv/web/colony/composer.js")
+
+      # 回归：原来是 `if (send.sending) return;`——连按 Enter 时第二条被无声丢掉
+      # （实测 4 次提交只发出 2 个 colony.say）。现在排到队列里串行发送。
+      assert js =~ "export function send(ctx, text) {"
+      assert js =~ "send.queue = next.catch(() => {});"
+      assert js =~ "async function doSend(ctx, text)"
+      refute js =~ "if (send.sending) return;"
+    end
+  end
 end
