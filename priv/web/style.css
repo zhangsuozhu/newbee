@@ -2069,7 +2069,7 @@ svg.ico {
   /* 底部详细信息（token 用量等）：默认收起成一根把手，输入框贴最底，上滑查看。 */
   #composer { display: flex; flex-direction: column; }
   #queue-bar { order: 0; }
-  .mobile-details { order: 1; overflow: hidden; max-height: 0; transition: max-height .18s var(--nb-ease); }
+  .mobile-details { order: 1; overflow: hidden; max-height: 26px; transition: max-height .18s var(--nb-ease); }
   .mobile-details.open { max-height: 168px; }
   .mobile-details.dragging { max-height: none; }
   #attach-preview { order: 2; }

@@ -32,7 +32,7 @@ defmodule Newbee.Web.MobileComposerTest do
     assert hide_at < show_at,
            "the desktop hide rule must precede the mobile rule, otherwise the cascade hides the handle"
 
-    assert Regex.match?(~r/\.mobile-details \{ order: 1; overflow: hidden; max-height: 0;/, css)
+    assert Regex.match?(~r/\.mobile-details \{ order: 1; overflow: hidden; max-height: 26px;/, css)
     assert Regex.match?(~r/\.mobile-details\.open \{ max-height: 168px; \}/, css)
     assert Regex.match?(~r/\.composer-card \{ order: 3; \}/, css)
     assert Regex.match?(~r/#composer \{ display: flex; flex-direction: column; \}/, css)
