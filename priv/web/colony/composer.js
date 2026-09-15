@@ -595,15 +595,29 @@ export function updateReviewBar() {
   // 只有一件时不再重复列出标题（成果卡里就有），避免同一句话在首屏出现三次。
   const items = document.getElementById("review-preview");
   if (items) items.textContent = pending.length > 1 ? pending.slice(0, 3).map((h) => h.title).join(" · ") : "";
-  document.getElementById("review-go").onclick = () => {
+  document.getElementById("review-go").onclick = (event) => {
+    // 键盘激活（Enter/Space）时 click 的 detail 为 0；鼠标点击是 1。
+    const fromKeyboard = !event || event.detail === 0;
     state.groupTab = 'work';
     resetToChat();
+    // 键盘用户：切到工作台后把焦点直接交给「通过」，否则焦点落到 body，
+    // 要从页首 Tab 二十来次才够得到验收按钮。
     setTimeout(() => {
       const card = document.querySelector("[data-honey-pending]");
       if (card) card.scrollIntoView({ block: "center", behavior: "smooth" });
+      if (!fromKeyboard) return;
+      // 工作台可能还没渲染出「通过」，出现后再抓焦点（最多等 ~1.4s）。
+      let tries = 0;
+      const grab = () => {
+        const accept = document.querySelector(".btn-allow");
+        if (accept) { accept.focus(); return; }
+        if (++tries < 12) setTimeout(grab, 120);
+      };
+      grab();
     }, 150);
   };
 }
+
 // ── @ 点名：仿微信群。输入 @ 弹出成员列表（含 @all），选中即插入 ──
 
 function mentionCandidates() {

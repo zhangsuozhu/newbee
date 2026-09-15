@@ -408,4 +408,15 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert taskcard =~ "guard(() => rpc('colony.work.continue'"
     end
   end
+
+  describe "验收条的键盘流" do
+    test "键盘激活去验收后，焦点交给通过按钮" do
+      composer = File.read!("priv/web/colony/composer.js")
+
+      # 回归：切换标签后焦点落到 body，键盘用户要从页首 Tab 二十多次才够得到「通过」。
+      assert composer =~ "const fromKeyboard = !event || event.detail === 0;"
+      assert composer =~ "const accept = document.querySelector(\".btn-allow\");"
+      assert composer =~ "if (++tries < 12) setTimeout(grab, 120);"
+    end
+  end
 end
