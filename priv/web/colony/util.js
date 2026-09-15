@@ -110,7 +110,21 @@ function bindCardMenuDismiss() {
   document.addEventListener("click", () => {
     document.querySelectorAll(".card-menu:not(.hidden)").forEach((pop) => pop.classList.add("hidden"));
   });
+  // 键盘用户：菜单打开后按 Esc 应该能关掉，并把焦点还给触发按钮
+  // （其它浮层——弹窗、工作台层——都支持 Esc，这里原来只有鼠标点击能关）。
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const open = Array.from(document.querySelectorAll(".card-menu:not(.hidden)"));
+    if (!open.length) return;
+    event.preventDefault();
+    for (const pop of open) {
+      pop.classList.add("hidden");
+      const trigger = pop.parentElement && pop.parentElement.querySelector(".card-more");
+      if (trigger) trigger.focus();
+    }
+  });
 }
+
 export function cardMenu(items, label = "更多 ▾") {
   bindCardMenuDismiss();
   const wrap = document.createElement("div");

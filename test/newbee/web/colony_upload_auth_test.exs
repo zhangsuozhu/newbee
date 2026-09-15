@@ -360,4 +360,15 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert shell =~ "sidebar.removeAttribute('aria-hidden')"
     end
   end
+
+  describe "卡片菜单的键盘操作" do
+    test "Esc 关闭菜单并把焦点还给触发按钮" do
+      util = File.read!("priv/web/colony/util.js")
+
+      # 回归：卡片「更多」菜单以前只有全局 click 能关，键盘用户按 Esc 无反应。
+      assert util =~ "document.addEventListener(\"keydown\", (event) => {"
+      assert util =~ "pop.parentElement && pop.parentElement.querySelector(\".card-more\")"
+      assert util =~ "if (trigger) trigger.focus();"
+    end
+  end
 end
