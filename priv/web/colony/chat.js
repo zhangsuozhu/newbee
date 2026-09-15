@@ -491,7 +491,15 @@ function detailText(t) {
   if (d.kind) bits.push(`类型：${signalLabel(d.kind)}`);
   if (d.summary) bits.push(d.summary);
   if (d.ok === false) bits.push("结果：失败");
-  return bits.join("\n");
+  // 其余字段兜底展示：工具的报错与输出常常就落在没枚举到的键里
+  // （出错卡以前只显示「工具执行出错」，点开也看不到原因）。
+  const used = new Set(["tool", "cmd", "task_id", "bee_id", "to", "from", "kind", "summary", "ok"]);
+  for (const [k, v] of Object.entries(d)) {
+    if (used.has(k) || v === null || v === undefined || v === "" || v === false) continue;
+    const text = typeof v === "string" ? v : JSON.stringify(v);
+    bits.push(`${k}: ${String(text).slice(0, 400)}`);
+  }
+  return bits.join("\n").slice(0, 2000);
 }
 
 // ── 成果卡：内容 + 验收（内联通过 / 打回）──

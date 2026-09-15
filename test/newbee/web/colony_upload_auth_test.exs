@@ -476,4 +476,15 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert drill =~ "成果见上方成果卡"
     end
   end
+
+  describe "工具卡详情" do
+    test "未枚举的字段也兜底展示（出错时点开能看到原因）" do
+      chat = File.read!("priv/web/colony/chat.js")
+
+      # 回归：以前 detailText 只认固定几个键，工具报错/输出落在别的键上时
+      # 「工具执行出错」点开是空的，用户看不到原因。
+      assert chat =~ "for (const [k, v] of Object.entries(d)) {"
+      assert chat =~ "bits.join(\"\\n\").slice(0, 2000)"
+    end
+  end
 end
