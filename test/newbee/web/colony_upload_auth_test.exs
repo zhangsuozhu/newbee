@@ -407,6 +407,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert taskcard =~ "guard(() => rpc('colony.task.transition'"
       assert taskcard =~ "guard(() => rpc('colony.work.submit'"
       assert taskcard =~ "guard(() => rpc('colony.work.continue'"
+      assert taskcard =~ "if (task.approval_required || task.status === 'blocked')"
+      assert taskcard =~ "if (task.status !== 'pending_review') actions.append(action('提交成果'"
     end
   end
 

@@ -214,6 +214,9 @@ defmodule Newbee.Colony.Work do
           task["owner_kind"] == "human" and task["assigned_bee_id"] != actor ->
             {:error, "forbidden", "只有负责人本人能接手真人工作"}
 
+          task["status"] == "pending_review" ->
+            {:error, "review_required", "成果正在待验收，请先通过或打回"}
+
           Task.terminal?(task) ->
             {:error, "terminal", "已结束的工作不能恢复"}
 
@@ -268,6 +271,9 @@ defmodule Newbee.Colony.Work do
 
           task["assigned_bee_id"] != actor ->
             {:error, "forbidden", "只有负责人能提交成果"}
+
+          task["status"] == "pending_review" ->
+            {:error, "review_required", "已有成果待验收，请先通过或打回"}
 
           Task.terminal?(task) ->
             {:error, "terminal", "工作已结束"}

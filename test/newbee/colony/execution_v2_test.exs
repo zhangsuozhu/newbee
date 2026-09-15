@@ -19,6 +19,20 @@ defmodule Newbee.Colony.ExecutionV2Test do
     assert {:ok, %{"stats" => %{"working" => 0}}} = Engine.view(cid)
   end
 
+  test "待验收成果必须先验收才能继续", %{cid: cid, actor: actor} do
+    {:ok, task} = Work.create(cid, %{"title" => "待验收工作", "assigned_bee_id" => actor})
+    {:ok, _} = Work.continue(cid, task["id"], "开始", actor)
+    {:ok, _honey} = Work.submit(cid, task["id"], %{"content" => "已完成，待验收"}, actor)
+
+    assert {:error, "review_required", "已有成果待验收，请先通过或打回"} =
+             Work.submit(cid, task["id"], %{"content" => "重复提交"}, actor)
+
+    assert {:error, "review_required", "成果正在待验收，请先通过或打回"} =
+             Work.continue(cid, task["id"], "继续修改", actor)
+
+    assert {:ok, %{"status" => "pending_review"}} = Store.get_task(task["id"])
+  end
+
   test "receiver rechecks pause and acknowledges a retried delivery only once", %{
     cid: cid,
     actor: actor
