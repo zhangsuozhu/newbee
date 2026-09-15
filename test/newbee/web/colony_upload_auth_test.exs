@@ -514,6 +514,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
 
       assert composer =~ "已请求暂停全群 AI，等待执行器确认（人仍可发言）"
       assert composer =~ "已请求恢复全群 AI，等待执行器确认"
+      assert js =~ "retry_member:'已提交补充说明，正在重试'"
+      assert js =~ "if (success) toast(success);"
     end
   end
 

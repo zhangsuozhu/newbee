@@ -18,6 +18,8 @@ async function act(t, action, attrs = {}) {
   try {
     await rpc('colony.work.flow', {colonyId:state.colonyId,taskId:t.id,revision:t.revision,action,...attrs});
     await refresh();
+    const success = {comment:'已补充讨论意见', discuss:'已发起新一轮互评', retry:'已重新发起初步分析', retry_member:'已提交补充说明，正在重试', execute:'已采纳方案，开始实施'}[action];
+    if (success) toast(success);
   } catch (e) {
     if (e?.code === 'timeout') {
       toast('请求超时；结果可能已处理，正在刷新工作卡', true);
