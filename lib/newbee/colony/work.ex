@@ -1,6 +1,6 @@
 defmodule Newbee.Colony.Work do
   @moduledoc "Work ownership, durable context, dispatch outbox and evidence-backed acceptance."
-  alias Newbee.Colony.{Store, Task, Bee, Id, Control, Honey}
+  alias Newbee.Colony.{Store, Task, Bee, Id, Control, Honey, Trace}
 
   def create(cid, attrs) do
     with {:ok, _colony} <- Store.get_colony(cid),
@@ -306,14 +306,17 @@ defmodule Newbee.Colony.Work do
               data
               |> put_in(["tasks", tid], task)
               |> put_in(["honey", honey["id"]], honey)
-              |> Store.put_entry("trace", %{
-                "colony_id" => cid,
-                "bee_id" => actor,
-                "task_id" => tid,
-                "type" => "honey",
-                "text" => "产出成果「#{honey["title"]}」（待验收）",
-                "data" => %{"honey_id" => honey["id"], "review_state" => "pending_review"}
-              })
+              |> Store.put_entry(
+                "trace",
+                Trace.entry(%{
+                  "colony_id" => cid,
+                  "bee_id" => actor,
+                  "task_id" => tid,
+                  "type" => "honey",
+                  "text" => "产出成果「#{honey["title"]}」（待验收）",
+                  "data" => %{"honey_id" => honey["id"], "review_state" => "pending_review"}
+                })
+              )
 
             {:ok, {:ok, honey}, next}
         end
@@ -386,19 +389,23 @@ defmodule Newbee.Colony.Work do
                 # 人验收也要留痕（与 engine 的 AI 验收路径一致）：只靠 honey 状态变化时，
                 # 任务轨迹里看不到「谁验收了、结论是什么」。
                 {next, _entry} =
-                  Store.put_entry(next, "trace", %{
-                    "colony_id" => cid,
-                    "bee_id" => actor,
-                    "task_id" => task["id"],
-                    "type" => "honey",
-                    "text" =>
-                      "成果「#{reviewed["title"]}」" <>
-                        if(verdict == "accept", do: "已验收通过 ✅", else: "被打回 ↩"),
-                    "data" => %{
-                      "honey_id" => hid,
-                      "review_state" => get_in(reviewed, ["review", "state"])
-                    }
-                  })
+                  Store.put_entry(
+                    next,
+                    "trace",
+                    Trace.entry(%{
+                      "colony_id" => cid,
+                      "bee_id" => actor,
+                      "task_id" => task["id"],
+                      "type" => "honey",
+                      "text" =>
+                        "成果「#{reviewed["title"]}」" <>
+                          if(verdict == "accept", do: "已验收通过 ✅", else: "被打回 ↩"),
+                      "data" => %{
+                        "honey_id" => hid,
+                        "review_state" => get_in(reviewed, ["review", "state"])
+                      }
+                    })
+                  )
 
                 {:ok, {:ok, reviewed}, next}
 

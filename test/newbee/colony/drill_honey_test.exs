@@ -31,6 +31,8 @@ defmodule Newbee.Colony.DrillHoneyTest do
     # 验收也留痕
     assert {:ok, _} = Work.review(cid, honey["id"], "accept", actor, "")
     assert {:ok, drill2} = Engine.drill(cid, task["id"])
+    # channel 必须落成 colony，否则群聊记录（只取 channel=colony）看不到这次提交/验收。
+    assert submit_entry["channel"] == "colony"
     assert Enum.any?(drill2["trace"], &(&1["text"] =~ "已验收通过"))
   end
 end

@@ -58,9 +58,26 @@ export function renderGroupView(flow, ctx) {
     if (!noise.length) return;
     const node = noiseNode(noise);
     if (noise.length) flow.appendChild(node);
-    noise = [];
   };
-  for (const group of groupTrace(trace)) {
+
+  // 同一成果在轨迹里会留下多条事件（产出、验收…），而成果卡渲染的是该成果的「当前」
+  // 状态与正文——两条都画就是两张一模一样、状态相同的卡。只保留最后一条（最终状态）。
+  // 群聊是时间线，但卡片本身看不出事件差异，去重比重复更有用。
+  const honeySeen = new Set();
+  const timelineTrace = [];
+  for (let i = trace.length - 1; i >= 0; i--) {
+    const t = trace[i];
+    if (t.type === 'honey') {
+      const hid = t.data && t.data.honey_id;
+      if (hid) {
+        if (honeySeen.has(hid)) continue;
+        honeySeen.add(hid);
+      }
+    }
+    timelineTrace.push(t);
+  }
+  timelineTrace.reverse();
+  for (const group of groupTrace(timelineTrace)) {
     if (isNoise(group.first)) { noise.push(...group.items); continue; }
     flushNoise();
     const node = traceNode(group.first, ctx);

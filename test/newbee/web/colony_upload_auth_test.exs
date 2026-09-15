@@ -469,6 +469,9 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       # 提交/验收各写一条成果事件，而卡片渲染的是「当前」状态：不按 honey_id 去重
       # 就会出现两张一模一样、状态相同的卡。
       assert drill =~ "const seenHoneyCards = new Set();"
+      # 群聊时间线同理：同一成果的多条事件只留最后一条，否则两张同状态的卡。
+      assert chat =~ "const timelineTrace = [];"
+      assert chat =~ "for (const group of groupTrace(timelineTrace)) {"
       assert drill =~ "if (hid && seenHoneyCards.has(hid)) return false;"
       assert drill =~ "成果见上方成果卡"
     end
