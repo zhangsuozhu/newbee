@@ -516,6 +516,7 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       # 以前照样 toast「已恢复这项工作」，用户以为在跑了。
       assert js =~ "但蜂群整体仍在暂停，请先恢复全群"
       assert js =~ "const stillPaused = !!(fresh && fresh.control_state && fresh.control_state !== 'running');"
+      assert js =~ "if (t.control_state === 'pausing') return '正在暂停，等待确认';"
 
       assert composer =~
                "const settled = running ? state.data?.control_state === 'paused' : state.data?.control_state === 'running';"

@@ -39,6 +39,7 @@ async function cleanupWorkspace(task) {
 }
 export function workflowLabel(t) {
   if (terminal(t) || t.status === 'pending_review') return statusLabel(t.status);
+  if (t.control_state === 'pausing') return '正在暂停，等待确认';
   return t.control_state && t.control_state !== 'running' ? '已暂停' : phases[t.workflow?.phase] || statusLabel(t.status);
 }
 export function renderWorkBoard(flow, ctx) {
