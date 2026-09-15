@@ -623,6 +623,24 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     end
   end
 
+  describe "会话刷新路由" do
+    test "保留当前嵌入会话并在启动后恢复" do
+      store = File.read!("priv/web/colony/store.js")
+      app = File.read!("priv/web/colony/app.js")
+
+      assert store =~ "function syncConversationUrl()"
+      assert store =~ "url.searchParams.set(\"conversation\", state.conversationId);"
+      assert store =~ "history.replaceState(null, \"\", next);"
+      assert store =~ "export function conversationRouteFromUrl()"
+      assert store =~ "syncConversationUrl();"
+      assert app =~ "const savedConversationRoute = conversationRouteFromUrl();"
+      assert app =~ "async function restoreConversationRoute(route)"
+      assert app =~ "await enterBeeMode(route.beeId);"
+      assert app =~ "await openConversation(route.conversationId, route.beeId);"
+      assert app =~ "await restoreConversationRoute(savedConversationRoute);"
+    end
+  end
+
   describe "一次性邀请码错误恢复" do
     test "已使用邀请码清掉 hash 后回到可用蜂群界面" do
       js = File.read!("priv/web/colony/manage.js")

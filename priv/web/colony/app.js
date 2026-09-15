@@ -9,6 +9,7 @@ import { rpc, toast } from "./api.js";
 import {
   state, subscribe, loadColonies, selectColony, refresh, startPolling,
   pushPath, memberById, resetToChat, enterBeeMode, exitBeeMode, openConversation, openBeeTrail,
+  conversationRouteFromUrl,
 } from "./store.js";
 import { renderSidebar } from "./sidebar.js";
 import { renderBreadcrumbs } from "./breadcrumbs.js";
@@ -31,6 +32,7 @@ function focusMainRegion() {
 }
 
 let lastSig = null;
+const savedConversationRoute = conversationRouteFromUrl();
 let lastRoute = null;
 
 const revealConversation = () => { if (matchMedia('(max-width: 768px)').matches) collapseSidebar(true, false); };
@@ -450,6 +452,19 @@ $("#new-colony").addEventListener("click", async () => {
 
 }
 
+async function restoreConversationRoute(route) {
+  if (!route) return;
+  const colony = state.colonies.find((item) => item.colony?.id === route.colonyId);
+  if (!colony) { resetToChat(); return; }
+  if (state.colonyId !== route.colonyId) await selectColony(route.colonyId);
+  if (!memberById(route.beeId)) { resetToChat(); return; }
+  await enterBeeMode(route.beeId);
+  await openConversation(route.conversationId, route.beeId);
+  revealConversation();
+  render(true);
+}
+
+
 async function boot() {
   initShell();
   // 代码块「复制」用的是 document 级事件委托，必须调用一次；
@@ -462,6 +477,7 @@ async function boot() {
     await ensureAuthenticated();
     await loadColonies();
     await refresh();
+    await restoreConversationRoute(savedConversationRoute);
   } catch (e) {
     state.lastError = e.message || String(e);
   }

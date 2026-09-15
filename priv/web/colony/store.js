@@ -31,6 +31,32 @@ export const state = {
   groupTab: 'work',
 };
 
+function syncConversationUrl() {
+  if (typeof window === "undefined") return;
+  const url = new URL(location.href);
+  const active = state.colonyId && state.beeModeId && state.conversationId &&
+    state.mode === "bee" && state.view === "conversation";
+  if (active) {
+    url.searchParams.set("colony", state.colonyId);
+    url.searchParams.set("bee", state.beeModeId);
+    url.searchParams.set("conversation", state.conversationId);
+  } else {
+    ["colony", "bee", "conversation"].forEach((key) => url.searchParams.delete(key));
+  }
+  const next = url.pathname + url.search + url.hash;
+  const current = location.pathname + location.search + location.hash;
+  if (next !== current) history.replaceState(null, "", next);
+}
+
+export function conversationRouteFromUrl() {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(location.search);
+  const colonyId = params.get("colony");
+  const beeId = params.get("bee");
+  const conversationId = params.get("conversation");
+  return colonyId && beeId && conversationId ? { colonyId, beeId, conversationId } : null;
+}
+
 export function subscribe(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
@@ -100,6 +126,7 @@ export async function selectColony(colonyId) {
   state.data = null;
   state.trail = null;
   state.drill = null;
+  syncConversationUrl();
   emit();
   await refresh();
 }
@@ -178,6 +205,7 @@ export function pushPath(entry) {
   state.view = entry.type;
   state.trail = null;
   state.drill = null;
+  syncConversationUrl();
   // 进入新层级立刻拉取该层级数据（不等下一次轮询）
   void refresh();
   emit();
@@ -189,6 +217,7 @@ export function gotoLevel(index) {
   state.view = top ? top.type : "chat";
   state.trail = null;
   state.drill = null;
+  syncConversationUrl();
   void refresh();
   emit();
 }
@@ -199,6 +228,7 @@ export function resetToChat() {
   state.view = "chat";
   state.trail = null;
   state.drill = null;
+  syncConversationUrl();
   emit();
 }
 
@@ -214,6 +244,7 @@ export async function enterBeeMode(beeId) {
   state.beeModeId = beeId;
   state.view = "dm";
   state.stack = [{ type: "dm", beeId, display: m ? m.display : beeId }];
+  syncConversationUrl();
   await refresh();
   if (state.mode !== 'bee' || state.beeModeId !== beeId || state.view !== 'dm') return;
   emit();
@@ -227,6 +258,7 @@ export async function exitBeeMode() {
   state.stack = prev.stack || [];
   state.view = prev.view === "conversation" ? "chat" : prev.view;
   state.modeBeforeBee = null;
+  syncConversationUrl();
   await refresh();
   emit();
 }
@@ -236,6 +268,7 @@ export async function openConversation(sessionId, beeId) {
   state.beeModeId = beeId;
   state.conversationId = sessionId;
   state.view = "conversation";
+  syncConversationUrl();
   void refresh();
   emit();
 }
@@ -247,6 +280,7 @@ export async function openBeeTrail(beeId) {
   state.conversationId = null;
   state.view = "dm";
   state.stack = [{ type: "dm", beeId, display: m ? m.display : beeId }];
+  syncConversationUrl();
   await refresh();
   emit();
 }
