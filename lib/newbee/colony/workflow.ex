@@ -502,7 +502,7 @@ defmodule Newbee.Colony.Workflow do
     Task.new(%{
       "colony_id" => root["colony_id"],
       "parent_task_id" => root["id"],
-      "title" => title,
+      "title" => attributed_title(title, bee),
       "description" => description,
       "assigned_bee_id" => bee["id"],
       "constraints" => root["constraints"],
@@ -518,6 +518,20 @@ defmodule Newbee.Colony.Workflow do
       "workspace_source" => get_in(root, ["workspace", "path"]),
       "coordinator_bee_id" => root["assigned_bee_id"]
     })
+  end
+
+  # 子任务标题一律带上负责人：任务树/深钻的子任务行只显示标题，同一主任务下
+  # 两只 Bee 的子任务同标题时（提案、按分工的多个执行子任务都可能撞名），
+  # 用户分不清谁在做什么。已在标题里出现成员名时不重复追加。
+  defp attributed_title(title, bee) do
+    display = to_string(bee["display"] || "")
+    title = to_string(title || "")
+
+    cond do
+      display == "" -> title
+      String.contains?(title, display) -> title
+      true -> title <> " · @" <> display
+    end
   end
 
   defp enqueue(data, task, instruction) do

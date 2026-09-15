@@ -157,6 +157,12 @@ defmodule Newbee.Colony.WorkflowTest do
              Work.submit(ctx.cid, root["id"], %{"content" => "尚未集成"}, root["assigned_bee_id"])
 
     [one, two] = root["workflow"]["children"] |> Enum.map(&get/1)
+
+    # 执行子任务标题也带负责人：分工标题由 AI 给（这里模拟「分工0/1」），任务树只显示标题，
+    # 撞名时用户分不清谁负责哪份。
+    exec_titles = Enum.map([one, two], & &1["title"])
+    assert Enum.any?(exec_titles, &(&1 =~ "@方案甲"))
+    assert Enum.any?(exec_titles, &(&1 =~ "@方案乙"))
     {:ok, _} = Work.submit(ctx.cid, one["id"], %{"content" => "模块一及验证结果"}, one["assigned_bee_id"])
     Workflow.advance()
     assert get(root["id"])["waiting_for"] == "children"
