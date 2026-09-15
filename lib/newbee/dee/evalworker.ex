@@ -313,7 +313,20 @@ defmodule Newbee.DEE.EvalWorker do
         try do
           outcome =
             try do
-              {value, new_binding} = Code.eval_string(code, binding, file: "cell_#{count}")
+              # 自动 load 被 GC 逐出的 ArtifactRef 绑定, 模型无感知
+              resolved_binding =
+                Enum.map(binding, fn
+                  {name, %Newbee.ArtifactRef{} = ref} ->
+                    case Newbee.ArtifactRef.load(ref) do
+                      {:ok, loaded} -> {name, loaded}
+                      _ -> {name, ref}
+                    end
+
+                  other ->
+                    other
+                end)
+
+              {value, new_binding} = Code.eval_string(code, resolved_binding, file: "cell_#{count}")
               {:ok, value, new_binding}
             rescue
               e -> {:error, Exception.format(:error, e, __STACKTRACE__)}

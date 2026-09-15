@@ -37,7 +37,9 @@ defmodule Newbee.Web.Api do
     rpc_id = get_in(conn.body_params, ["rpcId"]) || "-"
 
     payload =
-      (get_in(conn.body_params, ["payload"]) || %{}) |> Map.delete("__device_token__") |> Map.put("__origin__", origin)
+      (get_in(conn.body_params, ["payload"]) || %{})
+      |> Map.drop(["__device_token__", "__token__"])
+      |> Map.put("__origin__", origin)
 
     payload =
       case get_req_header(conn, "authorization") do
@@ -71,7 +73,7 @@ defmodule Newbee.Web.Api do
   # 杀死连接进程（那样 Bandit 只会回空 500），而是记日志并回 JSON 错误信封，
   # 前端能看到真实原因而不是“服务返回空响应 (HTTP 500)”。
   defp safe_dispatch(method, payload) do
-    dispatch_rpc(method, payload)
+    with :ok <- Newbee.Colony.Membership.authorize_rpc(method, payload), do: dispatch_rpc(method, payload)
   rescue
     e ->
       Logger.error("rpc #{method} crashed:\n" <> Exception.format(:error, e, __STACKTRACE__))
@@ -102,18 +104,25 @@ defmodule Newbee.Web.Api do
   # ── 认证域（远程暴露时强制；本地回环免认证）──
 
   defp dispatch_rpc("auth.status", p) do
-    authenticated =
-      case Map.get(p, "__token__") do
-        token when is_binary(token) -> Newbee.Web.Auth.check_token(token) == :ok
-        _ -> false
-      end
+    token = Map.get(p, "__token__")
+    # 成员凭据也能登录（人是 Bee），但它只能管理自己的会话，不能管理宿主环境。
+    member = if is_binary(token), do: Newbee.Colony.Membership.authenticate(token), else: :error
+    host_authenticated = is_binary(token) and Newbee.Web.Auth.check_token(token) == :ok
+    authenticated = host_authenticated or match?({:ok, _, _}, member)
 
-    {:ok,
-     %{
-       auth_required: Newbee.Web.Auth.auth_required?(Newbee.Web.Router.bind_ip()),
-       authenticated: authenticated,
-       password_set: Newbee.Web.Auth.password_set?()
-     }}
+    status = %{
+      auth_required: Newbee.Web.Auth.auth_required?(Newbee.Web.Router.bind_ip()),
+      authenticated: authenticated,
+      password_set: Newbee.Web.Auth.password_set?()
+    }
+
+    # host_owner 只在已登录时说明身份，避免给未认证请求多出字段。
+    status =
+      if authenticated,
+        do: Map.put(status, :host_owner, not match?({:ok, _, _}, member)),
+        else: status
+
+    {:ok, status}
   end
 
   defp dispatch_rpc("auth.captcha", _p) do
@@ -1383,6 +1392,15 @@ defmodule Newbee.Web.Api do
   end
 
   # 模型目录
+  # 首页模型选择：持久化新 AI 的默认模型，不创建或改动已有会话。
+  defp dispatch_rpc("llm.selectDefault", %{"provider" => provider, "model" => model})
+       when is_binary(provider) and is_binary(model) do
+    case Newbee.LLM.Config.set_default_model(provider <> "/" <> model) do
+      :ok -> {:ok, %{provider: provider, model: model}}
+      {:error, reason} -> {:error, "model_error", inspect(reason)}
+    end
+  end
+
   defp dispatch_rpc("llm.models", p) do
     opts = if p["refresh"] == true, do: [refresh: true], else: []
     cat = Newbee.LLM.Config.model_catalog(opts)
@@ -2498,6 +2516,9 @@ defmodule Newbee.Web.Api do
 
   # this boundary an unknown method raises FunctionClauseError and Plug returns
   # an HTML 500 page, which makes client retries and diagnostics unreliable.
+  # ── 蜂群协作（colony.*）：转发到独立模块，避免本文件继续膨胀 ──
+  defp dispatch_rpc("colony." <> _ = method, p), do: Newbee.Web.ColonyApi.dispatch(method, p)
+
   defp dispatch_rpc(method, _p), do: {:error, "unknown_method", "未知 RPC 方法: #{method}"}
 
   defp cancel_cleanup(task) do
@@ -3607,7 +3628,7 @@ defmodule Newbee.Web.Api do
   defp json_safe(%{} = v), do: Map.new(v, fn {k, val} -> {to_string(k), json_safe(val)} end)
   defp json_safe(v) when is_list(v), do: Enum.map(v, &json_safe/1)
   defp json_safe(v) when is_tuple(v), do: v |> Tuple.to_list() |> json_safe()
-  defp json_safe(v) when is_boolean(v), do: v
+  defp json_safe(v) when is_nil(v) or is_boolean(v), do: v
   defp json_safe(v) when is_atom(v), do: to_string(v)
   defp json_safe(v) when is_binary(v) or is_number(v) or is_boolean(v) or is_nil(v), do: v
   defp json_safe(v), do: inspect(v)

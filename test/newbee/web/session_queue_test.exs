@@ -399,7 +399,7 @@ defmodule Newbee.Web.SessionQueueTest do
   test "frontend renders pending input and identifies image turns" do
     js = File.read!("priv/web/app.js")
     css = File.read!("priv/web/style.css")
-    html = File.read!("priv/web/index.html")
+    html = File.read!("priv/web/workspace.html")
     [_, send_and_after] = String.split(js, "async function send(", parts: 2)
     [send_body | _] = String.split(send_and_after, "function interrupt()", parts: 2)
 

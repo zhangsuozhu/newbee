@@ -21,6 +21,7 @@ defmodule Newbee.Web.EvolutionUxTest do
     # 人话必须包含动作指引：批准 / 回退 / 建议 之一
     assert res["autonomy_explain"] =~ "批准" or res["autonomy_explain"] =~ "回退" or
              res["autonomy_explain"] =~ "建议"
+
     assert Map.has_key?(res, "changes")
     assert Map.has_key?(res, "engine")
   end
@@ -43,7 +44,8 @@ defmodule Newbee.Web.EvolutionUxTest do
   end
 
   test "进化面板有人话骨架：intro/guide/decide/progress/history" do
-    html = File.read!(Path.join([File.cwd!(), "priv", "web", "index.html"]))
+    # 会话界面（Mission Control 进化面板所在处）现在是工作区表面。
+    html = File.read!(Path.join([File.cwd!(), "priv", "web", "workspace.html"]))
     assert html =~ "evo-intro"
     assert html =~ "怎么判断要不要批准"
     assert html =~ "evo-guide"

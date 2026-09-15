@@ -33,7 +33,7 @@ defmodule Mix.Tasks.Newbee.Web do
 
     {inline_pw, args} = extract_inline_password(args)
 
-    {opts, _argv, _} =
+    {opts, argv, _} =
       OptionParser.parse(args,
         strict: [
           host: :string,
@@ -48,6 +48,23 @@ defmodule Mix.Tasks.Newbee.Web do
           reset_password: :keep
         ]
       )
+
+    # 位置参数兼容: `mix newbee.web 4444` 等价于 `--port 4444`。
+    # 之前裸数字静默进 _argv 被忽略, 用户在 bin/newbee web 4444 下以为生效实际起在 4173。
+    opts =
+      case {argv, Keyword.has_key?(opts, :port)} do
+        {[port_str], false} ->
+          case Integer.parse(port_str) do
+            {p, ""} when p > 0 and p < 65_536 -> Keyword.put(opts, :port, p)
+            _ -> Mix.raise("无法识别的参数: " <> port_str <> " (端口需为 1..65535 的数字, 或用 --port/--host 等选项)")
+          end
+
+        {[], _} ->
+          opts
+
+        {unknown, _} ->
+          Mix.raise("无法识别的参数: " <> Enum.join(unknown, " ") <> " (用 --port/--host 等选项, 或单个裸端口号)")
+      end
 
     opts =
       case inline_pw do

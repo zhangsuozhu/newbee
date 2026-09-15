@@ -223,6 +223,10 @@ defmodule Newbee.Plugins.RepoMap do
   defp hd_member(other) when is_atom(other), do: other
 
   # 解析一个引用节点到本工程完整模块名; 唯一后缀命中也算 (容相对引用)
+  # 段中可能混入运行时动态节点 (如 __MODULE__.Runner / unquote(...)),
+  # 此时引用无法静态解析, 直接跳过 (返回 nil) 而非崩溃。
+  # 事故: 2026-02 test/newbee/collaboration/chat_test.exs 的 __MODULE__.Runner
+  # 让 build(".") 整体不可用。
   defp resolve_ref(segs, alias_map, known, index) do
     expanded =
       case alias_map[hd(segs)] do
@@ -230,12 +234,14 @@ defmodule Newbee.Plugins.RepoMap do
         base -> base ++ tl(segs)
       end
 
-    full = Enum.join(expanded, ".")
+    if Enum.all?(expanded, &is_atom/1) do
+      full = Enum.join(expanded, ".")
 
-    if MapSet.member?(known, full) do
-      full
-    else
-      unique_suffix_indexed(full, index)
+      if MapSet.member?(known, full) do
+        full
+      else
+        unique_suffix_indexed(full, index)
+      end
     end
   end
 

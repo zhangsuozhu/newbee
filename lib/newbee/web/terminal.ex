@@ -66,23 +66,34 @@ defmodule Newbee.Web.Terminal do
   @doc "取出已捕获的手动终端上下文并清空缓冲。"
   def take_context(sid) when is_binary(sid) do
     case Registry.lookup(@registry, sid) do
-      [{pid, _}] -> GenServer.call(pid, :take_context, 5_000)
+      [{pid, _}] -> safe_call(pid, :take_context)
       [] -> {:ok, ""}
     end
   end
 
   def resize(sid, cols, rows) when is_binary(sid) do
     case Registry.lookup(@registry, sid) do
-      [{pid, _}] -> GenServer.call(pid, {:resize, cols, rows}, 5_000)
+      [{pid, _}] -> safe_call(pid, {:resize, cols, rows})
       [] -> {:error, :not_open}
     end
   end
 
   def interrupt(sid) when is_binary(sid) do
     case Registry.lookup(@registry, sid) do
-      [{pid, _}] -> GenServer.call(pid, :interrupt, 5_000)
+      [{pid, _}] -> safe_call(pid, :interrupt)
       [] -> {:error, :not_open}
     end
+  end
+
+  # 终端进程繁忙时 GenServer.call 会 exit(:timeout)。这三个入口都由 WebSocket 处理进程调用，
+  # 直接 exit 会把整个连接一起带崩（实测：并行负载下 terminal_wake 的 take_context 5s 超时
+  # 让 socket handler 崩溃）。这里统一降级成普通错误元组，由调用方决定怎么提示用户。
+  defp safe_call(pid, message) do
+    GenServer.call(pid, message, 5_000)
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
+    :exit, {:noproc, _} -> {:error, :not_open}
+    :exit, _ -> {:error, :unavailable}
   end
 
   def close(sid) when is_binary(sid) do

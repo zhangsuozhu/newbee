@@ -260,6 +260,20 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 
 > ⚠️ 远程暴露**必须**配 `--https`（或反代 TLS），否则密码与 token 明文传输。浏览器首访自签证书会提示警告，点继续即可；要绿锁用 CA 签发证书或反代。
 
+### 🔁 本地开发循环 / Dev Loop
+
+改代码不想每次手动重启：一条命令进入开发循环，参数会记住。
+
+```bash
+mix newbee.dev --https --host 0.0.0.0 --port 5555 --set-password   # 首次：带参数
+mix newbee.dev                                                     # 之后：直接用记住的参数
+```
+
+- 监听 `lib/**` 与 `priv/web/**`：改 Elixir 自动编译并**热换改动过的模块**（服务不中断），改前端刷新浏览器即可
+- 编译失败不影响在跑的服务；端口被占用会明确提示
+- 终端按键：`r` 重编译并重启监听 · `t` 快速测试 · `q` 退出
+- 参数记在 `.newbee/dev.flags`（**密码不落盘**）；`--forget` 忽略记忆，`--no-watch` 只起服务，`--tests` 每次重载后跑快速测试
+
 ---
 
 ## 🧰 工具调用约定 / Tool Contracts

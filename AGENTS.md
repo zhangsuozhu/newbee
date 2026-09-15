@@ -6,6 +6,15 @@
 - 依赖库（deps/）自身的警告不在此列，但**本项目 `lib/`、`test/` 代码不允许出现任何编译错误或警告**——不管是新引入的还是历史遗留，发现即修，不许带病提交。
 - 修改工具 API / 模块签名时同步契约测试，编译警告（如 unused、deprecated）一律当场清理。
 
+## 本地开发循环（mix newbee.dev）
+
+- 起服务 / 改代码用 `mix newbee.dev`（= `mix newbee.web` + 文件监听）。参数写进 `.newbee/dev.flags`，之后 `mix newbee.dev` 直接复用（命令行优先）；**密码不落盘**，需要时仍用 `--set-password`。
+- 改 `lib/**`：子进程 `mix compile` + 毫秒级热换改动过的模块（含依赖它的模块），**服务不中断**；改 `priv/web/**`：静态资源不缓存，刷新浏览器即可（不重启）。
+- 编译失败不打断在跑的服务，会把错误打出来，改对后下一轮自动接上；端口被占用会直接说明，不抛 bind 错。
+- 终端按键：`r` 重编译并重启监听（改了端口/插件装配时用）· `t` 跑一次 `mix newbee.test_fast` · `q` 退出。
+- **不要拿同 VM 的 `Mix.Task.run("compile")` 当热重载**，两个坑都踩过：① `app.start` 已经跑过 `compile → compile.all → compile.elixir`，不全量 `reenable` 会静默 noop（看着在编译，其实什么都没做）；② Elixir 编译器会先把待编译模块 purge 掉，`lib/newbee/web/api.ex` 单文件要 ~25s，那 25 秒里每个请求都是 `Newbee.Web.Router is not available`。dev 任务因此改成「子进程编译 + `code.load_binary` 热换」。
+- worktree 里跑之前确认 `deps` 指向主仓库（`ln -sfn ../../../deps deps`），否则 `mix` 报依赖未取。
+
 ## GitHub 协作工作流（本仓库）
 
 ### 仓库拓扑
