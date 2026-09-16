@@ -4891,6 +4891,18 @@ case "goal_round": break;
 
 
   // 媒体上屏：图片/音频/视频/文本卡片（实时事件与历史回放共用）
+  // 媒体 URL 鉴权：远程暴露（--host 绑非回环）时 /media 同样走 require_auth，
+  // 裸 URL 会得到 401「未登录或会话已过期」。所有媒体地址统一在此拼上会话 token；
+  // 本地回环模式无 token 时原样返回。extra 用于图片/音视频的 _t 缓存击穿参数。
+  function mediaUrl(u, extra) {
+    if (!u) return u;
+    const parts = [];
+    if (state.token && !u.includes("token=")) parts.push("token=" + encodeURIComponent(state.token));
+    if (extra) parts.push(extra);
+    if (!parts.length) return u;
+    return u + (u.includes("?") ? "&" : "?") + parts.join("&");
+  }
+
   function renderMediaShow(p) {
     // 去重：实时 media_show 事件与历史回放（session.history 的 media 行）是两条渲染路径，
     // 同 media_id 已在流里则跳过，避免刷新/切会话后出现两张卡。
@@ -4917,7 +4929,7 @@ case "goal_round": break;
     }
     if (kind === "image") {
       const img = document.createElement("img");
-      img.src = p.url + (p.url.includes("?") ? "&" : "?") + "_t=" + Date.now();
+      img.src = mediaUrl(p.url, "_t=" + Date.now());
       img.alt = p.caption || p.name || "媒体";
       img.className = "nb-zoomable";
       img.addEventListener("click", (e) => { e.stopPropagation(); openLightbox(img.src, img.alt); });
@@ -4926,13 +4938,13 @@ case "goal_round": break;
       const au = document.createElement("audio");
       au.controls = true;
       au.preload = "metadata";
-      au.src = p.url + "?_t=" + Date.now();
+      au.src = mediaUrl(p.url, "_t=" + Date.now());
       body.appendChild(au);
     } else if (kind === "video") {
       const vd = document.createElement("video");
       vd.controls = true;
       vd.preload = "metadata";
-      vd.src = p.url + "?_t=" + Date.now();
+      vd.src = mediaUrl(p.url, "_t=" + Date.now());
       body.appendChild(vd);
     } else if (kind === "text") {
       // 实时事件带正文；历史记录只带元数据，因此由受保护的媒体 URL 补读正文。
@@ -4949,7 +4961,7 @@ case "goal_round": break;
     body.className = "media-body";
     body.innerHTML = "";
     const a = document.createElement("a");
-    a.href = p.url;
+    a.href = mediaUrl(p.url);
     a.download = p.name || "file";
     a.className = "media-download";
     a.textContent = "下载 " + (p.name || "文件");
