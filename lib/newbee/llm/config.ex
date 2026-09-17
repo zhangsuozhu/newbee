@@ -224,7 +224,8 @@ defmodule Newbee.LLM.Config do
     * `attrs` — 字符串键 map，可含：
         - "newName"   — 重命名后的键名（缺省 = name）
         - "baseUrl"   — API 根地址（必填）
-        - "api"       — 默认协议（openai-completions / openai-responses / auto）
+        - "api"       — 默认协议（openai-completions / openai-responses / anthropic / auto）
+
         - "apiKey"    — 密钥或 ${ENV} 引用
         - "models"    — 模型 id 列表（list of string）
         - "modelApis" — 单模型协议覆盖表
@@ -321,8 +322,9 @@ defmodule Newbee.LLM.Config do
 
   defp sanitize_models(_), do: []
 
-  defp sanitize_api(api) when api in ["openai-responses", "auto"], do: api
+  defp sanitize_api(api) when api in ["openai-responses", "anthropic", "anthropic-messages", "auto"], do: api
   defp sanitize_api(api) when api in ["responses", "response"], do: "openai-responses"
+  defp sanitize_api(api) when api in ["messages", "message"], do: "anthropic-messages"
   defp sanitize_api(_), do: "openai-completions"
 
   defp maybe_put_model_apis(provider, map) when is_map(map) do
