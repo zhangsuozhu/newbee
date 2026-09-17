@@ -363,18 +363,22 @@ defmodule Newbee.LLM.Client do
   # 所以整个请求放到可杀的 worker；调用方每 50ms 检查一次 Esc 标志。
   defp stream_chat_request(%__MODULE__{} = client, messages, on_text, on_reasoning, opts) do
     tools = Keyword.get(opts, :tools, Newbee.Codec.tools())
+    # 上游流中断自动重试的通知回调；无则 no-op。
+    on_retry = Keyword.get(opts, :on_retry, fn _ -> :ok end)
 
     case client.responses_mode do
       :responses ->
         Newbee.LLM.Responses.request(client, messages, tools,
           on_text: on_text,
-          on_reasoning: on_reasoning
+          on_reasoning: on_reasoning,
+          on_retry: on_retry
         )
 
       :anthropic ->
         Newbee.LLM.Anthropic.request(client, messages, tools,
           on_text: on_text,
-          on_reasoning: on_reasoning
+          on_reasoning: on_reasoning,
+          on_retry: on_retry
         )
 
       _ ->

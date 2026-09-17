@@ -1000,6 +1000,213 @@ defmodule Newbee.LLM.ResponsesTest do
     end
   end
 
+  describe "stream_read_error mid-stream retry" do
+    defp sse_error_payload do
+      Enum.map_join(
+        [
+          %{
+            "type" => "error",
+            "error" => %{
+              "code" => "stream_read_error",
+              "message" => "stream_read_error",
+              "type" => "upstream_error"
+            }
+          }
+        ],
+        fn event -> "data: " <> Jason.encode!(event) <> "\n\n" end
+      )
+    end
+
+    defp sse_chunk(conn, events) do
+      payload = Enum.map_join(events, fn event -> "data: " <> Jason.encode!(event) <> "\n\n" end)
+
+      conn =
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
+        |> Plug.Conn.send_chunked(200)
+
+      {:ok, conn} = Plug.Conn.chunk(conn, payload)
+      conn
+    end
+
+    test "retries when the stream fails before any text is emitted" do
+      test_pid = self()
+      model = unique_model("stream-read-retry")
+
+      plug = fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:srr_request, Jason.decode!(raw)})
+
+        case two = Process.get(:srr_attempt, 0) do
+          0 ->
+            Process.put(:srr_attempt, two + 1)
+
+            conn
+            |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
+            |> Plug.Conn.send_chunked(200)
+            |> then(fn c ->
+              {:ok, c} = Plug.Conn.chunk(c, sse_error_payload())
+              c
+            end)
+
+          _ ->
+            sse_chunk(conn, [
+              %{
+                "type" => "response.output_item.done",
+                "item" => %{
+                  "type" => "message",
+                  "content" => [%{"type" => "output_text", "text" => "recovered"}]
+                }
+              },
+              %{
+                "type" => "response.completed",
+                "response" => %{
+                  "id" => "resp-retry-ok",
+                  "usage" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
+                }
+              }
+            ])
+        end
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: model,
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:ok, %{"content" => "recovered"}, _usage} =
+               Client.stream_chat(
+                 client,
+                 [user("hi")],
+                 fn _ -> :ok end,
+                 fn _ -> :ok end,
+                 on_retry: fn reason -> send(test_pid, {:on_retry, reason}) end
+               )
+
+      assert_received {:srr_request, _}
+      assert_received {:srr_request, _}
+      refute_received {:srr_request, _}
+      # 重试前已发出可见提示回调（TUI/CLI/Web 据此渲染）
+      assert_received {:on_retry, :stream_read_error}
+      refute_received {:on_retry, _}
+    end
+
+    test "does not retry when some text was already streamed to the user" do
+      test_pid = self()
+      model = unique_model("stream-read-noretry")
+
+      plug = fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:srn_request, Jason.decode!(raw)})
+
+        sse_chunk(conn, [
+          %{
+            "type" => "response.output_text.delta",
+            "delta" => "partial"
+          },
+          %{
+            "type" => "error",
+            "error" => %{
+              "code" => "stream_read_error",
+              "message" => "stream_read_error",
+              "type" => "upstream_error"
+            }
+          }
+        ])
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: model,
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:error, {:response_error, %{"code" => "stream_read_error"}, "partial"}} =
+               Client.stream_chat(client, [user("hi")])
+
+      # 已吐出正文 => 只有一次请求，不重试
+      assert_received {:srn_request, _}
+      refute_received {:srn_request, _}
+    end
+
+    test "empty SSE stream is an error, not a silent empty completion" do
+      test_pid = self()
+      model = unique_model("empty-stream")
+
+      plug = fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test_pid, {:es_request, Jason.decode!(raw)})
+
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
+        |> Plug.Conn.send_resp(200, "")
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: model,
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      assert {:error, {:response_error, %{"code" => "empty_stream"}, ""}} =
+               Client.stream_chat(
+                 client,
+                 [user("hi")],
+                 fn _ -> :ok end,
+                 fn _ -> :ok end,
+                 on_retry: fn reason -> send(test_pid, {:es_on_retry, reason}) end
+               )
+
+      # 空流与请求内容无关：整体重放 2 次，仍空才把错误交给上层——绝不返回空回复
+      assert_received {:es_on_retry, :stream_read_error}
+      assert_received {:es_request, _}
+      assert_received {:es_on_retry, :stream_read_error}
+      assert_received {:es_request, _}
+      assert_received {:es_request, _}
+      refute_received {:es_request, _}
+    end
+
+    test "stream without response.completed but with text still returns the text" do
+      model = unique_model("no-completed")
+
+      plug = fn conn ->
+        {:ok, _raw, conn} = Plug.Conn.read_body(conn)
+
+        sse_chunk(conn, [
+          %{
+            "type" => "response.output_item.done",
+            "item" => %{
+              "type" => "message",
+              "content" => [%{"type" => "output_text", "text" => "半截"}]
+            }
+          }
+        ])
+      end
+
+      client =
+        Client.new(
+          api: "openai-responses",
+          model: model,
+          api_key: "test",
+          base_url: "http://localhost",
+          req_options: [plug: plug, retry: false]
+        )
+
+      # 有正文就不判空流错误（网关差异不误伤正常路径），只留日志
+      assert {:ok, %{"content" => "半截"}, _usage} = Client.stream_chat(client, [user("hi")])
+    end
+  end
+
   describe "reasoning extraction" do
     test "keeps reasoning carried in content reasoning_text parts (non-stream path)" do
       test_pid = self()

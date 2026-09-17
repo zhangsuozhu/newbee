@@ -6,6 +6,11 @@ defmodule Newbee.LLM.Anthropic do
   the Anthropic-compatible `/messages` endpoint. This module translates the
   internal OpenAI-shaped transcript into Anthropic content blocks and restores
   the internal assistant/tool-call message shape on the way back.
+
+  A 200 response whose stream carries no recognizable event, or that stops before its
+  terminal `message_stop`, is an upstream failure: it must never surface as a successful
+  empty completion. The agent loop reads "no tool calls" as "the turn is over", so a fake
+  empty completion makes the session stop with nothing shown to the user.
   """
 
   @overload_statuses [429, 500, 502, 503, 529]
@@ -15,6 +20,13 @@ defmodule Newbee.LLM.Anthropic do
   @response_timeout 120_000
   @default_max_tokens 8_192
   @anthropic_version "2023-06-01"
+
+  # 完成门禁 + 空流重发（union-alpha 走本通道；网关抖动时会 200 + 空 SSE 流）：
+  # 见 finish_sse/3 与 request_with_stream_retry/6。
+  @stream_retries 2
+  @stream_retry_delay 1_000
+  # 无事件时留证的原文上限（既是兜底解析的输入，也是排障证据）。
+  @max_raw_bytes 4_096
 
   @doc "Stream a message through Anthropic's Messages API."
   def request(client, messages, tools, opts \\ []) do
@@ -28,7 +40,8 @@ defmodule Newbee.LLM.Anthropic do
     body = request_body(client, messages, tools, opts, true)
     on_text = Keyword.get(opts, :on_text, fn _ -> :ok end)
     on_reasoning = Keyword.get(opts, :on_reasoning, fn _ -> :ok end)
-    perform(client, body, on_text, on_reasoning)
+    on_retry = Keyword.get(opts, :on_retry, fn _ -> :ok end)
+    request_with_stream_retry(client, body, on_text, on_reasoning, on_retry, @stream_retries)
   end
 
   @doc "Complete a message through Anthropic's non-streaming Messages API."
@@ -239,6 +252,27 @@ defmodule Newbee.LLM.Anthropic do
     request_stream(req, client, on_text, on_reasoning, @overload_retries)
   end
 
+  # 200 + 流里没有任何可识别事件、或流没走完（网关抖动、代理错误页、非 SSE 内容）：
+  # 与请求内容无关，重发通常成功；而且此时用户还没看到任何正文，整体重发是安全的。
+  # 已吐正文的失败不重发——正文增量已经打印过，重发会造成正文重复拼接。
+  defp request_with_stream_retry(client, body, on_text, on_reasoning, on_retry, left) do
+    case perform(client, body, on_text, on_reasoning) do
+      {:error, {:anthropic_stream_error, reason, content} = error}
+      when left > 0 and reason in [:empty_stream, :incomplete_stream] and content == "" ->
+        if Newbee.LLM.Client.interrupted?(client) do
+          {:error, error}
+        else
+          Newbee.DebugLog.log(:llm, "anthropic stream #{reason}; retry left=#{left}")
+          on_retry.("anthropic stream #{reason}")
+          Process.sleep(@stream_retry_delay)
+          request_with_stream_retry(client, body, on_text, on_reasoning, on_retry, left - 1)
+        end
+
+      other ->
+        other
+    end
+  end
+
   defp build_req(client, body, stream?) do
     options =
       [
@@ -327,15 +361,20 @@ defmodule Newbee.LLM.Anthropic do
     started_at = System.monotonic_time(:millisecond)
 
     case sse_loop(response, client, on_text, on_reasoning, acc, "", started_at) do
-      {:done, acc, rest} -> finish_sse(apply_sse_buffer(acc, rest, on_text, on_reasoning))
-      {:interrupted, acc} -> {:interrupted, acc.content}
-      {:error, error} -> {:error, error}
+      {:done, acc, rest} ->
+        finish_sse(apply_sse_buffer(acc, rest, on_text, on_reasoning), on_text, on_reasoning)
+
+      {:interrupted, acc} ->
+        {:interrupted, acc.content}
+
+      {:error, error} ->
+        {:error, error}
     end
   end
 
   defp consume_sse_payload(bytes, on_text, on_reasoning) do
     acc = apply_sse_buffer(sse_acc(), bytes, on_text, on_reasoning)
-    finish_sse(acc)
+    finish_sse(acc, on_text, on_reasoning)
   end
 
   defp sse_loop(response, client, on_text, on_reasoning, acc, buffer, started_at) do
@@ -349,6 +388,7 @@ defmodule Newbee.LLM.Anthropic do
             {:ok, [data: data]} ->
               raw = IO.iodata_to_binary(data)
               Newbee.LLM.HttpDebug.append_raw(raw)
+              acc = note_raw(acc, raw)
               {events, rest} = split_sse(buffer <> raw)
               acc = Enum.reduce(events, acc, &apply_sse_event(&1, &2, on_text, on_reasoning))
               sse_loop(response, client, on_text, on_reasoning, acc, rest, started_at)
@@ -375,7 +415,7 @@ defmodule Newbee.LLM.Anthropic do
 
           System.monotonic_time(:millisecond) - started_at > @stream_timeout ->
             Req.cancel_async_response(response)
-            {:error, {:anthropic_stream_error, "stream timeout"}}
+            {:error, {:anthropic_stream_error, :stream_timeout, acc.content}}
 
           true ->
             sse_loop(response, client, on_text, on_reasoning, acc, buffer, started_at)
@@ -410,12 +450,37 @@ defmodule Newbee.LLM.Anthropic do
     after
       @response_timeout ->
         Req.cancel_async_response(response)
-        {:error, {:anthropic_stream_error, "response body timeout"}}
+        {:error, {:anthropic_stream_error, :body_timeout, ""}}
     end
   end
 
   defp sse_acc do
-    %{content: "", reasoning: "", tool_calls: %{}, usage: %{}, response_id: nil, error: nil}
+    %{
+      content: "",
+      reasoning: "",
+      tool_calls: %{},
+      usage: %{},
+      response_id: nil,
+      error: nil,
+      # 完成门禁：网关 200 但流里没有可识别事件（saw_event? false）、或流没走完
+      # （缺 message_stop 且没有最终 stop_reason）时，旧代码返回"成功的空回复"，
+      # 上层当成"模型说完了"静默结束本轮——用户看到的就是"跑着跑着停了"。
+      saw_event?: false,
+      stop_seen?: false,
+      stop_reason: nil,
+      raw: ""
+    }
+  end
+
+  # 只在还没识别到任何事件时留证：网关用 SSE 的 content-type 回非 SSE 内容
+  # （JSON 错误体/代理 HTML）时，这段原文既是兜底解析的输入，也是排障证据。
+  # 一旦识别到事件就不再累积，内存有界。
+  defp note_raw(%{saw_event?: true} = acc, _raw), do: acc
+
+  defp note_raw(acc, raw) do
+    kept = acc.raw <> raw
+
+    %{acc | raw: if(byte_size(kept) > @max_raw_bytes, do: binary_part(kept, 0, @max_raw_bytes), else: kept)}
   end
 
   defp apply_sse_buffer(acc, "", _on_text, _on_reasoning), do: acc
@@ -467,7 +532,8 @@ defmodule Newbee.LLM.Anthropic do
     %{
       acc
       | response_id: field(message, "id", :id) || acc.response_id,
-        usage: Map.merge(acc.usage, field(message, "usage", :usage) || %{})
+        usage: Map.merge(acc.usage, field(message, "usage", :usage) || %{}),
+        saw_event?: true
     }
   end
 
@@ -478,6 +544,8 @@ defmodule Newbee.LLM.Anthropic do
          _on_reasoning
        )
        when is_map(block) do
+    acc = %{acc | saw_event?: true}
+
     case field(block, "type", :type) do
       "tool_use" ->
         slot = %{
@@ -519,6 +587,8 @@ defmodule Newbee.LLM.Anthropic do
          on_reasoning
        )
        when is_map(delta) do
+    acc = %{acc | saw_event?: true}
+
     case field(delta, "type", :type) do
       "text_delta" ->
         text = field(delta, "text", :text) || ""
@@ -541,28 +611,70 @@ defmodule Newbee.LLM.Anthropic do
     end
   end
 
-  defp apply_anthropic_event(%{"type" => "message_delta", "usage" => usage}, acc, _, _)
-       when is_map(usage) do
-    %{acc | usage: Map.merge(acc.usage, usage)}
+  defp apply_anthropic_event(%{"type" => "message_delta"} = event, acc, _, _) do
+    delta = field(event, "delta", :delta) || %{}
+    usage = field(event, "usage", :usage)
+
+    acc = %{
+      acc
+      | saw_event?: true,
+        stop_reason: field(delta, "stop_reason", :stop_reason) || acc.stop_reason
+    }
+
+    if is_map(usage), do: %{acc | usage: Map.merge(acc.usage, usage)}, else: acc
   end
 
+  # 流正常收尾的唯一标志（Anthropic 规范里 message_stop 是最后一个事件）。
+  defp apply_anthropic_event(%{"type" => "message_stop"}, acc, _, _),
+    do: %{acc | saw_event?: true, stop_seen?: true}
+
   defp apply_anthropic_event(%{"type" => "error"} = event, acc, _, _) do
-    %{acc | error: field(event, "error", :error) || event}
+    %{acc | saw_event?: true, error: field(event, "error", :error) || event}
   end
 
   defp apply_anthropic_event(_event, acc, _on_text, _on_reasoning), do: acc
 
-  defp finish_sse(%{error: error} = acc) when not is_nil(error),
+  defp finish_sse(%{error: error} = acc, _on_text, _on_reasoning) when not is_nil(error),
     do: {:error, {:response_error, error, acc.content}}
 
-  defp finish_sse(acc) do
+  # 一个可识别事件都没收到：网关 200 却给了空流/非 SSE 内容（代理错误页、JSON 错误体）。
+  # 先按非 SSE 载荷兜底解析（有的网关把完整 JSON 消息挂在 SSE 的 content-type 下），
+  # 仍解析不出就是空流错误——绝不能当"成功的空回复"返回，否则上层把上游故障当成
+  # "模型说完了"而静默结束本轮。
+  defp finish_sse(%{saw_event?: false} = acc, on_text, on_reasoning) do
+    Newbee.DebugLog.log(:llm, "anthropic stream had no events raw=#{inspect(String.slice(acc.raw, 0, 400))}")
+
+    case parse_response(acc.raw) do
+      {:ok, message, usage} ->
+        emit_message(message, on_text, on_reasoning)
+        {:ok, message, usage}
+
+      {:error, {:api_error, error}} ->
+        {:error, {:response_error, error, acc.content}}
+
+      _ ->
+        {:error, {:anthropic_stream_error, :empty_stream, acc.content}}
+    end
+  end
+
+  # 收到过事件但流没走完（缺 message_stop，也没有最终 stop_reason）：连接被截断，
+  # 内容可能是半截的，不能当完整回答。
+  defp finish_sse(%{stop_seen?: false, stop_reason: nil} = acc, _on_text, _on_reasoning),
+    do: {:error, {:anthropic_stream_error, :incomplete_stream, acc.content}}
+
+  defp finish_sse(acc, _on_text, _on_reasoning) do
     message =
       %{"role" => "assistant", "content" => acc.content}
       |> maybe_put("reasoning", acc.reasoning)
       |> maybe_put("tool_calls", assemble_tool_calls(acc.tool_calls))
+      |> maybe_put("_stop_reason", truncation_reason(acc.stop_reason))
 
     {:ok, message, normalize_usage(acc.usage)}
   end
+
+  # 只把"被 max_tokens 截断"这一种异常收尾留给上层判断（主循环据此续跑而不是当成说完）。
+  defp truncation_reason("max_tokens"), do: "max_tokens"
+  defp truncation_reason(_), do: nil
 
   defp assemble_tool_calls(tool_calls) do
     tool_calls

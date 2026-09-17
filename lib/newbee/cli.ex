@@ -95,6 +95,11 @@ defmodule Newbee.CLI do
         IO.puts("[2m\u2691 进化线索已记录: #{String.slice(sig, 0, 60)}[0m")
         printer(buf)
 
+      {:newbee_event, :llm_retry, {:llm_retry, reason}} ->
+        buf = flush_buffer(buffer)
+        IO.puts("\e[2m\u27F3 上游连接中断（#{inspect(reason)}），正在自动重试…\e[0m")
+        printer(buf)
+
       {:newbee_event, :compacted, {:compacted, n}} ->
         buf = flush_buffer(buffer)
         IO.puts("[2m\u23F3 历史已压缩 #{n} 条[0m")

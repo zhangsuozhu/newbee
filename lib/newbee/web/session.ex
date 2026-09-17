@@ -3447,6 +3447,7 @@ defmodule Newbee.Web.Session do
   defp encode_event({:final_check, score}), do: %{score: score}
   defp encode_event({:final_check_low, score}), do: %{score: score}
   defp encode_event({:turn_long, step}), do: %{step: step}
+  defp encode_event({:llm_retry, reason}), do: %{reason: to_string(reason)}
   defp encode_event({:interrupted, _}), do: %{}
   defp encode_event({:error, e}), do: %{message: inspect(e)}
   defp encode_event({:turn_end, kind, ms}), do: %{result: kind, ms: ms}
