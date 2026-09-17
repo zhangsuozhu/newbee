@@ -201,8 +201,10 @@ cat > ~/.newbee/model.json <<'EOF'
   }
 }
 EOF
-# `api` 是厂家默认协议，可选 openai-completions / openai-responses / auto；
-# `modelApis` 为单模型覆盖。不要使用 `responses` 作为新配置值（旧配置会兼容迁移）。
+# `api` 是厂家默认协议，可选 openai-completions / openai-responses / anthropic / auto；
+# `modelApis` 为单模型覆盖，同一 provider 下可为不同模型选择不同协议，例如 `anthropic` 对应 `/messages`。
+# 不要使用 `responses` 作为新配置值（旧配置会兼容迁移）。
+
 # `responsesContinuation` 只控制 Responses API 的 previous_response_id + store:true，
 # 不会切换 API；不支持服务端存储的网关请保持 false。失效 response id 会自动回退完整请求。
 # `capabilities` 声明该 provider 模型的默认能力，`modelCapabilities` 按模型覆盖

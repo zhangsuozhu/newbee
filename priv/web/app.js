@@ -6272,7 +6272,9 @@ case "goal_round": break;
   function mcfgCanonicalApi(api) {
     if (api === "responses") return "openai-responses";
     if (api === "chat") return "openai-completions";
-    return ["openai-completions", "openai-responses", "auto"].includes(api) ? api : "openai-completions";
+    if (api === "anthropic-messages") return "anthropic";
+    return ["openai-completions", "openai-responses", "anthropic", "auto"].includes(api) ? api : "openai-completions";
+
   }
 
   function mcfgFlush() {
@@ -6310,8 +6312,9 @@ case "goal_round": break;
     row.innerHTML =
       '<div class="mcfg-model-id mono" title="' + mcfgEsc(model) + '">' + mcfgEsc(model) + '</div>' +
       '<select class="model-api" title="此模型使用的 API 协议">' +
-        '<option value="">继承默认</option><option value="openai-completions">completions</option>' +
-        '<option value="openai-responses">responses</option><option value="auto">auto</option></select>' +
+        '<option value="openai-responses">responses</option><option value="anthropic">anthropic messages</option>' +
+        '<option value="auto">auto</option></select>' +
+
       '<input type="number" class="model-ctx" min="1" placeholder="继承" title="上下文窗口 tokens；留空继承" />' +
       '<select class="model-cont" title="Responses 续写；其他协议下不生效">' +
         '<option value="">继承</option><option value="true">开启</option><option value="false">关闭</option></select>' +
