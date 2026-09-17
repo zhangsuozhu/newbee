@@ -29,32 +29,41 @@ export const state = {
   polling: false,
   refreshing: false,
   groupTab: 'work',
+  workFilter: 'attention',
+  inspector: null,
+  routeNotice: '',
 };
 
-function syncConversationUrl() {
-  if (typeof window === "undefined") return;
+function syncConversationUrl(replace = false, allowBeforeEnable = false, allowDuringRestore = false) {
+  if (typeof window === 'undefined' || (!navigationEnabled && !allowBeforeEnable) || (restoringRoute && !allowDuringRestore)) return;
   const url = new URL(location.href);
-  const active = state.colonyId && state.beeModeId && state.conversationId &&
-    state.mode === "bee" && state.view === "conversation";
-  if (active) {
-    url.searchParams.set("colony", state.colonyId);
-    url.searchParams.set("bee", state.beeModeId);
-    url.searchParams.set("conversation", state.conversationId);
-  } else {
-    ["colony", "bee", "conversation"].forEach((key) => url.searchParams.delete(key));
+  for (const key of ['colony', 'bee', 'conversation', 'task', 'view', 'queue', 'sourceBee', 'section']) url.searchParams.delete(key);
+  if (state.colonyId) url.searchParams.set('colony', state.colonyId);
+  const taskId = currentTaskId();
+  const sourceBeeId = taskId && state.stack.find(entry => entry.type === 'drill')?.fromBeeId;
+  if (taskId) {
+    url.searchParams.set('task', taskId);
+    if (state.drillTab && state.drillTab !== 'overview') url.searchParams.set('section', state.drillTab);
+    if (sourceBeeId) url.searchParams.set('sourceBee', sourceBeeId);
   }
+  else {
+    url.searchParams.set('view', state.view === 'dm' ? 'member' : state.groupTab);
+    if (state.view === 'chat' && state.groupTab === 'work' && ['attention', 'active', 'finished'].includes(state.workFilter)) url.searchParams.set('queue', state.workFilter);
+  }
+  const beeId = state.inspector?.beeId || state.beeModeId;
+  if (beeId) url.searchParams.set('bee', beeId);
+  if (state.inspector) url.searchParams.set('conversation', state.inspector.sessionId);
   const next = url.pathname + url.search + url.hash;
-  const current = location.pathname + location.search + location.hash;
-  if (next !== current) history.replaceState(null, "", next);
+  if (next !== location.pathname + location.search + location.hash) {
+    history[replace ? 'replaceState' : 'pushState']({newbee: true}, '', next);
+  }
 }
 
-export function conversationRouteFromUrl() {
-  if (typeof window === "undefined") return null;
-  const params = new URLSearchParams(location.search);
-  const colonyId = params.get("colony");
-  const beeId = params.get("bee");
-  const conversationId = params.get("conversation");
-  return colonyId && beeId && conversationId ? { colonyId, beeId, conversationId } : null;
+export function selectWorkSection(section) {
+  if (!['overview', 'collaboration', 'execution', 'results', 'history'].includes(section)) return;
+  state.drillTab = section;
+  syncConversationUrl();
+  emit();
 }
 
 export function subscribe(fn) {
@@ -69,6 +78,7 @@ export function emit() {
 }
 
 function invalidateMemberSession() {
+  state.inspector = null; inspectorSequence += 1;
   state.colonies = [];
   state.colonyId = null;
   state.data = null;
@@ -115,8 +125,10 @@ export async function loadColonies() {
   return state.colonies;
 }
 
-export async function selectColony(colonyId) {
+export async function selectColony(colonyId, internal = false) {
+  beginNavigation(internal);
   if (state.colonyId === colonyId) return;
+  state.inspector = null; inspectorSequence += 1;
   state.colonyId = colonyId;
   try { if (colonyId) localStorage.setItem('newbee.colony.active', colonyId); else localStorage.removeItem('newbee.colony.active'); } catch (_) {}
   state.attachments = []; state.uploadSid = null; state.uploadColony = null;
@@ -140,6 +152,7 @@ export async function refresh() {
   const current = () => sequence === refreshSequence && route === routeKey();
   state.refreshing = true;
   emit();
+  let detailRequest = false;
   try {
     const params = { colonyId };
     const prevRev = state.data && state.data.view_revision;
@@ -158,12 +171,18 @@ export async function refresh() {
       state.trail = trail;
     }
     if (state.view === "drill" && currentTaskId()) {
+      detailRequest = true;
       const drill = await rpc("colony.drill", { colonyId, taskId: currentTaskId() });
       if (!current()) return;
       state.drill = drill;
     }
   } catch (e) {
     if (!current()) return;
+    if (detailRequest && ['not_found', 'forbidden'].includes(e?.code)) {
+      state.routeNotice = '该工作不存在或当前不可访问，已返回工作列表。';
+      state.lastError = null; state.groupTab = 'work';
+      resetToChat(true); syncConversationUrl(true, true, true); return;
+    }
     if (e?.code === "unauthorized" && isMemberSession()) {
       invalidateMemberSession();
       return;
@@ -197,44 +216,54 @@ export function startPolling(ms = 3000) {
 // ── 面包屑路径 ──
 
 export function pushPath(entry) {
+  beginNavigation();
+  state.inspector = null; inspectorSequence += 1;
   // 同级重复点击不叠加
   const top = state.stack[state.stack.length - 1];
   if (top && top.type === entry.type &&
-      top.beeId === entry.beeId && top.taskId === entry.taskId) return;
-  state.stack.push(entry);
+      top.beeId === entry.beeId && top.taskId === entry.taskId) { syncConversationUrl(false, true); emit(); return; }
+  state.stack = [entry];
+  state.mode = entry.type === 'dm' ? 'bee' : 'colony';
+  state.beeModeId = entry.type === 'dm' ? entry.beeId : null;
   state.view = entry.type;
   state.trail = null;
   state.drill = null;
-  syncConversationUrl();
+  syncConversationUrl(false, true);
   // 进入新层级立刻拉取该层级数据（不等下一次轮询）
   void refresh();
   emit();
 }
 
 export function gotoLevel(index) {
+  beginNavigation();
+  state.inspector = null; inspectorSequence += 1;
   state.stack = state.stack.slice(0, index + 1);
   const top = state.stack[state.stack.length - 1];
   state.view = top ? top.type : "chat";
   state.trail = null;
   state.drill = null;
-  syncConversationUrl();
+  syncConversationUrl(false, true);
   void refresh();
   emit();
 }
 
-export function resetToChat() {
+export function resetToChat(internal = false) {
+  beginNavigation(internal);
+  state.inspector = null; inspectorSequence += 1;
   state.mode = 'colony'; state.beeModeId = null; state.conversationId = null; state.modeBeforeBee = null;
   state.stack = [];
   state.view = "chat";
   state.trail = null;
   state.drill = null;
-  syncConversationUrl();
+  syncConversationUrl(false, !internal);
   emit();
 }
 
 // ── 左侧模式：蜂群 ↔ 某只 Bee 的对话列表 ──
 
-export async function enterBeeMode(beeId) {
+export async function enterBeeMode(beeId, internal = false) {
+  beginNavigation(internal);
+  state.inspector = null; inspectorSequence += 1;
   const m = memberById(beeId);
   if (state.mode !== 'bee') state.modeBeforeBee = { view: state.view, stack: state.stack.slice() };
   state.trail = null;
@@ -244,13 +273,15 @@ export async function enterBeeMode(beeId) {
   state.beeModeId = beeId;
   state.view = "dm";
   state.stack = [{ type: "dm", beeId, display: m ? m.display : beeId }];
-  syncConversationUrl();
+  syncConversationUrl(false, !internal);
   await refresh();
   if (state.mode !== 'bee' || state.beeModeId !== beeId || state.view !== 'dm') return;
   emit();
 }
 
 export async function exitBeeMode() {
+  beginNavigation();
+  state.inspector = null; inspectorSequence += 1;
   state.mode = "colony";
   state.beeModeId = null;
   state.conversationId = null;
@@ -258,29 +289,54 @@ export async function exitBeeMode() {
   state.stack = prev.stack || [];
   state.view = prev.view === "conversation" ? "chat" : prev.view;
   state.modeBeforeBee = null;
-  syncConversationUrl();
+  syncConversationUrl(false, true);
   await refresh();
   emit();
 }
 
-export async function openConversation(sessionId, beeId) {
-  state.mode = "bee";
-  state.beeModeId = beeId;
-  state.conversationId = sessionId;
-  state.view = "conversation";
-  syncConversationUrl();
-  void refresh();
+export async function openConversation(sessionId, beeId, internal = false) {
+  beginNavigation(internal);
+  const colonyId = state.colonyId;
+  const sequence = ++inspectorSequence;
+  const task = (state.data?.tasks || []).find(t => t.session_id === sessionId);
+  beeId = beeId || task?.assigned_bee_id;
+  state.inspector = {sessionId, beeId, inspectionId: crypto.randomUUID(), status: 'loading', title: task?.title || '执行会话', taskId: task?.id};
+  syncConversationUrl(internal, !internal);
+  if (!internal && history.state?.newbee) history.replaceState({...history.state, inspector: true}, '', location.href);
   emit();
+  try {
+    if (!beeId || !memberById(beeId)) {
+      state.routeNotice = '该会话不存在或已不属于当前成员。';
+      closeInspector(true);
+      return;
+    }
+    const trail = await rpc('colony.bee.trail', {colonyId, beeId});
+    if (sequence !== inspectorSequence || colonyId !== state.colonyId) return;
+    const conversation = (trail.conversations || []).find(c => c.id === sessionId && c.kind !== 'human');
+    if (!conversation) {
+      state.routeNotice = '该会话不存在或已不属于当前成员，已保留原工作页面。';
+      closeInspector(true);
+      return;
+    }
+    state.inspector = {...state.inspector, status: 'connecting', title: conversationLabel(conversation, beeId), conversation};
+    emit();
+  } catch (error) {
+    if (sequence !== inspectorSequence || colonyId !== state.colonyId) return;
+    state.inspector = {...state.inspector, status: 'error', error: error.message || '连接失败'};
+    emit();
+  }
 }
 
 export async function openBeeTrail(beeId) {
+  beginNavigation();
+  state.inspector = null; inspectorSequence += 1;
   const m = memberById(beeId);
   state.mode = "bee";
   state.beeModeId = beeId;
   state.conversationId = null;
   state.view = "dm";
   state.stack = [{ type: "dm", beeId, display: m ? m.display : beeId }];
-  syncConversationUrl();
+  syncConversationUrl(false, true);
   await refresh();
   emit();
 }
@@ -315,4 +371,103 @@ export function memberByName(name) {
   return (state.data.members || []).find((m) => m.display === name) || null;
 }
 
+
+// A location describes the work being read; inspecting an execution never changes its send target.
+let navigationEnabled = false;
+let restoringRoute = false;
+let navigationSequence = 0;
+let inspectorSequence = 0;
+function beginNavigation(internal = false) {
+  if (!internal) { navigationSequence += 1; restoringRoute = false; }
+}
+export function enableNavigation() { navigationEnabled = true; if (!state.lastError && state.inspector?.status !== 'error') syncConversationUrl(true); }
+export function openHome(tab = 'work') {
+  if (tab === 'attention') { state.groupTab = 'work'; state.workFilter = 'attention'; }
+  else state.groupTab = tab;
+  resetToChat();
+}
+export function closeInspector(internal = false) {
+  beginNavigation(internal);
+  inspectorSequence += 1;
+  state.inspector = null;
+  syncConversationUrl(true, !internal);
+  emit();
+}
+export function conversationLabel(conversation, beeId) {
+  const task = (state.data?.tasks || []).find(t => t.session_id === conversation?.id);
+  const title = String(conversation?.title || '').trim();
+  if (title && !['工作执行', '私聊', '新对话', '新会话'].includes(title)) return title;
+  return task?.title || `${memberById(beeId)?.display || 'Bee'} · ${conversation?.when || (conversation?.id || '').slice(-6) || '新会话'}`;
+}
+export async function restoreLocation() {
+  const sequence = ++navigationSequence;
+  const params = new URLSearchParams(location.search);
+  const colonyId = params.get('colony');
+  const taskId = params.get('task');
+  const beeId = params.get('bee');
+  const sourceBeeId = params.get('sourceBee');
+  const sid = params.get('conversation');
+  restoringRoute = true;
+  state.routeNotice = '';
+  try {
+    if (state.lastError && !state.colonies.length) return;
+    if (colonyId && !state.colonies.some(c => c.colony.id === colonyId)) {
+      state.routeNotice = '无法打开该蜂群：它可能已删除，或你当前无法访问。';
+      resetToChat(true);
+      syncConversationUrl(true, true, true);
+      return;
+    }
+    if (colonyId && colonyId !== state.colonyId) await selectColony(colonyId, true);
+    if (sequence !== navigationSequence) return;
+    if (state.lastError && !state.data) return;
+    closeInspector(true);
+    const routeView = params.get('view');
+    if (routeView === 'attention') { state.groupTab = 'work'; state.workFilter = 'attention'; }
+    else { state.groupTab = ['work', 'messages'].includes(routeView) ? routeView : 'work'; }
+    if (state.groupTab === 'work' && ['attention', 'active', 'finished'].includes(params.get('queue'))) state.workFilter = params.get('queue');
+    resetToChat(true);
+    if (taskId) {
+      state.drillTab = ['overview', 'collaboration', 'execution', 'results', 'history'].includes(params.get('section')) ? params.get('section') : 'overview';
+      state.stack = [{type: 'drill', taskId, fromBeeId: sourceBeeId || undefined}];
+      state.view = 'drill';
+      await refresh();
+      if (sequence !== navigationSequence) return;
+      if (!state.drill?.task && !state.lastError) {
+        state.routeNotice = '该工作不存在或当前不可访问，已返回工作列表。';
+        resetToChat(true);
+        syncConversationUrl(true, true, true);
+      }
+    } else if (params.get('view') === 'member' && beeId) {
+      if (memberById(beeId)) await enterBeeMode(beeId, true);
+      else { state.routeNotice = '该成员已不属于当前蜂群，已返回工作列表。'; syncConversationUrl(true, true, true); }
+    }
+    if (sequence !== navigationSequence) return;
+    if (sid) await openConversation(sid, beeId, true);
+  } finally {
+    if (sequence === navigationSequence) {
+      restoringRoute = false;
+      // A failed request remains retryable at the original address.
+      if (!state.lastError && state.inspector?.status !== 'error') syncConversationUrl(true);
+      emit();
+    }
+  }
+}
+
+// One attention policy for the sidebar count and the actionable inbox.
+export function attentionTasks() {
+  const tasks = state.data?.tasks || [];
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  const result = new Map();
+  for (const task of tasks) {
+    if (['done', 'cancelled'].includes(task.status)) continue;
+    const needsHuman = ['blocked', 'pending_review', 'failed'].includes(task.status) || task.waiting_for === 'user' || task.approval_required || task.workflow?.phase === 'choosing';
+    if (!needsHuman) continue;
+    // Internal deliverables are integrated by the owner, not a second human review.
+    if (task.integration_required && task.status === 'pending_review') continue;
+    const parent = byId.get(task.parent_task_id || task.workflow_root);
+    const visible = parent && !['done', 'cancelled'].includes(parent.status) ? parent : task;
+    result.set(visible.id, visible);
+  }
+  return [...result.values()];
+}
 

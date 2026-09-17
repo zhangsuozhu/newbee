@@ -48,7 +48,7 @@ defmodule Newbee.Colony.ConversationLifecycleTest do
     assert {:error, :not_found} = Store.get("conversations", sid)
   end
 
-  test "不属于该 Bee 的对话不能改名或删除", %{cid: cid, bee: bee, actor: actor} do
+  test "不属于该 Bee 的对话不能改名或删除", %{cid: cid, bee: bee} do
     assert {:error, "not_found", _} =
              Engine.delete_conversation(cid, bee["id"], "no-such-session")
 
@@ -59,6 +59,29 @@ defmodule Newbee.Colony.ConversationLifecycleTest do
   test "改名不能留空", %{cid: cid, bee: bee, actor: actor} do
     {:ok, %{"sessionId" => sid}} = Conversation.create(cid, bee["id"], actor)
     assert {:error, "bad_request", _} = Engine.rename_conversation(cid, bee["id"], sid, "   ")
+  end
+
+  test "AI 会话按当前优先、最近 ID 倒序返回", %{cid: cid, bee: bee, actor: actor} do
+    older = "20260101-100000-ORDER-OLD"
+    newer = "20260101-110000-ORDER-NEW"
+
+    Enum.each([older, newer], fn sid ->
+      :ok = Newbee.Session.mark_created(sid)
+
+      :ok =
+        Store.put("conversations", %{
+          "id" => sid,
+          "colony_id" => cid,
+          "bee_id" => bee["id"],
+          "participants" => [actor, bee["id"]],
+          "visibility" => "private",
+          "kind" => "ai"
+        })
+    end)
+
+    on_exit(fn -> Enum.each([older, newer], &Newbee.Session.delete/1) end)
+    assert {:ok, trail} = Conversation.trail(cid, bee["id"], actor)
+    assert Enum.take(Enum.map(trail["conversations"], & &1["id"]), 2) == [newer, older]
   end
 
   test "真人对话没有会话，不能按会话删除", %{cid: cid, actor: actor} do

@@ -3,7 +3,7 @@ defmodule Newbee.Colony.Work do
   alias Newbee.Colony.{Store, Task, Bee, Id, Control, Honey, Trace}
 
   def create(cid, attrs) do
-    with {:ok, _colony} <- Store.get_colony(cid),
+    with {:ok, colony} <- Store.get_colony(cid),
          {:ok, bee} <- select_owner(cid, attrs) do
       task =
         Task.new(
@@ -13,6 +13,8 @@ defmodule Newbee.Colony.Work do
             "session_id" => nil
           })
         )
+
+      task = if is_binary(task["cwd"]), do: task, else: Map.put(task, "cwd", colony["cwd"])
 
       task =
         Map.merge(task, %{

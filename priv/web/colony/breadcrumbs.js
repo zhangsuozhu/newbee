@@ -1,85 +1,31 @@
-// 蜂群前端 · 顶部标题与面包屑（主界面 topbar 的标题行 + 一行小字）
-import { esc } from "./util.js";
-import { state, gotoLevel, resetToChat, memberById, exitBeeMode, openBeeTrail } from "./store.js";
-function focusChatRegion() {
-  const main = document.getElementById('transcript') || document.getElementById('main');
-  if (!main) return;
-  if (!main.hasAttribute('tabindex')) main.setAttribute('tabindex', '-1');
-  main.focus({preventScroll: true});
-}
-
+import { state, currentTaskId, memberById, enterBeeMode, openHome, pushPath } from './store.js';
 export function renderBreadcrumbs() {
-  const title = document.getElementById("session-title");
-  const sub = document.getElementById("session-sub");
+  const title = document.getElementById('session-title'), sub = document.getElementById('session-sub');
   if (!title) return;
-  // sub 缺失时仍然更新标题：容器是可选装饰，标题是必要信息。
-  if (sub) sub.innerHTML = "";
-  if (state.mode === "bee" && state.beeModeId) {
-    const bee = memberById(state.beeModeId) || (state.trail && state.trail.bee) || {};
-    const stack = state.stack || [];
-    // 成员层级里也会嵌套深钻（父任务 → 子任务）：栈里每一层都要给出来，
-    // 否则从子任务回不到父任务，只能绕回成员层级再找一遍。
-    const drills = [];
-    stack.forEach((entry, index) => { if (entry.type === "drill") drills.push({ entry, index }); });
-    const inConversation = state.view === "conversation";
-    const topDrill = drills[drills.length - 1];
-    title.textContent = topDrill ? (topDrill.entry.title || "任务") : (bee.display || "Bee");
-    if (!sub) return;
-    sub.appendChild(crumb("蜂群", false, async () => {
-      await exitBeeMode();
-      setTimeout(focusChatRegion, 0);
-    }));
-    sub.appendChild(sep());
-    sub.appendChild(crumb(bee.display || "Bee", !inConversation && drills.length === 0, () => openBeeTrail(bee.id)));
-    if (inConversation) {
-      sub.appendChild(sep());
-      sub.appendChild(crumb(conversationTitle(state.conversationId), true, () => {}));
-    } else {
-      drills.forEach((d, i) => {
-        sub.appendChild(sep());
-        const last = i === drills.length - 1;
-        sub.appendChild(crumb(d.entry.title || "任务", last, last ? () => {} : () => gotoLevel(d.index)));
-      });
-    }
-    return;
-  }
-
-  const stack = state.stack || [];
-  const top = stack[stack.length - 1];
-  title.textContent = top ? (top.type === "dm" ? (top.display || "Bee") : (top.title || "任务")) : "群聊";
-
+  title.tabIndex = -1;
+  const taskId = currentTaskId();
+  const task = state.drill?.task || (state.data?.tasks || []).find(t => t.id === taskId);
+  const bee = state.beeModeId ? memberById(state.beeModeId) : null;
+  const homeTitle = state.workFilter === 'attention' ? '待我处理' : state.workFilter === 'finished' ? '已完成' : '进行中';
+  title.textContent = taskId ? task?.title || '正在打开工作…' : state.view === 'dm' ? bee?.display || '成员' : state.groupTab === 'messages' ? '群聊' : homeTitle;
   if (!sub) return;
-  sub.appendChild(crumb("群聊", stack.length === 0, () => resetToChat()));
-  stack.forEach((entry, i) => {
-    sub.appendChild(sep());
-    const isLast = i === stack.length - 1;
-    sub.appendChild(crumb(label(entry), isLast, () => gotoLevel(i)));
-  });
-}
-
-function conversationTitle(id) {
-  const list = (state.trail && state.trail.conversations) || [];
-  const c = list.find((x) => x.id === id);
-  return (c && c.title) || "对话";
-}
-
-function sep() {
-  const s = document.createElement("span");
-  s.className = "crumb-sep";
-  s.textContent = "›";
-  return s;
-}
-
-function crumb(text, active, onClick) {
-  const b = document.createElement("button");
-  b.className = "crumb-link" + (active ? " active" : "");
-  b.textContent = text;
-  b.onclick = onClick;
-  return b;
-}
-
-function label(entry) {
-  if (entry.type === "dm") return entry.display || "Bee";
-  if (entry.type === "drill") return entry.title || "任务";
-  return entry.type;
+  sub.replaceChildren();
+  const add = (label, action) => {
+    const node = document.createElement(action ? 'button' : 'span');
+    node.className = action ? 'btn-ghost crumb' : 'crumb'; node.textContent = label;
+    if (action) { node.type = 'button'; node.onclick = action; }
+    sub.append(node);
+  };
+  add(state.data?.colony?.name || '蜂群', () => openHome('work'));
+  add(' / ');
+  if (taskId) {
+    const parent = (state.data?.tasks || []).find(t => t.id === task?.parent_task_id);
+    const sourceBeeId = state.stack.find(entry => entry.type === 'drill')?.fromBeeId;
+    const sourceBee = sourceBeeId && memberById(sourceBeeId);
+    if (parent) add(`返回工作「${parent.title}」`, () => pushPath({type: 'drill', taskId: parent.id, title: parent.title}));
+    else if (sourceBee) add(`返回成员「${sourceBee.display}」`, () => enterBeeMode(sourceBee.id));
+    else add('返回工作列表', () => openHome('work'));
+    const owner = memberById(task?.assigned_bee_id);
+    if (owner) add(` · 负责人：${owner.display}`);
+  } else add(state.view === 'dm' ? '成员概览' : title.textContent);
 }

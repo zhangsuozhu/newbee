@@ -49,13 +49,14 @@ defmodule Newbee.Web.MobileComposerTest do
     assert block =~ "OPEN_H"
   end
 
-  test "history pagination preserves the anchor while loading older messages", %{js: js} do
-    assert js =~ "const oldScrollTop = transcriptEl.scrollTop;"
-    assert js =~ "const anchor = oldNodes.find"
-    assert js =~ "filter((node) => node !== oldBtn)"
+  test "history pagination is manual and preserves the reading anchor", %{js: js} do
+    assert js =~ "function renderLoadMoreBtn(remaining)"
+    assert js =~ "查看更早的 ${Math.min(HISTORY_PAGE, remaining)} 条"
+    assert js =~ "const anchorTop = anchor?.getBoundingClientRect().top;"
+    assert js =~ "anchor.getBoundingClientRect().top - anchorTop"
     assert js =~ "state.stickBottom = false;"
-    assert js =~ "transcriptEl.style.overflowAnchor = \"none\";"
-    assert js =~ "requestAnimationFrame(() => requestAnimationFrame(resolve))"
-    assert js =~ "event.preventDefault()"
+    assert js =~ "transcriptEl.style.overflowAnchor = 'none';"
+    assert js =~ "已显示更早的 ${offset - start} 条消息"
+    refute js =~ "function initInfiniteHistory()"
   end
 end

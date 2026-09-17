@@ -3,7 +3,7 @@
 import { renderWorkBoard } from './workflow.js';
 import { esc, fmtAgo, fmtTime, kindLabel, signalLabel, statusLabel } from "./util.js";
 import { buildTaskCard, isTerminal, statusChip } from "./taskcard.js";
-import { state, memberById } from "./store.js";
+import { state, memberById, openHome, attentionTasks } from "./store.js";
 import { rpc, toast } from "./api.js";
 import { refresh } from "./store.js";
 import { form } from './forms.js';
@@ -18,38 +18,83 @@ function shortTitle(text, max = 34) {
 
 export function renderGroupView(flow, ctx) {
   const data = state.data || {};
-  const active = (data.tasks || []).filter(t => !isTerminal(t.status) && !t.workflow_root);
-  const pending = (data.honey?.recent || []).filter(h => ['pending_review', 'auto_verified'].includes(h.review_state) && !(data.tasks || []).some(t => t.integration_required && t.id === h.task_id));
-  const tabs = document.createElement('nav');
-  tabs.className = 'group-view-tabs'; tabs.setAttribute('aria-label', '蜂群内容');
-  for (const [id, label] of [['work', `当前工作 · ${active.length}`], ['messages', '群聊记录']]) {
-    const button = document.createElement('button'); button.type = 'button';
-    button.textContent = label;
-    const on = String((state.groupTab || 'work') === id);
-    button.setAttribute('aria-pressed', on); button.setAttribute('aria-selected', on);
-    button.onclick = () => { state.groupTab = id; ctx.render(true); };
-    tabs.append(button);
+  const tasks = data.tasks || [];
+  const attention = attentionTasks();
+  const attentionIds = new Set(attention.map(t => t.id));
+  const pending = (data.honey?.recent || []).filter(h =>
+    ['pending_review', 'auto_verified'].includes(h.review_state) &&
+    !tasks.some(t => t.integration_required && t.id === h.task_id) &&
+    !attentionIds.has(h.task_id)
+  );
+  const visible = tasks.filter(t => !t.workflow_root);
+  const active = visible.filter(t => !isTerminal(t.status) && !attentionIds.has(t.id));
+  const finished = visible.filter(t => isTerminal(t.status));
+  const counts = {attention: attention.length + pending.length, active: active.length, finished: finished.length};
+  const requested = ['attention', 'active', 'finished'].includes(state.workFilter) ? state.workFilter : 'attention';
+  const selected = requested === 'attention' && counts.attention === 0 && counts.active > 0 ? 'active' : requested;
+  state.workFilter = selected;
+
+  const topTabs = document.createElement('nav');
+  topTabs.className = 'group-view-tabs'; topTabs.setAttribute('aria-label', '蜂群内容');
+  for (const [id, label] of [['work', '工作台'], ['messages', '群聊']]) {
+    const tab = document.createElement('button'); tab.type = 'button'; tab.textContent = label;
+    const on = state.groupTab === id;
+    tab.setAttribute('aria-pressed', String(on)); tab.setAttribute('aria-selected', String(on));
+    tab.onclick = () => openHome(id);
+    topTabs.append(tab);
   }
-  flow.append(tabs);
-  if (state.groupTab !== 'messages') {
-    const summary = document.createElement('p'); summary.className = 'work-summary';
-    const waiting = active.filter(t => t.status === 'blocked' || t.workflow?.phase === 'choosing').length;
-    summary.textContent = pending.length || waiting
-      ? '下面是你需要处理的事，其余进展都在「群聊记录」里。'
-      : active.length ? '工作正在推进，需要你处理时会出现在这里。' : '暂时还没有进行中的工作。在下方说一句，就能开始。';
-    flow.append(summary);
+  flow.append(topTabs);
+  if (state.groupTab === 'messages') {
+    const hiddenTasks = new Set(tasks.filter(t => t.workflow || t.workflow_root).map(t => t.id));
+    const internalResults = new Set(tasks.filter(t => t.integration_required).map(t => t.result));
+    const trace = (data.trace || []).filter(t => t.channel === 'colony' && !['tool_call','tool','refresh','capabilities'].includes(t.type) && !(t.type === 'task' && hiddenTasks.has(t.task_id || t.data?.task_id)) && !(t.type === 'honey' && internalResults.has(t.data?.honey_id)));
+    if (!trace.length) flow.appendChild(emptyNote('还没有公开消息。在下面输入一句话，Bee 们都会看到。'));
+    else renderMessageTimeline(flow, ctx, trace, data, internalResults);
+    return;
+  }
+
+  const filters = document.createElement('nav');
+  filters.className = 'work-status-tabs'; filters.setAttribute('aria-label', '工作状态');
+  for (const [id, label] of [['attention', '待我处理'], ['active', '进行中'], ['finished', '已完成']]) {
+    const tab = document.createElement('button'); tab.type = 'button';
+    tab.textContent = `${label} · ${counts[id]}`;
+    const on = selected === id;
+    tab.setAttribute('aria-pressed', String(on)); tab.setAttribute('aria-selected', String(on));
+    tab.onclick = () => { state.workFilter = id; ctx.openHome('work'); };
+    filters.append(tab);
+  }
+  flow.append(filters);
+
+  const summary = document.createElement('p'); summary.className = 'work-summary';
+  summary.textContent = selected === 'attention'
+    ? (counts.attention ? '需要你决定、答复或验收的工作集中在这里。处理完后会自动移出。' : '暂时没有需要你处理的工作。')
+    : selected === 'active'
+      ? (counts.active ? '这里显示正在推进的工作；需要你介入时会进入“待我处理”。' : '暂时没有进行中的工作。')
+      : (counts.finished ? '已完成的工作和验收结果集中在这里。' : '还没有已完成的工作。');
+  flow.append(summary);
+
+  if (selected === 'attention') {
     for (const h of pending) flow.append(honeyNode({type:'honey', text:h.title, ts:h.created_at, data:{honey_id:h.id}}, ctx));
-    renderWorkBoard(flow, ctx);
-    for (const task of active.filter(t => !t.workflow)) flow.append(buildTaskCard(task, ctx));
-    return;
+    for (const task of attention) flow.append(buildTaskCard(task, ctx, {full: true}));
+  } else if (selected === 'active') {
+    renderWorkBoard(flow, ctx, active);
+    const independent = active.filter(t => !t.workflow);
+    if (independent.length) {
+      const heading = document.createElement('div'); heading.className = 'work-section-head';
+      heading.innerHTML = '<h2>独立工作</h2><span>正在由一只 Bee 直接处理</span>';
+      flow.append(heading);
+      for (const task of independent) flow.append(buildTaskCard(task, ctx));
+    }
+  } else {
+    const archive = document.createElement('section'); archive.className = 'work-archive';
+    for (const task of finished) archive.append(buildTaskCard(task, ctx, {compact: true}));
+    if (archive.childElementCount) flow.append(archive);
   }
-  const hiddenTasks = new Set((data.tasks || []).filter(t => t.workflow || t.workflow_root).map(t => t.id));
-  const internalResults = new Set((data.tasks || []).filter(t => t.integration_required).map(t => t.result));
-  const trace = (data.trace || []).filter(t => t.channel === 'colony' && !['tool_call','tool','refresh','capabilities'].includes(t.type) && !(t.type === 'task' && hiddenTasks.has(t.task_id || t.data?.task_id)) && !(t.type === 'honey' && internalResults.has(t.data?.honey_id)));
-  if (!trace.length) {
-    flow.appendChild(emptyNote("还没有公开消息。在下面输入一句话，Bee 们都会看到。"));
-    return;
+  if (!flow.querySelector('[data-task-id], .honey-card, .work-archive')) {
+    flow.append(emptyNote(selected === 'attention' ? '没有需要处理的工作。' : selected === 'active' ? '在下方输入需求，就能开始一项新工作。' : '完成的工作会保留在这里。'));
   }
+}
+function renderMessageTimeline(flow, ctx, trace, data, internalResults) {
   // 群里最多的噪音是机械进度行（「工具已返回，处理中」）。它们没有额外信息，
   // 收成一行「工具执行 N 次」，点开看时间；其余事件照旧。
   let prevSender = null;
@@ -189,6 +234,13 @@ export function renderDMView(flow, ctx) {
     return;
   }
 
+  let records = flow;
+  if (trail.bee?.kind === 'ai') {
+    records = document.createElement('details'); records.className = 'work-records';
+    const summary = document.createElement('summary'); summary.textContent = `成员动态 · ${trace.length} 条`;
+    records.append(summary); flow.append(records);
+  }
+
   // 任务第一次出现 → 完整任务卡（即「新建任务」那一刻）；
   // 之后同一任务的状态变化 → 收成一条细状态行，避免刷屏。
   const seenTask = new Set();
@@ -196,12 +248,12 @@ export function renderDMView(flow, ctx) {
     const task = t.task_id ? taskById.get(t.task_id) : null;
     if (task && !seenTask.has(task.id)) {
       seenTask.add(task.id);
-      flow.appendChild(buildTaskCard(task, ctx));
+      records.appendChild(buildTaskCard(task, ctx));
       continue;
     }
     const node = traceNode(t, ctx);
     if (task) node.classList.add("cont");
-    flow.appendChild(node);
+    records.appendChild(node);
   }
 }
 
@@ -640,5 +692,3 @@ function emptyNote(text) {
   node.append(ico, body);
   return node;
 }
-
-

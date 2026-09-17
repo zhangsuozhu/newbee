@@ -1,14 +1,18 @@
 // One navigation shell. Tools open as their own original surfaces, with no extra wrapper.
 import { rpc, toast, forgetAuthToken } from './api.js';
-import { state, resetToChat } from './store.js';
+import { state, closeInspector } from './store.js';
 
 const $ = id => document.getElementById(id);
-let hostOwner = false, contextKey, infoSeq = 0, audio;
+let hostOwner = false, contextKey, infoSeq = 0, audio, cwdSaveSeq = 0;
 let layer, frame, authResolve, locked = false;
 let previousTasks = new Map(), taskBaseline = false;
 
 const workspaceCwdKey = 'newbee.workspace.cwd';
-export function selectedWorkspaceCwd() {
+export function selectedWorkspaceCwd(taskIdOverride = null) {
+  const taskId = taskIdOverride || state.inspector?.taskId || state.drill?.task?.id;
+  const task = taskId && (state.drill?.task?.id === taskId ? state.drill.task : (state.data?.tasks || []).find(item => item.id === taskId));
+  if (typeof task?.cwd === 'string' && task.cwd.trim()) return task.cwd.trim();
+  if (!taskId && !sessionId() && typeof state.data?.colony?.cwd === 'string' && state.data.colony.cwd.trim()) return state.data.colony.cwd.trim();
   try {
     const cwd = localStorage.getItem(workspaceCwdKey);
     return typeof cwd === 'string' && cwd.trim() ? cwd.trim() : null;
@@ -21,14 +25,14 @@ function rememberWorkspaceCwd(cwd) {
   try { localStorage.setItem(workspaceCwdKey, cwd.trim()); } catch (_) {}
 }
 
-const sessionId = () => state.mode === 'bee' && state.view === 'conversation' ? state.conversationId : null;
+const sessionId = () => state.inspector?.sessionId || null;
 
 // 终端与右侧栏都长在「当前打开的对话」里：没有对话不显示，非私有对话不开终端。
 const panels = { sid: null, terminal: false, monitor: false };
 const conversationVisibility = () => {
   const id = sessionId();
   if (!id) return null;
-  const entry = ((state.trail && state.trail.conversations) || []).find(c => c.id === id);
+  const entry = state.inspector?.conversation;
   return entry ? entry.visibility || 'private' : 'work';
 };
 function syncThemeFrames() {
@@ -48,34 +52,39 @@ function bindThemeFrame(frame) {
 function postPanel(panel) {
   const frame = $('embed-frame');
   if (!frame || !frame.contentWindow) return toast('对话还没打开，稍后再试', true);
-  frame.contentWindow.postMessage({newbeeCommand:'panel', panel, open: panels[panel], sessionId: sessionId()}, location.origin);
+  frame.contentWindow.postMessage({newbeeCommand:'panel', panel, open: panels[panel], sessionId: sessionId(), inspectionId: state.inspector?.inspectionId}, location.origin);
 }
 // 成员层级里给 AI 成员打字：宿主把这句话转进它的内嵌对话。
 // iframe 刚挂上时它可能还没绑定会话，postMessage 会被丢掉，所以带 commandId 重发直到它回执；
 // 回执 + 幂等判断保证同一句话不会发两遍。
 let pendingSend = null;
 export function sendIntoConversation(text) {
-  if (pendingSend && pendingSend.timer) clearInterval(pendingSend.timer);
-  const commandId = 'send-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
-  const entry = { commandId, text, tries: 0, timer: null };
-  pendingSend = entry;
-  const attempt = () => {
-    const frame = $('embed-frame');
-    const win = frame && frame.contentWindow;
-    entry.tries += 1;
-    if (!win || !sessionId() || entry.tries > 15) {
-      clearInterval(entry.timer);
-      if (pendingSend === entry) pendingSend = null;
-      return;
-    }
-    win.postMessage({newbeeCommand:'send', text: entry.text, commandId, sessionId: sessionId()}, location.origin);
-  };
-  attempt();
-  entry.timer = setInterval(attempt, 350);
-  return true;
+  const sid = sessionId();
+  if (!sid) return Promise.reject(new Error('请先打开目标执行会话'));
+  if (pendingSend) return Promise.reject(new Error('上一条指导尚未确认，请稍后再发'));
+  const commandId = crypto.randomUUID();
+  return new Promise((resolve, reject) => {
+    const entry = {commandId, sid, inspectionId: state.inspector.inspectionId, text, tries: 0, timer: null, resolve, reject};
+    pendingSend = entry;
+    const fail = message => {
+      clearInterval(entry.timer); if (pendingSend === entry) pendingSend = null;
+      reject(new Error(message));
+    };
+    const attempt = () => {
+      if (sessionId() !== sid || state.inspector?.inspectionId !== entry.inspectionId) return fail('已切换执行会话，未确认的指导保留在原草稿中');
+      if (++entry.tries > 80) return fail('未收到提交确认，请先检查执行记录，避免重复发送；草稿已保留');
+      const win = $('embed-frame')?.contentWindow;
+      if (win && state.inspector?.status === 'ready') {
+        win.postMessage({newbeeCommand:'send', text, commandId, sessionId:sid, inspectionId: entry.inspectionId}, location.origin);
+      }
+    };
+    entry.timer = setInterval(attempt, 350);
+    attempt();
+  });
 }
 
-function syncPanelButtons() {
+function syncPanelButtons()
+ {
   const sid = sessionId();
   const local = sid && conversationVisibility() === 'private';
   $('terminal-toggle').classList.toggle('hidden', !hostOwner || !local);
@@ -136,12 +145,18 @@ function closeWorkspace() {
   locked = false;
   refreshWorkspaceInfo();
 }
-export function openWorkspace(surface) {
+export function openWorkspace(surface, taskIdOverride = null) {
   if (surface !== 'auth' && !hostOwner) return toast('成员身份不能管理宿主环境', true);
   ensureLayer();
   locked = surface === 'auth';
   const params = new URLSearchParams({embed:'1', surface});
   if (surface !== 'auth' && surface !== 'qr' && surface !== 'config' && sessionId()) params.set('session', sessionId());
+  if (surface === 'directory') {
+    const taskId = taskIdOverride || state.drill?.task?.id;
+    const cwd = selectedWorkspaceCwd(taskId);
+    if (cwd) params.set('cwd', cwd);
+    if (taskId && !sessionId()) params.set('task', taskId);
+  }
   const qk = new URLSearchParams(location.search).get('qk');
   if (surface === 'auth' && qk) params.set('qk', qk);
   frame.src = '/workspace.html?' + params;
@@ -177,9 +192,9 @@ export async function refreshWorkspaceInfo() {
     const current = models.current || {};
     $('model-label').textContent = current.model ? [current.provider, current.model].filter(Boolean).join('/') : '选择模型';
     $('model-label').title = sid ? '点击切换当前 AI 对话的模型' : '点击选择环境默认模型（新 AI 使用）';
-    const cwd = info?.cwd || (sid ? null : selectedWorkspaceCwd()) || host.cwd || '';
+    const cwd = info?.cwd || (sid ? null : selectedWorkspaceCwd() || state.data?.colony?.cwd) || host.cwd || '';
     $('cwd-label').textContent = cwd;
-    $('cwd-label').title = (sid ? '当前 AI 工作目录：' : '当前环境目录：') + cwd;
+    $('cwd-label').title = sid ? '当前执行会话工作目录：' + cwd : state.drill?.task?.cwd ? '当前工作目录：' + cwd : '当前蜂群默认工作目录：' + cwd;
   } catch (error) { toast(error.message, true); }
 }
 function soundUI() {
@@ -203,12 +218,19 @@ function beep() {
 }
 export function updateWorkspaceContext() {
   const sid = sessionId();
+  if (!sid) {
+    const cwd = selectedWorkspaceCwd() || state.data?.colony?.cwd;
+    if (cwd) {
+      $('cwd-label').textContent = cwd;
+      $('cwd-label').title = state.drill?.task?.cwd ? '当前工作目录：' + cwd : '当前蜂群默认工作目录：' + cwd;
+    }
+  }
   // 换对话 = 关掉上一个对话的面板，两个面板都属于那条对话。
   if (panels.sid !== sid) { panels.sid = sid; panels.terminal = false; panels.monitor = false; }
   if (contextKey !== (sid || '')) refreshWorkspaceInfo();
   syncPanelButtons();
   const tasks = new Map((state.data?.tasks || []).map(task => [task.id, task.status]));
-  if (taskBaseline && [...tasks].some(([id,status]) => ['awaiting_review','succeeded','failed','awaiting_input'].includes(status) && previousTasks.get(id) !== status)) beep();
+  if (taskBaseline && [...tasks].some(([id,status]) => ['pending_review','done','failed','blocked'].includes(status) && previousTasks.get(id) !== status)) beep();
   previousTasks = tasks; taskBaseline = true;
 }
 export function initShell() {
@@ -263,12 +285,77 @@ export function initShell() {
     const isConversation = event.source === $('embed-frame')?.contentWindow;
     if (!isTool && !isConversation) return;
     const message = event.data || {};
+    if (isConversation && message.sessionId && message.sessionId !== sessionId()) return;
+    if (isConversation && message.inspectionId && message.inspectionId !== state.inspector?.inspectionId) return;
 
     if (message.newbeeWorkspace === 'changed') {
       if (!sessionId() && typeof message.cwd === 'string' && message.cwd.trim()) {
-        rememberWorkspaceCwd(message.cwd);
+        const cwd = message.cwd.trim();
+        const taskId = typeof message.taskId === 'string' ? message.taskId : null;
+        const listedTask = taskId && (state.data?.tasks || []).find(item => item.id === taskId);
+        const task = taskId && (state.drill?.task?.id === taskId ? state.drill.task : listedTask);
+        if (task && state.colonyId && state.data?.can_manage && task.cwd !== cwd) {
+          const previousTask = {...task};
+          const previousListedTask = listedTask && listedTask !== task ? {...listedTask} : null;
+          const saveSeq = ++cwdSaveSeq;
+          const saveColonyId = state.colonyId;
+          const restore = (target, snapshot) => {
+            if (!target || !snapshot) return;
+            Object.keys(target).forEach(key => { if (!(key in snapshot)) delete target[key]; });
+            Object.assign(target, snapshot);
+          };
+          const applyTask = value => {
+            Object.assign(task, value);
+            if (listedTask) Object.assign(listedTask, value);
+            $('cwd-label').textContent = value.cwd || '';
+            $('cwd-label').title = value.cwd ? '当前工作目录：' + value.cwd : '当前工作目录';
+          };
+          const optimistic = {...task, cwd, revision: (task.revision || 0) + 1, context_revision: (task.context_revision || 0) + 1};
+          if (typeof task.workspace_source === 'string') optimistic.workspace_source = cwd;
+          applyTask(optimistic);
+          void rpc('colony.work.cwd', {colonyId: saveColonyId, taskId, cwd}).then(result => {
+            if (saveSeq !== cwdSaveSeq || state.colonyId !== saveColonyId) return;
+            applyTask(result.task || {cwd});
+            toast(`这项工作的工作目录已设为 ${result.task?.cwd || cwd}`);
+          }).catch(error => {
+            if (saveSeq !== cwdSaveSeq || state.colonyId !== saveColonyId) return;
+            restore(task, previousTask);
+            restore(listedTask, previousListedTask);
+            refreshWorkspaceInfo();
+            toast(error.message || '保存工作目录失败', true);
+          });
+        } else if (task && !state.data?.can_manage) {
+          toast('当前工作目录需要蜂群管理权限', true);
+        } else if (!task) {
+          rememberWorkspaceCwd(cwd);
+          const colony = state.data?.colony;
+          if (state.colonyId && state.data?.can_manage && colony?.cwd !== cwd) {
+            const previousCwd = colony?.cwd;
+            const saveSeq = ++cwdSaveSeq;
+            const saveColonyId = state.colonyId;
+            if (colony?.id === saveColonyId) {
+              colony.cwd = cwd;
+              $('cwd-label').textContent = cwd;
+              $('cwd-label').title = '当前蜂群默认工作目录：' + cwd;
+            }
+            void rpc('colony.cwd', {colonyId: saveColonyId, cwd}).then(result => {
+              if (saveSeq !== cwdSaveSeq || state.colonyId !== saveColonyId) return;
+              if (state.data?.colony?.id === saveColonyId) state.data.colony.cwd = result.colony.cwd;
+              rememberWorkspaceCwd(result.colony.cwd);
+              toast(`蜂群默认工作目录已设为 ${result.colony.cwd}`);
+            }).catch(error => {
+              if (saveSeq !== cwdSaveSeq || state.colonyId !== saveColonyId) return;
+              if (state.data?.colony?.id === saveColonyId) {
+                state.data.colony.cwd = previousCwd || '';
+                try { previousCwd ? localStorage.setItem(workspaceCwdKey, previousCwd) : localStorage.removeItem(workspaceCwdKey); } catch (_) {}
+              }
+              refreshWorkspaceInfo();
+              toast(error.message || '保存工作目录失败', true);
+            });
+          }
+        }
+        refreshWorkspaceInfo();
       }
-      refreshWorkspaceInfo();
     }
     if (isConversation && message.newbeeWorkspace === 'panel') {
       panels[message.panel] = !!message.open;
@@ -277,7 +364,7 @@ export function initShell() {
     if (isConversation && message.newbeeWorkspace === 'closed') {
       panels.terminal = false;
       panels.monitor = false;
-      resetToChat();
+      closeInspector();
       syncPanelButtons();
       return;
     }
@@ -288,9 +375,12 @@ export function initShell() {
     }
     if (isConversation && message.newbeeWorkspace === 'sent') {
       // 对话已回执：停止重发，避免同一句话发两遍。
-      if (pendingSend && pendingSend.commandId === message.commandId) {
-        clearInterval(pendingSend.timer);
+      if (pendingSend && pendingSend.commandId === message.commandId && pendingSend.inspectionId === message.inspectionId) {
+        const entry = pendingSend;
+        clearInterval(entry.timer);
         pendingSend = null;
+        if (message.status === 'accepted') { entry.resolve(message); toast(message.message || '已收到，等待执行器处理'); }
+        else entry.reject(new Error(message.message || '指导未提交，草稿已保留'));
       }
     }
 

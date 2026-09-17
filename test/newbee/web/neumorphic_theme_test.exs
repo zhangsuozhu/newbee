@@ -284,6 +284,6 @@ defmodule Newbee.Web.NeumorphicThemeTest do
     assert css =~ ":has(> button:nth-child(3))"
     assert css =~ "height: var(--colony-dialog-button-h);"
     assert css =~ "#send.btn-icon-round"
-    assert index =~ "colony/colony.css?v=20260912-buttons-pass1"
+    assert index =~ "colony/colony.css?v=workbench-15"
   end
 end

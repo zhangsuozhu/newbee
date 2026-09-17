@@ -94,6 +94,7 @@ defmodule Newbee.Colony.Conversation do
             "busy" => meta["busy"] == true
           }
         end)
+        |> Enum.sort_by(&{&1["current"], &1["id"]}, :desc)
 
       trace =
         Enum.filter(

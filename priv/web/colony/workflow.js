@@ -17,6 +17,13 @@ function rememberDetails(details, taskId, key) {
 }
 const terminal = t => ['done','failed','cancelled'].includes(t.status);
 const name = id => memberById(id)?.display || '已离开的成员';
+function workspaceFailure(t) { return typeof t.next_step === 'string' && /workspace_(unsupported_file|missing|git_failed)/.test(t.next_step); }
+function canChangeCwd(t) { return !t.workspace && !t.session_id && ['pending', 'claimed', 'blocked'].includes(t.status); }
+function nextStepLabel(t) {
+  if (workspaceFailure(t)) return '执行环境没有启动：工作目录里有不支持的文件或链接。可以先直接重试；若仍失败，请换到具体项目目录。';
+  return t.next_step || '';
+}
+
 function button(label, fn, primary = false) {
   const el = document.createElement('button'); el.type = 'button'; el.className = primary ? 'btn-allow' : 'btn-ghost'; el.textContent = label;
   el.onclick = async () => { el.disabled = true; try { await fn(); } catch(e) { toast(e.message || '操作失败', true); } finally { el.disabled = false; } }; return el;
@@ -29,7 +36,9 @@ async function act(t, action, attrs = {}) {
   try {
     await rpc('colony.work.flow', {colonyId:state.colonyId,taskId:t.id,revision:t.revision,action,...attrs});
     await refresh();
-    const success = {comment:'已补充讨论意见', discuss:'已发起新一轮互评', retry:'已重新发起初步分析', retry_member:'已提交补充说明，正在重试', execute:'已采纳方案，开始实施'}[action];
+    const success = action === 'retry' && workspaceFailure(t)
+      ? '已重新尝试启动执行'
+      : {comment:'已补充讨论意见', discuss:'已发起新一轮互评', retry:'已重新发起初步分析', retry_member:'已提交补充说明，正在重试', execute:'已采纳方案，开始实施'}[action];
     if (success) toast(success);
   } catch (e) {
     if (e?.code === 'timeout') {
@@ -53,25 +62,30 @@ export function workflowLabel(t) {
   if (t.control_state === 'pausing') return '正在暂停，等待确认';
   return t.control_state && t.control_state !== 'running' ? '已暂停' : phases[t.workflow?.phase] || statusLabel(t.status);
 }
-export function renderWorkBoard(flow, ctx) {
+export function renderWorkBoard(flow, ctx, sourceTasks = null) {
   const priority = t => t.status === 'blocked' || t.workflow?.phase === 'choosing' ? 0 : t.status === 'pending_review' ? 1 : 2;
-  const tasks = (state.data?.tasks || []).filter(t => t.workflow && !terminal(t)).sort((a,b) => priority(a) - priority(b)); if (!tasks.length) return;
-  const panel = document.createElement('section'); panel.className = 'work-board'; panel.setAttribute('aria-label','当前协作任务');
+  const tasks = (sourceTasks || state.data?.tasks || []).filter(t => t.workflow && !terminal(t)).sort((a,b) => priority(a) - priority(b)); if (!tasks.length) return;
+  const panel = document.createElement('section'); panel.className = 'work-board'; panel.setAttribute('aria-label','协作工作');
+  const boardHead = document.createElement('div'); boardHead.className = 'work-section-head';
+  boardHead.innerHTML = '<h2>协作工作</h2><span>需要多步判断或多人协作的工作</span>';
   const tabs = document.createElement('div'); tabs.className = 'work-tabs';
   const focused = tasks.find(t => t.id === state.focusedWork) || tasks.find(t => t.workflow.phase === 'choosing') || tasks[0];
   for (const t of tasks) {
-    const tab = button(`${t.title.slice(0,30)} · ${workflowLabel(t)}`, () => { state.focusedWork = t.id; const host = document.createElement('div'); renderWorkBoard(host,ctx); panel.replaceWith(host.querySelector('.work-board')); });
+    const tab = button(`${t.title.slice(0,30)} · ${workflowLabel(t)}`, () => { state.focusedWork = t.id; const host = document.createElement('div'); renderWorkBoard(host, ctx, sourceTasks); panel.replaceWith(host.querySelector('.work-board')); });
     tab.setAttribute('aria-pressed',String(t.id === focused.id)); tabs.append(tab);
   }
   const jump = button('↑ 查看当前任务', () => flow.querySelector('.work-board')?.scrollIntoView({block:'start',behavior:'smooth'}));
   jump.classList.add('work-jump');
-  panel.append(tabs,buildWorkflowCard(focused,ctx)); flow.append(panel);
+  panel.append(boardHead, tabs, buildWorkflowCard(focused,ctx)); flow.append(panel);
 }
 export function buildWorkflowCard(t, ctx) {
   const w = t.workflow, manage = state.data?.can_manage && !terminal(t), selected = new Set(state.workSelections?.[t.id] || []);
   const card = document.createElement('article'); card.className = 'work-flow-card'; card.dataset.taskId = t.id;
   const head = document.createElement('div'); head.className = 'work-flow-head'; head.innerHTML = `<strong>${esc(t.title)}</strong><span class="chip-mini accent">${esc(workflowLabel(t))}</span>`;
-  card.append(head,paragraph(`${name(t.assigned_bee_id)} 负责 · 互评 ${w.round}/2 轮`,'work-flow-owner'));
+  const title = head.querySelector('strong'); title.tabIndex = 0; title.setAttribute('role', 'button');
+  title.onclick = () => ctx.openTask(t.id, t.title);
+  title.onkeydown = e => { if (['Enter', ' '].includes(e.key)) { e.preventDefault(); title.click(); } };
+  card.append(head,paragraph(`${name(t.assigned_bee_id)} 负责`,'work-flow-owner'));
   // 判断依据默认收起：卡面上先给结论，想追原因再展开。
   if (w.reason) {
     const why = document.createElement('details'); why.className = 'work-why';
@@ -88,7 +102,10 @@ export function buildWorkflowCard(t, ctx) {
   const bar = document.createElement('div'); bar.className = 'work-flow-bar';
   order.forEach((phase, i) => { const cell = document.createElement('i'); if (i <= index) cell.className = 'on'; if (i === index) cell.setAttribute('aria-current','step'); bar.append(cell); });
   const now = document.createElement('div'); now.className = 'work-flow-now'; now.textContent = `${phases[w.phase] || statusLabel(t.status)} · ${index + 1}/${order.length}`;
-  steps.append(bar, now); card.append(steps);
+  steps.append(bar, now);
+  const process = document.createElement('details'); process.className = 'work-process';
+  const processTitle = document.createElement('summary'); processTitle.textContent = '协作阶段与互评';
+  process.append(processTitle, steps, paragraph(`互评 ${w.round || 0}/2 轮`)); card.append(process);
   const proposals = document.createElement('div'); proposals.className = 'work-proposals';
   for (const p of w.proposals || []) {
     const child = (state.data?.tasks || []).find(c => c.id === p.task_id);
@@ -118,7 +135,7 @@ export function buildWorkflowCard(t, ctx) {
       if(manage) item.append(button('补充并重试',async () => { const input = await form('继续当前阶段',[{name:'text',label:'答复或补充说明',multiline:true,required:true}],'重试'); if(input) await act(t,'retry_member',{memberTaskId:p.task_id,text:input.text}); }));
     }
     if(w.phase === 'choosing' && manage) item.append(button('选它执行',() => act(t,'execute',{assignments:[{bee_id:p.bee_id}],text:'采纳该成员方案，按讨论补充实施并验证。'}),true));
-    if(child?.session_id) item.append(button('查看调查过程',() => ctx.openConversation(child.session_id,child.assigned_bee_id)));
+    if(child?.session_id) item.append(button('打开执行会话',() => ctx.openConversation(child.session_id,child.assigned_bee_id)));
     proposals.append(item);
   }
   if(proposals.childElementCount) {
@@ -131,7 +148,12 @@ export function buildWorkflowCard(t, ctx) {
     } else card.append(proposals);
   }
   for(const id of w.children || []) { const child = (state.data?.tasks || []).find(c => c.id === id); if(!child) continue; const row = document.createElement('div'); row.className = 'work-assignment'; row.append(paragraph(`${name(child.assigned_bee_id)} · ${child.title} · ${child.integration_required && child.status === 'pending_review' ? '已提交，待负责人集成' : statusLabel(child.status)}`),button('查看分工',() => ctx.openTask(child.id,child.title))); card.append(row); }
-  if(t.next_step && t.status === 'blocked') card.append(paragraph(t.next_step,'work-flow-next'));
+  if(t.next_step && t.status === 'blocked') card.append(paragraph(nextStepLabel(t),'work-flow-next'));
+  if (t.cwd) {
+    const cwd = document.createElement('div'); cwd.className = 'work-cwd';
+    cwd.innerHTML = `<span class="work-label">执行目录</span><span class="work-cwd-path" title="${esc(t.cwd)}">${esc(t.cwd)}</span>`;
+    card.append(cwd);
+  }
   if((w.comments || []).length) {
     const details = document.createElement('details'); const title = document.createElement('summary');
     title.textContent = `人的补充 · ${w.comments.length}`;
@@ -146,7 +168,14 @@ export function buildWorkflowCard(t, ctx) {
     card.append(details);
   }
   const actions = document.createElement('div'); actions.className = 'work-flow-actions';
+  if (t.status === 'pending_review' || t.status === 'done') actions.append(button('查看成果', () => ctx.openTask(t.id, t.title, 'results'), true));
   if(!terminal(t) && !['executing','integrating'].includes(w.phase)) actions.append(button('补充讨论意见',async () => { const input = await form('给任务补充意见',[{name:'text',label:'约束、分歧或希望的方案',multiline:true,required:true}],'发送'); if(input) await act(t,'comment',input); }));
+  const paused = t.control_state && t.control_state !== 'running';
+  if (manage && t.control_state === 'paused') actions.append(button('继续执行', async () => { await rpc('colony.control',{colonyId:state.colonyId,scope:'work',targetId:t.id,action:'resume'}); await refresh(); toast('已恢复这项工作，执行器会继续处理'); }, true));
+  if (manage && canChangeCwd(t)) {
+    actions.append(button('更换工作目录', () => ctx.openDirectory(t.id)));
+  }
+
   if(manage) {
     if(w.phase === 'choosing') {
       actions.append(button('让所选 Bee 分工执行',async () => {
@@ -157,12 +186,21 @@ export function buildWorkflowCard(t, ctx) {
       }));
       const discuss = button('再互评一轮',() => act(t,'discuss')); discuss.disabled = w.round >= 2; actions.append(discuss);
     }
-    if(w.phase === 'triage' && t.status === 'blocked') actions.append(button('重试初步分析',() => act(t,'retry')));
-    if(['executing','integrating'].includes(w.phase) && t.status === 'blocked' && t.waiting_for !== 'children') actions.append(button('答复并继续',async () => { const input = await form('继续实施',[{name:'text',label:t.next_step || '补充要求',multiline:true,required:true}]); if(input) await guard(() => rpc('colony.work.continue',{colonyId:state.colonyId,taskId:t.id,revision:t.revision,text:input.text}).then(refresh))(); }));
-    const paused = t.control_state && t.control_state !== 'running';
+      if (w.phase === 'triage' && ['blocked','claimed'].includes(t.status)) {
+        const retryLabel = workspaceFailure(t) ? '重试执行' : '继续初步分析';
+        actions.append(button(retryLabel, () => act(t, 'retry'), true));
+      }
+    if (['executing','integrating'].includes(w.phase) && t.status === 'blocked' && t.waiting_for !== 'children') {
+      if (workspaceFailure(t)) actions.append(button('重试执行', async () => {
+        await rpc('colony.work.continue',{colonyId:state.colonyId,taskId:t.id,revision:t.revision,text:'执行环境已修复，请在当前工作目录继续。'});
+        await refresh(); toast('已重新发起执行');
+      }, true));
+      else actions.append(button('答复并继续',async () => { const input = await form('继续实施',[{name:'text',label:t.next_step || '补充要求',multiline:true,required:true}]); if(input) await guard(() => rpc('colony.work.continue',{colonyId:state.colonyId,taskId:t.id,revision:t.revision,text:input.text}).then(refresh))(); }, true));
+    }
+    // 低频操作收进「更多」，卡面上只留你此刻要做的决定。
     // 低频操作收进「更多」，卡面上只留你此刻要做的决定。
     const lowFreq = [['工作详情', () => ctx.openTask(t.id, t.title)]];
-    if (t.session_id) lowFreq.push(['查看执行过程', () => ctx.openConversation(t.session_id, t.assigned_bee_id)]);
+    if (t.session_id) lowFreq.push(['打开执行会话', () => ctx.openConversation(t.session_id, t.assigned_bee_id)]);
     lowFreq.push([paused ? '恢复任务' : '暂停任务', async () => {
       const action = paused ? 'resume' : 'pause';
       await rpc('colony.control',{colonyId:state.colonyId,scope:'work',targetId:t.id,action});
@@ -199,7 +237,12 @@ export function buildWorkflowCard(t, ctx) {
   const line = document.createElement('summary');
   line.className = 'work-flow-fold-head';
   line.innerHTML = head.innerHTML;
+  const direct = line.querySelector('strong');
+  direct.tabIndex = 0; direct.setAttribute('role', 'button');
+  direct.onclick = event => { event.preventDefault(); event.stopPropagation(); ctx.openTask(t.id, t.title); };
+  direct.onkeydown = event => { if (['Enter', ' '].includes(event.key)) { event.preventDefault(); event.stopPropagation(); ctx.openTask(t.id, t.title); } };
   folded.append(line, card);
+
   folded.addEventListener('toggle', () => {
     if (folded.open) openFolds.add(t.id);
     else openFolds.delete(t.id);

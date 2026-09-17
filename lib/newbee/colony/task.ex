@@ -52,6 +52,7 @@ defmodule Newbee.Colony.Task do
       "evidence" => [],
       "limitations" => [],
       "session_id" => Map.get(attrs, "session_id"),
+      "cwd" => Map.get(attrs, "cwd"),
       "source" => Map.get(attrs, "source") || "user",
       "budget" => Map.merge(@default_budget, Map.get(attrs, "budget") || %{}),
       "revision" => 0,

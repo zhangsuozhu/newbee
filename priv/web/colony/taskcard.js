@@ -1,4 +1,4 @@
-import { buildWorkflowCard } from './workflow.js';
+import { buildWorkflowCard } from './workflow.js?v=workbench-2';
 import { cardMenu, esc, absTime, fmtAgo, statusLabel } from './util.js';
 import { state, memberById, refresh } from './store.js';
 import { rpc, toast } from './api.js';
@@ -6,6 +6,10 @@ import { form, confirmAction } from './forms.js';
 import { renderInline, renderMarkdown } from './md.js';
 
 export function isTerminal(status) { return ['done', 'failed', 'cancelled'].includes(status); }
+function workspaceFailure(task) { return typeof task.next_step === 'string' && /workspace_(unsupported_file|missing|git_failed)/.test(task.next_step); }
+function canChangeCwd(task) { return !task.workspace && !task.session_id && ['pending', 'claimed', 'blocked'].includes(task.status); }
+function nextStepLabel(task) { return workspaceFailure(task) ? '执行环境没有启动：工作目录里有不支持的文件或链接。可以先直接重试；若仍失败，请换到具体项目目录。' : task.next_step || ''; }
+
 function shortTitle(text, max = 34) {
   const s = String(text || '').replace(/^\s*(请?帮我|帮忙)?(完成|做|处理)[:：]?\s*/, '').trim();
   return s.length > max ? s.slice(0, max) + '…' : s;
@@ -32,12 +36,23 @@ export function buildTaskCard(task, ctx, opts = {}) {
     `<span class="work-time" title="${esc(absTime(stamp))}">${esc(fmtAgo(stamp))}</span>`;
   const head = document.createElement('div'); head.className = 'work-head'; head.innerHTML = headMarkup;
   node.append(head);
-  if (opts.compact) return node;
+  if (!opts.compact) {
+    const title = head.querySelector('.work-title');
+    title.tabIndex = 0; title.setAttribute('role', 'button');
+    title.onclick = () => ctx.openTask(task.id, task.title);
+    title.onkeydown = e => { if (['Enter', ' '].includes(e.key)) { e.preventDefault(); title.click(); } };
+  }
+  if (opts.compact) {
+    head.tabIndex = 0; head.setAttribute('role', 'button');
+    head.onclick = () => ctx.openTask(task.id, task.title);
+    head.onkeydown = event => { if (['Enter', ' '].includes(event.key)) { event.preventDefault(); head.click(); } };
+    return node;
+  }
   const body = document.createElement('div'); body.className = 'work-body';
   const brief = [];
   if (bee) brief.push(`<span class="work-label">负责人</span><span class="work-value">${esc(bee.display)}${task.owner_kind === 'human' ? ' · 真人' : ''}</span>`);
   if (task.activity) brief.push(`<span class="work-label">最近</span><span class="work-value">${renderInline(task.activity)}</span>`);
-  const nextStep = task.integration_required && ['claimed','running'].includes(task.status) ? '按已确认分工实施，完成后提交负责人集成。' : task.next_step;
+  const nextStep = task.integration_required && ['claimed','running'].includes(task.status) ? '按已确认分工实施，完成后提交负责人集成。' : nextStepLabel(task);
   if (nextStep) {
     const next = document.createElement('div'); next.className = 'work-next';
     next.innerHTML = `<span class="work-label">下一步</span><span class="work-next-text">${renderInline(nextStep)}</span>`;
@@ -51,6 +66,11 @@ export function buildTaskCard(task, ctx, opts = {}) {
       next.appendChild(more);
     }
     body.append(next);
+  }
+  if (task.cwd) {
+    const cwd = document.createElement('div'); cwd.className = 'work-cwd';
+    cwd.innerHTML = `<span class="work-label">执行目录</span><span class="work-cwd-path" title="${esc(task.cwd)}">${esc(task.cwd)}</span>`;
+    body.append(cwd);
   }
   if (task.waiting_for === 'user') {
     const wait = document.createElement('div'); wait.className = 'work-ask'; wait.textContent = '需要你决定后才能继续';
@@ -71,6 +91,10 @@ ${Array.isArray(value) ? value.map(v => typeof v === 'string' ? v : JSON.stringi
   const actions = document.createElement('div'); actions.className = 'honey-actions work-actions';
   // 主操作（最多两个）留在卡面上；其余收进「更多」，避免一排按钮把卡片压成工具栏。
   const menu = [];
+  if (task.status === 'pending_review') {
+    const review = document.createElement('button'); review.type = 'button'; review.className = 'btn-allow';
+    review.textContent = '查看成果'; review.onclick = () => ctx.openTask(task.id, task.title, 'results'); actions.append(review);
+  }
   menu.push(['查看工作', () => ctx.openTask(task.id, task.title)]);
   if (task.session_id) menu.push(['打开执行会话', () => ctx.openConversation(task.session_id, task.assigned_bee_id)]);
   const cleanableWorkspace = task.workspace && ['filesystem_copy', 'git_worktree'].includes(task.workspace.kind) && task.workspace.review_status !== 'cleaned';
@@ -92,7 +116,13 @@ ${Array.isArray(value) ? value.map(v => typeof v === 'string' ? v : JSON.stringi
         if (yes) await control(task, 'interrupt');
       }]);
     }
-    if (task.approval_required || task.status === 'blocked') actions.append(action(task.mode === 'proposal' ? '采纳方案并实施' : '答复并继续', async () => {
+    if (state.data?.can_manage && task.control_state === 'paused') actions.append(action('继续执行', guard(() => control(task, 'resume'))));
+    if (state.data?.can_manage && canChangeCwd(task)) actions.append(action('更换工作目录', () => ctx.openDirectory(task.id), true));
+    if (task.approval_required || task.status === 'blocked') actions.append(action(workspaceFailure(task) ? '重试执行' : task.mode === 'proposal' ? '采纳方案并实施' : '答复并继续', async () => {
+      if (workspaceFailure(task)) {
+        await guard(() => rpc('colony.work.continue', {colonyId:state.colonyId, taskId:task.id, revision:task.revision, text:'执行环境已修复，请在当前工作目录继续。'}).then(refresh))();
+        return;
+      }
       const answer = await form(task.question?.question || '继续这项工作', [{name:'text', label:'决定或补充要求', multiline:true, required:true, value:task.mode === 'proposal' ? '按该方案实施，完成后给出验证证据。' : ''}], '继续');
       if (answer) await guard(() => rpc('colony.work.continue', {colonyId:state.colonyId, taskId:task.id, revision:task.revision, text:answer.text}).then(refresh))();
     }));
@@ -118,7 +148,12 @@ ${Array.isArray(value) ? value.map(v => typeof v === 'string' ? v : JSON.stringi
   const line = document.createElement('summary');
   line.className = 'work-head';
   line.innerHTML = headMarkup;
+  const direct = line.querySelector('.work-title');
+  direct.tabIndex = 0; direct.setAttribute('role', 'button');
+  direct.onclick = event => { event.preventDefault(); event.stopPropagation(); ctx.openTask(task.id, task.title); };
+  direct.onkeydown = event => { if (['Enter', ' '].includes(event.key)) { event.preventDefault(); event.stopPropagation(); ctx.openTask(task.id, task.title); } };
   folded.append(line, node);
+
   return folded;
 }
 
@@ -142,7 +177,7 @@ async function revise(task) {
   const changes = {revision:task.revision, constraints:result.constraints.split('\n').filter(Boolean), acceptance:result.acceptance.split('\n').filter(Boolean)};
   await rpc('colony.work.revise', {colonyId:state.colonyId, taskId:task.id, changes}); await refresh();
 }
-async function collaborate(task) {
+export async function collaborate(task) {
   const result = await form('请成员处理独立子工作', [{name:'title', label:'要交付什么', required:true}, {name:'assigned_bee_id', label:'负责人', options:(state.data?.members || []).map(b => ({value:b.id, label:b.display}))}, {name:'description', label:'边界、输入和集成方式', required:true, multiline:true}], '创建待授权子工作');
   if (result) { await rpc('colony.work.collaborate', {colonyId:state.colonyId, taskId:task.id, children:[result]}); await refresh(); }
 }
@@ -160,7 +195,4 @@ function sameBrief(a, b) {
   const head = (s) => s.slice(0, 40);
   return x.length > 20 && y.length > 20 && (x.includes(head(y)) || y.includes(head(x)));
 }
-
-
-
 

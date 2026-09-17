@@ -16,3 +16,5 @@ html:not(.workspace-surface) #sidebar,
 html:not(.workspace-surface) #sidebar-expand,
 html:not(.workspace-surface) #topbar { display: none !important; }
 html:not(.workspace-surface) #app { grid-template-columns: minmax(0, 1fr); }
+/* Inspecting execution never opens an implicit second input target. */
+.execution-inspection:not(.execution-guidance) #composer { display: none !important; }

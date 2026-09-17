@@ -33,6 +33,35 @@ defmodule Newbee.Colony.ExecutionV2Test do
     assert {:ok, %{"status" => "pending_review"}} = Store.get_task(task["id"])
   end
 
+  test "AI 工作失去心跳且没有活动投递时进入待核对状态", %{cid: cid, actor: actor} do
+    {:ok, task} = Work.create(cid, %{"title" => "无心跳工作"})
+
+    Store.all("deliveries")
+    |> Enum.filter(&(&1["task_id"] == task["id"]))
+    |> Enum.each(fn delivery -> assert :ok = Store.delete("deliveries", delivery["id"]) end)
+
+    assert {:ok, _} =
+             Store.update("tasks", task["id"], nil, fn current ->
+               {:ok,
+                Map.merge(current, %{"status" => "running", "claimed_at" => 0, "heartbeat_at" => 0, "owner_kind" => nil})}
+             end)
+
+    assert :ok = Runtime.sweep()
+    assert {:ok, stale} = Store.get_task(task["id"])
+    assert stale["status"] == "blocked"
+    assert stale["waiting_for"] == "user"
+    assert stale["next_step"] =~ "没有心跳"
+    assert stale["owner_kind"] == "ai"
+    assert {:ok, continued} = Work.continue(cid, task["id"], "检查后继续", actor)
+    assert continued["status"] == "claimed"
+    assert Enum.any?(Store.all("deliveries"), &(&1["task_id"] == task["id"] and &1["status"] == "pending"))
+
+    assert Enum.any?(
+             Store.trace_for_colony(cid),
+             &(&1["task_id"] == task["id"] and &1["data"]["reason"] == "heartbeat_timeout")
+           )
+  end
+
   test "receiver rechecks pause and acknowledges a retried delivery only once", %{
     cid: cid,
     actor: actor

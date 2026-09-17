@@ -1,37 +1,62 @@
 /* newbee WebUI 前端（移植 dsh client/web 会话 shell 语义，无构建依赖原生 JS）。
  * 信道：REST RPC（POST /api/<method>）+ WebSocket 事件下行（/ws?session=）。 */
 (() => {
-  // 嵌入在蜂群主页里的会话：宿主只能开关面板（终端 / Mission Control），别的都不许动。
+  // The embedded workspace has an explicit inspection/guidance scope controlled by its trusted parent.
   function embedMode() { return new URLSearchParams(location.search).get("embed") === "1"; }
   function notifyEmbedPanel(panel, open) {
     if (!embedMode() || window.parent === window) return;
-    window.parent.postMessage({newbeeWorkspace: "panel", panel, open, sessionId: state.sid}, location.origin);
+    window.parent.postMessage({newbeeWorkspace: "panel", panel, open, sessionId: state.sid, inspectionId}, location.origin);
+  }
+  const inspectionMode = new URLSearchParams(location.search).get('inspect') === '1';
+  const inspectionId = new URLSearchParams(location.search).get('inspectionId');
+  let inspectionReady = false, guidanceEnabled = false;
+  function inspectionNotify(type, payload = {}) {
+    workspaceNotify(type, {sessionId: state.sid || new URLSearchParams(location.search).get('session'), inspectionId, ...payload});
+  }
+  function setGuidance(enabled) {
+    guidanceEnabled = enabled;
+    document.documentElement.classList.toggle('execution-guidance', enabled);
+    const composer = $('composer');
+    if (inspectionMode && composer) composer.classList.toggle('hidden', !enabled);
+    if (inspectionMode) inspectionNotify('guidance', {enabled});
+    if (enabled) $('input')?.focus({preventScroll: true});
   }
   function initEmbedPanels() {
-    let lastCommandId = null;
-    window.addEventListener("message", (event) => {
-      if (event.origin !== location.origin) return;
+    const commands = new Map();
+    if (inspectionMode) setGuidance(false);
+
+    window.addEventListener("message", async (event) => {
+      if (event.origin !== location.origin || event.source !== window.parent) return;
       const data = event.data || {};
       if (data.sessionId && data.sessionId !== state.sid) return;
-      // 宿主的蜂群页只允许开关面板，以及把用户在成员视图里写的话转进来。
+      if (inspectionMode && data.inspectionId && data.inspectionId !== inspectionId) return;
+      if (data.newbeeCommand === 'inspect-status' && inspectionReady) inspectionNotify('session-ready');
+      if (data.newbeeCommand === 'guide' && inspectionReady) setGuidance(true);
+      if (data.newbeeCommand === 'quote') {
+        const selection = window.getSelection();
+        const element = selection?.anchorNode?.parentElement;
+        const record = element?.closest('[data-seq], [data-id], .msg');
+        inspectionNotify('quote', {text: selection?.toString() || '', recordId: record?.dataset.seq || record?.dataset.id || record?.id || null});
+      }
+      // Only the trusted parent may submit a command, with a fixed session and request id.
+
       if (data.newbeeCommand === "panel") {
         if (data.panel === "terminal") setTerminalPanel(!!data.open);
         if (data.panel === "monitor") setMCOpen(!!data.open);
       }
-      if (data.newbeeCommand === "send" && typeof data.text === "string" && data.text.trim()) {
-        // 宿主会重发直到收到回执（iframe 刚挂上时可能还没绑定会话）；
-        // 同一个 commandId 只执行一次，重发只补回执，不会把这句话发两遍。
-        if (data.commandId && data.commandId === lastCommandId) {
-          window.parent.postMessage({newbeeWorkspace: "sent", commandId: data.commandId}, location.origin);
-          return;
+      if (data.newbeeCommand === 'send' && typeof data.text === 'string' && data.text.trim()) {
+        if (!data.commandId || !inspectionReady || !state.sid) return;
+        let request = commands.get(data.commandId);
+        if (!request) {
+          setGuidance(true);
+          request = send(data.text, true, data.commandId).then(result => result || {status: 'rejected', message: '未提交，请在执行输入区重试'});
+          commands.set(data.commandId, request);
         }
-        if (!state.sid) return; // 会话还没就绪，等宿主下一次重发
-        lastCommandId = data.commandId || null;
-        send(data.text);
-        window.parent.postMessage({newbeeWorkspace: "sent", commandId: data.commandId}, location.origin);
+        const result = await request;
+        inspectionNotify('sent', {commandId: data.commandId, ...result});
       }
     });
-    // iframe 会吞掉键盘事件；对话无弹窗/面板/忙碌任务时，把 Escape 交回宿主返回上一级。
+    // Escape closes local panels first; it never silently navigates away or cancels execution.
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       const modalOpen = document.querySelector("dialog[open], .modal:not(.hidden), #cmd-palette:not(.hidden), #qa-overlay:not(.hidden), #login-overlay:not(.hidden)");
@@ -50,12 +75,13 @@
         $("terminal-close")?.click();
         return;
       }
-      if (state.busy || (event.target !== $("input") && event.target !== document.body)) return;
+      if (!inspectionMode) return;
       event.preventDefault();
-      event.stopPropagation();
-      workspaceNotify("closed");
+      event.stopImmediatePropagation();
+      if (event.target !== $('input') || !guidanceEnabled) inspectionNotify('close-inspector');
     }, true);
-    workspaceNotify("ready");
+    workspaceNotify('ready');
+    if (inspectionReady) inspectionNotify('session-ready');
   }
 
   // 复制文本：优先 Clipboard API；不安全上下文（例如用 http://局域网IP 打开）里
@@ -4424,9 +4450,10 @@ case "goal_round": break;
     dirState.hidden = false;
     $("dir-hidden-toggle").checked = false;
     $("dir-new-name").value = "";
+    const requestedCwd = new URLSearchParams(location.search).get("cwd");
     try {
       const home = await rpc("workspace.home", {});
-      dirState.cur = home.home || "/";
+      dirState.cur = requestedCwd || state.cwd || home.home || "/";
       try {
         const listing = await rpc("workspace.listDir", { path: dirState.cur });
         renderDirPicker(listing);
@@ -4525,7 +4552,8 @@ case "goal_round": break;
     const picked = dirState.cur;
     if (!picked) return;
     if (!state.sid) {
-      workspaceNotify("changed", {cwd: picked});
+      const taskId = new URLSearchParams(location.search).get("task");
+      workspaceNotify("changed", {cwd: picked, taskId: taskId || null});
       closeDirPicker();
       return;
     }
@@ -4632,6 +4660,7 @@ case "goal_round": break;
 
   async function resume(sid) {
     const seq = ++resumeSeq;
+    inspectionReady = false;
     const stale = () => seq !== resumeSeq || state.sid !== sid;
     disconnectSocket();
     exitGroupMode();
@@ -4720,6 +4749,8 @@ case "goal_round": break;
     const firstUser = (hist.messages || []).find(m => m && m.role === "user");
     const title = firstUser ? String(firstUser.content || "").replace(/\s+/g, " ").trim().slice(0, 48) : "";
     $("session-title").textContent = title || (hasUserMessage ? sid : "新会话");
+    inspectionReady = true;
+    if (inspectionMode) inspectionNotify('session-ready');
   }
 
   function renderWelcome() {
@@ -4851,8 +4882,11 @@ case "goal_round": break;
     MC._replaying = false;
     MC.steps = [];
     renderMCSteps();
-    initInfiniteHistory();
     scrollBottom(true);
+    const renderedSid = state.sid;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (state.sid === renderedSid && state.stickBottom) scrollBottom(true);
+    }));
   }
 
 
@@ -5262,102 +5296,65 @@ case "goal_round": break;
   }
 
   function renderLoadMoreBtn(remaining) {
-    const flowEl = $("flow");
-    const btn = document.createElement("div");
-    btn.className = "load-more-btn";
-    btn.id = "load-more";
-    btn.innerHTML = `<button class="btn-ghost" style="margin:8px auto;display:block;font-size:12px">↑ 加载更早 ${remaining} 条消息</button>`;
-    const button = btn.querySelector("button");
-    if (button) {
-      button.addEventListener("focus", () => { historyButtonFocused = true; });
-      button.addEventListener("blur", () => { historyButtonFocused = false; });
-      button.addEventListener("mousedown", (event) => event.preventDefault());
+    const flowEl = $('flow');
+    let region = $('load-more');
+    if (!region) {
+      region = document.createElement('div'); region.id = 'load-more'; region.className = 'load-more-btn';
+      const button = document.createElement('button'); button.className = 'btn-ghost'; button.type = 'button';
+      button.style.cssText = 'margin:8px auto;display:block;font-size:12px';
+      button.addEventListener('click', () => { void loadEarlier(); });
+      const status = document.createElement('span'); status.setAttribute('role', 'status');
+      region.append(button, status); flowEl.insertBefore(region, flowEl.firstChild);
     }
-    btn.addEventListener("click", () => loadEarlier());
-    flowEl.insertBefore(btn, flowEl.firstChild);
+    const button = region.querySelector('button');
+    button.textContent = remaining > 0 ? `↑ 查看更早的 ${Math.min(HISTORY_PAGE, remaining)} 条 · 还有 ${remaining} 条` : '已到会话开头';
+    button.setAttribute('aria-disabled', String(remaining <= 0));
+    region.removeAttribute('aria-busy');
   }
-  let historyButtonFocused = false;
-  let loadingEarlier = false; // 防重入
+  let loadingEarlier = false;
   async function loadEarlier() {
     if (loadingEarlier || historyOffset <= 0) return;
+    const sid = state.sid, generation = resumeSeq;
+    const transcriptEl = $('transcript'), flowEl = $('flow'), region = $('load-more');
+    if (!region) return;
     loadingEarlier = true;
-    const restoreHistoryFocus = historyButtonFocused;
-    historyButtonFocused = false;
-    const stickBottom = state.stickBottom;
+    region.setAttribute('aria-busy', 'true');
+    region.querySelector('button').setAttribute('aria-disabled', 'true');
+    region.querySelector('button').textContent = '正在显示更早消息…';
+    const anchor = Array.from(flowEl.children).find(node => node !== region && node.classList.contains('msg'));
+    const anchorTop = anchor?.getBoundingClientRect().top;
+    const scrollTop = transcriptEl.scrollTop, stickBottom = state.stickBottom;
+    const behavior = transcriptEl.style.scrollBehavior, overflowAnchor = transcriptEl.style.overflowAnchor;
+    const offset = historyOffset, start = Math.max(0, offset - HISTORY_PAGE);
+    const existing = new Set(flowEl.childNodes);
     state.stickBottom = false;
-    let transcriptEl = null;
-    let overflowAnchor = "";
-    let behavior = "";
+    transcriptEl.style.scrollBehavior = 'auto'; transcriptEl.style.overflowAnchor = 'none';
     try {
-      const flowEl = $("flow");
-      transcriptEl = $("transcript");
-      behavior = transcriptEl.style.scrollBehavior;
-      transcriptEl.style.scrollBehavior = "auto";
-      overflowAnchor = transcriptEl.style.overflowAnchor;
-      transcriptEl.style.overflowAnchor = "none";
-      const oldHeight = transcriptEl.scrollHeight;
-      const oldScrollTop = transcriptEl.scrollTop;
-
-      // 先记录旧按钮仍在场时的锚点，再移除按钮避免把它当历史内容复挂。
-      const oldBtn = $("load-more");
-      const oldNodes = Array.from(flowEl.childNodes).filter((node) => node !== oldBtn);
-      const anchor = oldNodes.find((node) => node.nodeType === 1 && node.classList.contains("msg"));
-      const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
-      if (oldBtn) oldBtn.remove();
-      flowEl.innerHTML = ""; // 清空 flow 本身保留
-
-      const newSkip = Math.max(0, historyOffset - HISTORY_PAGE);
-      const start = newSkip;
-      const end = historyOffset;
-      historyOffset = newSkip;
-
-      // 更早消息渲染进空 flow：appendChild 天然从头到尾顺序正确
       MC._replaying = true;
-      allHistoryMsgs.slice(start, end).forEach((m) => { renderOneMsg(m); });
+      allHistoryMsgs.slice(start, offset).forEach(renderOneMsg);
       MC._replaying = false;
-
-      // 把原有内容整体挂回末尾（更早的在顶部，旧内容在下方）
-      oldNodes.forEach((n) => flowEl.appendChild(n));
-
-      // 仍有更早消息则在最前放按钮
-      if (historyOffset > 0) renderLoadMoreBtn(historyOffset);
-
-      // 等新节点完成布局，按旧锚点校正；没有元素锚点时才退回高度差。
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      if (anchor && anchor.isConnected && anchorTop != null) {
-        const correctAnchor = (base) => {
-          transcriptEl.scrollTop = Math.max(0, base + anchor.getBoundingClientRect().top - anchorTop);
-        };
-        correctAnchor(oldScrollTop);
-        // 浏览器可能在校正帧提交前完成一次 scroll anchoring，再补一次实际误差。
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        correctAnchor(transcriptEl.scrollTop);
-      } else {
-        transcriptEl.scrollTop = Math.max(0, oldScrollTop + transcriptEl.scrollHeight - oldHeight);
-      }
-      if (restoreHistoryFocus && historyOffset > 0) {
-        document.querySelector("#load-more button")?.focus({ preventScroll: true });
+      const generated = Array.from(flowEl.childNodes).filter(node => !existing.has(node));
+      const fragment = document.createDocumentFragment(); generated.forEach(node => fragment.append(node));
+      flowEl.insertBefore(fragment, region.nextSibling);
+      historyOffset = start;
+      renderLoadMoreBtn(start);
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      if (state.sid !== sid || resumeSeq !== generation) return;
+      if (anchor?.isConnected) transcriptEl.scrollTop = Math.max(0, scrollTop + anchor.getBoundingClientRect().top - anchorTop);
+      region.querySelector('[role=status]').textContent = `已显示更早的 ${offset - start} 条消息`;
+    } catch (error) {
+      if (state.sid === sid && resumeSeq === generation) {
+        Array.from(flowEl.childNodes).filter(node => !existing.has(node)).forEach(node => node.remove());
+        historyOffset = offset;
+        renderLoadMoreBtn(offset);
+        region.querySelector('[role=status]').textContent = '显示失败，请重试';
       }
     } finally {
-      if (transcriptEl) {
-        transcriptEl.style.scrollBehavior = behavior;
-        transcriptEl.style.overflowAnchor = overflowAnchor;
-      }
-      state.stickBottom = stickBottom;
+      MC._replaying = false;
+      transcriptEl.style.scrollBehavior = behavior; transcriptEl.style.overflowAnchor = overflowAnchor;
+      if (state.sid === sid && resumeSeq === generation) state.stickBottom = stickBottom;
       loadingEarlier = false;
     }
-  }
-
-  // 触顶自动加载（窗口式渐进：向上滚到顶自动加载更早对话）
-  function initInfiniteHistory() {
-    const t = $("transcript");
-    if (!t || t.dataset.infinityBound) return;
-    t.dataset.infinityBound = "1";
-    t.addEventListener("scroll", () => {
-      if (historyOffset <= 0 || loadingEarlier || state.busy) return;
-      const manual = historyButtonFocused || document.activeElement?.closest?.("#load-more");
-      if (t.scrollTop <= 40 && !manual) loadEarlier();
-    });
   }
 
   // ── 文件附件（上传 / 粘贴 / 预览）──
@@ -5693,7 +5690,10 @@ case "goal_round": break;
     }
   }
   // 发送
-  async function send(forcedText) {
+  async function send(forcedText, requireAck = false, suppliedQueueId = null) {
+    if (inspectionMode && (!inspectionReady || !guidanceEnabled)) return {status: 'rejected', message: '请先点击指导这只 Bee'};
+    if (inspectionMode && /^\/new(?:\s|$)/.test(forcedText ?? input.value)) { line('notice', '请在成员概览中创建新会话，当前检查保持在原执行。'); return {status: 'rejected', message: '当前检查不能切换到新会话'}; }
+    if (requireAck && /^\/(new|btw)(?:\s|$)/.test(forcedText || '')) return {status: 'rejected', message: '请在执行输入区使用会话命令'};
     state.eventCreatedAt = new Date().toISOString();
     const text = (forcedText == null ? input.value : forcedText).trim();
     if (text) setInterrupted(false);
@@ -5732,7 +5732,7 @@ case "goal_round": break;
     }
 
     if ((!text && attachments.length === 0) || !state.sid) return;
-    const queueId = genQueueId();
+    const queueId = suppliedQueueId || genQueueId();
     const wasBusy = state.busy === true;
     if (!wasBusy) state.turnKind = attachments.length > 0 ? "images" : "text";
 
@@ -5770,19 +5770,21 @@ case "goal_round": break;
           text,
           queueId,
         });
-      } else if (state.ws && state.ws.readyState === 1) {
+      } else if (!requireAck && state.ws && state.ws.readyState === 1) {
         state.ws.send(JSON.stringify({ type: "prompt", text, queueId }));
       } else {
         await rpc("session.prompt", { sessionId: state.sid, text, queueId });
       }
       clearAttachments();
+      return {status: 'accepted', queued: wasBusy, message: wasBusy ? '已收到，等待当前步骤结束后处理' : '已收到，等待执行器处理'};
     } catch (e) {
       line("error", e.message);
       state.pendingPrompts.delete(queueId);
       state.queue = (state.queue || []).filter((it) => it && it.id !== queueId);
       renderQueue();
       state.busy = wasBusy; setBusy(wasBusy);
-
+      if (!input.value) { input.value = text; saveDraft(text); autoGrow(); }
+      return {status: 'rejected', message: e.message || '发送失败'};
     }
   }
   function composerCanWhip(busy = state.busy) {
@@ -8824,6 +8826,7 @@ case "goal_round": break;
       const auth = await rpc("auth.status", {});
 
       if (auth.auth_required && !auth.authenticated) {
+        if (inspectionMode) inspectionNotify('session-error', {code: 'unauthorized', message: '登录已过期，请重新登录后重试'});
         if (state.token) setToken(null);
         showLogin();
         return;
@@ -8831,12 +8834,14 @@ case "goal_round": break;
 
       hideLogin();
       try { await bootApp(); } catch (error) {
+        if (inspectionMode) inspectionNotify('session-error', {code: error.code, message: error.message});
         if (workspaceSurface) workspaceNotify("error", {message: error.message});
         else line("error", error.message);
       }
     } catch (e) {
       showLogin();
       loginError(`无法确认登录状态: ${e.message}`);
+      if (inspectionMode) inspectionNotify('session-error', {code: e.code, message: `无法确认登录状态：${e.message}`});
     }
   })();
   // ── 手机扫码免登录进入（Quick Access）──

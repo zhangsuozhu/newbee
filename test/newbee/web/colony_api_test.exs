@@ -31,6 +31,42 @@ defmodule Newbee.Web.ColonyApiTest do
     assert %{"ok" => %{"colonies" => [_]}} = rpc("colony.list", %{})
   end
 
+  test "目录选择会持久化为蜂群默认 cwd，并固定新任务目录", %{cid: cid} do
+    assert %{"ok" => %{"colony" => %{"cwd" => "/"}}} =
+             rpc("colony.cwd", %{"colonyId" => cid, "cwd" => "/"})
+
+    assert %{"ok" => view} = rpc("colony.view", %{"colonyId" => cid})
+    assert view["colony"]["cwd"] == "/"
+
+    {:ok, bee} = Engine.add_bee(cid, %{"display" => "cwd-bee", "kind" => "ai"})
+
+    assert %{"ok" => result} =
+             rpc("colony.say", %{"colonyId" => cid, "text" => "让 cwd-bee 做 cwd 测试", "cwd" => "/"})
+
+    assert [task] = result["tasks"]
+    assert task["cwd"] == "/"
+    assert task["assigned_bee_id"] == bee["id"]
+  end
+
+  test "任务详情可在启动前单独切换 cwd，不改变蜂群默认目录", %{cid: cid} do
+    {:ok, before} = Engine.view(cid)
+    default_cwd = before["colony"]["cwd"]
+    {:ok, task} = Work.create(cid, %{"title" => "待切换目录的工作"})
+
+    assert %{"ok" => %{"task" => updated}} =
+             rpc("colony.work.cwd", %{"colonyId" => cid, "taskId" => task["id"], "cwd" => "/"})
+
+    assert updated["cwd"] == "/"
+
+    [delivery] = Enum.filter(Store.all("deliveries"), &(&1["task_id"] == task["id"]))
+    assert delivery["status"] == "pending"
+    assert delivery["context_revision"] == updated["context_revision"]
+
+    assert {:ok, stored} = Store.get_task(task["id"])
+    assert stored["cwd"] == "/"
+    assert %{"colony" => %{"cwd" => ^default_cwd}} = Engine.view(cid) |> elem(1)
+  end
+
   test "incremental view detects rename below another record revision and control changes", %{cid: cid} do
     {:ok, bee} = Engine.add_bee(cid, %{"display" => "revision fixture", "kind" => "ai"})
     :ok = Store.put_bee(Map.put(bee, "revision", 999))
@@ -80,6 +116,13 @@ defmodule Newbee.Web.ColonyApiTest do
     assert [task] = result["tasks"]
     assert task["assigned_bee_id"] == bee["id"]
     assert task["session_id"] == nil
+
+    assert result["receipt"] == %{
+             "status" => "accepted",
+             "message" => result["reply"],
+             "task_ids" => [task["id"]]
+           }
+
     assert length(Store.all("deliveries")) == 1
 
     assert %{"ok" => again} =
@@ -93,6 +136,7 @@ defmodule Newbee.Web.ColonyApiTest do
     assert length(Store.all("deliveries")) == 1
     assert %{"ok" => progress} = rpc("colony.say", %{"colonyId" => cid, "text" => "进展如何"})
     assert progress["reply"] =~ "进度"
+    assert progress["receipt"]["status"] == "accepted"
   end
 
   test "AI state cannot be manually completed and old dispatch methods are closed", %{cid: cid} do

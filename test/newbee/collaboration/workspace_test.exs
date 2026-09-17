@@ -109,6 +109,13 @@ defmodule Newbee.Collaboration.WorkspaceTest do
     refute File.exists?(Path.join(workspace["path"], ".appimage-cache"))
     assert {:ok, _} = Workspace.cleanup(terminal_task(workspace, "rejected"))
 
+    agents_link = Path.join(root, ".agents/skills/git-commit-conventions")
+    File.mkdir_p!(Path.dirname(agents_link))
+    File.ln_s!(root, agents_link)
+    assert {:ok, tool_workspace} = Workspace.prepare(root, "child-tool-links", :auto)
+
+    assert {:ok, _} = Workspace.cleanup(terminal_task(tool_workspace, "rejected"))
+
     File.ln_s!(Path.join(root, "base.txt"), Path.join(root, "source-link.txt"))
 
     assert {:error, "workspace_unsupported_file", message} =

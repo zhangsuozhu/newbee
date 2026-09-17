@@ -10,7 +10,7 @@ defmodule Newbee.Web.ColonyApi do
 
   alias Newbee.Colony.Engine
 
-  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.dissolve colony.view colony.drill colony.workspace.cleanup colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow)
+  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.cwd colony.dissolve colony.view colony.drill colony.workspace.cleanup colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.cwd colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow)
 
   @doc "dispatch/2 返回 {:ok, value} | {:error, code, message}。"
   def dispatch("colony.invite.redeem", p),
@@ -146,7 +146,8 @@ defmodule Newbee.Web.ColonyApi do
                 context: p["context"],
                 upload_ids: p["uploadIds"] || [],
                 upload_sid: p["uploadSid"],
-                request_id: p["requestId"]
+                request_id: p["requestId"],
+                cwd: p["cwd"]
               )
             end
           end
@@ -170,6 +171,7 @@ defmodule Newbee.Web.ColonyApi do
               "assignee_display" => p["assignee"],
               "parent_task_id" => p["parentTaskId"],
               "actor_bee_id" => actor["id"],
+              "cwd" => p["cwd"],
               "workflow" => true
             })
 
@@ -177,6 +179,16 @@ defmodule Newbee.Web.ColonyApi do
 
         "colony.work.flow" ->
           with {:ok, task} <- Newbee.Colony.Workflow.act(cid, p["taskId"], p["action"], p, actor["id"]),
+               do: {:ok, %{"task" => task}}
+
+        "colony.work.cwd" ->
+          with {:ok, task} <-
+                 Engine.set_task_cwd(
+                   cid,
+                   p["taskId"],
+                   p["cwd"],
+                   actor_bee_id: actor["id"]
+                 ),
                do: {:ok, %{"task" => task}}
 
         "colony.work.revise" ->
@@ -248,7 +260,7 @@ defmodule Newbee.Web.ColonyApi do
 
   defp authorize_request(method, p, actor, role) do
     owner_only =
-      ~w(colony.create colony.bootstrap colony.dissolve colony.rename colony.bee.add colony.bee.remove colony.control colony.invite.create colony.remote.join colony.honey.review colony.task.claim colony.task.decompose colony.honey.add colony.workspace.cleanup colony.signal.emit)
+      ~w(colony.create colony.bootstrap colony.dissolve colony.rename colony.cwd colony.work.cwd colony.bee.add colony.bee.remove colony.control colony.invite.create colony.remote.join colony.honey.review colony.task.claim colony.task.decompose colony.honey.add colony.workspace.cleanup colony.signal.emit)
 
     cond do
       method not in @methods ->
@@ -307,10 +319,17 @@ defmodule Newbee.Web.ColonyApi do
         attrs = %{
           "name" => g(payload, "name"),
           "goal" => g(payload, "goal") || "",
-          "queen" => g(payload, "queen")
+          "queen" => g(payload, "queen"),
+          "cwd" => g(payload, "cwd")
         }
 
         with {:ok, colony} <- Engine.create_colony(attrs) do
+          {:ok, %{"colony" => colony}}
+        end
+
+      "colony.cwd" ->
+        with {:ok, cid} <- need(payload, "colonyId"),
+             {:ok, colony} <- Engine.set_cwd(cid, g(payload, "cwd"), actor_bee_id: g(payload, "actorBeeId")) do
           {:ok, %{"colony" => colony}}
         end
 

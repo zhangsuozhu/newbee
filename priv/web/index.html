@@ -6,7 +6,7 @@
   <title>蜂群 · newbee</title>
   <script src="/theme.js?v=20260912-theme-pass9"></script>
   <link rel="stylesheet" href="/style.css?v=20260912-theme-pass9" />
-  <link rel="stylesheet" href="/colony/colony.css?v=20260912-buttons-pass1" />
+  <link rel="stylesheet" href="/colony/colony.css?v=workbench-15" />
   <link rel="stylesheet" href="/colony/shell.css?v=20260912-theme-pass9" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 </head>
@@ -21,7 +21,7 @@
 
     <div class="session-tools">
       <div class="session-search">
-        <input id="colony-filter" type="search" placeholder="搜索蜂群 / 成员…" />
+        <input id="colony-filter" type="search" placeholder="搜索蜂群 / 工作 / 成员…" />
       </div>
       <button id="new-colony" class="icon-btn new-session-icon" title="新建蜂群" aria-label="新建蜂群">
         <svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -109,7 +109,7 @@
             </div>
             <input type="file" id="file-input" multiple hidden />
           </div>
-          <textarea id="input" rows="1" placeholder="说点什么…"></textarea>
+          <textarea id="input" rows="1" placeholder="说点什么…" aria-label="发起新工作或发送群聊消息" aria-describedby="scope-hint"></textarea>
           <div class="composer-actions">
             <button id="send" class="btn-icon-round btn-send" title="发送 (Enter)" aria-label="发送">
               <svg class="ico send-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
@@ -124,6 +124,6 @@
 
 <div id="colony-toast" class="colony-toast" hidden></div>
 
-<script type="module" src="/colony/app.js?v=20260912-colony-pass10"></script>
+<script type="module" src="/colony/app.js?v=workbench-35"></script>
 </body>
 </html>

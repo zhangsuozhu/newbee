@@ -1,17 +1,26 @@
 // 蜂群前端 · 左侧列表：蜂群（会话组样式）+ 成员（会话项样式），完全复用主界面组件类
 import { esc, statusLabel, kindLabel } from "./util.js";
-import { state, currentBeeId, refresh, openBeeTrail } from "./store.js";
+import { state, currentBeeId, currentTaskId, refresh, openBeeTrail, conversationLabel, attentionTasks } from "./store.js";
 import { form, confirmAction, restoreFocus } from './forms.js';
 import { rpc, toast } from './api.js';
 import {renameColony, dissolveColony} from './manage.js';
 
 export function renderSidebar(root, ctx) {
-  root.innerHTML = "";
-  // Bee 模式：左侧换成「和这只 Bee 的对话列表」（返回键回到蜂群）
-  if (state.mode === "bee" && state.beeModeId) {
-    renderBeeConversations(root, ctx);
-    return;
+  const active = document.activeElement;
+  const focusables = [...root.querySelectorAll('button, [tabindex="0"]')];
+  const index = root.contains(active) ? focusables.indexOf(active) : -1;
+  const identity = node => node && JSON.stringify([node.closest('[data-sid]')?.dataset.sid, node.closest('[data-task-id]')?.dataset.taskId, node.closest('[data-group-id]')?.dataset.groupId, node.dataset.navKey, node.getAttribute('aria-label') || node.getAttribute('title') || node.textContent]);
+  const key = index >= 0 ? identity(active) : null;
+  renderSidebarContent(root, ctx);
+  if (key && !active.isConnected) {
+    [...root.querySelectorAll('button, [tabindex="0"]')].find(node => identity(node) === key)?.focus({preventScroll: true});
   }
+}
+function renderSidebarContent(root, ctx) {
+
+  root.innerHTML = "";
+  const quick = document.createElement('button'); quick.type = 'button'; quick.className = 'btn-ghost work-find';
+  quick.textContent = '查找工作 / 成员 · Ctrl/⌘ K'; quick.onclick = () => ctx.quickOpen(); root.append(quick);
   const kw = (state.filter || "").trim().toLowerCase();
 
   const activeMembers = (state.data && state.data.members) || [];
@@ -20,7 +29,8 @@ export function renderSidebar(root, ctx) {
     const c = item.colony || {};
     const inName = String(c.name || "").toLowerCase().includes(kw) || String(c.goal || "").toLowerCase().includes(kw);
     const inMembers = c.id === state.colonyId && activeMembers.some((m) => String(m.display || "").toLowerCase().includes(kw));
-    return inName || inMembers;
+    const inWork = c.id === state.colonyId && (state.data?.tasks || []).some(t => String(t.title || '').toLowerCase().includes(kw));
+    return inName || inMembers || inWork;
   });
 
   if (!items.length) {
@@ -42,26 +52,22 @@ export function renderSidebar(root, ctx) {
   for (const item of items) root.appendChild(colonyGroup(item, ctx));
 }
 
-// ── Bee 模式：这只 Bee 的对话列表（点对话 = 打开真实 newbee 会话）──
-function renderBeeConversations(root, ctx) {
+// ── Bee 模式：这只 Bee 的会话列表（点会话 = 打开真实 newbee 会话）──
+export function renderBeeConversations(root, ctx) {
   const bee = beeOf(state.beeModeId) || (state.trail && state.trail.bee) || {};
   const isAi = bee.kind === "ai";
 
   const head = document.createElement("div");
   head.className = "bee-mode-head";
-  head.innerHTML = `
-    <button class="btn-ghost bee-back" id="beeBack" title="返回蜂群">‹ 返回</button>
-    <span class="bee-mode-name" title="${esc(bee.display || "")}">${esc(bee.display || "Bee")}</span>
-    <span class="session-role">${esc(kindLabel(bee.kind))}</span>`;
-  head.querySelector("#beeBack").onclick = () => ctx.exitBeeMode();
+  head.textContent = '相关会话';
   root.appendChild(head);
 
   const tools = document.createElement("div");
   tools.className = "bee-mode-tools";
   const newBtn = document.createElement("button");
   newBtn.className = "btn-ghost";
-  newBtn.textContent = "＋ 新建对话";
-  newBtn.title = isAi ? "开一条新会话（真实 newbee 会话）" : "真人成员的对话由对方创建";
+  newBtn.textContent = "＋ 新建会话";
+  newBtn.title = isAi ? "开一条新会话（真实 newbee 会话）" : "真人成员的会话由对方创建";
   newBtn.disabled = !isAi;
   newBtn.onclick = () => ctx.newConversation(bee.id);
   tools.appendChild(newBtn);
@@ -72,7 +78,7 @@ function renderBeeConversations(root, ctx) {
   if (!convs.length) {
     const empty = document.createElement("div");
     empty.className = "session-empty";
-    empty.textContent = isAi ? "还没有对话，点上面「＋ 新建对话」开始" : "真人成员还没有绑定会话";
+    empty.textContent = isAi ? "还没有会话，点上面「＋ 新建会话」开始" : "真人成员还没有绑定会话";
     root.appendChild(empty);
     return;
   }
@@ -81,14 +87,14 @@ function renderBeeConversations(root, ctx) {
     const cell = document.createElement("div");
     cell.className = "swipe-cell session-child";
     const item = document.createElement("div");
-    const active = state.view === "conversation" && state.conversationId === c.id;
+    const active = state.inspector?.sessionId === c.id;
     item.className = "session-item" + (active ? " active" : "");
     item.dataset.conversation = c.id;
-    // 真人对话是消息线程（没有会话），不能当会话打开、也没有改名/删除。
+    // 真人会话是消息线程（没有会话），不能当会话打开、也没有改名/删除。
     const isSession = c.kind !== "human";
     const dot = c.busy ? "busy" : c.running ? "online" : "offline";
     item.innerHTML = `
-      <span class="t"><span class="sess-dot ${dot}"></span>${esc(c.title || "新对话")}${c.current ? '<span class="session-role">当前</span>' : ""}</span>
+      <span class="t"><span class="sess-dot ${dot}"></span>${esc(conversationLabel(c, bee.id))}${c.current ? '<span class="session-role">当前</span>' : ""}</span>
       <span class="meta">${esc(`${c.messages || 0} 条${c.when ? " · " + c.when : ""}`)}</span>`;
     item.onclick = () => {
       if (cell.dataset.swipeOpen === "1") { closeSwipe(cell); return; }
@@ -119,15 +125,15 @@ function renderBeeConversations(root, ctx) {
        rename.className = "swipe-action swipe-rename";
        rename.type = "button";
        rename.textContent = "改名";
-       rename.title = "改名该对话";
-       rename.setAttribute("aria-label", "改名该对话");
+       rename.title = "改名该会话";
+       rename.setAttribute("aria-label", "改名该会话");
        rename.onclick = (event) => { event.stopPropagation(); closeSwipe(cell); renameConversation(bee, c); };
        const del = document.createElement("button");
        del.className = "swipe-action swipe-delete";
        del.type = "button";
        del.textContent = "删除";
-       del.title = "删除该对话";
-       del.setAttribute("aria-label", "删除该对话");
+       del.title = "删除该会话";
+       del.setAttribute("aria-label", "删除该会话");
        del.onclick = (event) => { event.stopPropagation(); closeSwipe(cell); deleteConversation(bee, c); };
        actions.append(rename, del);
        cell.appendChild(actions);
@@ -191,6 +197,7 @@ function colonyGroup(item, ctx) {
     const body = document.createElement("div");
     body.className = "session-group-body";
     body.appendChild(groupChatItem(colony, members, ctx));
+    appendWorkNavigation(body, ctx);
     if (!members.length) {
       const loading = document.createElement("div");
       loading.className = "session-empty";
@@ -203,7 +210,7 @@ function colonyGroup(item, ctx) {
   return wrap;
 }
 
-// ── 私有对话：左滑删除 + ⋯ 菜单（改名 / 删除），与主界面同一套交互 ──
+// ── 私有会话：左滑删除 + ⋯ 菜单（改名 / 删除），与主界面同一套交互 ──
 let openSwipeCell = null;
 function closeSwipe(cell) {
   if (!cell) return;
@@ -299,7 +306,7 @@ function pick(title, actions, target = "") {
     if (target) {
       const context = document.createElement("p");
       context.className = "dialog-target";
-      context.textContent = "对话：" + target;
+      context.textContent = "会话：" + target;
       node.append(context);
     }
     const row = document.createElement("div");
@@ -327,8 +334,8 @@ function pick(title, actions, target = "") {
 }
 
 async function conversationMenu(bee, conversation) {
-  const target = conversation.title || "新对话";
-  const choice = await pick("对话操作", [
+  const target = conversation.title || "新会话";
+  const choice = await pick("会话操作", [
     {value: "rename", label: "改名"},
     {value: "delete", label: "删除", danger: true}
   ], target);
@@ -337,7 +344,7 @@ async function conversationMenu(bee, conversation) {
 }
 
 async function renameConversation(bee, conversation) {
-  const value = await form("给对话改名", [{name: "title", label: "名称", value: conversation.title || "", required: true, placeholder: "例如：登录模块重构"}], "保存");
+  const value = await form("给会话改名", [{name: "title", label: "名称", value: conversation.title || "", required: true, placeholder: "例如：登录模块重构"}], "保存");
   if (!value || !value.title) return;
   try {
     await rpc("colony.bee.conversation.rename", {colonyId: state.colonyId, beeId: bee.id, sessionId: conversation.id, title: value.title});
@@ -348,7 +355,7 @@ async function renameConversation(bee, conversation) {
   await refresh();
 }
 async function deleteConversation(bee, conversation) {
-  const confirmed = await confirmAction("删除对话", `删除「${conversation.title || "新对话"}」？这条对话的内容会一并删除，无法恢复。`, "删除");
+  const confirmed = await confirmAction("删除会话", `删除「${conversation.title || "新会话"}」？这条会话的内容会一并删除，无法恢复。`, "删除");
   if (!confirmed) return;
   try {
     await rpc("colony.bee.conversation.delete", {colonyId: state.colonyId, beeId: bee.id, sessionId: conversation.id});
@@ -357,17 +364,17 @@ async function deleteConversation(bee, conversation) {
     toast(error.message || "删除失败", true);
     return;
   }
-  if (state.conversationId === conversation.id) await openBeeTrail(bee.id);
+  if (state.inspector?.sessionId === conversation.id) await openBeeTrail(bee.id);
   else await refresh();
 }
 
-// 群聊：所有成员（人 / AI）的公共对话——与会话项同款，排在一对一之上
+// 群聊：所有成员（人 / AI）的公共会话——与会话项同款，排在一对一之上
 function groupChatItem(colony, members, ctx) {
   const cell = document.createElement("div");
   cell.className = "swipe-cell session-child";
 
   const item = document.createElement("div");
-  const here = state.colonyId === colony.id && state.view === "chat";
+  const here = state.colonyId === colony.id && state.view === 'chat' && state.groupTab === 'messages';
   item.className = "session-item" + (here ? " active" : "");
   item.dataset.groupChat = colony.id;
 
@@ -377,6 +384,8 @@ function groupChatItem(colony, members, ctx) {
     <span class="t"><span class="sess-dot ${anyWorking ? "busy" : "online"}"></span>群聊<span class="session-role">所有人</span></span>
     <span class="meta">${esc(`${members.length} 成员${anyWorking ? " · 有人正在干活" : ""}${latest ? " · " + latest : ""}`)}</span>`;
 
+  item.tabIndex = 0; item.setAttribute('role', 'button');
+  item.onkeydown = event => { if (event.target === item && ['Enter', ' '].includes(event.key)) { event.preventDefault(); item.click(); } };
   item.onclick = () => ctx.openGroupChat();
   cell.appendChild(item);
   return cell;
@@ -408,7 +417,7 @@ function beeItem(m, colonyId, ctx) {
   const here = state.colonyId === colonyId && state.view === "dm" && currentBeeId() === m.id;
   item.className = "session-item" + (here ? " active" : "");
   item.dataset.sid = m.id;
-  // 自己和自己对话没有意义：本人那一项不进入对话，也不提供新建对话。
+  // 自己和自己会话没有意义：本人那一项不进入会话，也不提供新建会话。
   const isMe = !!(state.data && state.data.actor_bee_id === m.id);
   // 没有任务的成员不显示「›」，免得点到一个空入口。
   const hasTasks = ((state.data && state.data.tasks) || []).some((t) => t.assigned_bee_id === m.id);
@@ -427,12 +436,12 @@ function beeItem(m, colonyId, ctx) {
   }
   if (m.kind === 'ai' && state.data?.can_manage) {
     const control = document.createElement('button'); control.className = 'member-control';
-    const paused = m.control_state !== 'running';
+    const paused = ['paused', 'pausing'].includes(m.control_state);
     control.textContent = paused ? '继续' : '暂停';
     control.title = m.control_state === 'pausing' ? '正在暂停，等待执行确认' : `${control.textContent}${m.display}在当前群的执行`;
     control.setAttribute('aria-label', control.title);
     if (paused) control.classList.add('is-paused');
-    control.onclick = async (event) => {event.stopPropagation(); control.disabled = true; try {await rpc('colony.control', {colonyId, scope:'bee', targetId:m.id, action:paused ? 'resume' : 'pause'}); await refresh(); toast(paused ? `已恢复「${m.display}」在本群的执行` : `已暂停「${m.display}」在本群的执行`);} catch (error) {toast(error.message, true);} finally {control.disabled = false;}};
+    control.onclick = async (event) => {event.stopPropagation(); control.disabled = true; try {await rpc('colony.control', {colonyId, scope:'bee', targetId:m.id, action:paused ? 'resume' : 'pause'}); await refresh(); const settled = memberByIdLocal(m.id)?.control_state === (paused ? 'running' : 'paused'); toast(settled ? `${paused ? '已恢复' : '已暂停'}「${m.display}」在本群的执行` : `已请求${paused ? '恢复' : '暂停'}「${m.display}」，等待执行器确认`);} catch (error) {toast(error.message, true);} finally {control.disabled = false;}};
     item.append(control);
   }
 
@@ -507,4 +516,31 @@ function currentTaskTitle(beeId) {
 
 export function setCollapsed(colonyId, val) {
   state.collapsed[colonyId] = val;
+}
+function appendWorkNavigation(root, ctx) {
+  const tasks = state.data?.tasks || [];
+  const attention = attentionTasks();
+  const attentionIds = new Set(attention.map(t => t.id));
+  const pending = (state.data?.honey?.recent || []).filter(h =>
+    ['pending_review', 'auto_verified'].includes(h.review_state) &&
+    !tasks.some(t => t.integration_required && t.id === h.task_id) &&
+    !attentionIds.has(h.task_id)
+  );
+  const attentionCount = attention.length + pending.length;
+  const nav = (label, active, action, detail = '') => {
+    const item = document.createElement('button'); item.type = 'button';
+    item.className = 'session-item work-nav' + (active ? ' active' : '');
+    item.innerHTML = `<span class="t">${esc(label)}</span>${detail ? `<span class="meta">${esc(detail)}</span>` : ''}`;
+    if (active) item.setAttribute('aria-current', 'page');
+    item.dataset.navKey = label; item.onclick = action; root.append(item);
+  };
+  nav(`待我处理${attentionCount ? ' · ' + attentionCount : ''}`, state.view === 'chat' && state.groupTab === 'work' && state.workFilter === 'attention', () => ctx.openHome('attention'));
+  nav('工作台', state.view === 'chat' && state.groupTab === 'work' && state.workFilter !== 'attention', () => ctx.openHome('work'));
+  const heading = document.createElement('div'); heading.className = 'work-nav-label'; heading.textContent = '最近工作'; root.append(heading);
+  const recent = tasks.filter(t => !t.parent_task_id).slice().sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''))).slice(0, 12);
+  for (const task of recent) {
+    const bee = beeOf(task.assigned_bee_id);
+    nav(task.title || '未命名工作', currentTaskId() === task.id, () => ctx.openTask(task.id, task.title), `${bee?.display || '待分配'} · ${statusLabel(task.status)}`);
+  }
+  const members = document.createElement('div'); members.className = 'work-nav-label'; members.textContent = '成员'; root.append(members);
 }

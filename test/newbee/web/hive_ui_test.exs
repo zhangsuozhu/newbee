@@ -73,6 +73,50 @@ defmodule Newbee.Web.HiveUiTest do
     assert surface =~ ~s|id="terminal-panel"|
   end
 
+  test "工作卡显示任务 cwd，目录入口保留 taskId" do
+    taskcard = File.read!("priv/web/colony/taskcard.js")
+    workflow = File.read!("priv/web/colony/workflow.js")
+    shell = File.read!("priv/web/colony/shell.js")
+    css = File.read!("priv/web/colony/colony.css")
+    app = File.read!("priv/web/colony/app.js")
+
+    assert taskcard =~ "className = 'work-cwd'"
+    assert taskcard =~ "work-cwd-path"
+    assert workflow =~ "className = 'work-cwd'"
+    assert shell =~ "taskIdOverride"
+    assert shell =~ "params.set('task', taskId)"
+    assert css =~ ".work-cwd-path"
+    assert css =~ "#flow > [data-drill-section][hidden]"
+    assert app =~ "const todo = attention.length + pendingHoney;"
+  end
+
+  test "工作详情提供成果、历史、协作和可恢复的 Esc 关闭行为" do
+    drill = File.read!("priv/web/colony/drill.js")
+    workbench = File.read!("priv/web/colony/workbench.js")
+    store = File.read!("priv/web/colony/store.js")
+    app = File.read!("priv/web/colony/app.js")
+    taskcard = File.read!("priv/web/colony/taskcard.js")
+    workflow = File.read!("priv/web/colony/workflow.js")
+    composer = File.read!("priv/web/colony/composer.js")
+    index = File.read!("priv/web/index.html")
+
+    assert drill =~ "成果验收"
+    assert drill =~ "renderWorkHistory"
+    assert drill =~ "work-collab-panel"
+    assert drill =~ "没有不可变快照"
+    assert drill =~ "if (t.type === 'honey') return false;"
+    assert drill =~ "node.append(summary);"
+    assert taskcard =~ "direct.onclick"
+    assert workflow =~ "direct.onclick"
+    assert workbench =~ "closeInspector();"
+    refute workbench =~ "history.back()"
+    assert store =~ "'section'"
+    assert app =~ "drill.js?v=workbench-"
+    assert composer =~ "aria-describedby"
+    assert composer =~ "给当前工作补充要求"
+    assert index =~ "aria-label=\"发起新工作或发送群聊消息\""
+  end
+
   test "Bun 执行真实 Hive UI helper 与 CAS mutation 行为" do
     case System.find_executable("bun") do
       nil ->

@@ -609,7 +609,11 @@ defmodule Newbee.Collaboration.Workspace do
               end
 
             {:ok, {:ok, %File.Stat{type: :symlink}}} ->
-              {:halt, {:error, "workspace_unsupported_file", "不支持符号链接 " <> child_rel}}
+              if ignorable_tool_symlink?(child_rel) do
+                {:cont, {:ok, files, total_bytes}}
+              else
+                {:halt, {:error, "workspace_unsupported_file", "不支持符号链接 " <> child_rel}}
+              end
 
             {:ok, {:ok, _}} ->
               {:cont, {:ok, files, total_bytes}}
@@ -624,6 +628,11 @@ defmodule Newbee.Collaboration.Workspace do
 
   defp excluded_entry?(name),
     do: MapSet.member?(@excluded_entries, name) or String.starts_with?(name, "_build") or sensitive_entry?(name)
+
+  defp ignorable_tool_symlink?(path) do
+    [first | _] = Path.split(path)
+    first in [".agents", ".claude", ".codex", ".cursor"]
+  end
 
   defp sensitive_entry?(name) do
     downcased = String.downcase(name)

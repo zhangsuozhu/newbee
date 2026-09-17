@@ -1153,7 +1153,7 @@ defmodule Newbee.Colony.Engine do
           {:error, "bad_request", "真人成员的对话由对方创建，蜂群里只能记录消息"}
 
         true ->
-          cwd = Keyword.get(opts, :cwd) || Map.get(bee, "cwd")
+          cwd = Keyword.get(opts, :cwd) || Map.get(bee, "cwd") || colony["cwd"]
 
           case Newbee.Web.Session.ensure(nil, cwd) do
             {:ok, _pid, sid} ->
@@ -2207,4 +2207,144 @@ defmodule Newbee.Colony.Engine do
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
+
+  @doc "设置尚未启动工作的 cwd；已有隔离工作区或正在执行的工作不能改路径。"
+  def set_task_cwd(colony_id, task_id, cwd, opts \\ []) do
+    with {:ok, colony} <- fetch_colony(colony_id),
+         :ok <- ensure_active(colony),
+         :ok <- require_queen(colony, Keyword.get(opts, :actor_bee_id)),
+         {:ok, task} <- fetch_task(task_id),
+         :ok <- task_belongs_to(task, colony_id),
+         :ok <- task_cwd_changeable(task),
+         {:ok, expanded} <- valid_cwd(cwd),
+         {:ok, updated} <-
+           Store.transaction(fn data ->
+             current = get_in(data, ["tasks", task_id])
+
+             cond do
+               current == nil or current["colony_id"] != colony_id ->
+                 {:error, "not_found", "任务不在当前群"}
+
+               current["revision"] != task["revision"] ->
+                 {:error, "conflict", "工作已更新，请刷新后再修改工作目录"}
+
+               true ->
+                 case task_cwd_changeable(current) do
+                   :ok ->
+                     if Enum.any?(Map.values(data["deliveries"]), fn delivery ->
+                          delivery["task_id"] == task_id and delivery["status"] in ["dispatching", "accepted"]
+                        end) do
+                       {:error, "execution_started", "工作投递已经开始，请先等待本轮执行结束"}
+                     else
+                       updated =
+                         current
+                         |> Map.put("cwd", expanded)
+                         |> Map.update("revision", 1, &(&1 + 1))
+                         |> Map.update("context_revision", 1, &(&1 + 1))
+                         |> Map.put("updated_at", now_ms())
+
+                       updated =
+                         if is_binary(current["workspace_source"]) do
+                           Map.put(updated, "workspace_source", expanded)
+                         else
+                           updated
+                         end
+
+                       deliveries =
+                         Map.new(data["deliveries"], fn {id, delivery} ->
+                           delivery =
+                             if delivery["task_id"] == task_id and delivery["status"] == "pending",
+                               do: Map.put(delivery, "context_revision", updated["context_revision"]),
+                               else: delivery
+
+                           {id, delivery}
+                         end)
+
+                       next =
+                         data
+                         |> put_in(["tasks", task_id], updated)
+                         |> Map.put("deliveries", deliveries)
+
+                       {:ok, {:ok, updated}, next}
+                     end
+
+                   error ->
+                     error
+                 end
+             end
+           end) do
+      trace(colony_id, %{
+        "type" => "lifecycle",
+        "bee_id" => Keyword.get(opts, :actor_bee_id),
+        "task_id" => task_id,
+        "text" => "工作「" <> task["title"] <> "」工作目录已设为：" <> expanded
+      })
+
+      {:ok, updated}
+    end
+  end
+
+  @doc "设置蜂群默认工作目录；已有任务会保留创建时的目录，避免切换目录后重放到错误项目。"
+  def set_cwd(colony_id, cwd, opts \\ []) do
+    with {:ok, colony} <- fetch_colony(colony_id),
+         :ok <- require_queen(colony, Keyword.get(opts, :actor_bee_id)),
+         {:ok, expanded} <- valid_cwd(cwd),
+         {:ok, updated} <-
+           Store.transaction(fn data ->
+             old_cwd = colony["cwd"]
+
+             tasks =
+               Map.new(data["tasks"], fn {id, task} ->
+                 task =
+                   if task["colony_id"] == colony_id and not is_binary(task["cwd"]),
+                     do: Map.put(task, "cwd", old_cwd),
+                     else: task
+
+                 {id, task}
+               end)
+
+             updated = colony |> Map.put("cwd", expanded) |> Map.put("updated_at", now_ms())
+             next = data |> Map.put("tasks", tasks) |> put_in(["colonies", colony_id], updated)
+             {:ok, {:ok, updated}, next}
+           end) do
+      trace(colony_id, %{
+        "type" => "lifecycle",
+        "bee_id" => Keyword.get(opts, :actor_bee_id),
+        "text" => "蜂群工作目录已设为：" <> expanded
+      })
+
+      {:ok, updated}
+    end
+  end
+
+  defp task_cwd_changeable(task) do
+    cond do
+      Task.terminal?(task) or task["status"] == "pending_review" ->
+        {:error, "task_finished", "已结束或待验收的工作不能修改工作目录"}
+
+      is_binary(task["session_id"]) and task["session_id"] != "" ->
+        {:error, "execution_started", "执行会话已经绑定，不能修改工作目录"}
+
+      is_map(task["workspace"]) ->
+        {:error, "workspace_ready", "隔离工作区已经启动，不能修改工作目录"}
+
+      task["status"] == "running" ->
+        {:error, "execution_started", "工作已经开始执行，请先暂停后再修改工作目录"}
+
+      task["status"] in ["pending", "claimed", "blocked"] ->
+        :ok
+
+      true ->
+        {:error, "invalid_phase", "当前阶段不能修改工作目录"}
+    end
+  end
+
+  defp valid_cwd(cwd) when is_binary(cwd) do
+    case Newbee.Web.Workspace.valid_dir?(cwd) do
+      {:ok, path} -> {:ok, path}
+      :error -> {:error, "bad_request", "工作目录不存在或不是目录"}
+    end
+  end
+
+  defp valid_cwd(_), do: {:error, "bad_request", "工作目录不存在或不是目录"}
 end

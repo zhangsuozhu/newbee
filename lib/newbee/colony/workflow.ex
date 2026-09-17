@@ -351,13 +351,15 @@ defmodule Newbee.Colony.Workflow do
       else: {:error, "budget_exhausted", "已达到两轮互评上限，请根据现有证据作出决定"}
   end
 
-  defp do_act(data, %{"workflow" => %{"phase" => "triage"}, "status" => "blocked"} = root, "retry", _, _) do
-    if root["workflow"]["calls"] < 3 do
+  defp do_act(data, %{"workflow" => %{"phase" => "triage"}} = root, "retry", _, _) do
+    if root["status"] in ["blocked", "claimed"] and root["workflow"]["calls"] < 3 do
       root = update_in(root, ["workflow", "calls"], &(&1 + 1))
       {data, root} = enqueue(data, root, "重新进行初步分析，并严格返回要求的JSON。")
       ok(data, root)
     else
-      {:error, "budget_exhausted", "分析重试已达上限，请检查执行会话"}
+      if root["workflow"]["calls"] >= 3,
+        do: {:error, "budget_exhausted", "分析重试已达上限，请检查执行会话"},
+        else: {:error, "invalid_phase", "当前工作不可重试，请先恢复工作"}
     end
   end
 

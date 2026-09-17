@@ -89,6 +89,15 @@ defmodule Newbee.Colony.WorkflowTest do
     assert length(Store.all("deliveries")) == count
   end
 
+  test "claimed 初步分析可以从停止状态重新发起", ctx do
+    root = create(ctx)
+    assert root["status"] == "claimed"
+
+    assert {:ok, retried} = act(ctx, root, "retry")
+    assert retried["workflow"]["calls"] == root["workflow"]["calls"] + 1
+    assert Enum.any?(Store.all("deliveries"), &(&1["task_id"] == root["id"] and &1["instruction"] =~ "重新进行初步分析"))
+  end
+
   test "invalid analysis is blocked and bounded retries never silently execute", ctx do
     root = create(ctx)
     {:ok, root} = complete(root, "我直接完成了")

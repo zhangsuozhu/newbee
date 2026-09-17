@@ -6,9 +6,12 @@ defmodule Newbee.Colony.Runtime do
   @impl true
   def init(_) do
     Newbee.Bus.subscribe()
+    recover_stale_tasks()
     Process.send_after(self(), :tick, 1_000)
     {:ok, %{}}
   end
+
+  @stale_next_step "执行器已超过 10 分钟没有心跳，无法确认是否还在运行。请先检查执行会话、工作目录和已发生的外部操作，再点击“答复并继续”；系统不会自动重放上次操作。"
 
   @impl true
   def handle_info(:tick, state) do
@@ -17,6 +20,7 @@ defmodule Newbee.Colony.Runtime do
     {:noreply, state}
   end
 
+  @impl true
   def handle_info({:newbee_event, :web_event, {:web_event, sid, kind, payload}}, state) do
     project(sid, kind, payload)
     {:noreply, state}
@@ -26,6 +30,7 @@ defmodule Newbee.Colony.Runtime do
 
   def sweep do
     Newbee.Colony.Workflow.advance()
+    recover_stale_tasks()
 
     Store.all("pending_messages")
     |> Enum.filter(&(&1["status"] == "waiting"))
@@ -42,6 +47,94 @@ defmodule Newbee.Colony.Runtime do
     |> Enum.filter(&(&1["status"] in ["pending", "dispatching", "accepted"]))
     |> Enum.sort_by(& &1["created_at"])
     |> Enum.each(&dispatch/1)
+  end
+
+  defp recover_stale_tasks do
+    now = System.system_time(:millisecond)
+    deliveries = Store.all("deliveries")
+
+    ai_bee_ids =
+      Store.all("bees")
+      |> Enum.filter(&(&1["kind"] == "ai"))
+      |> Enum.map(& &1["id"])
+      |> MapSet.new()
+
+    Store.list_tasks()
+    |> Enum.filter(&stale_task?(&1, now, deliveries, ai_bee_ids))
+    |> Enum.each(fn task -> mark_stale(task, ai_bee_ids) end)
+
+    normalize_stale_tasks(ai_bee_ids)
+  end
+
+  defp normalize_stale_tasks(ai_bee_ids) do
+    Store.list_tasks()
+    |> Enum.filter(fn task ->
+      task["status"] == "blocked" and
+        task["next_step"] == @stale_next_step and
+        is_nil(task["owner_kind"]) and
+        MapSet.member?(ai_bee_ids, task["assigned_bee_id"])
+    end)
+    |> Enum.each(fn task ->
+      Store.update("tasks", task["id"], nil, fn current ->
+        {:ok, Map.put(current, "owner_kind", "ai") |> Map.put("updated_at", System.system_time(:millisecond))}
+      end)
+    end)
+  end
+
+  defp stale_task?(task, now, deliveries, ai_bee_ids) do
+    (task["owner_kind"] == "ai" or MapSet.member?(ai_bee_ids, task["assigned_bee_id"])) and
+      task["status"] in ["claimed", "running"] and
+      Task.stale?(task, now) and
+      not Enum.any?(deliveries, fn delivery ->
+        delivery["task_id"] == task["id"] and
+          delivery["status"] in ["pending", "dispatching", "accepted"]
+      end) and
+      not session_alive?(task["session_id"])
+  end
+
+  defp session_alive?(sid) when is_binary(sid) and sid != "" do
+    case Newbee.Web.Session.lookup(sid) do
+      {:ok, pid} -> Process.alive?(pid)
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp session_alive?(_), do: false
+
+  defp mark_stale(task, ai_bee_ids) do
+    case Store.transaction(fn data ->
+           current = get_in(data, ["tasks", task["id"]])
+
+           if current &&
+                stale_task?(
+                  current,
+                  System.system_time(:millisecond),
+                  Map.values(data["deliveries"]),
+                  ai_bee_ids
+                ) do
+             updated =
+               Map.merge(current, %{
+                 "status" => "blocked",
+                 "waiting_for" => "user",
+                 "resume_needed" => false,
+                 "next_step" => @stale_next_step,
+                 "owner_kind" => "ai",
+                 "updated_at" => System.system_time(:millisecond)
+               })
+
+             {:ok, {:changed, updated}, put_in(data, ["tasks", task["id"]], updated)}
+           else
+             {:ok, :unchanged, data}
+           end
+         end) do
+      {:changed, updated} ->
+        trace(updated, "task", @stale_next_step, %{"reason" => "heartbeat_timeout"})
+
+      _ ->
+        :ok
+    end
   end
 
   defp resume_work(task) do
@@ -116,7 +209,7 @@ defmodule Newbee.Colony.Runtime do
 
   defp ensure_local_session(delivery, task) do
     with {:ok, colony} <- Store.get_colony(task["colony_id"]),
-         {:ok, cwd} <- Newbee.Colony.Workspace.ensure(task, colony["cwd"]),
+         {:ok, cwd} <- Newbee.Colony.Workspace.ensure(task, task["cwd"] || colony["cwd"]),
          {:ok, _pid, sid} <- Newbee.Web.Session.ensure(task["session_id"], cwd) do
       Store.transaction(fn data ->
         current = get_in(data, ["tasks", task["id"]])

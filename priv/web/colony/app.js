@@ -1,20 +1,21 @@
+import { initWorkbench, renderInspector, renderAttention, rememberReadingPosition, showQuickOpen } from './workbench.js?v=workbench-5';
 // 蜂群前端 · 入口：装配模块、轮询、事件绑定。
 // 视觉全部复用主界面的组件类（#sidebar / .session-group / .msg-* / .composer-card …），
 // 本页只负责「蜂群 = 会话组 + 成员」的数据映射。
 import { esc } from "./util.js";
 import { form } from './forms.js';
-import { initShell, ensureAuthenticated, updateWorkspaceContext, collapseSidebar, selectedWorkspaceCwd, sendIntoConversation } from './shell.js';
+import { initShell, ensureAuthenticated, updateWorkspaceContext, collapseSidebar, selectedWorkspaceCwd, sendIntoConversation, openWorkspace } from './shell.js';
 import { redeemInvitation } from './manage.js';
 import { rpc, toast } from "./api.js";
 import {
   state, subscribe, loadColonies, selectColony, refresh, startPolling,
   pushPath, memberById, resetToChat, enterBeeMode, exitBeeMode, openConversation, openBeeTrail,
-  conversationRouteFromUrl,
+  restoreLocation, enableNavigation, openHome, attentionTasks,
 } from "./store.js";
-import { renderSidebar } from "./sidebar.js";
+import { renderSidebar, renderBeeConversations } from "./sidebar.js";
 import { renderBreadcrumbs } from "./breadcrumbs.js";
 import { renderGroupView, renderDMView } from "./chat.js";
-import { renderDrillView } from "./drill.js";
+import { renderDrillView } from "./drill.js?v=workbench-29";
 import { renderComposer, updateScope, updateReviewBar, send, prefill } from "./composer.js";
 import { bindMarkdownCopy } from "./md.js";
 
@@ -32,12 +33,13 @@ function focusMainRegion() {
 }
 
 let lastSig = null;
-const savedConversationRoute = conversationRouteFromUrl();
+
 let lastRoute = null;
 
 const revealConversation = () => { if (matchMedia('(max-width: 768px)').matches) collapseSidebar(true, false); };
 
 const ctx = {
+  quickOpen: () => showQuickOpen(),
   switchColony: async (id) => {
     await selectColony(id);
     render(true);
@@ -57,7 +59,10 @@ const ctx = {
     refresh();
     render(true);
   },
-  openTask: (taskId, title) => {
+  openHome: (tab) => { openHome(tab); revealConversation(); render(true); },
+  openDirectory: (taskId) => openWorkspace('directory', taskId),
+  openTask: (taskId, title, section = 'overview') => {
+    state.drillTab = section;
     pushPath({ type: "drill", taskId, title });
     render(true);
   },
@@ -67,7 +72,8 @@ const ctx = {
       const trail = await rpc("colony.bee.trail", { colonyId: state.colonyId, beeId: m.id });
       const t = (trail.tasks || [])[0];
       if (t) {
-        pushPath({ type: "drill", taskId: t.id, title: t.title });
+        pushPath({ type: "drill", taskId: t.id, title: t.title, fromBeeId: m.id });
+        state.drillTab = 'overview';
         render(true);
       } else if (state.data && state.data.actor_bee_id === m.id) {
         toast("这是你自己，没有任务可钻");
@@ -111,9 +117,11 @@ const ctx = {
 
     try {
       const cwd = selectedWorkspaceCwd();
-      const payload = { colonyId: state.colonyId, beeId };
+      const colonyId = state.colonyId;
+      const payload = { colonyId, beeId };
       if (cwd) payload.cwd = cwd;
       const res = await rpc("colony.bee.conversation.new", payload);
+      if (state.colonyId !== colonyId) return;
       toast("已新建对话");
       await refresh();
       await openConversation(res.sessionId, beeId);
@@ -122,26 +130,29 @@ const ctx = {
       toast(e.message || "新建对话失败", true);
     }
   },
-  // 成员层级里给 AI 成员打字：colony.say 带 context.beeId 会走 1:1 会话通道，
-  // 而 AI 的 1:1 只能在内嵌对话里进行（服务端固定返回 conversation_required）。
-  // 与其让用户撞报错并丢掉这句话，不如把它直接转进这个 AI 的对话里发出。
+  // 成员概览里的输入明确发送到该成员已有的当前/最近会话；只有没有会话时才创建。
   deliverToConversation: async (bee, text) => {
+    const colonyId = state.colonyId;
     try {
-      let sid = bee.session_id;
+      const conversations = (state.trail?.conversations || []).filter(c => c.kind !== 'human');
+      let sid = bee.session_id || conversations.find(c => c.current)?.id || conversations[0]?.id;
       if (!sid) {
-        const res = await rpc("colony.bee.conversation.new", { colonyId: state.colonyId, beeId: bee.id });
+        const res = await rpc("colony.bee.conversation.new", { colonyId, beeId: bee.id });
         sid = res.sessionId;
         await refresh();
       }
+      if (state.colonyId !== colonyId || state.beeModeId !== bee.id || state.view !== 'dm') throw new Error('指导对象已切换，请回到原成员重试');
       await openConversation(sid, bee.id);
-      sendIntoConversation(text);
-      toast(`已转到 ${bee.display} 的对话`);
+      if (state.inspector?.sessionId !== sid) throw new Error('无法打开目标会话');
+      await sendIntoConversation(text);
+      toast(`已转到 ${bee.display} 的会话`);
     } catch (e) {
-      toast(e.message || "打开对话失败", true);
+      toast(e.message || "打开会话失败", true);
+      throw e;
     }
   },
   refreshNow: async () => {
-
+    await refresh();
     render(true);
   },
   render: (force) => render(force),
@@ -159,10 +170,12 @@ function signature() {
   const convs = (state.trail && state.trail.conversations || []).map((c) => `${c.id}:${c.title}:${c.messages || 0}`).join("|");
   const colonyName = d?.colony?.name || "";
   const colonyNames = (state.colonies || []).map((c) => c.colony?.name || "").join("|");
-  return JSON.stringify([state.colonyId, colonyName, colonyNames, state.groupTab, state.conversationId, state.mode, state.view, state.stack.map((s) => s.beeId || s.taskId).join(">"), state.filter, members, tasks, trace, trail, drill, state.colonies.length, state.lastError, d?.control_state, d?.can_manage, (d?.honey?.recent || []).map(h=>`${h.id}:${h.review_state}`).join(','), (d?.members || []).map(m=>m.control_state).join(','), convs]);
+  return JSON.stringify([state.colonyId, state.drillTab, state.inspector?.sessionId, colonyName, colonyNames, state.groupTab, state.workFilter, state.conversationId, state.mode, state.view, state.stack.map((s) => s.beeId || s.taskId).join(">"), state.filter, members, tasks, trace, trail, drill, state.colonies.length, state.lastError, d?.control_state, d?.can_manage, (d?.honey?.recent || []).map(h=>`${h.id}:${h.review_state}`).join(','), (d?.members || []).map(m=>m.control_state).join(','), convs]);
 }
 
 function render(force = false) {
+  renderInspector();
+  updateWorkspaceContext();
   renderSyncStatus();
   const sig = signature();
   if (!force && sig === lastSig) return;
@@ -173,62 +186,19 @@ function render(force = false) {
   renderTopMeta();
   renderWorkspaceContext();
 
-  // 视图切换：会话视图用内嵌的真实 newbee 界面，其余用蜂群自己的流
-  const embedding = state.view === "conversation" && !!state.conversationId && state.mode === "bee";
-  const transcript = $("#transcript");
-  const composer = $("#composer");
-  const embedHost = $("#embed-host");
-  const tools = document.querySelector(".session-tools");
-
-  if (tools) tools.classList.toggle("hidden", state.mode === "bee");
-  if (transcript) transcript.classList.toggle("hidden", embedding);
-  if (composer) composer.classList.toggle("hidden", embedding);
-  if (embedHost) embedHost.classList.toggle("hidden", !embedding);
-
-  if (embedding) {
-    const route = JSON.stringify([state.colonyId, state.view, state.conversationId, state.stack, state.groupTab]);
-    const changedRoute = route !== lastRoute;
-    const conversationId = state.conversationId;
-    const frame = $("#embed-frame");
-    if (!frame) {
-      setTimeout(() => {
-        if (state.view === "conversation" && state.conversationId === conversationId && document.querySelector("#embed-frame")) render(true);
-      }, 0);
-      return;
-    }
-    // iframe load 可能早于工作区脚本挂载；有界重试把焦点交给真正输入框。
-    const focusEmbed = (attempt = 0) => {
-      if (state.view !== "conversation" || state.conversationId !== conversationId || frame.hidden) return;
-      const input = frame.contentDocument?.getElementById("input");
-      if (input) {
-        input.focus({ preventScroll: true });
-        return;
-      }
-      if (attempt < 40) {
-        setTimeout(() => focusEmbed(attempt + 1), 50);
-        return;
-      }
-      frame.focus({ preventScroll: true });
-    };
-    if (changedRoute && lastRoute !== null) frame.addEventListener("load", () => focusEmbed(), { once: true });
-    const src = `/workspace.html?session=${encodeURIComponent(conversationId)}&embed=1`;
-    if (frame.dataset.src !== src) {
-      frame.dataset.src = src;
-      frame.src = src;
-    }
-    if (changedRoute && lastRoute !== null) setTimeout(focusEmbed, 0);
-    lastRoute = route;
-    $("#review-bar").classList.add("hidden");
-    renderTopMeta();
-    renderWorkspaceContext();
-    return;
-  }
+  const transcript = $('#transcript');
+  const tools = document.querySelector('.session-tools');
+  if (tools) tools.classList.remove('hidden');
+  const restoredPosition = rememberReadingPosition();
 
   const flow = $("#flow");
   const route = JSON.stringify([state.colonyId, state.view, state.stack, state.groupTab]);
   const sameRoute = route === lastRoute;
   const scrollTop = transcript.scrollTop;
   const wasNearBottom = transcript.scrollHeight - scrollTop - transcript.clientHeight < 120;
+  const focused = document.activeElement;
+  const focusTask = sameRoute && flow.contains(focused) ? focused.closest('[data-task-id]')?.dataset.taskId : null;
+  const focusLabel = focused?.getAttribute?.('aria-label') || focused?.textContent;
   const disclosures = sameRoute ? [...flow.querySelectorAll('details')].map(d => [d.querySelector('summary')?.textContent, d.open]) : [];
   flow.innerHTML = "";
 
@@ -280,6 +250,9 @@ function render(force = false) {
     renderDrillView(flow, ctx);
   } else if (state.view === "dm") {
     renderDMView(flow, ctx);
+    if (state.beeModeId) renderBeeConversations(flow, ctx);
+  } else if (state.groupTab === 'attention') {
+    renderAttention(flow, ctx);
   } else {
     renderGroupView(flow, ctx);
   }
@@ -291,9 +264,14 @@ function render(force = false) {
       if (i >= 0) details.open = remaining.splice(i, 1)[0][1];
     }
   }
+  if (focusTask && !focused.isConnected) {
+    const card = [...flow.querySelectorAll('[data-task-id]')].find(node => node.dataset.taskId === focusTask);
+    const target = [...(card?.querySelectorAll('button, summary, input, [tabindex="0"]') || [])].find(node => (node.getAttribute('aria-label') || node.textContent) === focusLabel);
+    target?.focus({preventScroll: true});
+  }
   const overview = state.view === 'chat' && state.groupTab !== 'messages';
   const startAtTop = state.view === 'drill' || overview;
-  if (!sameRoute) transcript.scrollTop = startAtTop ? 0 : transcript.scrollHeight;
+  if (!sameRoute) transcript.scrollTop = restoredPosition ?? (startAtTop ? 0 : transcript.scrollHeight);
   else if (wasNearBottom && !startAtTop) scrollBottom();
   else transcript.scrollTop = scrollTop;
   // 跳转（面包屑 / 任务卡 / 验收条）后键盘用户的焦点会掉到 body，接着 Tab 就得从页首重来。
@@ -380,10 +358,11 @@ function renderTopMeta() {
   }
   const s = d.stats || {};
   // 顶栏先说「要你做什么」，人数、成果这类背景统计放到右侧小字，避免两处重复。
+  const attention = attentionTasks();
+  const attentionIds = new Set(attention.map(t => t.id));
   const internal = new Set((d.tasks || []).filter(t => t.integration_required).map(t => t.id));
-  const pendingHoney = (d.honey?.recent || []).filter(h => ['pending_review', 'auto_verified'].includes(h.review_state) && !internal.has(h.task_id)).length;
-  const waiting = (d.tasks || []).filter(t => !['done', 'failed', 'cancelled'].includes(t.status) && (t.status === 'blocked' || t.workflow?.phase === 'choosing')).length;
-  const todo = pendingHoney + waiting;
+  const pendingHoney = (d.honey?.recent || []).filter(h => ['pending_review', 'auto_verified'].includes(h.review_state) && !internal.has(h.task_id) && !attentionIds.has(h.task_id)).length;
+  const todo = attention.length + pendingHoney;
   const parts = [];
   if (todo) parts.push(`待你处理 ${todo} 件`);
   if (s.tasks_open) parts.push(`${s.tasks_open} 项在办`);
@@ -429,6 +408,7 @@ $("#new-colony").addEventListener("click", async () => {
     // 输入框仍可用，用户此刻发送会把消息投进上一个蜂群（实测窗口 1.6s~数秒）。
     state.switching = true;
     try {
+      input.cwd = selectedWorkspaceCwd() || undefined;
       const created = await rpc('colony.create', input);
       await loadColonies();
       await selectColony(created.colony.id);
@@ -452,23 +432,9 @@ $("#new-colony").addEventListener("click", async () => {
 
 }
 
-async function restoreConversationRoute(route) {
-  if (!route) return;
-  const colony = state.colonies.find((item) => item.colony?.id === route.colonyId);
-  if (!colony) { resetToChat(); return; }
-  if (state.colonyId !== route.colonyId) await selectColony(route.colonyId);
-  if (!memberById(route.beeId)) { resetToChat(); return; }
-  await enterBeeMode(route.beeId);
-  const conversation = (state.trail?.conversations || []).find((item) => item.id === route.conversationId);
-  if (!conversation) { resetToChat(); return; }
-  await openConversation(route.conversationId, route.beeId);
-  revealConversation();
-  render(true);
-}
-
-
 async function boot() {
   initShell();
+  initWorkbench(ctx);
   // 代码块「复制」用的是 document 级事件委托，必须调用一次；
   // 之前只 import 没调用，群聊里的复制按钮点了没反应。
   bindMarkdownCopy();
@@ -479,7 +445,9 @@ async function boot() {
     await ensureAuthenticated();
     await loadColonies();
     await refresh();
-    await restoreConversationRoute(savedConversationRoute);
+    await restoreLocation();
+    enableNavigation();
+    window.addEventListener('popstate', () => { void restoreLocation(); });
   } catch (e) {
     state.lastError = e.message || String(e);
   }
@@ -493,17 +461,7 @@ async function boot() {
     dialogEscape = true;
     setTimeout(() => { dialogEscape = false; }, 0);
   }, true);
-  window.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
-    if (dialogEscape || e.target?.closest?.('dialog')) return;
-    if (document.querySelector('dialog[open]')) return;
-    if (document.activeElement && document.activeElement.id === "input") return;
-    if (!state.stack.length) return;
-    resetToChat();
-    revealConversation();
-    refresh();
-    render(true);
-  });
+
 }
 
 export const colonyCtx = ctx;

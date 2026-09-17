@@ -4,6 +4,7 @@ import { rpc, toast, authToken } from "./api.js";
 import { state, currentBeeId, currentTaskId, memberById, resetToChat } from "./store.js";
 import { manage, help, joinEnvironment } from './manage.js';
 import { refresh } from './store.js';
+import { selectedWorkspaceCwd } from './shell.js';
 
 const MAX_ATTACH = 8;
 const MAX_FILE = 20 * 1024 * 1024;
@@ -13,6 +14,43 @@ const EFFORT_LABELS = { none: "关闭", minimal: "极低", low: "低", medium: "
 
 let ctxRef = null;
 let mentionOpen = false;
+let activeDraftKey = null;
+const memoryDrafts = new Map();
+const scopedAttachments = new Map();
+function draftScope() {
+  return JSON.stringify([state.colonyId, state.data?.actor_bee_id || 'host', currentTaskId() || null, currentTaskId() ? null : currentBeeId() || null]);
+}
+function readDraft(key) {
+  if (memoryDrafts.has(key)) return memoryDrafts.get(key);
+  try { return sessionStorage.getItem('newbee.work.draft:' + key) || ''; } catch (_) { return ''; }
+}
+function writeDraft(key, text) {
+  if (!key) return;
+  memoryDrafts.set(key, text);
+  try {
+    if (text) sessionStorage.setItem('newbee.work.draft:' + key, text);
+    else sessionStorage.removeItem('newbee.work.draft:' + key);
+  } catch (_) {}
+}
+function syncDraftScope() {
+  const input = document.getElementById('input');
+  if (!input) return;
+  const next = draftScope();
+  if (next === activeDraftKey) return;
+  if (activeDraftKey) {
+    writeDraft(activeDraftKey, input.value);
+    scopedAttachments.set(activeDraftKey, {items: state.attachments.slice(), sid: state.attachSid});
+  }
+  activeDraftKey = next;
+  const attached = scopedAttachments.get(next);
+  state.attachments = attached?.items?.slice() || []; state.attachSid = attached?.sid || null;
+  renderAttachPreview();
+  input.value = readDraft(next); state.draft = input.value; autosize(input);
+  const feedback = feedbackByScope.get(next);
+  sendFeedback(feedback?.message || '', feedback?.error || false);
+}
+
+
 
 export function renderComposer(ctx) {
   ctxRef = ctx;
@@ -21,8 +59,8 @@ export function renderComposer(ctx) {
   bar.dataset.ready = "1";
 
   const chips = [
-    ['＋', '新工作', 'primary', () => prefill('请帮我完成：')],
-    ['◔', '当前工作', '', () => { state.groupTab = 'work'; resetToChat(); ctx.render(true); }],
+    ['＋', '新工作', 'primary', () => { ctx.openHome('work'); prefill('请帮我完成：'); }],
+    ['◔', '工作台', '', () => ctx.openHome('work')],
     ['？', '能做什么', '', help],
     ['⚙', '群设置', '', manage],
     ['⇢', '加入蜂群', 'secondary', joinEnvironment],
@@ -49,9 +87,10 @@ export function renderComposer(ctx) {
 
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("send");
-  input.value = state.draft || "";
+  syncDraftScope();
   input.addEventListener("input", () => {
     state.draft = input.value;
+    writeDraft(activeDraftKey, input.value);
     autosize(input);
   });
   input.addEventListener("keydown", (e) => {
@@ -68,7 +107,7 @@ export function renderComposer(ctx) {
   bindEffort(ctx);
   bindMentions();
   bindPause();
-  if (ctx.autofocus) input.focus();
+  // Navigation focuses a heading; typing focus is always an explicit user action.
 }
 
 // ── 附件：按钮 / 拖拽 / 粘贴（与主界面同一套上传接口与预览样式）──
@@ -126,13 +165,16 @@ function bindAttachments(ctx) {
 
 async function ensureUploadSession() {
   if (state.uploadColony !== state.colonyId) {
-    const result = await rpc('colony.upload.session', {colonyId:state.colonyId});
+    const colonyId = state.colonyId;
+    const result = await rpc('colony.upload.session', {colonyId});
+    if (state.colonyId !== colonyId) throw new Error('蜂群已切换，请重新选择附件');
     state.uploadSid = result.sessionId; state.uploadColony = state.colonyId;
   }
 }
 
 async function addFiles(files) {
   if (!files.length) return;
+  const originScope = draftScope();
   try {await ensureUploadSession();} catch (error) {toast(error.message, true); return;}
   const t = target();
   if (!t.sid) {
@@ -140,6 +182,7 @@ async function addFiles(files) {
     return;
   }
   for (const file of files) {
+    if (draftScope() !== originScope) return;
     if (!file) continue;
     if (file.size === 0) {
       toast("不能上传空文件：" + (file.name || "file"), true);
@@ -158,7 +201,7 @@ async function addFiles(files) {
     renderAttachPreview();
     try {
       const uploaded = await uploadAttachment(file, sid);
-      if (target().sid !== sid) {
+      if (target().sid !== sid || draftScope() !== originScope) {
         await deleteAttachment(uploaded, sid).catch(() => {});
         continue;
       }
@@ -300,9 +343,9 @@ function bindEffort(ctx) {
         renderSegs(lv);
         close();
         const t = target();
-        if (!t.sid) return;
+        if (!t.executionSid) return;
         try {
-          await rpc("session.setEffort", { sessionId: t.sid, effort: lv });
+          await rpc("session.setEffort", { sessionId: t.executionSid, effort: lv });
           toast(`「${t.label}」思考强度：${EFFORT_LABELS[lv] || lv}`);
         } catch (err) {
           toast("设置思考强度失败：" + (err.message || err), true);
@@ -339,7 +382,7 @@ async function restoreEffort(sid) {
   try {
     const st = await rpc("session.state", { sessionId: sid });
     const effort = st && (st.effort || (st.state && st.state.effort));
-    if (window.__colonyRestoreEffort) window.__colonyRestoreEffort(effort || "medium");
+    if (state.effortSid === sid && window.__colonyRestoreEffort) window.__colonyRestoreEffort(effort || "medium");
   } catch (e) {
     /* 会话未运行：保持默认 */
   }
@@ -359,6 +402,7 @@ export function target() {
     const sid = exec && exec.session_id;
     return {
       sid: uploadSid || sid || null,
+      executionSid: task?.session_id || null,
       bee: exec || null,
       label: exec ? exec.display : "当前任务",
       why: "这条任务还没有执行者（或执行者未绑定会话），无法上传附件",
@@ -368,6 +412,7 @@ export function target() {
     const bee = memberById(beeId);
     return {
       sid: uploadSid || (bee && bee.session_id) || null,
+      executionSid: bee?.session_id || null,
       bee: bee || null,
       label: bee ? bee.display : "Bee",
       why: "这只 Bee 还没有绑定会话，无法上传附件",
@@ -413,6 +458,7 @@ function bindPause() {
 }
 
 export function updateScope() {
+  syncDraftScope();
   const pause = document.getElementById('colony-pause');
   if (pause) {
     const cs = state.data?.control_state;
@@ -430,25 +476,31 @@ export function updateScope() {
   }
 
   const hint = document.getElementById("scope-hint");
+  const input = document.getElementById("input");
   const t = target();
 
   if (hint) {
     const bee = currentBeeId() ? memberById(currentBeeId()) : null;
     const taskId = currentTaskId();
-    if (taskId) hint.textContent = `发给 ${t.label}`;
+    if (taskId) hint.textContent = `发给：本工作 · ${state.drill?.task?.title || '正在加载'} · 负责人 ${t.label}`;
     // 成员层级里对 AI 说话：这句话会被转进它自己的对话（colony.say 走 1:1 会被拒），
     // 提示要写成「将转入对话」，不然等于承诺了一个发不出去的地址。
-    else if (bee && bee.kind === "ai" && state.view === "dm") hint.textContent = `将转入 ${bee.display} 的对话`;
+    else if (bee && bee.kind === "ai" && state.view === "dm") hint.textContent = `发给：${bee.display} · 将打开该成员的执行会话`;
     else if (bee) hint.textContent = `发给 ${bee.display}`;
-    else hint.textContent = "发到群聊 · Enter 发送，Shift+Enter 换行";
+    else hint.textContent = "发给：群聊 · 新需求将创建工作 · Enter 发送，Shift+Enter 换行";
+    if (input) {
+      input.setAttribute("aria-describedby", "scope-hint");
+      input.setAttribute("aria-label", taskId ? "给当前工作补充要求" : bee ? `发给 ${bee.display}` : "发起新工作或发送群聊消息");
+    }
   }
+
 
 
   // 思考强度：与 AI 一对一（或 AI 执行的任务）才有意义；群聊隐藏
   const pick = document.getElementById("effort-pick");
   const btn = document.getElementById("effort-btn");
   if (pick && btn) {
-    const isAi = !!(t.bee && t.bee.kind === "ai");
+    const isAi = !!(t.executionSid && t.bee?.kind === 'ai');
     pick.classList.toggle("hidden", !isAi);
     btn.disabled = !isAi;
   }
@@ -464,13 +516,14 @@ export function updateScope() {
     clearAttachments(true);
     state.attachSid = null;
   }
-  if (t.sid && t.sid !== state.effortSid && (!t.bee || t.bee.kind === "ai")) {
-    state.effortSid = t.sid;
-    restoreEffort(t.sid);
+  if (t.executionSid && t.executionSid !== state.effortSid && t.bee?.kind === 'ai') {
+    state.effortSid = t.executionSid;
+    restoreEffort(t.executionSid);
   }
 }
 
 export function prefill(text) {
+  syncDraftScope();
   const input = document.getElementById("input");
   if (!input) return;
   const typed = input.value || "";
@@ -479,6 +532,7 @@ export function prefill(text) {
   const next = typed.trim() && !typed.trim().startsWith(text) ? `${text} ${typed.trim()}` : text;
   input.value = next;
   state.draft = next;
+  writeDraft(activeDraftKey, next);
   autosize(input);
   input.focus();
   input.setSelectionRange(next.length, next.length);
@@ -489,84 +543,87 @@ function autosize(input) {
   input.style.height = Math.min(input.scrollHeight, 160) + "px";
 }
 
-// 串行化发送：上一条还在飞就排队，而不是静默丢弃。
-// 之前发送中会直接 return，快速连按 Enter / 连点发送时第二条被无声丢掉
-// 第二条会被无声丢掉（实测 4 次尝试只发出 2 个 colony.say，用户看到「什么都没发生」）。
+// Capture the recipient at the user's click, never when a queued promise eventually runs.
+const pendingSubmissions = new Set();
 export function send(ctx, text) {
-  const run = () => doSend(ctx, text);
-  const next = (send.queue || Promise.resolve()).then(run, run);
+  syncDraftScope();
+  text = (text || '').trim();
+  const uploads = state.attachments.map(a => a.id);
+  if (!text && !uploads.length) return Promise.resolve();
+  if (!state.colonyId || state.switching || state.uploading) {
+    toast(state.uploading ? '请等待文件上传完成' : '正在切换工作，请稍后发送', true);
+    return Promise.resolve();
+  }
+  const taskId = currentTaskId(), beeId = currentBeeId();
+  const envelope = {
+    colonyId: state.colonyId, taskId, beeId, bee: beeId ? memberById(beeId) : null,
+    view: state.view, text, uploadIds: uploads, uploadSid: state.uploadSid,
+    draftKey: draftScope(), draft: document.getElementById('input')?.value || '',
+    requestId: crypto.randomUUID(),
+  };
+  const key = JSON.stringify([envelope.draftKey, text, uploads]);
+  if (pendingSubmissions.has(key)) return send.queue || Promise.resolve();
+  pendingSubmissions.add(key);
+  feedbackFor(envelope.draftKey, '等待提交…');
+  const run = () => doSend(ctx, envelope);
+  const next = (send.queue || Promise.resolve()).then(run, run).finally(() => pendingSubmissions.delete(key));
   send.queue = next.catch(() => {});
   return next;
 }
-
-async function doSend(ctx, text) {
-  text = (text || "").trim();
-  const uploadIds = state.attachments.map((a) => a.id);
-  if (!text && !uploadIds.length) return;
-  if (!state.colonyId) { toast('请先选择蜂群', true); return; }
-  // 成员层级里给 AI 成员打字：colony.say 带 context.beeId 会走 1:1 会话通道，
-  // 而 AI 的 1:1 只能在内嵌对话里进行——服务端固定返回 conversation_required。
-  // 既然产品语义是「和这只 Bee 交流」，就直接把话转进它的对话，而不是让用户撞报错。
-  if (state.view === "dm" && state.beeModeId) {
-    const member = memberById(state.beeModeId);
-    if (member && member.kind === "ai") {
-      if (uploadIds.length) { toast("附件请打开它自己的对话再发", true); return; }
-      const input = document.getElementById("input");
-      if (ctx.deliverToConversation) {
-        if (input && input.value === text) { input.value = ""; state.draft = ""; autosize(input); }
-        await ctx.deliverToConversation(member, text);
-        return;
-      }
-    }
-  }
-
-
-  // 建群/切群还在路上时别把消息发进旧群（send 用的是此刻的 state.colonyId）。
-  if (state.switching) { toast('正在创建蜂群，请稍候再发送', true); return; }
-  if (state.uploading > 0) { toast("请等待文件上传完成", true); return; }
-  // 队列已保证串行，这里不需要再丢弃并发提交。
-
-  const input = document.getElementById('input');
-  const button = document.getElementById('send');
-  const draft = input?.value || '';
-  const route = () => JSON.stringify([state.colonyId, state.view, state.conversationId, state.stack]);
-  const origin = route();
-  const payload = { colonyId: state.colonyId, text, requestId: crypto.randomUUID(), uploadSid: state.uploadSid };
-  const beeId = currentBeeId(), taskId = currentTaskId();
-  if (taskId) payload.context = { taskId };
-  else if (beeId) payload.context = { beeId };
+async function doSend(ctx, envelope) {
+  const {text, colonyId, taskId, beeId, uploadIds, draftKey} = envelope;
+  const sameScope = () => draftScope() === draftKey;
+  const input = document.getElementById('input'), button = document.getElementById('send');
+  const payload = {colonyId, text, requestId: envelope.requestId, uploadSid: envelope.uploadSid, cwd: selectedWorkspaceCwd() || undefined};
+  if (taskId) payload.context = {taskId};
+  else if (beeId) payload.context = {beeId};
   if (uploadIds.length) payload.uploadIds = uploadIds;
   send.sending = true;
-  if (button) { button.disabled = true; button.setAttribute('aria-label', '发送中'); button.setAttribute('aria-busy', 'true'); }
-  sendFeedback('正在发送…');
+  if (sameScope() && button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+  feedbackFor(draftKey, '正在发送…');
   let accepted = false;
   try {
-    const res = await rpc('colony.say', payload);
+    let res;
+    if (!taskId && envelope.view === 'dm' && envelope.bee?.kind === 'ai') {
+      if (!sameScope()) throw new Error('页面已切换，定向指导未发送，请回到原成员重试');
+      if (uploadIds.length) throw new Error('请打开执行并点击「指导这只 Bee」后发送附件');
+      await ctx.deliverToConversation(envelope.bee, text);
+      res = {reply: '已收到，等待执行器处理'};
+    } else {
+      res = await rpc('colony.say', payload);
+    }
     accepted = true;
-    // 请求期间新输入的内容、切换页面后的草稿都不能被旧请求清空。
-    if (route() === origin) {
-      if (input && input.value === draft && draft.trim() === text) {
-        input.value = ''; state.draft = ''; autosize(input);
-      }
+    const saved = readDraft(draftKey);
+    if (sameScope() && input?.value === envelope.draft) {
+      input.value = ''; state.draft = ''; writeDraft(draftKey, ''); autosize(input);
+    } else if (!sameScope() && saved === envelope.draft) writeDraft(draftKey, '');
+    const attached = scopedAttachments.get(draftKey);
+    if (attached) attached.items = attached.items.filter(a => !uploadIds.includes(a.id));
+    if (sameScope()) {
       state.attachments = state.attachments.filter(a => !uploadIds.includes(a.id));
       renderAttachPreview();
     }
-    sendFeedback('已发送');
-    toast(res.reply ? (res.reply.length > 100 ? '已发送，回复见消息流' : `已发送 · ${res.reply}`) : '已发送');
-    if (route() === origin) {
-      for (const a of res.actions || []) {
-        if (a.type === 'switch' && a.colony_id) await ctx.switchColony(a.colony_id);
+    const message = res.receipt?.message || res.reply || '已收到';
+    feedbackFor(draftKey, message);
+    if (sameScope()) {
+      for (const action of res.actions || []) {
+        if (action.type === 'switch' && action.colony_id) await ctx.switchColony(action.colony_id);
       }
     }
-    await ctx.refreshNow();
-  } catch (e) {
-    const message = accepted ? '已发送，但更新消息失败，请刷新查看' : (e.message || '发送失败') + '；输入内容已保留';
-    sendFeedback(message, true);
+    if (state.colonyId === colonyId) await ctx.refreshNow();
+  } catch (error) {
+    const message = accepted ? '已收到，但进展更新失败，请刷新查看' : `${error.message || '发送失败'}；原草稿已保留`;
+    feedbackFor(draftKey, message, true);
     toast(message, true);
   } finally {
     send.sending = false;
-    if (button) { button.disabled = false; button.setAttribute('aria-label', '发送'); button.removeAttribute('aria-busy'); }
+    if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
   }
+}
+const feedbackByScope = new Map();
+function feedbackFor(key, message, error = false) {
+  feedbackByScope.set(key, {message, error});
+  if (draftScope() === key) sendFeedback(message, error);
 }
 
 function sendFeedback(message, error = false) {
@@ -577,6 +634,7 @@ function sendFeedback(message, error = false) {
     document.getElementById('composer')?.append(status);
   }
   status.textContent = message;
+  status.hidden = !message;
   status.classList.toggle('error', error);
 }
 
@@ -585,7 +643,7 @@ export function updateReviewBar() {
   const bar = document.getElementById("review-bar");
   if (!bar) return;
   // 首页概览已经列出待验收成果和操作按钮，底部不再重复同一条。
-  if (state.view === 'chat' && state.groupTab !== 'messages') { bar.classList.add('hidden'); return; }
+  if (state.view === 'drill' || (state.view === 'chat' && state.groupTab !== 'messages')) { bar.classList.add('hidden'); return; }
   const recent = (state.data && state.data.honey && state.data.honey.recent) || [];
   const internalTasks = new Set((state.data?.tasks || []).filter(t => t.integration_required).map(t => t.id));
   const pending = recent.filter(h => !internalTasks.has(h.task_id) && (h.review_state === 'pending_review' || h.review_state === 'auto_verified'));

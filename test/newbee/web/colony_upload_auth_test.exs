@@ -127,10 +127,11 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     test "容器缺失时仍更新标题，不再整体失效" do
       js = File.read!("priv/web/colony/breadcrumbs.js")
 
-      assert js =~ "document.getElementById(\"session-sub\")"
+      assert js =~ "document.getElementById('session-sub')"
       assert js =~ "if (!title) return;"
-      # 两个分支都要在 appendChild 前守卫 sub
-      assert js |> String.split("if (!sub) return;") |> length() == 3
+      # 标题先更新，再把 sub 当成可选装饰。
+      assert js =~ "title.textContent = taskId"
+      assert js |> String.split("if (!sub) return;") |> length() == 2
     end
   end
 
@@ -166,8 +167,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     test "成员级暂停/恢复有成功反馈" do
       js = File.read!("priv/web/colony/sidebar.js")
 
-      assert js =~ "已暂停「${m.display}」在本群的执行"
-      assert js =~ "已恢复「${m.display}」在本群的执行"
+      assert js =~ "const settled = memberByIdLocal(m.id)?.control_state"
+      assert js =~ "等待执行器确认"
     end
   end
 
@@ -250,11 +251,11 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       app = File.read!("priv/web/colony/app.js")
       composer = File.read!("priv/web/colony/composer.js")
 
-      # 回归：建群要走 create → loadColonies → selectColony，这段窗口里 state.colonyId
-      # 还是旧群，此时发送会把消息投进上一个蜂群（实测把测试消息发进了真实群）。
+      # 创建期间不能按稍后执行时的 state 重新解释发送目标。
       assert app =~ "state.switching = true;"
       assert app =~ "state.switching = false;"
-      assert composer =~ "if (state.switching) { toast('正在创建蜂群，请稍候再发送', true); return; }"
+      assert composer =~ "if (!state.colonyId || state.switching || state.uploading)"
+      assert composer =~ "const envelope = {"
     end
   end
 
@@ -274,11 +275,11 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     test "并发提交排队而不是静默丢弃" do
       js = File.read!("priv/web/colony/composer.js")
 
-      # 回归：原来是 `if (send.sending) return;`——连按 Enter 时第二条被无声丢掉
-      # （实测 4 次提交只发出 2 个 colony.say）。现在排到队列里串行发送。
+      # 每次点击先捕获不可变 envelope，再串行提交；不能在队列真正运行时重新取目标。
       assert js =~ "export function send(ctx, text) {"
+      assert js =~ "const envelope = {"
       assert js =~ "send.queue = next.catch(() => {});"
-      assert js =~ "async function doSend(ctx, text)"
+      assert js =~ "async function doSend(ctx, envelope)"
       refute js =~ "if (send.sending) return;"
     end
   end
@@ -287,12 +288,11 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     test "从成员层级深钻任务时，标题与面包屑显示任务名（支持嵌套）" do
       js = File.read!("priv/web/colony/breadcrumbs.js")
 
-      # 回归：成员层级只处理了「对话」子层，从历史任务/侧栏深钻任务时
-      # 标题仍停在成员名，用户看不出点进了哪里。
-      assert js =~ "const topDrill = drills[drills.length - 1];"
-      assert js =~ "title.textContent = topDrill ? (topDrill.entry.title || \"任务\") : (bee.display || \"Bee\");"
-      # 父任务 → 子任务要同时画出来（否则回不到父任务）
-      assert js =~ "if (entry.type === \"drill\") drills.push({ entry, index });"
+      # 工作是稳定位置，负责人是属性；标题和返回目标不再依赖 Bee 模式栈。
+      assert js =~ "title.textContent = taskId ? task?.title"
+      assert js =~ "const parent = (state.data?.tasks || []).find"
+      assert js =~ ~S|add(parent ? `返回工作「${parent.title}」` : '返回工作列表'|
+      assert js =~ "负责人：${owner.display}"
     end
   end
 
@@ -324,21 +324,18 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       shell = File.read!("priv/web/colony/shell.js")
       workspace = File.read!("priv/web/app.js")
 
-      # 回归：成员层级里给 AI 打字，colony.say 会走 1:1 通道并被服务端拒绝
-      # （conversation_required），用户只看到报错，这句话也发不出去。
-      assert composer =~ "await ctx.deliverToConversation(member, text);"
+      # 成员输入优先复用当前/最近会话，跨 iframe 只有收到 accepted 回执才清草稿。
+      assert composer =~ "await ctx.deliverToConversation(envelope.bee, text);"
       assert app =~ "deliverToConversation: async (bee, text) =>"
+      assert app =~ "conversations.find(c => c.current)?.id || conversations[0]?.id"
       assert shell =~ "export function sendIntoConversation(text)"
-      # 宿主重发直到 embed 回执；embed 用 commandId 幂等 + 回执，避免发两遍
-      assert shell =~ "newbeeCommand:'send'"
-      assert shell =~ "newbeeWorkspace === 'sent'"
-      assert workspace =~ "newbeeWorkspace: \"sent\", commandId: data.commandId"
-      assert workspace =~ "iframe 会吞掉键盘事件"
-      assert workspace =~ "workspaceNotify(\"closed\");"
-      assert shell =~ "message.newbeeWorkspace === 'closed'"
-      assert shell =~ "resetToChat();"
-      # 提示文案不再承诺一个发不出去的地址
-      assert composer =~ "将转入 ${bee.display} 的对话"
+      assert shell =~ "return new Promise((resolve, reject) =>"
+      assert shell =~ "pendingSend.inspectionId === message.inspectionId"
+      assert workspace =~ "const commands = new Map();"
+      assert workspace =~ "request = send(data.text, true, data.commandId)"
+      assert workspace =~ "inspectionNotify('sent', {commandId: data.commandId, ...result})"
+      assert workspace =~ "inspectionNotify('close-inspector')"
+      assert composer =~ "原草稿已保留"
     end
   end
 
@@ -346,11 +343,10 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     test "面包屑给出父任务层级，可点回父任务" do
       js = File.read!("priv/web/colony/breadcrumbs.js")
 
-      # 回归：bee 模式只渲染最后一层 drill，从子任务回不到父任务
-      # （state.stack 里其实已有父任务，只是没画出来）。
-      assert js =~ "const drills = [];"
-      assert js =~ "if (entry.type === \"drill\") drills.push({ entry, index });"
-      assert js =~ "last ? () => {} : () => gotoLevel(d.index)"
+      # 子工作从服务端 parent_task_id 找父工作，返回不依赖易失的页面栈。
+      assert js =~ "const parent = (state.data?.tasks || []).find(t => t.id === task?.parent_task_id);"
+      assert js =~ "pushPath({type: 'drill', taskId: parent.id, title: parent.title})"
+      assert js =~ "返回工作列表"
     end
   end
 
@@ -417,12 +413,12 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert app =~ "const restoreFocus = btn && document.activeElement === btn ? btn : null;"
       assert app =~ "document.body.contains(restoreFocus)"
       assert app =~ "restoreFocus.focus({ preventScroll: true });"
-      assert app =~ "let historyButtonFocused = false;"
-      assert app =~ "button.addEventListener(\"focus\", () => { historyButtonFocused = true; });"
-      assert app =~ "const manual = historyButtonFocused || document.activeElement?.closest?.(\"#load-more\");"
-      assert app =~ "if (t.scrollTop <= 40 && !manual) loadEarlier();"
-      assert app =~ "const restoreHistoryFocus = historyButtonFocused;"
-      assert app =~ "document.querySelector(\"#load-more button\")?.focus({ preventScroll: true });"
+      assert app =~ "function renderLoadMoreBtn(remaining)"
+      assert app =~ "查看更早的 ${Math.min(HISTORY_PAGE, remaining)} 条"
+      assert app =~ "region.setAttribute('aria-busy', 'true')"
+      assert app =~ "anchor.getBoundingClientRect().top - anchorTop"
+      assert app =~ "已显示更早的 ${offset - start} 条消息"
+      refute app =~ "function initInfiniteHistory()"
       assert cutil =~ "export async function copyToClipboard(text)"
       assert md =~ "copyToClipboard(code).then((ok) => {"
       assert forms =~ "const ok = await copyToClipboard(input.value);"
@@ -511,7 +507,7 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       # 回归：人的提交（colony.work.submit）不一定写任务级 Trace，深钻只渲染 Trace，
       # 于是「已提交、待验收」的任务在详情里显示「还没有工作记录」，也验收不了。
       assert chat =~ "export function honeyNode(t, ctx) {"
-      assert drill =~ "import { traceNode, honeyNode } from \"./chat.js\";"
+      assert drill =~ "import { traceNode, honeyNode } from './chat.js';"
       assert drill =~ "filter((h) => h.task_id === task.id)"
       assert drill =~ "if (tracedHoneyIds.has(h.id)) continue;"
       # 提交/验收各写一条成果事件，而卡片渲染的是「当前」状态：不按 honey_id 去重
@@ -530,7 +526,7 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       app = File.read!("priv/web/colony/app.js")
 
       assert app =~ "const startAtTop = state.view === 'drill' || overview;"
-      assert app =~ "if (!sameRoute) transcript.scrollTop = startAtTop ? 0 : transcript.scrollHeight;"
+      assert app =~ "restoredPosition ?? (startAtTop ? 0 : transcript.scrollHeight)"
       assert app =~ "else if (wasNearBottom && !startAtTop) scrollBottom();"
     end
   end
@@ -586,69 +582,52 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     end
   end
 
-  describe "对话框关闭焦点" do
-    test "form、确认框和侧栏选择框都恢复触发控件" do
+  describe "对话框与检查面板焦点" do
+    test "关闭后恢复触发位置，普通 Escape 不再退出整件工作" do
       forms = File.read!("priv/web/colony/forms.js")
-      app = File.read!("priv/web/colony/app.js")
       sidebar = File.read!("priv/web/colony/sidebar.js")
+      workbench = File.read!("priv/web/colony/workbench.js")
+      workspace = File.read!("priv/web/app.js")
 
       assert forms =~ "export function restoreFocus(previousFocus)"
-      assert forms =~ "node.noValidate = true;"
       assert forms =~ "dialog.remove(); restoreFocus(previousFocus);"
-      assert sidebar =~ "import { form, confirmAction, restoreFocus } from './forms.js';"
       assert sidebar =~ "dialog.remove(); restoreFocus(previousFocus);"
-      assert forms =~ "const menuTrigger = previousFocus.closest?.('.card-menu-wrap')?.querySelector('.card-more');"
-
-      assert forms =~
-               "const target = focusable(previousFocus) ? previousFocus : focusable(menuTrigger) ? menuTrigger : main;"
-
-      assert forms =~ "setTimeout(() => {"
-      assert forms =~ "  }, 50);"
-
-      assert app =~ "if (document.querySelector('dialog[open]')) return;"
-      assert app =~ "let dialogEscape = false;"
-      assert app =~ "dialogEscape = true;"
-      assert app =~ "if (dialogEscape || e.target?.closest?.('dialog')) return;"
-      assert app =~ "frame.focus({ preventScroll: true });"
-      assert app =~ "lastRoute = route;"
-      assert app =~ "const input = frame.contentDocument?.getElementById(\"input\");"
-      assert app =~ "const frame = $(\"#embed-frame\");"
-      assert app =~ "if (input) {"
-      assert app =~ "input.focus({ preventScroll: true });"
-      assert app =~ "const route = JSON.stringify([state.colonyId, state.view, state.conversationId,"
-      assert app =~ "const focusEmbed = (attempt = 0) =>"
-      assert app =~ "setTimeout(() => focusEmbed(attempt + 1), 50);"
-      assert app =~ "frame.addEventListener(\"load\", () => focusEmbed(), { once: true });"
+      assert workbench =~ "!document.querySelector('dialog[open]') && state.inspector"
+      assert workbench =~ "if (event.target.closest('textarea, input, [contenteditable=true]')) return;"
+      assert workbench =~ "if (previousFocus?.isConnected) previousFocus.focus"
+      assert workbench =~ "setTimeout(() => history.back(), 0)"
+      assert workspace =~ "Escape closes local panels first; it never silently navigates away"
+      assert workspace =~ "inspectionNotify('close-inspector')"
     end
   end
 
-  describe "Bee 对话返回焦点" do
-    test "从执行过程列表返回蜂群时接管 transcript 焦点" do
-      breadcrumbs = File.read!("priv/web/colony/breadcrumbs.js")
+  describe "执行检查返回焦点" do
+    test "关闭执行检查返回来源工作或成员页" do
+      workbench = File.read!("priv/web/colony/workbench.js")
+      store = File.read!("priv/web/colony/store.js")
 
-      assert breadcrumbs =~ "function focusChatRegion()"
-      assert breadcrumbs =~ "await exitBeeMode();"
-      assert breadcrumbs =~ "setTimeout(focusChatRegion, 0);"
+      assert workbench =~ "history.state?.inspector"
+      assert workbench =~ "setTimeout(() => history.back(), 0)"
+      assert store =~ "history.replaceState({...history.state, inspector: true}"
+      refute store =~ "window.addEventListener('popstate'"
     end
   end
 
-  describe "会话刷新路由" do
-    test "保留当前嵌入会话并在启动后恢复" do
+  describe "工作与执行的刷新路由" do
+    test "恢复工作、成员和执行检查，并为无效目标保留可见说明" do
       store = File.read!("priv/web/colony/store.js")
       app = File.read!("priv/web/colony/app.js")
+      workbench = File.read!("priv/web/colony/workbench.js")
 
-      assert store =~ "function syncConversationUrl()"
-      assert store =~ "url.searchParams.set(\"conversation\", state.conversationId);"
-      assert store =~ "history.replaceState(null, \"\", next);"
-      assert store =~ "export function conversationRouteFromUrl()"
-      assert store =~ "syncConversationUrl();"
-      assert app =~ "const savedConversationRoute = conversationRouteFromUrl();"
-      assert app =~ "async function restoreConversationRoute(route)"
-      assert app =~ "await enterBeeMode(route.beeId);"
-      assert app =~ "const conversation = (state.trail?.conversations || []).find"
-      assert app =~ "if (!conversation) { resetToChat(); return; }"
-      assert app =~ "await openConversation(route.conversationId, route.beeId);"
-      assert app =~ "await restoreConversationRoute(savedConversationRoute);"
+      assert store =~ "function syncConversationUrl(replace = false)"
+      assert store =~ "url.searchParams.set('task', taskId)"
+      assert store =~ "url.searchParams.set('conversation', state.inspector.sessionId)"
+      assert store =~ "export async function restoreLocation()"
+      assert store =~ "该会话不存在或已不属于当前成员"
+      assert store =~ "await openConversation(sid, beeId, true)"
+      refute store =~ "window.addEventListener('popstate'"
+      assert app =~ "window.addEventListener('popstate'"
+      assert workbench =~ "正在恢复「${current.title}」的消息与连接"
     end
   end
 

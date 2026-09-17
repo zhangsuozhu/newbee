@@ -16,12 +16,17 @@ defmodule Newbee.Colony.Workspace do
 
       true ->
         source = task["workspace_source"] || cwd
-        name = "colony-" <> String.replace(task["id"], ~r/[^a-zA-Z0-9._-]/, "_")
 
-        with {:ok, snapshot} <- Newbee.Collaboration.Workspace.prepare(source, name, true),
-             {:ok, workspace} <- attach_git(snapshot, source),
-             {:ok, _} <- Store.update("tasks", task["id"], nil, &{:ok, Map.put(&1, "workspace", workspace)}) do
-          {:ok, workspace["path"]}
+        if Path.expand(source) == "/" do
+          {:ok, "/"}
+        else
+          name = "colony-" <> String.replace(task["id"], ~r/[^a-zA-Z0-9._-]/, "_")
+
+          with {:ok, snapshot} <- Newbee.Collaboration.Workspace.prepare(source, name, true),
+               {:ok, workspace} <- attach_git(snapshot, source),
+               {:ok, _} <- Store.update("tasks", task["id"], nil, &{:ok, Map.put(&1, "workspace", workspace)}) do
+            {:ok, workspace["path"]}
+          end
         end
     end
   end

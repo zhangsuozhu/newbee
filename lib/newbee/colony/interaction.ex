@@ -5,6 +5,7 @@ defmodule Newbee.Colony.Interaction do
   def say(cid, text, opts \\ []) do
     actor = Keyword.get(opts, :actor_bee_id)
     context = Keyword.get(opts, :context) || %{}
+    cwd = Keyword.get(opts, :cwd)
 
     with {:ok, member} <- Work.member(cid, actor) do
       {names, core} = Engine.parse_mentions(text)
@@ -73,7 +74,7 @@ defmodule Newbee.Colony.Interaction do
         is_binary(tid) ->
           case continue_or_discuss(cid, tid, core, actor, targets) do
             {:ok, task} ->
-              response("已补充到当前工作，执行器会使用最新上下文继续。", [task])
+              response("已收到本工作的补充要求，具体处理进展见工作记录。", [task])
 
             # 方案阶段不接受直接指令：消息已经记进群聊，别报成发送失败。
             {:error, "workflow_decision_required", msg} ->
@@ -110,6 +111,7 @@ defmodule Newbee.Colony.Interaction do
             "workflow" => true,
             "actor_bee_id" => actor,
             "request_id" => Keyword.get(opts, :request_id),
+            "cwd" => cwd,
             "upload_ids" => Keyword.get(opts, :upload_ids, []),
             "upload_sid" => Keyword.get(opts, :upload_sid) || member["session_id"]
           }
@@ -314,6 +316,7 @@ defmodule Newbee.Colony.Interaction do
            "proposal_bee_ids" => Enum.map(members, & &1["id"]),
            "actor_bee_id" => actor,
            "request_id" => Keyword.get(opts, :request_id),
+           "cwd" => Keyword.get(opts, :cwd),
            "upload_ids" => Keyword.get(opts, :upload_ids, []),
            "upload_sid" => Keyword.get(opts, :upload_sid)
          }) do
@@ -357,6 +360,12 @@ defmodule Newbee.Colony.Interaction do
        Map.merge(
          %{
            "reply" => reply,
+           # Acceptance is a transport receipt, not a claim that the executor has applied it.
+           "receipt" => %{
+             "status" => "accepted",
+             "message" => reply,
+             "task_ids" => Enum.map(tasks, & &1["id"])
+           },
            "tasks" => tasks,
            "actions" => Enum.map(tasks, &%{"type" => "task_created", "task_id" => &1["id"]})
          },
