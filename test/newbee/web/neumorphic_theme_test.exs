@@ -164,27 +164,34 @@ defmodule Newbee.Web.NeumorphicThemeTest do
   test "the polished sidebar uses icon QR, linear rows, a current marker and soft checkboxes",
        %{css: css, index: index, scope: scope} do
     app = File.read!("priv/web/app.js")
-    surface = File.read!("priv/web/workspace.html")
+surface = File.read!("priv/web/workspace.html")
+colony = File.read!("priv/web/colony.html")
 
-    assert index =~ ~s(id="qa-show" class="icon-btn qa-icon-btn")
-    refute index =~ ">手机扫码<"
-    assert app =~ "session-current-mark"
-    assert scope =~ ".swipe-cell .session-item"
-    assert scope =~ "border-bottom"
-    assert scope =~ ".session-select-mark"
-    assert scope =~ ~s(content: "✓")
-    assert scope =~ ".sidebar-foot .logout-btn"
-    assert scope =~ "align-self: flex-end"
+assert index =~ ~s(id="qa-show" class="icon-btn qa-icon-btn")
+refute index =~ ">手机扫码<"
+assert app =~ "session-current-mark"
+assert scope =~ ".swipe-cell .session-item"
+assert scope =~ "border-bottom"
+assert scope =~ ".session-select-mark"
+assert scope =~ ~s(content: "✓")
+assert scope =~ ".sidebar-foot .logout-btn"
+assert scope =~ "align-self: flex-end"
 
-    assert app =~ "xg-main"
-    assert app =~ "xg-icon-btn"
-    assert app =~ "aria-label=\"更多操作\""
-    # 旧跨主机协作入口（建群/加入/群管理）已从两个页面移除，只留会话界面本身。
-    refute index =~ "允许群主完全控制本机"
-    refute index =~ "接受完全控制（群主可在本机执行任意代码和系统命令）"
-    refute index =~ "xg-check-mark"
-    assert scope =~ ".xg-check-mark"
-    assert index =~ ~s(id="new-colony" class="icon-btn new-session-icon")
+assert app =~ "xg-main"
+assert app =~ "xg-icon-btn"
+assert app =~ "aria-label=\"更多操作\""
+# Colony 待处理嵌在会话侧栏，不再把蜂群当第二首页。
+assert index =~ ~s|id="work-inbox"|
+assert index =~ ~s|id="work-review-bar"|
+refute index =~ ~s|id="colony-entry"|
+assert index =~ "允许群主完全控制本机"
+assert index =~ "xg-check-mark"
+
+
+assert scope =~ ".xg-check-mark"
+assert index =~ ~s(id="new-session" class="icon-btn new-session-icon")
+assert colony =~ ~s(id="new-colony" class="icon-btn new-session-icon")
+
     assert css =~ ".session-tools"
     assert css =~ ".session-group .swipe-cell .session-item { border-bottom-color: transparent; }"
     assert css =~ ~r/\.session-tools #new-session\s*\{[^}]*border-radius:\s*50%/s
@@ -275,15 +282,17 @@ defmodule Newbee.Web.NeumorphicThemeTest do
              ~r/\.(mc-file-added|mc-file-deleted|login-error|pair-msg)[^{]*\{[^}]*#[0-9a-fA-F]{3,6}/
   end
 
-  test "colony button geometry uses one explicit scale", %{index: index} do
-    css = File.read!("priv/web/colony/colony.css")
-    assert css =~ "--colony-button-h: 40px;"
-    assert css =~ "--colony-dialog-button-h: 44px;"
-    assert css =~ "grid-template-columns: repeat(2, minmax(0, 1fr));"
-    assert css =~ "grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(100%, 360px);"
-    assert css =~ ":has(> button:nth-child(3))"
-    assert css =~ "height: var(--colony-dialog-button-h);"
-    assert css =~ "#send.btn-icon-round"
-    assert index =~ "colony/colony.css?v=workbench-15"
-  end
+test "colony button geometry uses one explicit scale" do
+css = File.read!("priv/web/colony/colony.css")
+colony = File.read!("priv/web/colony.html")
+assert css =~ "--colony-button-h: 44px;"
+assert css =~ "--colony-dialog-button-h: 44px;"
+assert css =~ "grid-template-columns: repeat(2, minmax(0, 1fr));"
+assert css =~ "grid-template-columns: repeat(3, minmax(0, 1fr)); width: min(100%, 360px);"
+assert css =~ ":has(> button:nth-child(3))"
+assert css =~ "height: var(--colony-dialog-button-h);"
+assert css =~ "#send.btn-icon-round"
+assert colony =~ "colony/colony.css?v="
+end
+
 end

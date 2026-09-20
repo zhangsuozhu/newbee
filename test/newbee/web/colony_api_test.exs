@@ -23,6 +23,56 @@ defmodule Newbee.Web.ColonyApiTest do
     Jason.decode!(conn.resp_body)["result"]
   end
 
+  test "trace pagination is bounded, exclusive and scoped", %{cid: cid} do
+    {:ok, task} = Work.create(cid, %{"title" => "history fixture"})
+
+    for n <- 1..7 do
+      Store.append_trace(%{
+        "colony_id" => cid,
+        "task_id" => task["id"],
+        "channel" => "colony",
+        "type" => "message",
+        "text" => "page #{n}"
+      })
+    end
+
+    payload = %{"colonyId" => cid, "taskId" => task["id"], "limit" => 3}
+    assert %{"ok" => first} = rpc("colony.trace.list", payload)
+    assert length(first["trace"]) == 3
+    assert first["trace_page"]["has_more"] == true
+    cursor = first["trace_page"]["before_seq"]
+    snapshot = first["trace_page"]["snapshot_seq"]
+    Store.append_trace(%{"colony_id" => cid, "task_id" => task["id"], "channel" => "colony", "text" => "new arrival"})
+
+    assert %{"ok" => second} =
+             rpc("colony.trace.list", Map.merge(payload, %{"beforeSeq" => cursor, "snapshotSeq" => snapshot}))
+
+    assert length(second["trace"]) == 3
+    assert Enum.all?(second["trace"], &(&1["seq"] < cursor))
+    assert second["trace_page"]["snapshot_seq"] == snapshot
+
+    assert %{"ok" => tail} =
+             rpc(
+               "colony.trace.list",
+               Map.merge(payload, %{
+                 "beforeSeq" => second["trace_page"]["before_seq"],
+                 "snapshotSeq" => snapshot,
+                 "limit" => 100
+               })
+             )
+
+    assert tail["trace_page"]["has_more"] == false
+    records = tail["trace"] ++ second["trace"] ++ first["trace"]
+    assert records == Enum.sort_by(records, & &1["seq"])
+    assert length(records) == length(Enum.uniq_by(records, & &1["seq"]))
+    assert Enum.count(records, &String.starts_with?(&1["text"] || "", "page ")) == 7
+    refute Enum.any?(records, &(&1["text"] == "new arrival"))
+    assert %{"error" => %{"code" => "bad_request"}} = rpc("colony.trace.list", Map.put(payload, "beforeSeq", -1))
+    assert %{"ok" => empty} = rpc("colony.trace.list", Map.put(payload, "beforeSeq", 1))
+    assert empty["trace"] == []
+    refute empty["trace_page"]["has_more"]
+  end
+
   test "view exposes actual actor and durable control state", %{cid: cid, actor: actor} do
     assert %{"ok" => view} = rpc("colony.view", %{"colonyId" => cid})
     assert view["actor_bee_id"] == actor
@@ -191,6 +241,12 @@ defmodule Newbee.Web.ColonyApiTest do
 
     assert accepted["review_state"] == "accepted"
     assert {:ok, %{"status" => "done"}} = Store.get_task(task["id"])
+    trace_count = length(Store.trace_for_colony(cid))
+
+    assert %{"ok" => %{"honey" => ^accepted}} =
+             rpc("colony.honey.review", %{"colonyId" => cid, "honeyId" => honey["id"], "verdict" => "accept"})
+
+    assert length(Store.trace_for_colony(cid)) == trace_count
   end
 
   test "Queen can explicitly clean an ended task workspace", %{cid: cid, actor: actor} do

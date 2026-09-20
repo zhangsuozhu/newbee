@@ -137,15 +137,41 @@ defmodule Newbee.Colony.Store do
   defp append(_, _), do: {:error, :missing_colony_id}
 
   def trace_for_colony(cid, opts \\ []) do
-    in_colony("trace", cid)
-    |> Enum.filter(fn e ->
-      (!opts[:task_id] or e["task_id"] == opts[:task_id]) and
-        (!opts[:bee_id] or e["bee_id"] == opts[:bee_id] or e["to_bee_id"] == opts[:bee_id]) and
-        (!opts[:channel] or e["channel"] == opts[:channel]) and
-        (!opts[:since_seq] or e["seq"] > opts[:since_seq])
-    end)
-    |> Enum.sort_by(& &1["seq"])
-    |> Enum.take(-Keyword.get(opts, :limit, 200))
+    trace_page(cid, Keyword.put_new(opts, :limit, 200))["trace"]
+  end
+
+  @doc "Returns an exclusive, snapshot-bounded page of the durable trace."
+  def trace_page(cid, opts \\ []) do
+    all = in_colony("trace", cid)
+    snapshot_seq = opts[:snapshot_seq] || Enum.max([0 | Enum.map(all, & &1["seq"])])
+    before_seq = opts[:before_seq] || snapshot_seq + 1
+    limit = min(max(Keyword.get(opts, :limit, 200), 1), 1000)
+
+    records =
+      all
+      |> Enum.filter(fn e ->
+        e["seq"] <= snapshot_seq and e["seq"] < before_seq and
+          (!opts[:task_id] or e["task_id"] == opts[:task_id]) and
+          (!opts[:bee_id] or e["bee_id"] == opts[:bee_id] or e["to_bee_id"] == opts[:bee_id]) and
+          (!opts[:channel] or e["channel"] == opts[:channel]) and
+          (!opts[:since_seq] or e["seq"] > opts[:since_seq])
+      end)
+      |> Enum.sort_by(& &1["seq"], :desc)
+
+    page = Enum.take(records, limit)
+
+    %{
+      "trace" => Enum.reverse(page),
+      "trace_page" => %{
+        "before_seq" =>
+          case List.last(page) do
+            nil -> nil
+            entry -> entry["seq"]
+          end,
+        "snapshot_seq" => snapshot_seq,
+        "has_more" => length(records) > length(page)
+      }
+    }
   end
 
   def signals_for_colony(cid, opts \\ []) do

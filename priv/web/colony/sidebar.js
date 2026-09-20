@@ -1,6 +1,6 @@
 // 蜂群前端 · 左侧列表：蜂群（会话组样式）+ 成员（会话项样式），完全复用主界面组件类
 import { esc, statusLabel, kindLabel } from "./util.js";
-import { state, currentBeeId, currentTaskId, refresh, openBeeTrail, conversationLabel, attentionTasks } from "./store.js";
+import { state, currentBeeId, currentTaskId, refresh, openBeeTrail, conversationLabel, attentionTasks, pendingReviewResults } from "./store.js";
 import { form, confirmAction, restoreFocus } from './forms.js';
 import { rpc, toast } from './api.js';
 import {renameColony, dissolveColony} from './manage.js';
@@ -49,7 +49,7 @@ function renderSidebarContent(root, ctx) {
     return;
   }
 
-  for (const item of items) root.appendChild(colonyGroup(item, ctx));
+  for (const item of items) root.appendChild(colonyGroup(item, ctx, kw));
 }
 
 // ── Bee 模式：这只 Bee 的会话列表（点会话 = 打开真实 newbee 会话）──
@@ -148,7 +148,7 @@ export function renderBeeConversations(root, ctx) {
 function beeOf(id) {
   return ((state.data && state.data.members) || []).find((m) => m.id === id) || null;
 }
-function colonyGroup(item, ctx) {
+function colonyGroup(item, ctx, kw = '') {
   const colony = item.colony || {};
   const stats = item.stats || {};
   const active = colony.id === state.colonyId;
@@ -197,14 +197,15 @@ function colonyGroup(item, ctx) {
     const body = document.createElement("div");
     body.className = "session-group-body";
     body.appendChild(groupChatItem(colony, members, ctx));
-    appendWorkNavigation(body, ctx);
+    appendWorkNavigation(body, ctx, kw);
     if (!members.length) {
       const loading = document.createElement("div");
       loading.className = "session-empty";
       loading.textContent = "加载成员…";
       body.appendChild(loading);
     }
-    for (const m of orderMembers(members)) body.appendChild(beeItem(m, colony.id, ctx));
+    const visibleMembers = orderMembers(members).filter(m => !kw || String(m.display || '').toLowerCase().includes(kw) || (state.data?.tasks || []).some(t => t.assigned_bee_id === m.id && String(t.title || '').toLowerCase().includes(kw)));
+    for (const m of visibleMembers) body.appendChild(beeItem(m, colony.id, ctx));
     wrap.appendChild(body);
   }
   return wrap;
@@ -517,15 +518,10 @@ function currentTaskTitle(beeId) {
 export function setCollapsed(colonyId, val) {
   state.collapsed[colonyId] = val;
 }
-function appendWorkNavigation(root, ctx) {
+function appendWorkNavigation(root, ctx, kw = '') {
   const tasks = state.data?.tasks || [];
   const attention = attentionTasks();
-  const attentionIds = new Set(attention.map(t => t.id));
-  const pending = (state.data?.honey?.recent || []).filter(h =>
-    ['pending_review', 'auto_verified'].includes(h.review_state) &&
-    !tasks.some(t => t.integration_required && t.id === h.task_id) &&
-    !attentionIds.has(h.task_id)
-  );
+  const pending = pendingReviewResults();
   const attentionCount = attention.length + pending.length;
   const nav = (label, active, action, detail = '') => {
     const item = document.createElement('button'); item.type = 'button';
@@ -537,7 +533,7 @@ function appendWorkNavigation(root, ctx) {
   nav(`待我处理${attentionCount ? ' · ' + attentionCount : ''}`, state.view === 'chat' && state.groupTab === 'work' && state.workFilter === 'attention', () => ctx.openHome('attention'));
   nav('工作台', state.view === 'chat' && state.groupTab === 'work' && state.workFilter !== 'attention', () => ctx.openHome('work'));
   const heading = document.createElement('div'); heading.className = 'work-nav-label'; heading.textContent = '最近工作'; root.append(heading);
-  const recent = tasks.filter(t => !t.parent_task_id).slice().sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''))).slice(0, 12);
+  const recent = tasks.filter(t => !t.parent_task_id && (!kw || String(t.title || '').toLowerCase().includes(kw))).slice().sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''))).slice(0, 12);
   for (const task of recent) {
     const bee = beeOf(task.assigned_bee_id);
     nav(task.title || '未命名工作', currentTaskId() === task.id, () => ctx.openTask(task.id, task.title), `${bee?.display || '待分配'} · ${statusLabel(task.status)}`);

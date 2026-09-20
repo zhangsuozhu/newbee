@@ -41,37 +41,28 @@ defmodule Newbee.Web.HiveUiTest do
     assert js =~ "collab_task_updated"
   end
 
-  # 蜂群是登录后的唯一主页：旧工作组/跨主机建群的可见入口与其对话框全部移除，
-  # 原会话界面作为工作区表面继续提供终端、模型、目录、监控等能力。
-  test "蜂群主页取代旧工作组入口，会话界面退居工作区表面" do
-    home = File.read!(Path.expand("priv/web/index.html"))
-    surface = File.read!(Path.expand("priv/web/workspace.html"))
+# 登录后主页是原会话界面；Colony 作为待处理和验收嵌进该界面。
+test "会话主页保留原界面，并把蜂群待处理嵌进侧栏" do
+home = File.read!(Path.expand("priv/web/index.html"))
+js = File.read!(Path.expand("priv/web/app.js"))
+surface = File.read!(Path.expand("priv/web/workspace.html"))
 
-    assert home =~ ~s|id="colony-list"|
-    assert home =~ ~s|id="model-label"|
-    assert home =~ ~s|id="cwd-label"|
-    assert home =~ ~s|id="terminal-toggle"|
-    assert home =~ ~s|id="mc-expand"|
-    assert home =~ "colony/app.js"
-    assert home =~ "colony/shell.css"
-    # 主页的输入框是蜂群群聊用的；会话界面独有的元素不出现。
-    refute home =~ ~s|id="session-list"|, "主页不再内嵌会话列表"
-    refute home =~ ~s|id="mission-control"|, "Mission Control 跟随 AI 对话"
+assert home =~ ~s|id="session-list"|
+assert home =~ ~s|src="/app.js|
+assert home =~ ~s|id="work-inbox"|
+assert home =~ ~s|id="work-review-bar"|
+refute home =~ ~s|id="colony-entry"|
+refute home =~ "colony/app.js"
+refute home =~ ~s|id="colony-list"|
+assert js =~ "startWorkInbox"
+assert js =~ "colony.honey.review"
+refute js =~ "请从蜂群中打开一个 AI 对话"
 
-    for page <- [home, surface] do
-      for id <- ~w(group-modal delegate-modal task-modal xcreate-modal xjoin-modal xmanage-modal) do
-        refute page =~ ~s|id="#{id}"|, "#{id} 应已移除"
-      end
+assert surface =~ ~s|id="input"|
+assert surface =~ ~s|id="terminal-panel"|
+end
 
-      refute page =~ ~s|id="delegate-session"|
-      refute page =~ ~s|id="colony-entry"|
-      refute page =~ ~s|id="session-menu-remove-group"|
-      refute page =~ ~s|选择会话组成工作组|
-    end
 
-    assert surface =~ ~s|id="input"|
-    assert surface =~ ~s|id="terminal-panel"|
-  end
 
   test "工作卡显示任务 cwd，目录入口保留 taskId" do
     taskcard = File.read!("priv/web/colony/taskcard.js")
@@ -98,7 +89,8 @@ defmodule Newbee.Web.HiveUiTest do
     taskcard = File.read!("priv/web/colony/taskcard.js")
     workflow = File.read!("priv/web/colony/workflow.js")
     composer = File.read!("priv/web/colony/composer.js")
-    index = File.read!("priv/web/index.html")
+    colony = File.read!("priv/web/colony.html")
+
 
     assert drill =~ "成果验收"
     assert drill =~ "renderWorkHistory"
@@ -114,7 +106,8 @@ defmodule Newbee.Web.HiveUiTest do
     assert app =~ "drill.js?v=workbench-"
     assert composer =~ "aria-describedby"
     assert composer =~ "给当前工作补充要求"
-    assert index =~ "aria-label=\"发起新工作或发送群聊消息\""
+    assert colony =~ ~s|aria-label="发起新工作或发送群聊消息"|
+
   end
 
   test "Bun 执行真实 Hive UI helper 与 CAS mutation 行为" do

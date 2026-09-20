@@ -1055,7 +1055,8 @@ defmodule Newbee.Colony.Engine do
       tasks = Store.tasks_for_colony(colony_id)
       honey = Store.honey_for_colony(colony_id)
       signals = Store.signals_for_colony(colony_id, limit: 40)
-      trace = Store.trace_for_colony(colony_id, limit: 200, channel: "colony")
+      trace_page = Store.trace_page(colony_id, limit: 200, channel: "colony")
+      trace = trace_page["trace"]
       now = now_ms()
 
       {:ok,
@@ -1070,6 +1071,7 @@ defmodule Newbee.Colony.Engine do
          },
          "signals" => Enum.map(signals, &Signal.public_view/1),
          "trace" => trace,
+         "trace_page" => trace_page["trace_page"],
          "stats" => colony_stats(colony_id),
          "view_revision" => view_signature(colony, bees, tasks, honey, signals, trace)
        }}
@@ -1084,13 +1086,14 @@ defmodule Newbee.Colony.Engine do
       ids = subtree_ids(task_id, tasks)
       subtree_tasks = Enum.filter(tasks, &(Map.get(&1, "id") in ids))
       now = now_ms()
+      trace_page = Store.trace_page(colony_id, task_id: task_id, limit: 100)
 
       {:ok,
        %{
          "task" => Task.public(task, now),
-         "subtree" => Task.tree(Enum.filter(tasks, &(&1["id"] in ids))),
          "tasks" => Enum.map(subtree_tasks, &Task.public(&1, now)),
-         "trace" => Store.trace_for_colony(colony_id, task_id: task_id, limit: 100),
+         "trace" => trace_page["trace"],
+         "trace_page" => trace_page["trace_page"],
          # 该子树的成果：人的提交不一定写任务级 Trace，只给 trace 会让「已提交、待验收」
          # 的任务在详情里看起来「没有工作记录」。这里把成果一并给出，前端按 task_id 渲染。
          "honey" =>

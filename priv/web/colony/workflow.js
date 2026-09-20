@@ -1,4 +1,4 @@
-import { state, memberById, refresh } from './store.js';
+import { state, memberById, refresh, attentionFor } from './store.js';
 import { rpc, toast } from './api.js';
 import { form, confirmAction } from './forms.js';
 import { cardMenu, esc, statusLabel } from './util.js';
@@ -86,6 +86,12 @@ export function buildWorkflowCard(t, ctx) {
   title.onclick = () => ctx.openTask(t.id, t.title);
   title.onkeydown = e => { if (['Enter', ' '].includes(e.key)) { e.preventDefault(); title.click(); } };
   card.append(head,paragraph(`${name(t.assigned_bee_id)} 负责`,'work-flow-owner'));
+  const attention = attentionFor(t);
+  if (attention) {
+    const reason = paragraph(attention.reason, 'work-attention-reason');
+    if (state.view !== 'drill' && t.status !== 'pending_review') reason.append(button(attention.label, () => ctx.openTask(t.id, t.title, attention.section)));
+    card.append(reason);
+  }
   // 判断依据默认收起：卡面上先给结论，想追原因再展开。
   if (w.reason) {
     const why = document.createElement('details'); why.className = 'work-why';

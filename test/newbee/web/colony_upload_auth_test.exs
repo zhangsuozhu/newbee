@@ -102,7 +102,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
 
   describe "深钻与成员对话层级的面包屑" do
     test "页面提供面包屑容器，样式与模块同源" do
-      html = File.read!("priv/web/index.html")
+      html = File.read!("priv/web/colony.html")
+
       css = File.read!("priv/web/colony/colony.css")
 
       # 回归：colony/breadcrumbs.js 一直按 #session-sub 渲染，但 index.html 里没有这个元素，
@@ -114,7 +115,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
     end
 
     test "蜂群页标题不再暗示双击改名" do
-      html = File.read!("priv/web/index.html")
+      html = File.read!("priv/web/colony.html")
+
       css = File.read!("priv/web/colony/colony.css")
 
       # 回归：colony 页加载的是 colony/app.js，没有 attachTitleRename；
@@ -153,7 +155,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
   describe "全群暂停按钮可见性" do
     test "updateScope 必须同时清掉 .hidden 类" do
       js = File.read!("priv/web/colony/composer.js")
-      html = File.read!("priv/web/index.html")
+      html = File.read!("priv/web/colony.html")
+
       css = File.read!("priv/web/style.css")
 
       # 回归：静态标记 class 里带 hidden（index.html），CSS 是 .hidden{display:none !important}，
@@ -208,9 +211,9 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
 
       # 回归：traceNode 会把 `type: "task"` 的事件渲染成「该任务的当前卡片」，
       # 于是同一张卡在深钻里出现两次（实测 .work-flow-card = 2）。
-      assert js =~ "const taskEventId = (t) => t.task_id || t.data?.task_id || t.data?.taskId;"
-      assert js =~ "if (!id || id === task.id) return false;"
-      assert js =~ "if (seenTaskCards.has(id)) return false;"
+      assert js =~ "const taskEventId = t => t.task_id || t.data?.task_id || t.data?.taskId;"
+      assert js =~ "if (!id || id === task.id || seenTaskCards.has(id)) return false;"
+      assert js =~ "seenTaskCards.add(id);"
     end
 
     test "任务卡的控制动作有成功反馈" do
@@ -291,7 +294,8 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       # 工作是稳定位置，负责人是属性；标题和返回目标不再依赖 Bee 模式栈。
       assert js =~ "title.textContent = taskId ? task?.title"
       assert js =~ "const parent = (state.data?.tasks || []).find"
-      assert js =~ ~S|add(parent ? `返回工作「${parent.title}」` : '返回工作列表'|
+      assert js =~ ~S|if (parent) add(`返回工作「${parent.title}」`|
+      assert js =~ ~S|else add('返回工作列表'|
       assert js =~ "负责人：${owner.display}"
     end
   end
@@ -508,16 +512,16 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       # 于是「已提交、待验收」的任务在详情里显示「还没有工作记录」，也验收不了。
       assert chat =~ "export function honeyNode(t, ctx) {"
       assert drill =~ "import { traceNode, honeyNode } from './chat.js';"
-      assert drill =~ "filter((h) => h.task_id === task.id)"
-      assert drill =~ "if (tracedHoneyIds.has(h.id)) continue;"
+      assert drill =~ "filter(h => h.task_id === task.id)"
+      assert drill =~ "data: {...honey, honey_id: honey.id}"
       # 提交/验收各写一条成果事件，而卡片渲染的是「当前」状态：不按 honey_id 去重
       # 就会出现两张一模一样、状态相同的卡。
-      assert drill =~ "const seenHoneyCards = new Set();"
+      assert drill =~ "if (t.type === 'honey') return false;"
       # 群聊时间线同理：同一成果的多条事件只留最后一条，否则两张同状态的卡。
       assert chat =~ "const timelineTrace = [];"
       assert chat =~ "for (const group of groupTrace(timelineTrace)) {"
-      assert drill =~ "if (hid && seenHoneyCards.has(hid)) return false;"
-      assert drill =~ "成果见上方成果卡"
+      assert drill =~ "card.dataset.drillSection = 'results';"
+      assert drill =~ "成果见成果验收"
     end
   end
 
@@ -594,8 +598,10 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       assert sidebar =~ "dialog.remove(); restoreFocus(previousFocus);"
       assert workbench =~ "!document.querySelector('dialog[open]') && state.inspector"
       assert workbench =~ "if (event.target.closest('textarea, input, [contenteditable=true]')) return;"
-      assert workbench =~ "if (previousFocus?.isConnected) previousFocus.focus"
-      assert workbench =~ "setTimeout(() => history.back(), 0)"
+      assert workbench =~ "previousFocus.isConnected"
+      assert workbench =~ "target?.focus({preventScroll: true})"
+      assert workbench =~ "closeInspector();"
+      refute workbench =~ "history.back()"
       assert workspace =~ "Escape closes local panels first; it never silently navigates away"
       assert workspace =~ "inspectionNotify('close-inspector')"
     end
@@ -606,9 +612,11 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       workbench = File.read!("priv/web/colony/workbench.js")
       store = File.read!("priv/web/colony/store.js")
 
-      assert workbench =~ "history.state?.inspector"
-      assert workbench =~ "setTimeout(() => history.back(), 0)"
-      assert store =~ "history.replaceState({...history.state, inspector: true}"
+      assert workbench =~ "const saved = previousFocus"
+      assert workbench =~ "closeInspector();"
+      refute workbench =~ "history.back()"
+      assert store =~ "export function closeInspector(internal = false)"
+      assert store =~ "state.inspector = null;"
       refute store =~ "window.addEventListener('popstate'"
     end
   end
@@ -619,7 +627,9 @@ defmodule Newbee.Web.ColonyUploadAuthTest do
       app = File.read!("priv/web/colony/app.js")
       workbench = File.read!("priv/web/colony/workbench.js")
 
-      assert store =~ "function syncConversationUrl(replace = false)"
+      assert store =~
+               "function syncConversationUrl(replace = false, allowBeforeEnable = false, allowDuringRestore = false)"
+
       assert store =~ "url.searchParams.set('task', taskId)"
       assert store =~ "url.searchParams.set('conversation', state.inspector.sessionId)"
       assert store =~ "export async function restoreLocation()"

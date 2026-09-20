@@ -3,11 +3,12 @@
 import { renderWorkBoard } from './workflow.js';
 import { esc, fmtAgo, fmtTime, kindLabel, signalLabel, statusLabel } from "./util.js";
 import { buildTaskCard, isTerminal, statusChip } from "./taskcard.js";
-import { state, memberById, openHome, attentionTasks } from "./store.js";
+import { state, memberById, openHome, attentionTasks, pendingReviewResults, emit } from "./store.js";
 import { rpc, toast } from "./api.js";
 import { refresh } from "./store.js";
 import { form } from './forms.js';
 import { renderMarkdown } from "./md.js";
+import { reviewModel } from './workview.js';
 
 // 卡片标题去掉指令前缀，避免用户原话在标题和正文之间重复占屏。
 function shortTitle(text, max = 34) {
@@ -21,18 +22,13 @@ export function renderGroupView(flow, ctx) {
   const tasks = data.tasks || [];
   const attention = attentionTasks();
   const attentionIds = new Set(attention.map(t => t.id));
-  const pending = (data.honey?.recent || []).filter(h =>
-    ['pending_review', 'auto_verified'].includes(h.review_state) &&
-    !tasks.some(t => t.integration_required && t.id === h.task_id) &&
-    !attentionIds.has(h.task_id)
-  );
+  const pending = pendingReviewResults();
   const visible = tasks.filter(t => !t.workflow_root);
   const active = visible.filter(t => !isTerminal(t.status) && !attentionIds.has(t.id));
   const finished = visible.filter(t => isTerminal(t.status));
   const counts = {attention: attention.length + pending.length, active: active.length, finished: finished.length};
   const requested = ['attention', 'active', 'finished'].includes(state.workFilter) ? state.workFilter : 'attention';
-  const selected = requested === 'attention' && counts.attention === 0 && counts.active > 0 ? 'active' : requested;
-  state.workFilter = selected;
+  const selected = requested;
 
   const topTabs = document.createElement('nav');
   topTabs.className = 'group-view-tabs'; topTabs.setAttribute('aria-label', '蜂群内容');
@@ -49,7 +45,7 @@ export function renderGroupView(flow, ctx) {
     const internalResults = new Set(tasks.filter(t => t.integration_required).map(t => t.result));
     const trace = (data.trace || []).filter(t => t.channel === 'colony' && !['tool_call','tool','refresh','capabilities'].includes(t.type) && !(t.type === 'task' && hiddenTasks.has(t.task_id || t.data?.task_id)) && !(t.type === 'honey' && internalResults.has(t.data?.honey_id)));
     if (!trace.length) flow.appendChild(emptyNote('还没有公开消息。在下面输入一句话，Bee 们都会看到。'));
-    else renderMessageTimeline(flow, ctx, trace, data, internalResults);
+    renderMessageTimeline(flow, ctx, trace, data, internalResults);
     return;
   }
 
@@ -95,6 +91,25 @@ export function renderGroupView(flow, ctx) {
   }
 }
 function renderMessageTimeline(flow, ctx, trace, data, internalResults) {
+  const page = data.trace_page;
+  if (page?.has_more && page.before_seq != null) {
+    const older = document.createElement('button');
+    older.type = 'button'; older.className = 'btn-ghost trace-load-older';
+    older.textContent = '加载更早消息';
+    older.onclick = async () => {
+      older.disabled = true; older.textContent = '正在加载…';
+      try {
+        const result = await rpc('colony.trace.list', {colonyId: state.colonyId, beforeSeq: page.before_seq, snapshotSeq: page.snapshot_seq, limit: 200});
+        state.data = {...state.data, trace: [...(result.trace || []), ...(state.data.trace || [])], trace_page: result.trace_page};
+        emit();
+      } catch (error) {
+        older.disabled = false; older.textContent = '加载更早消息';
+        toast(error.message || '历史消息加载失败', true);
+      }
+    };
+    flow.append(older);
+  }
+
   // 群里最多的噪音是机械进度行（「工具已返回，处理中」）。它们没有额外信息，
   // 收成一行「工具执行 N 次」，点开看时间；其余事件照旧。
   let prevSender = null;
@@ -518,15 +533,32 @@ function toolNode(t) {
     `<span class="tool-dur" title="${esc(absTime(t.ts))}">${esc(fmtAgo(t.ts))}</span>`;
   node.appendChild(head);
 
-  const detail = detailText(t);
+  const raw = String(t.text || "").trim();
+  const dataDetail = detailText(t);
+  const detail = [raw, dataDetail].filter((value, index, values) => value && (index === 0 || value !== raw)).join("\n").slice(0, 4000);
   if (detail) {
     const res = document.createElement("div");
     res.className = "tool-result";
     res.textContent = detail;
     res.hidden = true;
     node.appendChild(res);
-    head.onclick = () => { res.hidden = !res.hidden; };
-    head.title = "点开看详情";
+    const hint = document.createElement("span");
+    hint.className = "tool-detail-hint";
+    hint.textContent = "详情";
+    hint.title = "展开工具操作详情";
+    head.insertBefore(hint, head.querySelector(".tool-dur"));
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    head.setAttribute("aria-expanded", "false");
+    const toggle = () => {
+      const open = res.hidden;
+      res.hidden = !open;
+      head.setAttribute("aria-expanded", String(open));
+    };
+    head.onclick = toggle;
+    head.onkeydown = (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); }
+    };
   }
   return node;
 }
@@ -556,81 +588,143 @@ function detailText(t) {
 
 // ── 成果卡：内容 + 验收（内联通过 / 打回）──
 export function honeyNode(t, ctx) {
-  const live = (state.data?.honey?.recent || []).find(h => h.id === t.data?.honey_id);
+  const id = t.data?.honey_id || t.data?.id;
+  const live = (state.drill?.honey || []).find(h => h.id === id) || (state.data?.honey?.recent || []).find(h => h.id === id);
   const d = {...(t.data || {}), ...(live || {})};
-  const reviewState = d.review_state || "pending_review";
-  const honeyId = d.honey_id;
-  const pending = !!honeyId && (reviewState === "pending_review" || reviewState === "auto_verified");
-
-  const node = document.createElement("div");
-  node.className = "msg msg-tool";
-  if (pending) node.dataset.honeyPending = "1";
-
-  const head = document.createElement("div");
-  head.className = "tool-head";
-  head.innerHTML =
-    `<span class="card-kind kind-honey">成果</span><span class="diffstat" title="${esc(d.title || t.text || "成果")}">${esc(shortTitle(d.title || t.text || "成果", 34))}</span>` +
+  const task = state.drill?.task?.id === d.task_id ? state.drill.task
+    : (state.drill?.tasks || []).find(item => item.id === d.task_id) || (state.data?.tasks || []).find(item => item.id === d.task_id);
+  const model = reviewModel(task, d);
+  const reviewState = d.review_state || d.review?.state || 'pending_review';
+  const honeyId = d.honey_id || d.id;
+  const pending = !!honeyId && ['pending_review', 'auto_verified'].includes(reviewState);
+  const node = document.createElement('article'); node.className = 'msg msg-tool honey-card'; node.dataset.honeyId = honeyId || '';
+  if (pending) node.dataset.honeyPending = '1';
+  const head = document.createElement('div'); head.className = 'tool-head';
+  head.innerHTML = `<span class="card-kind kind-honey">成果</span><span class="diffstat" title="${esc(d.title || t.text || '成果')}">${esc(shortTitle(d.title || t.text || '成果', 34))}</span>` +
     `<span class="chip-mini ${honeyChip(reviewState)}">${esc(honeyStateLabel(reviewState))}</span>` +
-    `<span class="tool-dur" title="${esc(absTime(t.ts))}">${esc(fmtAgo(t.ts))}</span>`;
-  node.appendChild(head);
-
+    `<span class="tool-dur" title="${esc(absTime(d.created_at || t.ts))}">${esc(fmtAgo(d.created_at || t.ts))}</span>`;
+  node.append(head);
+  const delivery = document.createElement('section'); delivery.className = 'honey-delivery';
+  const heading = document.createElement('h3'); heading.textContent = '本次交付'; delivery.append(heading);
   if (d.content) {
-    const body = document.createElement("div");
-    body.className = "honey-result md";
-    body.innerHTML = renderMarkdown(d.content);
-    const more = clampBlock(body, d.content, "查看完整成果");
-    node.appendChild(body);
-    if (more) node.appendChild(more);
+    const body = document.createElement('div'); body.className = 'honey-result md'; body.innerHTML = renderMarkdown(d.content);
+    const more = clampBlock(body, d.content, '查看完整成果'); delivery.append(body); if (more) delivery.append(more);
+  } else {
+    const missing = document.createElement('p'); missing.textContent = '该成果未提供交付正文。'; delivery.append(missing);
   }
+  if (d.content_ref) {
+    const ref = document.createElement('p'); ref.className = 'honey-source'; ref.textContent = `成果位置：${d.content_ref}`; delivery.append(ref);
+  }
+  const links = document.createElement('div'); links.className = 'honey-review-links';
+  if (task && ctx.openTask) links.append(reviewLink('查看执行记录', () => ctx.openTask(task.id, task.title, 'execution')));
+  if (task?.workspace && ctx.openDirectory) links.append(reviewLink('查看工作区', () => ctx.openDirectory(task.id)));
+  delivery.append(links); node.append(delivery, reviewEvidence(model));
 
-  if (d.content_ref || d.evidence?.length || d.limitations?.length) {
-    const evidence = document.createElement('details'); evidence.className = 'work-context';
-    const title = document.createElement('summary'); title.textContent = `成果与验证记录 · 工作版本 ${d.work_revision ?? '?'}`;
-    const content = document.createElement('pre'); content.textContent = [d.content_ref ? `成果引用：${d.content_ref}` : '', ...(d.evidence || []).map(e => e.text || JSON.stringify(e)), '未覆盖范围：', ...(d.limitations || ['尚未说明'])].filter(Boolean).join('\n');
-    evidence.append(title,content); node.append(evidence);
-  }
-  const checks = d.checks || [];
-  if (checks.length) {
-    const box = document.createElement("div");
-    box.className = "honey-checks";
-    for (const c of checks) {
-      const chip = document.createElement("span");
-      chip.className = `chip-mini ${c.ok ? "ok" : "bad"}`;
-      chip.textContent = `${c.ok ? "✓" : "✗"} ${c.check || "检查"}`;
-      box.appendChild(chip);
-    }
-    node.appendChild(box);
-  }
-
-  const actions = document.createElement("div");
-  actions.className = "honey-actions";
+  const actions = document.createElement('div'); actions.className = 'honey-actions';
   if (pending && state.data?.can_manage) {
-    actions.appendChild(reviewBtn("通过", "accept", "btn-allow", honeyId));
-    actions.appendChild(reviewBtn("打回", "reject", "btn-deny", honeyId));
+    const unavailable = model.revision !== 'matching' || !task;
+    for (const [label, verdict, cls] of [['接受这次交付', 'accept', 'btn-allow'], ['提出修改', 'reject', 'btn-deny']]) {
+      const control = reviewBtn(label, verdict, cls, honeyId, node); control.disabled = unavailable;
+      if (unavailable) control.title = '工作要求与交付未确认一致，不能直接验收。';
+      actions.append(control);
+    }
+    if (unavailable) {
+      const reason = document.createElement('p'); reason.className = 'honey-review-notice';
+      reason.textContent = model.revision === 'changed' ? '工作要求已变化，请核对当前要求与旧成果；服务端会拒绝直接验收。' : '缺少成果或工作的要求修订信息，暂不能直接验收。';
+      node.append(reason);
+    }
+  } else if (pending) {
+    const note = document.createElement('p'); note.className = 'honey-review-notice'; note.textContent = '等待有管理权限的负责人验收；你可以查看交付与记录。'; node.append(note);
   }
-  node.appendChild(actions);
+  node.append(actions);
   return node;
 }
 
-function reviewBtn(label, verdict, cls, honeyId) {
-  const b = document.createElement("button");
-  b.className = cls;
-  b.textContent = label;
+function reviewLink(label, action) {
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'btn-ghost';
+  button.textContent = label; button.onclick = action; return button;
+}
+function reviewEvidence(model) {
+  const section = document.createElement('section'); section.className = 'honey-review-evidence';
+  const heading = document.createElement('h3'); heading.textContent = '验收依据'; section.append(heading);
+  const baseline = document.createElement('p'); baseline.className = `honey-baseline ${model.revision}`;
+  baseline.textContent = {matching: '工作要求与本次交付一致', changed: '工作要求已变化，本次交付对应旧要求', unknown: '工作要求对应关系尚未确认'}[model.revision];
+  section.append(baseline);
+  const code = document.createElement('p'); code.className = 'honey-source';
+  code.textContent = model.gitRevision ? `交付声明的代码版本：${model.gitRevision}（未比较当前工作区）` : '代码基线：未记录本次交付的代码版本，不代表当前代码已验证。';
+  section.append(code);
+  const table = document.createElement('table'); table.className = 'honey-evidence-table';
+  const caption = document.createElement('caption'); caption.textContent = '验收条件与检查记录'; table.append(caption);
+  const head = document.createElement('thead'); const headRow = document.createElement('tr');
+  for (const label of ['验收条件', '检查依据', '状态']) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = label; headRow.append(cell); }
+  head.append(headRow); table.append(head);
+  const body = document.createElement('tbody');
+  for (const item of model.criteria) {
+    const row = document.createElement('tr'); const criterion = document.createElement('th'); criterion.scope = 'row'; criterion.textContent = item.criterion;
+    const source = document.createElement('td'); source.textContent = item.checks.length ? item.checks.map(check => check.detail || check.check || check.criterion).join('\n') : '未提供对应检查记录';
+    const status = document.createElement('td'); status.className = `honey-evidence-status ${item.status}`;
+    status.textContent = {passed: '预检报告通过', failed: '预检未通过', unverified: '未验证'}[item.status];
+    row.append(criterion, source, status); body.append(row);
+  }
+  if (!model.criteria.length) {
+    const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 3; cell.textContent = '未记录验收条件，请对照目标核查交付。'; row.append(cell); body.append(row);
+  }
+  table.append(body); section.append(table);
+  const caveat = document.createElement('p'); caveat.className = 'honey-review-notice'; caveat.textContent = '预检报告不等于人工验收；执行摘要或多位 Bee 的同意不证明验收条件已满足。'; section.append(caveat);
+  if (model.otherChecks.length) {
+    const details = document.createElement('details'); const title = document.createElement('summary'); title.textContent = '其他预检记录（未关联验收条件）'; details.append(title);
+    for (const check of model.otherChecks) {
+      const line = document.createElement('p'); line.textContent = `${check.check || check.criterion || '检查'}：${check.ok === true ? '报告通过' : check.ok === false ? '未通过' : '结果未知'}${check.detail ? ' · ' + check.detail : ''}`; details.append(line);
+    }
+    section.append(details);
+  }
+  const limits = document.createElement('h4'); limits.textContent = '未验证项与限制'; section.append(limits);
+  const list = document.createElement('ul');
+  const unknown = model.criteria.filter(row => row.status === 'unverified').map(row => `未验证：${row.criterion}`);
+  for (const text of [...unknown, ...model.limitations, ...(!model.limitations.length ? ['提交者尚未说明验证范围，不能据此认为没有限制。'] : [])]) {
+    const item = document.createElement('li'); item.textContent = text; list.append(item);
+  }
+  section.append(list);
+  const records = document.createElement('details'); records.className = 'honey-evidence-records';
+  const title = document.createElement('summary'); title.textContent = `执行记录引用 · ${model.records.length}`; records.append(title);
+  for (const record of model.records) {
+    const entry = document.createElement('p'); const identity = record?.id || (record?.seq != null ? `记录 ${record.seq}` : '未提供定位信息');
+    entry.textContent = `${identity} · ${typeof record === 'string' ? record : record?.text || '未提供摘要'}`; records.append(entry);
+  }
+  if (!model.records.length) { const empty = document.createElement('p'); empty.textContent = '未提供可定位的执行记录引用。'; records.append(empty); }
+  section.append(records); return section;
+}
+
+function reviewBtn(label, verdict, cls, honeyId, card) {
+  const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = label;
+  const colonyId = state.colonyId;
   b.onclick = async () => {
-    b.disabled = true;
+    if (card.getAttribute('aria-busy') === 'true') return;
+    let needsRefresh = false;
+    card.setAttribute('aria-busy', 'true');
+    const controls = [...card.querySelectorAll('.honey-actions button')]; controls.forEach(button => { button.disabled = true; });
+    card.querySelector('.honey-review-error')?.remove();
     try {
       let note = '';
-      if (verdict === 'reject') {const answer = await form('退回成果', [{name:'note',label:'需要补齐什么',multiline:true,required:true}], '退回'); if (!answer) {b.disabled = false; return;} note = answer.note;}
-      await rpc("colony.honey.review", { colonyId: state.colonyId, honeyId, verdict, note });
-      toast(verdict === "accept" ? "已验收 ✅" : "已打回 ↩");
-      await refresh();
-    } catch (e) {
-      toast(e.message || "操作失败", true);
-      b.disabled = false;
+      if (verdict === 'reject') {
+        const answer = await form('提出修改', [{name: 'note', label: '需要补齐什么', multiline: true, required: true}], '退回修改');
+        if (!answer) return; note = answer.note;
+      }
+      await rpc('colony.honey.review', {colonyId, honeyId, verdict, note});
+      if (state.colonyId === colonyId) { toast(verdict === 'accept' ? '已验收这次交付' : '已退回修改'); await refresh(); }
+    } catch (error) {
+      const message = document.createElement('p'); message.className = 'honey-review-error'; message.setAttribute('role', 'alert');
+      message.textContent = error.code === 'timeout' ? '验收结果待确认，请刷新工作后确认；不要重复提交。' : error.message || '验收失败，原成果保留。';
+      needsRefresh = ['timeout', 'stale_result'].includes(error.code);
+      if (needsRefresh) message.append(reviewLink('刷新工作确认', () => refresh()));
+      card.append(message);
+    } finally {
+      card.removeAttribute('aria-busy'); controls.forEach(button => { button.disabled = needsRefresh; });
     }
   };
   return b;
 }
+
 
 function honeyChip(s) {
   return { pending_review: "warn", auto_verified: "accent", accepted: "ok", rejected: "bad" }[s] || "";

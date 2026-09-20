@@ -95,14 +95,56 @@ defmodule Newbee.Web.CssSingleSourceTest do
     bun = System.find_executable("bun") || "/home/alanx/.bun/bin/bun"
 
     if File.exists?(bun) do
-      out = Path.join(System.tmp_dir!(), "newbee-js-parse-check.js")
+      out =
+        Path.join(
+          System.tmp_dir!(),
+          "newbee-js-parse-" <> Integer.to_string(System.unique_integer([:positive])) <> ".js"
+        )
 
-      for rel <- ["priv/web/app.js", "priv/web/theme.js", "priv/web/project-chat.js", "priv/web/colony/chat.js"] do
+      for rel <- [
+            "priv/web/app.js",
+            "priv/web/theme.js",
+            "priv/web/project-chat.js",
+            "priv/web/colony/chat.js",
+            "priv/web/colony/app.js",
+            "priv/web/colony/store.js",
+            "priv/web/colony/taskcard.js",
+            "priv/web/colony/workflow.js",
+            "priv/web/colony/workview.js",
+            "priv/web/colony/drill.js",
+            "priv/web/colony/sidebar.js",
+            "priv/web/colony/workbench.js"
+          ] do
         path = Path.expand(rel)
         assert File.exists?(path), "#{rel} 不存在"
 
         {msg, code} =
-          System.cmd(bun, ["build", path, "--target", "browser", "--outfile", out], stderr_to_stdout: true)
+          System.cmd(
+            bun,
+            [
+              "build",
+              path,
+              "--target",
+              "browser",
+              "--external",
+              "./workflow.js?v=*",
+              "--external",
+              "./drill.js?v=*",
+              "--external",
+              "./workbench.js?v=*",
+              "--external",
+              "./taskcard.js?v=*",
+              "--external",
+              "./shell.js?v=*",
+              "--external",
+              "./chat.js?v=*",
+              "--external",
+              "./composer.js?v=*",
+              "--outfile",
+              out
+            ],
+            stderr_to_stdout: true
+          )
 
         File.rm(out)
         assert code == 0, "#{rel} 不是合法 JavaScript：\n#{msg}"

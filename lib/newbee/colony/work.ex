@@ -347,6 +347,11 @@ defmodule Newbee.Colony.Work do
           honey == nil or task == nil or honey["colony_id"] != cid ->
             {:error, "not_found", "成果不存在"}
 
+          (honey["review"]["state"] == "accepted" and verdict == "accept") or
+              (honey["review"]["state"] == "rejected" and verdict == "reject") ->
+            # Retrying the same decision is safe: do not bump task revision or append another trace.
+            {:ok, {:ok, honey}, data}
+
           honey["work_revision"] != (task["context_revision"] || 0) ->
             {:error, "stale_result", "要求已变化，需要重新核对成果"}
 

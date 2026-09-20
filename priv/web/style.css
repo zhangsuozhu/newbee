@@ -2022,10 +2022,10 @@ svg.ico {
   .login-col-pair { border-left: none !important; padding-left: 0 !important; flex: 0 0 auto; }
   .login-box.pair-open .login-divider-v { display: flex; }
 
-  /* 1. 左侧会话抽屉：横向全屏覆盖 */
+  /* 1. 左侧会话抽屉：窄屏抽屉保留可点击的外部遮罩区域 */
   #sidebar {
     position: fixed; top: 0; bottom: 0; left: 0; z-index: 40;
-    width: 100vw; min-width: 0; max-width: 100vw;
+    width: min(86vw, 360px); min-width: 0; max-width: 360px;
     box-shadow: 4px 0 24px rgba(0,0,0,0.25);
     transition: transform 0.2s ease;
   }
@@ -2034,7 +2034,7 @@ svg.ico {
   #app:not(.sidebar-collapsed)::after {
     content: ''; position: fixed; inset: 0 0 70px 0;
     background: rgba(0,0,0,0.35); z-index: 35;
-    pointer-events: auto;
+    pointer-events: none;
   }
 
   /* 2. 顶栏紧凑 */
@@ -2511,6 +2511,13 @@ svg.ico {
 .session-group-label{padding:9px 8px 4px;color:var(--nb-label-caption);font-size:11px;font-weight:650;border-top:1px solid var(--nb-border);margin-top:5px}
 .session-group-label:first-child{border-top:0;margin-top:0}.session-group-label.other{margin-top:10px}
 .session-group-label.current{color:var(--nb-accent);}
+.work-inbox{padding:4px 6px 8px;border-bottom:1px solid var(--nb-border)}
+.work-inbox.hidden{display:none}
+.work-inbox .session-group-label{margin:0;padding:6px 8px 4px;border-top:0;color:var(--nb-accent)}
+.work-inbox-item{width:100%;text-align:left;background:transparent;border:0;cursor:pointer}
+.work-inbox-item .meta{color:var(--nb-label-3)}
+#work-review-bar{gap:8px}
+
 .session-group{margin:4px 0;border-radius:12px;overflow:hidden;border:1px solid var(--nb-border);background:var(--nb-bg-elev)}
 .session-group-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;row-gap:4px;padding:7px 8px 7px 6px;background:var(--nb-bg-elev);cursor:pointer;user-select:none;border-radius:0}
 .session-group-header:hover{background:var(--nb-bg)}
@@ -4025,6 +4032,23 @@ button { font-size: var(--ui-fs-ui); }
   /* 多选：可视方块 18px，命中区扩到 28px。 */
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select { width: 28px; height: 28px; padding: 5px; left: 2px; top: 7px; }
   :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select input { width: 28px; height: 28px; }
+  .mcfg-box :is(button, input:not([type="checkbox"]):not([type="radio"]), select, textarea) { min-height: 44px; box-sizing: border-box; }
+  .mcfg-box :is(input[type="checkbox"], input[type="radio"]) { width: 28px; height: 28px; }
+  .mcfg-pitem { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
+  .dir-pathbar input, .dir-create input, .dir-create button, .dir-show-hidden { min-height: 44px; box-sizing: border-box; }
+  .dir-show-hidden { display: inline-flex; align-items: center; }
+  .dir-show-hidden input { width: 28px; height: 28px; }
+  .dir-crumb, .dir-entry { min-height: 44px; display: flex; align-items: center; }
+  #model-modal .modal-actions button, #model-modal .ctx-chip { min-height: 44px; box-sizing: border-box; }
+  #model-modal .model-provider, #model-modal .model-opt { min-height: 44px; display: flex; align-items: center; box-sizing: border-box; }
+  #model-modal .model-opt .ctx-chip { min-height: 44px; box-sizing: border-box; }
+  .ctx-editor :is(input, button) { min-height: 44px; box-sizing: border-box; }
+  #mission-control button { min-height: 44px; box-sizing: border-box; }
+  #mission-control :is(.icon-btn, .mc-tab) { min-width: 44px; }
+  #dir-cancel, #dir-confirm { min-height: 44px; box-sizing: border-box; }
+  .mcfg-check { min-height: 44px; box-sizing: border-box; }
+  #terminal-panel button { min-height: 44px; box-sizing: border-box; }
+  #terminal-panel .icon-btn { min-width: 44px; }
 }
 @media (max-width: 400px) {
   #topbar .theme-picker { width: 92px; }

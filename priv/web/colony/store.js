@@ -1,4 +1,5 @@
 // 蜂群前端 · 状态中心（订阅 + 轮询）
+import { attentionWorks, workAttention, pendingReviewHoney } from './workview.js';
 import { rpc, toast, isMemberSession } from "./api.js";
 
 const listeners = new Set();
@@ -75,6 +76,30 @@ export function emit() {
   for (const fn of listeners) {
     try { fn(state); } catch (e) { console.error("[colony] listener failed", e); }
   }
+}
+function mergeTraceSnapshot(previous, incoming) {
+  if (!previous || !incoming) return incoming;
+  if (previous.task?.id && incoming.task?.id && previous.task.id !== incoming.task.id) return incoming;
+  const oldTrace = Array.isArray(previous.trace) ? previous.trace : [];
+  const freshTrace = Array.isArray(incoming.trace) ? incoming.trace : [];
+  if (!oldTrace.length && !freshTrace.length) return incoming;
+  const key = (entry, index) => entry?.seq != null ? 'seq:' + entry.seq : entry?.id != null ? 'id:' + entry.id : 'raw:' + index + ':' + JSON.stringify(entry);
+  const seen = new Set();
+  const merged = [];
+  for (const [index, entry] of [...oldTrace, ...freshTrace].entries()) {
+    const entryKey = key(entry, index);
+    if (seen.has(entryKey)) continue;
+    seen.add(entryKey); merged.push(entry);
+  }
+  const ordered = merged.every(entry => Number.isFinite(entry?.seq))
+    ? merged.sort((a, b) => a.seq - b.seq) : merged;
+  const oldFirst = oldTrace.find(entry => Number.isFinite(entry?.seq))?.seq;
+  const freshFirst = freshTrace.find(entry => Number.isFinite(entry?.seq))?.seq;
+  const localHasOlder = oldFirst != null && freshFirst != null && oldFirst < freshFirst;
+  const page = localHasOlder && previous.trace_page
+    ? {...(incoming.trace_page || {}), before_seq: previous.trace_page.before_seq, has_more: previous.trace_page.has_more}
+    : incoming.trace_page;
+  return {...incoming, trace: ordered, ...(page ? {trace_page: page} : {})};
 }
 
 function invalidateMemberSession() {
@@ -160,7 +185,7 @@ export async function refresh() {
     const view = await rpc("colony.view", params);
     if (!current()) return;
     // An unchanged overview does not imply unchanged member or task detail.
-    if (view.changed !== false) state.data = view;
+    if (view.changed !== false) state.data = mergeTraceSnapshot(state.data, view);
     state.lastError = null;
 
     // 一对一视图与「Bee 模式」都需要 trail（Bee 模式靠它出对话列表）
@@ -174,7 +199,7 @@ export async function refresh() {
       detailRequest = true;
       const drill = await rpc("colony.drill", { colonyId, taskId: currentTaskId() });
       if (!current()) return;
-      state.drill = drill;
+      state.drill = mergeTraceSnapshot(state.drill, drill);
     }
   } catch (e) {
     if (!current()) return;
@@ -453,21 +478,17 @@ export async function restoreLocation() {
   }
 }
 
-// One attention policy for the sidebar count and the actionable inbox.
+// One responsibility policy for counts, cards and the actionable inbox.
+export function workViewer() {
+  return {canManage: state.data?.can_manage === true, actorId: state.data?.actor_bee_id};
+}
 export function attentionTasks() {
-  const tasks = state.data?.tasks || [];
-  const byId = new Map(tasks.map(task => [task.id, task]));
-  const result = new Map();
-  for (const task of tasks) {
-    if (['done', 'cancelled'].includes(task.status)) continue;
-    const needsHuman = ['blocked', 'pending_review', 'failed'].includes(task.status) || task.waiting_for === 'user' || task.approval_required || task.workflow?.phase === 'choosing';
-    if (!needsHuman) continue;
-    // Internal deliverables are integrated by the owner, not a second human review.
-    if (task.integration_required && task.status === 'pending_review') continue;
-    const parent = byId.get(task.parent_task_id || task.workflow_root);
-    const visible = parent && !['done', 'cancelled'].includes(parent.status) ? parent : task;
-    result.set(visible.id, visible);
-  }
-  return [...result.values()];
+  return attentionWorks(state.data?.tasks || [], workViewer());
+}
+export function attentionFor(task) {
+  return workAttention(task, state.data?.tasks || [], workViewer());
+}
+export function pendingReviewResults() {
+  return pendingReviewHoney(state.data?.tasks || [], state.data?.honey?.recent || [], attentionTasks(), workViewer());
 }
 

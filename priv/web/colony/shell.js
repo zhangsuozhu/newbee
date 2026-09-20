@@ -45,7 +45,10 @@ function syncThemeFrames() {
 function bindThemeFrame(frame) {
   if (frame && frame.dataset.themeBound !== '1') {
     frame.dataset.themeBound = '1';
-    frame.addEventListener('load', syncThemeFrames);
+    frame.addEventListener('load', () => {
+      syncThemeFrames();
+      if (layer && !layer.hidden) frame.focus({preventScroll:true});
+    });
   }
 }
 

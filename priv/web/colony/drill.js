@@ -1,6 +1,6 @@
 // 蜂群前端 · 任务深钻：任务头卡（.msg-tool）+ 子任务列表 + 工作轨迹（同款卡片）
 import { esc, fmtTime, statusLabel } from "./util.js";
-import { state, memberById, refresh, selectWorkSection } from "./store.js";
+import { state, memberById, refresh, selectWorkSection, emit } from "./store.js";
 import { rpc, toast } from "./api.js";
 import { traceNode, honeyNode } from './chat.js';
 import { prefill } from './composer.js';
@@ -74,7 +74,7 @@ export function renderDrillView(flow, ctx) {
   });
 
   for (const honey of honeys) {
-    const card = honeyNode({type: 'honey', text: honey.title, ts: honey.created_at, data: {honey_id: honey.id}}, ctx);
+    const card = honeyNode({type: 'honey', text: honey.title, ts: honey.created_at, data: {...honey, honey_id: honey.id}}, ctx);
     card.dataset.drillSection = 'results';
     flow.append(card);
   }
@@ -159,6 +159,23 @@ function historyEvent(t) {
 function renderWorkHistory(flow, task, drill, ctx) {
   const panel = document.createElement('section'); panel.className = 'work-history'; panel.dataset.drillSection = 'history';
   const head = document.createElement('h3'); head.textContent = '工作历史'; panel.append(head);
+  const page = drill.trace_page;
+  if (page?.has_more && page.before_seq != null) {
+    const older = document.createElement('button'); older.type = 'button'; older.className = 'btn-ghost trace-load-older';
+    older.textContent = '加载更早记录';
+    older.onclick = async () => {
+      older.disabled = true; older.textContent = '正在加载…';
+      try {
+        const result = await rpc('colony.trace.list', {colonyId: state.colonyId, taskId: task.id, beforeSeq: page.before_seq, snapshotSeq: page.snapshot_seq, limit: 100});
+        state.drill = {...state.drill, trace: [...(result.trace || []), ...(state.drill.trace || [])], trace_page: result.trace_page};
+        emit();
+      } catch (error) {
+        older.disabled = false; older.textContent = '加载更早记录';
+        toast(error.message || '历史记录加载失败', true);
+      }
+    };
+    panel.append(older);
+  }
   const entries = (drill.trace || []).filter(t => !['lifecycle', 'command', 'signal', 'tool', 'dispatch'].includes(t.type));
   const list = document.createElement('details'); list.className = 'work-records'; list.open = true;
   const summary = document.createElement('summary'); summary.textContent = `工作记录 · ${entries.length} 条`;
@@ -200,8 +217,10 @@ function applyDrillTab(flow) {
 
 
 function childRow(child, ctx) {
-  const row = document.createElement("div");
+  const row = document.createElement("button");
+  row.type = "button";
   row.className = "drill-child";
+  row.setAttribute("aria-label", `打开子工作：${child.title}`);
   row.innerHTML =
     `<span class="child-title">${esc(child.title)}</span>` +
     `<span class="chip-mini ${statusChip(child.status)}">${esc(statusLabel(child.status))}</span>` +
@@ -229,4 +248,3 @@ function note(text) {
   node.textContent = text;
   return node;
 }
-

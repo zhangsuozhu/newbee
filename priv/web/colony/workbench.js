@@ -1,5 +1,5 @@
 // Work stays in the main region; execution inspection has its own explicit input scope.
-import { state, memberById, currentTaskId, closeInspector, openConversation, openHome, attentionTasks } from './store.js';
+import { state, memberById, currentTaskId, closeInspector, openConversation, openHome, attentionTasks, pendingReviewResults } from './store.js';
 import { statusLabel } from './util.js';
 import { buildTaskCard } from './taskcard.js';
 import { honeyNode } from './chat.js';
@@ -9,7 +9,7 @@ import { toast } from './api.js';
 export function renderAttention(flow, ctx) {
   const heading = document.createElement('h2'); heading.textContent = '需要处理'; flow.append(heading);
   const tasks = attentionTasks();
-  const pending = (state.data?.honey?.recent || []).filter(h => ['pending_review', 'auto_verified'].includes(h.review_state) && !(state.data?.tasks || []).some(t => t.integration_required && t.id === h.task_id));
+  const pending = pendingReviewResults();
   for (const honey of pending) flow.append(honeyNode({type: 'honey', text: honey.title, ts: honey.created_at, data: {honey_id: honey.id}}, ctx));
   if (!tasks.length && !pending.length) {
     const empty = document.createElement('p'); empty.className = 'work-summary';

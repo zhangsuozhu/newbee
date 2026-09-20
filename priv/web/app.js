@@ -2979,11 +2979,13 @@ case "goal_round": break;
     // 兼容旧调用：协作不再切换成独立页面。
   }
 
-  function initGroups() {
-    $("new-group").onclick = openGroupModal;
-    $("group-modal-cancel").onclick = () => $("group-modal").classList.add("hidden");
-    $("group-modal-confirm").onclick = createGroup;
-    $("delegate-session").onclick = openDelegateModal;
+function initGroups() {
+const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+bind("new-group", openGroupModal);
+bind("group-modal-cancel", () => $("group-modal")?.classList.add("hidden"));
+bind("group-modal-confirm", createGroup);
+bind("delegate-session", openDelegateModal);
+
     $("delegate-cancel").onclick = () => $("delegate-modal").classList.add("hidden");
     $("delegate-confirm").onclick = delegateSession;
     $("delegate-acceptance-add").onclick = () => addAcceptanceRow("command", "", "", "delegate-acceptance-list");
@@ -3075,6 +3077,113 @@ case "goal_round": break;
       renderSessionList();
     }
   }
+  // Colony 融进原会话：待处理出现在侧栏顶部，验收出现在输入区上方。
+  let workInboxTimer = 0;
+  let workInbox = {items: [], review: null};
+  function workTerminal(task) { return ["done", "cancelled"].includes(task.status); }
+  function workAttention(task, viewer) {
+    if (workTerminal(task)) return null;
+    const mine = task.owner_kind === "human" && task.assigned_bee_id === viewer.actorId;
+    if (task.status === "pending_review") {
+      return viewer.canManage && !task.integration_required ? {reason: "等待你验收", section: "results"} : null;
+    }
+    if (task.waiting_for === "user") return {reason: "等待你答复", section: "overview"};
+    if (task.status === "blocked") return {reason: "工作受阻", section: "overview"};
+    if (mine) return {reason: "由你负责", section: "overview"};
+    return null;
+  }
+  async function loadWorkInbox() {
+    if (document.hidden || workspaceSurface) return;
+    try {
+      const listed = await rpc("colony.list", {});
+      const colonies = listed.colonies || [];
+      const items = [];
+      let review = null;
+      for (const row of colonies) {
+        const colony = row.colony || row;
+        if (!colony || !colony.id) continue;
+        const view = await rpc("colony.view", {colonyId: colony.id});
+        if (view.changed === false) continue;
+        const viewer = {canManage: view.can_manage === true, actorId: view.actor_bee_id};
+        const tasks = view.tasks || [];
+        const honeys = (view.honey && view.honey.recent) || [];
+        for (const task of tasks) {
+          const action = workAttention(task, viewer);
+          if (!action) continue;
+          items.push({colonyId: colony.id, colonyName: colony.name || "蜂群", task, action});
+        }
+        if (!review && viewer.canManage) {
+          const honey = honeys.find((h) => ["pending_review", "auto_verified"].includes(h.review_state));
+          if (honey) review = {colonyId: colony.id, honey, task: tasks.find((t) => t.id === honey.task_id) || null};
+        }
+      }
+      workInbox = {items, review};
+      renderWorkInbox();
+      renderWorkReview();
+    } catch (_e) {}
+  }
+  function startWorkInbox() {
+    if (workInboxTimer) clearInterval(workInboxTimer);
+    loadWorkInbox();
+    workInboxTimer = setInterval(loadWorkInbox, 8000);
+  }
+  function renderWorkInbox() {
+    const box = $("work-inbox");
+    if (!box) return;
+    const items = workInbox.items || [];
+    box.innerHTML = "";
+    if (!items.length) { box.classList.add("hidden"); box.hidden = true; return; }
+    box.classList.remove("hidden"); box.hidden = false;
+    const label = document.createElement("div");
+    label.className = "session-group-label";
+    label.textContent = "需要你处理 · " + items.length;
+    box.appendChild(label);
+    items.slice(0, 8).forEach((item) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "session-item work-inbox-item";
+      const title = String(item.task.title || "未命名工作").replace(/\s+/g, " ").trim().slice(0, 36);
+      row.innerHTML = `<span class="t">${escapeHtml(title)}</span><span class="meta">${escapeHtml(item.action.reason)}</span>`;
+      row.onclick = () => openWorkItem(item);
+      box.appendChild(row);
+    });
+  }
+  async function openWorkItem(item) {
+    const sid = item.task.session_id;
+    if (sid) {
+      if (state.sid !== sid) await resume(sid);
+      return;
+    }
+    line("notice", (item.task.title || "这项工作") + "还没有执行会话，可在输入区直接说明下一步。");
+  }
+  function renderWorkReview() {
+    const bar = $("work-review-bar");
+    if (!bar) return;
+    const review = workInbox.review;
+    if (!review || $("permission-bar") && !$("permission-bar").classList.contains("hidden")) {
+      bar.classList.add("hidden");
+      return;
+    }
+    $("work-review-text").textContent = (review.task && review.task.title ? review.task.title + " · " : "") + "有成果待你验收";
+    bar.classList.remove("hidden");
+  }
+  async function reviewCurrentWork(verdict) {
+    const review = workInbox.review;
+    if (!review) return;
+    try {
+      await rpc("colony.honey.review", {colonyId: review.colonyId, honeyId: review.honey.id, verdict});
+      line("notice", verdict === "accept" ? "已接受这次交付" : "已打回，等待补充");
+      await loadWorkInbox();
+    } catch (e) {
+      line("error", "验收失败: " + (e.message || e));
+    }
+  }
+  document.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "work-review-yes") reviewCurrentWork("accept");
+    if (e.target && e.target.id === "work-review-no") reviewCurrentWork("reject");
+  });
+
+
 
   // 组成员必须只出现一次；没有在当前组索引中的会话才属于其他会话。
   function groupedSessionIds() {
@@ -3532,31 +3641,17 @@ case "goal_round": break;
   function renderXGroups(box, kw, ctx) {
     const gs = state.xgroups || [];
     const list = gs.filter((g) => !kw || String(g.name || "").toLowerCase().includes(kw) || String(g.project_id || "").toLowerCase().includes(kw));
-    // 没群就不占地方：不渲染分区标题与占位文案。
-    // 搜索无匹配时整块跳过（此时建群/加群是无关操作）；平时只保留两个入口按钮。
-    if (!list.length) {
-      if (kw) return;
-      const em = document.createElement("div");
-      em.className = "xgroup-empty";
-      const row = document.createElement("div");
-      row.className = "xgroup-empty-actions";
-      const mkEmptyBtn = (txt, tip, cls, fn) => { const b = document.createElement("button"); b.className = "xg-btn " + cls; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; row.appendChild(b); };
-      mkEmptyBtn("建群", "建一个项目协作群", "xg-main", openXCreate);
-      mkEmptyBtn("加群", "用加群码加入协作群", "", openXJoin);
-      em.appendChild(row);
-      box.appendChild(em);
-      return;
-    }
-    const label = document.createElement("div");
-    label.className = "session-group-label xzone-head";
-    const ztitle = document.createElement("span");
-    ztitle.className = "xzone-title";
-    ztitle.textContent = "项目协作群 · " + list.length;
-    label.appendChild(ztitle);
-    const mkZone = (txt, tip, fn) => { const b = document.createElement("button"); b.className = "xg-btn"; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; label.appendChild(b); };
-    mkZone("建群", "建一个项目协作群", openXCreate);
-    mkZone("加群", "用加群码加入协作群", openXJoin);
-    box.appendChild(label);
+// 没群就不占地方。任务协作走侧栏「需要你处理」，不在这里再建第二套入口。
+if (!list.length) return;
+const label = document.createElement("div");
+label.className = "session-group-label xzone-head";
+const ztitle = document.createElement("span");
+ztitle.className = "xzone-title";
+ztitle.textContent = "已连接的环境 · " + list.length;
+label.appendChild(ztitle);
+box.appendChild(label);
+
+
 
     list.forEach((g) => {
       const det = (state.xgroupDetail || {})[g.id] || {};
@@ -4298,7 +4393,8 @@ case "goal_round": break;
   function updateSelectedSessionCount() {
     const n = state.selectedSessions ? state.selectedSessions.size : 0;
     const label = $("selected-session-count");
-    if (label) label.textContent = n ? `${n} 个已选` : "选择会话组成工作组";
+if (label) label.textContent = n ? `${n} 个已选` : "选择会话";
+
     const button = $("new-group");
     if (button) button.disabled = n === 0;
   }
@@ -4805,55 +4901,58 @@ case "goal_round": break;
     input.focus();
   }
 
-  async function newSession(cwd) {
-    if (state.creatingSession) return;
-    const btn = $("new-session");
-    const prevSid = state.sid;
-    state.creatingSession = true;
-    btn.disabled = true;
-    btn.textContent = "⏳ 创建中…";
+const NEW_SESSION_ICON = '<svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+async function newSession(cwd) {
+if (state.creatingSession) return;
+const btn = $("new-session");
+const prevSid = state.sid;
+state.creatingSession = true;
+if (btn) btn.disabled = true;
 
-    // 前端先生成 sessionId 并立即落本地 + 连 ws（socket init 会在后端幂等 ensure）。
-    // 即使 HTTP 应答被热加载/网络打断，重试同一个 id 也不会造出重复会话。
-    const sid = genSessionId();
-    prepareNewSessionUI(cwd || null, sid);
-    // 指定 cwd 时让带 cwd 的 session.create 先行，避免 ws ensure 抢先建出无 cwd 会话。
-    if (!cwd) connect();
+// 前端先生成 sessionId 并立即落本地 + 连 ws（socket init 会在后端幂等 ensure）。
+// 即使 HTTP 应答被热加载/网络打断，重试同一个 id 也不会造出重复会话。
+const sid = genSessionId();
+prepareNewSessionUI(cwd || null, sid);
+// 指定 cwd 时让带 cwd 的 session.create 先行，避免 ws ensure 抢先建出无 cwd 会话。
+if (!cwd) connect();
 
-    const payload = cwd ? { sessionId: sid, cwd } : { sessionId: sid };
-    try {
-      let created;
-      try {
-        created = await rpc("session.create", payload);
-      } catch (firstErr) {
-        await new Promise((r) => setTimeout(r, 250));
-        created = await rpc("session.create", payload);
-      }
-      state.cwd = created.cwd || cwd || null;
-      updateCwdLabel(state.cwd);
-      try {
-        await resume(created.sessionId || sid);
-      } catch (firstResumeErr) {
-        await new Promise((r) => setTimeout(r, 250));
-        await resume(created.sessionId || sid);
-      }
-    } catch (err) {
-      if (prevSid) {
-        try {
-          await resume(prevSid);
-          line("error", "新建会话失败: " + err.message);
-        } catch (restoreErr) {
-          line("error", "新建会话失败: " + err.message);
-          line("error", "恢复原会话失败: " + restoreErr.message);
-        }
-      } else {
-        line("error", "新建会话失败: " + err.message);
-      }
-    } finally {
-      state.creatingSession = false;
-      btn.disabled = false;
-      btn.textContent = "+ 新会话";
-    }
+const payload = cwd ? { sessionId: sid, cwd } : { sessionId: sid };
+try {
+let created;
+try {
+  created = await rpc("session.create", payload);
+} catch (firstErr) {
+  await new Promise((r) => setTimeout(r, 250));
+  created = await rpc("session.create", payload);
+}
+state.cwd = created.cwd || cwd || null;
+updateCwdLabel(state.cwd);
+try {
+  await resume(created.sessionId || sid);
+} catch (firstResumeErr) {
+  await new Promise((r) => setTimeout(r, 250));
+  await resume(created.sessionId || sid);
+}
+} catch (err) {
+if (prevSid) {
+  try {
+    await resume(prevSid);
+    line("error", "新建会话失败: " + err.message);
+  } catch (restoreErr) {
+    line("error", "新建会话失败: " + err.message);
+    line("error", "恢复原会话失败: " + restoreErr.message);
+  }
+} else {
+  line("error", "新建会话失败: " + err.message);
+}
+} finally {
+state.creatingSession = false;
+if (btn) {
+  btn.disabled = false;
+  btn.innerHTML = NEW_SESSION_ICON;
+}
+}
+
   }
 
   // 分页加载常量
@@ -8753,68 +8852,74 @@ case "goal_round": break;
     }
   }
 
-  // 实际启动逻辑（登录成功后或免认证时调用）
-  // 工作区组件只打开指定功能；登录和打开主页不会自动新建 AI 会话。
-  async function bootApp() {
-    initTheme();
-    initSound();
-    if (workspaceSurface === "auth") {
-      workspaceNotify("authenticated");
-      return;
-    }
-    initSidebar();
-    initEvolution();
-    initMissionControl();
-    initTerminal();
-    state.sid = null;
-    const sid = new URLSearchParams(location.search).get("session");
-    if (sid) await resume(sid);
-    if (embedMode()) initEmbedPanels();
-    if (workspaceSurface) {
-      let target;
-      if (workspaceSurface === "models") {
-        await openModels(); target = $("model-modal");
-      } else if (workspaceSurface === "config") {
-        await openModelConfig(); target = $("mcfg-modal");
-      } else if (workspaceSurface === "directory") {
-        await openDirPicker(); target = $("dir-modal");
-        if (!sid) {
-          $("dir-new-btn").classList.add("hidden");
-          $("dir-new-name").classList.add("hidden");
-        }
-      } else if (workspaceSurface === "qr") {
-        openQuickAccess(); target = $("qa-overlay");
-      } else {
-        workspaceNotify("error", {message: "未知功能"});
-        return;
-      }
-      // 关闭一律由原界面自己的按钮触发；Esc 与点击空白处同样关闭，不留第二层壳。
-      document.addEventListener("keydown", event => {
-        if (event.key === "Escape") workspaceNotify("closed");
-      });
-      if (target) {
-        if (target.classList.contains("modal")) {
-          target.addEventListener("mousedown", event => {
-            if (event.target === target) workspaceNotify("closed");
-          });
-        }
-        const observer = new MutationObserver(() => {
-          if (target.classList.contains("hidden")) {
-            observer.disconnect(); workspaceNotify("closed");
-          }
-        });
-        observer.observe(target, {attributes: true, attributeFilter: ["class"]});
-      }
-      workspaceNotify("ready");
-      return;
-    }
-    if (!sid) throw new Error("请从蜂群中打开一个 AI 对话");
-    initCmdPalette();
-    initGlobalKeys();
-    initAtComplete();
-    applySidebar(true, false);
-    startStats();
+// 实际启动逻辑（登录成功后或免认证时调用）
+// 工作区组件只打开指定功能；主页仍是会话列表。
+async function bootApp() {
+initTheme();
+initSound();
+if (workspaceSurface === "auth") {
+workspaceNotify("authenticated");
+return;
+}
+initSidebar();
+initEvolution();
+initMissionControl();
+initTerminal();
+const sid = new URLSearchParams(location.search).get("session");
+if (sid) state.sid = sid;
+if (embedMode()) initEmbedPanels();
+if (workspaceSurface) {
+let target;
+if (workspaceSurface === "models") {
+  await openModels(); target = $("model-modal");
+} else if (workspaceSurface === "config") {
+  await openModelConfig(); target = $("mcfg-modal");
+} else if (workspaceSurface === "directory") {
+  await openDirPicker(); target = $("dir-modal");
+  if (!sid) {
+    $("dir-new-btn").classList.add("hidden");
+    $("dir-new-name").classList.add("hidden");
   }
+} else if (workspaceSurface === "qr") {
+  openQuickAccess(); target = $("qa-overlay");
+} else {
+  workspaceNotify("error", {message: "未知功能"});
+  return;
+}
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") workspaceNotify("closed");
+});
+if (target) {
+  if (target.classList.contains("modal")) {
+    target.addEventListener("mousedown", event => {
+      if (event.target === target) workspaceNotify("closed");
+    });
+  }
+  const observer = new MutationObserver(() => {
+    if (target.classList.contains("hidden")) {
+      observer.disconnect(); workspaceNotify("closed");
+    }
+  });
+  observer.observe(target, {attributes: true, attributeFilter: ["class"]});
+}
+workspaceNotify("ready");
+return;
+}
+initCmdPalette();
+initGlobalKeys();
+initAtComplete();
+initGroups();
+await loadGroups();
+const host = await rpc("host.describe", {});
+$("model-label").textContent = host.model || "(no model)";
+if (sid) await resume(sid);
+else await newSession();
+loadSessions();
+startWorkInbox();
+startStats();
+startUnreadPoll();
+}
+
 
   // ── 启动 ──
   (async () => {

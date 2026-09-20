@@ -102,10 +102,15 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
   color: var(--nb-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--nb-font);
 }
+.msg-tool .tool-head .tool-detail-hint {
+  flex: none; color: var(--nb-label-caption); font-size: 11px;
+  border: 1px solid var(--nb-border); border-radius: 4px; padding: 0 4px;
+}
 .msg-tool .tool-head .tool-dur { margin-left: auto; flex: none; }
 .msg-tool .tool-result {
   border: 0; padding: 3px 0 5px; background: none;
-  color: var(--nb-label-caption); max-height: 200px;
+  color: var(--nb-label-caption); max-height: 240px;
+  overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .msg-tool .tool-result[hidden] { display: none; }
 .msg-tool .msg-time { margin: 0 0 4px; }
@@ -185,10 +190,10 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .md-more:hover { text-decoration: underline; }
 .honey-checks { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
 .honey-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 9px 12px; border-top: 1px solid var(--nb-border); background: var(--nb-bg-panel); }
-.honey-actions .btn-allow, .honey-actions .btn-deny { padding: 4px 14px; font-size: 12.5px; }
+.honey-actions .btn-allow, .honey-actions .btn-deny { min-height: 44px; height: auto; padding: 4px 14px; font-size: 12.5px; }
 .honey-actions:empty { display: none; }
 .work-context { padding: 8px 12px; color: var(--nb-label-caption); font-size: 12px; border-top: 1px solid var(--nb-border); }
-.work-context summary { cursor: pointer; }
+.work-context summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
 .work-context pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 340px; overflow: auto; }
 
 /* ══ 状态小徽章（信号种类 / 成果状态 / 任务状态）══ */
@@ -206,9 +211,10 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .drill-children { display: flex; flex-direction: column; gap: 5px; margin: 2px 0 4px; }
 .drill-child {
   max-width: var(--nb-content-w); width: 100%;
+  min-height: 44px;
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px; border: 1px solid var(--nb-border); border-radius: 10px;
-  background: var(--nb-bg-panel); cursor: pointer; font-size: 13px; color: var(--nb-label-1);
+  background: var(--nb-bg-panel); cursor: pointer; font: 13px/1.4 var(--nb-font); text-align: left; color: var(--nb-label-1);
 }
 .drill-child:hover { border-color: var(--nb-accent); }
 .drill-child .child-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -216,7 +222,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .drill-child .chip-mini { flex: none; }
 
 .drill-tabs { max-width: var(--nb-content-w); width: 100%; display: flex; gap: 4px; margin: 0 0 10px; padding: 3px; border-bottom: 1px solid var(--nb-border); overflow-x: auto; }
-.drill-tabs button { border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--nb-label-caption); padding: 7px 12px; cursor: pointer; white-space: nowrap; font: 600 12px/1.3 var(--nb-font); }
+.drill-tabs button { min-height: 44px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--nb-label-caption); padding: 7px 12px; cursor: pointer; white-space: nowrap; font: 600 12px/1.3 var(--nb-font); }
 .drill-tabs button[aria-selected="true"] { color: var(--nb-label-1); border-bottom-color: var(--nb-accent); }
 .drill-tabs button:hover { color: var(--nb-label-1); background: color-mix(in srgb, var(--nb-accent) 8%, transparent); }
 .drill-tabs + [data-drill-section="overview"] { margin-top: 0; }
@@ -642,7 +648,9 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 /* 第二轮组件细节：操作按钮同高，证据路径不再硬裁。 */
 .colony-home .work-actions > button,
 .colony-home .work-actions .card-more,
-.colony-home .honey-actions > button { min-height: 30px; line-height: 1.35; }
+.colony-home .work-actions > button,
+.colony-home .work-actions .card-more { min-height: 30px; line-height: 1.35; }
+.colony-home .honey-actions > button { min-height: 44px; line-height: 1.35; }
 .colony-home .work-actions .card-more { padding: 4px 12px; }
 .colony-home .work-context pre,
 .colony-home .honey-result pre,
@@ -698,7 +706,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 
 /* 蜂群按钮尺寸收敛：同一语义同高，弹窗决策按钮同高同宽。 */
 .colony-home {
-  --colony-button-h: 40px;
+  --colony-button-h: 44px;
   --colony-compact-button-h: 34px;
   --colony-icon-button-h: 34px;
   --colony-composer-button-h: 40px;
@@ -787,7 +795,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .colony-home .theme-menu-item { box-sizing: border-box; height: 36px; min-height: 36px; padding-top: 0; padding-bottom: 0; }
 .colony-home .effort-seg { box-sizing: border-box; height: 40px; min-height: 40px; }
 .colony-home .attach-remove { box-sizing: border-box; width: 28px; min-width: 28px; height: 28px; min-height: 28px; }
-.colony-home .md-more { display: inline-flex; align-items: center; justify-content: center; height: 32px; min-height: 32px; padding: 0 12px; line-height: 1.2; }
+.colony-home .md-more { display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 44px; min-height: 44px; padding: 0 12px; line-height: 1.2; }
 
 /* 页面级遗漏控件：回到底部和退出登录也纳入同一图标/文字按钮高度。 */
 .colony-home :is(#to-bottom, .logout-btn) {
@@ -804,7 +812,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .work-tabs [aria-pressed="true"] { color: var(--accent, #8a651b); outline: 1px solid currentColor; }
 .work-flow-card { padding: 20px; border: 1px solid var(--border, #cbd0d9); border-radius: 16px; background: var(--surface, rgba(255,255,255,.35)); min-width: 0; }
 .work-flow-head { display: flex; align-items: start; gap: 12px; justify-content: space-between; overflow-wrap: anywhere; }
-.work-flow-head strong { font-size: 18px; }
+.work-flow-head strong { min-height: 44px; display: flex; align-items: center; font-size: 18px; }
 .work-flow-owner { font-size: 12px; opacity: .75; margin: 8px 0; }
 .work-flow-reason { line-height: 1.6; margin: 12px 0; }
 .work-flow-steps { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
@@ -817,7 +825,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .work-proposal-summary { max-height: 320px; overflow-y: auto; }
 .work-proposal button { margin: 10px 6px 0 0; }
 .work-flow-card details { margin: 12px 0; }
-.work-flow-card details summary { cursor: pointer; font-weight: 600; }
+.work-flow-card > details > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-weight: 600; }
 .work-flow-card details p { overflow-wrap: anywhere; }
 .work-flow-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .work-assignment { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border, #cbd0d9); }
@@ -825,6 +833,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 @media (max-width: 640px) { .work-flow-card { padding: 12px; } .work-flow-head { flex-wrap: wrap; } .work-flow-actions button { min-height: 40px; } }
 
 
+.work-flow-fold-head strong[role="button"] { min-height: 44px; display: flex; align-items: center; }
 .work-proposal details .md { max-height: 280px; overflow-y: auto; }
 
 
@@ -843,7 +852,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .group-view-tabs button[aria-pressed="true"] { color: var(--nb-label-1); background: color-mix(in srgb, var(--nb-accent) 12%, transparent); font-weight: 600; }
 
 .work-status-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0 0 8px; padding: 4px; border: 1px solid var(--nb-border); border-radius: 10px; background: color-mix(in srgb, var(--nb-bg-panel) 72%, transparent); }
-.work-status-tabs button { min-width: 0; border: 0; border-radius: 7px; padding: 8px 10px; background: transparent; color: var(--nb-label-2); cursor: pointer; font: 600 12px/1.3 var(--nb-font); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-status-tabs button { min-width: 0; min-height: 44px; border: 0; border-radius: 7px; padding: 8px 10px; background: transparent; color: var(--nb-label-2); cursor: pointer; font: 600 12px/1.3 var(--nb-font); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .work-status-tabs button[aria-pressed="true"] { color: var(--nb-label-1); background: var(--nb-bg-panel); box-shadow: 0 1px 4px rgba(0,0,0,.12); }
 .work-status-tabs button:hover { color: var(--nb-label-1); }
 .work-archive { display: flex; flex-direction: column; gap: 6px; }
@@ -896,7 +905,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .work-card > summary.work-head:hover { background: color-mix(in srgb, var(--nb-accent) 8%, transparent); }
 .work-fold-body { padding: 0 12px 10px; }
 .work-owner { flex: none; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--nb-label-caption); font-size: 12px; }
-.work-why > summary { cursor: pointer; color: var(--nb-label-caption); font-size: 12.5px; padding: 2px 0; }
+.work-why > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--nb-label-caption); font-size: 12.5px; padding: 2px 0; }
 .work-why > .work-flow-reason { margin: 6px 0 0; }
 .work-flow-steps { flex-wrap: nowrap; align-items: center; gap: 10px; margin: 12px 0; }
 .work-flow-bar { display: flex; flex: 1 1 auto; gap: 4px; min-width: 40px; }
@@ -973,7 +982,7 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .work-executions { padding: 12px; border: 1px solid var(--nb-border, #8884); border-radius: 10px; margin: 12px 0; }
 .work-executions h3 { font-size: 14px; margin: 0 0 8px; }
 .work-executions button { display: block; text-align: left; width: 100%; margin: 4px 0; }
-.work-records > summary { cursor: pointer; margin: 16px 0 8px; }
+.work-records > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; margin: 16px 0 8px; }
 .work-quote { font-size: 12px; margin: 4px 0 12px; }
 #work-quick-open { width: min(560px, 90vw); }
 #work-quick-open input { width: 100%; box-sizing: border-box; padding: 12px; }
@@ -996,20 +1005,21 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
 .work-collab-empty { margin: 12px 0 0; color: var(--nb-label-caption); font-size: 12.5px; }
 .work-history .work-records { margin: 0; }
 .work-history-versions { margin-top: 12px; }
-.work-history-version { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; width: 100%; padding: 9px 0; border: 0; border-top: 1px solid var(--nb-border, #8883); background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.work-history-versions > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.work-history-version { min-height: 44px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; width: 100%; box-sizing: border-box; padding: 9px 0; border: 0; border-top: 1px solid var(--nb-border, #8883); background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .work-history-version:hover { color: var(--nb-accent); }
 .work-history-version span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .work-history-version span:nth-child(2), .work-history-version time { color: var(--nb-label-caption); font-size: 12px; }
 .work-history-event { margin: 0; border-top: 1px solid var(--nb-border, #8883); }
 .work-history-event:first-of-type { border-top: 0; }
-.work-history-event > summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: baseline; gap: 8px; padding: 9px 0; cursor: pointer; list-style: none; }
+.work-history-event > summary { min-height: 44px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 9px 0; cursor: pointer; list-style: none; }
 .work-history-event > summary::-webkit-details-marker { display: none; }
 .work-history-event > summary strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 550; }
 .work-history-kind, .work-history-who, .work-history-event time { color: var(--nb-label-caption); font-size: 11.5px; }
 .work-history-event-body { margin: -2px 0 10px; padding: 8px 10px; border-left: 2px solid var(--nb-border); color: var(--nb-label-2); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .work-process { margin: 10px 0; }
-.work-process > summary { cursor: pointer; color: var(--nb-label-2); font-size: 12.5px; }
+.work-process > summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--nb-label-2); font-size: 12.5px; }
 .work-collab-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
 .work-flow-actions, .work-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .work-flow-actions:empty, .work-actions:empty { display: none; }
@@ -1024,4 +1034,86 @@ font-family: var(--nb-font); font-size: 12.5px; line-height: 1.6;
   #work-body.has-inspector #work-primary { display: none; }
   #work-body.has-inspector .execution-inspector { flex: 1; min-width: 0; border-left: 0; }
   #inspector-expand { display: none; }
+}
+
+/* Review the delivery and its evidence without turning logs into proof. */
+.honey-card { min-width: 0; }
+.honey-card h3 { margin: 12px 0 8px; font-size: 14px; line-height: 1.4; }
+.honey-card h4 { margin: 14px 0 6px; font-size: 13px; }
+.honey-review-evidence { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--nb-border); }
+.honey-source, .honey-review-notice { color: var(--nb-label-caption); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.honey-baseline { margin: 8px 0; font-size: 13px; }
+.honey-baseline.changed, .honey-review-error { color: var(--nb-red); }
+.honey-baseline.unknown { color: var(--nb-label-caption); }
+.honey-review-links { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.honey-evidence-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; line-height: 1.5; }
+.honey-evidence-table caption { text-align: left; padding: 6px 0; font-weight: 600; }
+.honey-evidence-table th, .honey-evidence-table td { padding: 8px 6px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--nb-border); overflow-wrap: anywhere; white-space: pre-line; }
+.honey-evidence-table th { font-weight: 600; }
+.honey-evidence-table thead th:nth-child(1) { width: 36%; }
+.honey-evidence-table thead th:nth-child(2) { width: 39%; }
+.honey-evidence-table thead th:nth-child(3) { width: 25%; }
+.honey-evidence-status.failed { color: var(--nb-red); }
+.honey-evidence-status.passed { color: var(--nb-green); }
+.honey-evidence-status.unverified { color: var(--nb-label-caption); }
+.honey-review-evidence ul { margin: 6px 0; padding-left: 20px; overflow-wrap: anywhere; }
+.honey-evidence-records { margin: 12px 0; }
+.honey-evidence-records summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.honey-evidence-records p { overflow-wrap: anywhere; white-space: pre-wrap; font-size: 12px; line-height: 1.6; }
+.honey-review-error { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.work-attention-reason { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--nb-label-2); }
+@media (max-width: 768px) {
+  .honey-evidence-table th, .honey-evidence-table td { padding: 8px 4px; }
+  .honey-actions { flex-wrap: wrap; }
+  .colony-home .honey-card .honey-actions button { height: auto; min-height: 44px; max-width: 100%; white-space: normal; }
+}
+@media (max-width: 768px) {
+  .colony-home #colony-list .session-group-toggle,
+  .colony-home #colony-list .session-group-menu-btn,
+  .colony-home #colony-list .menu-btn,
+  .colony-home #colony-list .member-control,
+  .colony-home #colony-list .swipe-action,
+  .colony-home #main .swipe-action,
+  .colony-home #colony-list .work-nav,
+  .colony-home #main .icon-btn,
+  .colony-home #main .review-btn,
+  .colony-home #main .bee-task,
+  .colony-home #main .chip-btn,
+  .colony-home #main .btn-send,
+  .colony-home #main .menu-btn {
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+  .colony-home #colony-list .session-group-toggle,
+  .colony-home #colony-list .session-group-menu-btn,
+  .colony-home #colony-list .menu-btn,
+  .colony-home #main .icon-btn,
+  .colony-home #main .btn-send,
+  .colony-home #main .menu-btn,
+  .colony-home #sidebar .model-config-btn {
+    min-width: 44px;
+  }
+  .colony-home #main .work-title[role="button"] {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  .colony-home #sidebar .icon-btn,
+  .colony-home #sidebar .model-config-btn {
+    min-width: 44px;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+  .colony-home #sidebar-expand,
+  .colony-home .sidebar-expand:not(.hidden) {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+  .colony-home .theme-menu button {
+    min-height: 44px;
+    box-sizing: border-box;
+  }
 }

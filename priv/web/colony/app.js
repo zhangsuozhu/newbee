@@ -4,19 +4,19 @@ import { initWorkbench, renderInspector, renderAttention, rememberReadingPositio
 // 本页只负责「蜂群 = 会话组 + 成员」的数据映射。
 import { esc } from "./util.js";
 import { form } from './forms.js';
-import { initShell, ensureAuthenticated, updateWorkspaceContext, collapseSidebar, selectedWorkspaceCwd, sendIntoConversation, openWorkspace } from './shell.js';
+import { initShell, ensureAuthenticated, updateWorkspaceContext, collapseSidebar, selectedWorkspaceCwd, sendIntoConversation, openWorkspace } from './shell.js?v=workbench-6';
 import { redeemInvitation } from './manage.js';
 import { rpc, toast } from "./api.js";
 import {
   state, subscribe, loadColonies, selectColony, refresh, startPolling,
   pushPath, memberById, resetToChat, enterBeeMode, exitBeeMode, openConversation, openBeeTrail,
-  restoreLocation, enableNavigation, openHome, attentionTasks,
+  restoreLocation, enableNavigation, openHome, attentionTasks, pendingReviewResults,
 } from "./store.js";
 import { renderSidebar, renderBeeConversations } from "./sidebar.js";
 import { renderBreadcrumbs } from "./breadcrumbs.js";
-import { renderGroupView, renderDMView } from "./chat.js";
-import { renderDrillView } from "./drill.js?v=workbench-29";
-import { renderComposer, updateScope, updateReviewBar, send, prefill } from "./composer.js";
+import { renderGroupView, renderDMView } from "./chat.js?v=workbench-1";
+import { renderDrillView } from "./drill.js?v=workbench-30";
+import { renderComposer, syncComposerDraft, updateScope, updateReviewBar, send, prefill } from './composer.js?v=workbench-4';
 import { bindMarkdownCopy } from "./md.js";
 
 const $ = (sel) => document.querySelector(sel);
@@ -163,14 +163,20 @@ function signature() {
   const d = state.data;
   const members = d ? (d.members || []).map((m) => `${m.id}:${m.status}:${m.active_tasks}`).join(",") : "";
   const tasks = d ? (d.tasks || []).map((t) => `${t.id}:${t.status}:${t.revision || ""}`).join(",") : "";
-  const trace = d && d.trace && d.trace.length ? d.trace[d.trace.length - 1].seq : 0;
+  const traceItems = Array.isArray(d?.trace) ? d.trace : [];
+  const trace = traceItems.length ? traceItems[traceItems.length - 1].seq : 0;
+  const traceFirst = traceItems.length ? traceItems[0].seq : 0;
+  const tracePage = d?.trace_page ? [d.trace_page.before_seq, d.trace_page.snapshot_seq, d.trace_page.has_more].join(':') : '';
   const trail = state.trail && state.trail.trace && state.trail.trace.length ? state.trail.trace[state.trail.trace.length - 1].seq : 0;
-  const drill = state.drill && state.drill.task ? `${state.drill.task.id}:${state.drill.task.status}:${state.drill.task.revision || ""}:${(state.drill.tasks || []).length}` : "";
+  const drillTrace = Array.isArray(state.drill?.trace) ? state.drill.trace : [];
+  const drill = state.drill && state.drill.task ? `${state.drill.task.id}:${state.drill.task.status}:${state.drill.task.revision || ''}:${(state.drill.tasks || []).length}` : '';
+  const drillFirst = drillTrace.length ? drillTrace[0].seq : 0;
+  const drillPage = state.drill?.trace_page ? [state.drill.trace_page.before_seq, state.drill.trace_page.snapshot_seq, state.drill.trace_page.has_more].join(':') : '';
   // 对话列表的标题/条数变化也要触发重绘（改名、删除、新消息都会改它）。
   const convs = (state.trail && state.trail.conversations || []).map((c) => `${c.id}:${c.title}:${c.messages || 0}`).join("|");
   const colonyName = d?.colony?.name || "";
   const colonyNames = (state.colonies || []).map((c) => c.colony?.name || "").join("|");
-  return JSON.stringify([state.colonyId, state.drillTab, state.inspector?.sessionId, colonyName, colonyNames, state.groupTab, state.workFilter, state.conversationId, state.mode, state.view, state.stack.map((s) => s.beeId || s.taskId).join(">"), state.filter, members, tasks, trace, trail, drill, state.colonies.length, state.lastError, d?.control_state, d?.can_manage, (d?.honey?.recent || []).map(h=>`${h.id}:${h.review_state}`).join(','), (d?.members || []).map(m=>m.control_state).join(','), convs]);
+  return JSON.stringify([state.colonyId, state.drillTab, state.inspector?.sessionId, colonyName, colonyNames, state.groupTab, state.workFilter, state.conversationId, state.mode, state.view, state.stack.map((s) => s.beeId || s.taskId).join('>'), state.filter, members, tasks, trace, traceFirst, tracePage, trail, drill, drillTrace.length, drillFirst, drillPage, state.colonies.length, state.lastError, d?.control_state, d?.can_manage, (d?.honey?.recent || []).map(h=>`${h.id}:${h.review_state}`).join(','), (d?.members || []).map(m=>m.control_state).join(','), convs]);
 }
 
 function render(force = false) {
@@ -250,7 +256,7 @@ function render(force = false) {
     renderDrillView(flow, ctx);
   } else if (state.view === "dm") {
     renderDMView(flow, ctx);
-    if (state.beeModeId) renderBeeConversations(flow, ctx);
+    if (state.beeModeId) renderBeeConversations($("#colony-list"), ctx);
   } else if (state.groupTab === 'attention') {
     renderAttention(flow, ctx);
   } else {
@@ -280,6 +286,7 @@ function render(force = false) {
   if (!sameRoute && lastRoute !== null) focusMainRegion();
   lastRoute = route;
   updateNewMsgHint(route, wasNearBottom);
+  syncComposerDraft();
   updateScope();
   updateReviewBar();
 }
@@ -359,9 +366,7 @@ function renderTopMeta() {
   const s = d.stats || {};
   // 顶栏先说「要你做什么」，人数、成果这类背景统计放到右侧小字，避免两处重复。
   const attention = attentionTasks();
-  const attentionIds = new Set(attention.map(t => t.id));
-  const internal = new Set((d.tasks || []).filter(t => t.integration_required).map(t => t.id));
-  const pendingHoney = (d.honey?.recent || []).filter(h => ['pending_review', 'auto_verified'].includes(h.review_state) && !internal.has(h.task_id) && !attentionIds.has(h.task_id)).length;
+  const pendingHoney = pendingReviewResults().length;
   const todo = attention.length + pendingHoney;
   const parts = [];
   if (todo) parts.push(`待你处理 ${todo} 件`);

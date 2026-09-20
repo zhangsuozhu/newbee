@@ -1,6 +1,6 @@
 import { buildWorkflowCard } from './workflow.js?v=workbench-2';
 import { cardMenu, esc, absTime, fmtAgo, statusLabel } from './util.js';
-import { state, memberById, refresh } from './store.js';
+import { state, memberById, refresh, attentionFor } from './store.js';
 import { rpc, toast } from './api.js';
 import { form, confirmAction } from './forms.js';
 import { renderInline, renderMarkdown } from './md.js';
@@ -20,12 +20,12 @@ export function buildTaskCard(task, ctx, opts = {}) {
   if (task.workflow && !opts.compact) return buildWorkflowCard(task, ctx);
   const bee = memberById(task.assigned_bee_id);
   const node = document.createElement('div'); node.className = 'msg msg-tool work-card'; node.dataset.taskId = task.id;
+  const attention = attentionFor(task);
   const paused = task.control_state && task.control_state !== 'running';
-  const label = paused ? ({paused:'已暂停', pausing:'正在暂停，等待确认'}[task.control_state] || task.control_state) : task.approval_required ? '等待授权' : task.mode === 'proposal' && task.status === 'pending_review' ? '方案待决定' : statusLabel(task.status);
+  const label = paused ? ({paused:'已暂停', pausing:'正在暂停，等待确认'}[task.control_state] || task.control_state) : task.approval_required ? '等待授权' : task.mode === 'proposal' && task.status === 'pending_review' ? '方案待决定' : attention?.reason || statusLabel(task.status);
   const stamp = task.activity_at || task.updated_at || task.created_at;
   // 要人动手的任务才铺开；纯进展折成一行，点开才是完整卡片，首屏才不会被卡片撑满。
-  const mine = task.owner_kind === 'human' && task.assigned_bee_id === state.data?.actor_bee_id;
-  const needsYou = !!(!isTerminal(task.status) && (task.approval_required || task.waiting_for === 'user' || ['blocked', 'pending_review'].includes(task.status) || mine));
+  const needsYou = !!attention;
   const fold = !needsYou && !opts.compact && !opts.full;
   // 卡面只留「是什么 + 谁在做 + 状态 + 下一步」；描述、最近动态、上下文都进折叠区。
   const headMarkup =
@@ -94,6 +94,11 @@ ${Array.isArray(value) ? value.map(v => typeof v === 'string' ? v : JSON.stringi
   if (task.status === 'pending_review') {
     const review = document.createElement('button'); review.type = 'button'; review.className = 'btn-allow';
     review.textContent = '查看成果'; review.onclick = () => ctx.openTask(task.id, task.title, 'results'); actions.append(review);
+  }
+  if (attention && task.status !== 'pending_review' && state.view !== 'drill') {
+    const open = document.createElement('button'); open.type = 'button'; open.className = 'btn-ghost';
+    open.textContent = attention.label; open.onclick = () => ctx.openTask(task.id, task.title, attention.section);
+    actions.append(open);
   }
   menu.push(['查看工作', () => ctx.openTask(task.id, task.title)]);
   if (task.session_id) menu.push(['打开执行会话', () => ctx.openConversation(task.session_id, task.assigned_bee_id)]);

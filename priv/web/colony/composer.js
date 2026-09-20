@@ -45,17 +45,21 @@ function syncDraftScope() {
   const attached = scopedAttachments.get(next);
   state.attachments = attached?.items?.slice() || []; state.attachSid = attached?.sid || null;
   renderAttachPreview();
-  input.value = readDraft(next); state.draft = input.value; autosize(input);
+  input.value = readDraft(next); state.draft = input.value; autosize(input); updateSendState();
   const feedback = feedbackByScope.get(next);
   sendFeedback(feedback?.message || '', feedback?.error || false);
 }
 
 
 
+export function syncComposerDraft() { syncDraftScope(); }
+
 export function renderComposer(ctx) {
   ctxRef = ctx;
   const bar = document.getElementById("quick-bar");
-  if (!bar || bar.dataset.ready === "1") return;
+  if (!bar) return;
+  syncDraftScope();
+  if (bar.dataset.ready === "1") return;
   bar.dataset.ready = "1";
 
   const chips = [
@@ -87,11 +91,10 @@ export function renderComposer(ctx) {
 
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("send");
-  syncDraftScope();
   input.addEventListener("input", () => {
     state.draft = input.value;
     writeDraft(activeDraftKey, input.value);
-    autosize(input);
+    autosize(input); updateSendState();
   });
   input.addEventListener("keydown", (e) => {
     if (e.isComposing || e.keyCode === 229) return;
@@ -106,7 +109,7 @@ export function renderComposer(ctx) {
   bindAttachments(ctx);
   bindEffort(ctx);
   bindMentions();
-  bindPause();
+  bindPause(); updateSendState();
   // Navigation focuses a heading; typing focus is always an explicit user action.
 }
 
@@ -251,7 +254,7 @@ async function deleteAttachment(a, sid = state.attachSid) {
   await fetch(`/api/upload/${encodeURIComponent(sid)}/${encodeURIComponent(a.id)}`, { method: "DELETE", headers });
 }
 
-function renderAttachPreview() {
+function renderAttachPreview() { updateSendState();
   const box = document.getElementById("attach-preview");
   if (!box) return;
   if (state.attachments.length === 0 && state.uploading === 0) {
@@ -395,6 +398,8 @@ export function target() {
   const uploadSid = state.uploadColony === state.colonyId ? state.uploadSid : null;
   const taskId = currentTaskId();
   const beeId = currentBeeId();
+  // 多会话 Bee 的默认 session_id 可能为空；历史详情由 inspector.sessionId 精确指向当前会话。
+  const conversationSid = !taskId ? (state.inspector?.sessionId || state.conversationId || null) : null;
 
   if (taskId) {
     const task = state.drill && state.drill.task;
@@ -411,8 +416,8 @@ export function target() {
   if (beeId) {
     const bee = memberById(beeId);
     return {
-      sid: uploadSid || (bee && bee.session_id) || null,
-      executionSid: bee?.session_id || null,
+      sid: uploadSid || conversationSid || bee?.session_id || null,
+      executionSid: conversationSid || bee?.session_id || null,
       bee: bee || null,
       label: bee ? bee.display : "Bee",
       why: "这只 Bee 还没有绑定会话，无法上传附件",
@@ -533,7 +538,7 @@ export function prefill(text) {
   input.value = next;
   state.draft = next;
   writeDraft(activeDraftKey, next);
-  autosize(input);
+  autosize(input); updateSendState();
   input.focus();
   input.setSelectionRange(next.length, next.length);
 }
@@ -541,6 +546,13 @@ export function prefill(text) {
 function autosize(input) {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 160) + "px";
+}
+
+function updateSendState() {
+  const input = document.getElementById('input');
+  const button = document.getElementById('send');
+  if (!input || !button) return;
+  button.disabled = !input.value.trim() && state.attachments.length === 0;
 }
 
 // Capture the recipient at the user's click, never when a queued promise eventually runs.
@@ -617,7 +629,7 @@ async function doSend(ctx, envelope) {
     toast(message, true);
   } finally {
     send.sending = false;
-    if (button) { button.disabled = false; button.removeAttribute('aria-busy'); }
+    if (button) { updateSendState(); button.removeAttribute('aria-busy'); }
   }
 }
 const feedbackByScope = new Map();
@@ -661,6 +673,7 @@ export function updateReviewBar() {
     // 键盘激活（Enter/Space）时 click 的 detail 为 0；鼠标点击是 1。
     const fromKeyboard = !event || event.detail === 0;
     state.groupTab = 'work';
+    state.workFilter = 'attention';
     resetToChat();
     // 键盘用户：切到工作台后把焦点直接交给「通过」，否则焦点落到 body，
     // 要从页首 Tab 二十来次才够得到验收按钮。

@@ -531,11 +531,19 @@ defmodule Newbee.Web.ColonyApi do
         end
 
       "colony.trace.list" ->
-        with {:ok, cid} <- need(payload, "colonyId") do
+        with {:ok, cid} <- need(payload, "colonyId"),
+             {:ok, before_seq} <- cursor(payload, "beforeSeq"),
+             {:ok, snapshot_seq} <- cursor(payload, "snapshotSeq") do
           limit = positive_int(g(payload, "limit"), 200)
           task_id = g(payload, "taskId")
-          trace = Newbee.Colony.Store.trace_for_colony(cid, limit: limit, task_id: task_id)
-          {:ok, %{"trace" => trace}}
+
+          {:ok,
+           Newbee.Colony.Store.trace_page(cid,
+             limit: limit,
+             task_id: task_id,
+             before_seq: before_seq,
+             snapshot_seq: snapshot_seq
+           )}
         end
 
       "colony.capabilities" ->
@@ -578,6 +586,14 @@ defmodule Newbee.Web.ColonyApi do
 
   defp positive_int(v, _default) when is_integer(v) and v > 0, do: min(v, 1000)
   defp positive_int(_, default), do: default
+
+  defp cursor(payload, key) do
+    case g(payload, key) do
+      nil -> {:ok, nil}
+      value when is_integer(value) and value >= 0 -> {:ok, value}
+      _ -> {:error, "bad_request", "cursor must be a non-negative integer"}
+    end
+  end
 
   defp normalize_children(list) when is_list(list) do
     Enum.map(list, fn
