@@ -23,31 +23,35 @@ defmodule Newbee.Plugins.RepoMapTest do
     assert map =~ "README.txt"
   end
 
-  test "引用段含动态节点 (__MODULE__.Sub) 时构建不崩溃" do
-    # 回归: 2026-02 chat_test.exs 的 __MODULE__.Runner 让 build(".") 抛
-    # Protocol.UndefinedError (String.Chars for Tuple)。resolve_ref 必须跳过
-    # 无法静态解析的动态段。
-    dir =
-      Path.join(
-        System.tmp_dir!(),
-        "newbee_repomap_dyn_" <> Integer.to_string(System.unique_integer([:positive]))
-      )
+# 回归：`__MODULE__.X`（本仓库 test/collaboration/chat_test.exs 就有）与
+# `&__MODULE__.f/1` 会在引用段里带 AST 元组，旧实现直接 Enum.join 抛
+# String.Chars not implemented for Tuple，整个 RepoMap.build/1 崩掉。
+test "__MODULE__.X 形态的引用不崩溃" do
+dir =
+Path.join(
+  System.tmp_dir!(),
+  "newbee_repomap_module_ref_" <> Integer.to_string(System.unique_integer([:positive]))
+)
 
-    File.mkdir_p!(Path.join(dir, "lib"))
-    File.write!(Path.join(dir, "mix.exs"), "defmodule Dyn.MixProject do\nend")
+File.mkdir_p!(Path.join(dir, "lib/demo"))
+File.write!(Path.join(dir, "mix.exs"), "defmodule Demo.MixProject do\nend\n")
 
-    File.write!(Path.join(dir, "lib/dyn.ex"), """
-    defmodule Dyn do
-      def runner, do: __MODULE__.Runner
-      defmodule Runner do
-        def go, do: :ok
-      end
-    end
-    """)
+File.write!(Path.join(dir, "lib/demo/app.ex"), """
+defmodule Demo.App do
+def start(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__.Runner)
+def reload, do: &__MODULE__.load/1
 
-    on_exit(fn -> File.rm_rf(dir) end)
+defmodule Runner do
+  def run, do: :ok
+end
+end
+""")
 
-    map = Newbee.Plugins.RepoMap.build(dir)
-    assert map =~ "Dyn"
-  end
+on_exit(fn -> File.rm_rf(dir) end)
+
+map = Newbee.Plugins.RepoMap.build(dir)
+assert map =~ "Demo.App"
+assert map =~ "Runner"
+end
+
 end

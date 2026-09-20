@@ -4,6 +4,9 @@ defmodule Newbee.Agent.Loop do
   直到 done / ask / 无工具调用。每轮事件通过 render 回调流出。
   """
   use GenServer
+  # 无工具调用的"伪收尾"（上游空流 / 被 max_tokens 截断）允许的自动续跑次数；
+  # 用尽后空回复明确报错，用户不会再看到"跑着跑着就停了"且全程无提示。
+  @incomplete_turn_retries 2
 
   defstruct messages: [],
             client: nil,
@@ -32,7 +35,9 @@ defmodule Newbee.Agent.Loop do
             owner_pid: nil,
             owner: nil,
             # 沉睡规则正文重试熔断：同一组规则连续命中计数，达上限放行防无限重试。
-            rule_streak: %{ids: [], count: 0}
+            rule_streak: %{ids: [], count: 0},
+            # 伪收尾续跑计数：正常前进（工具调用/正常收尾）时清零。
+            incomplete_streak: 0
 
   # ── API ──
 
@@ -209,8 +214,8 @@ defmodule Newbee.Agent.Loop do
     end
 
     client_fun =
-      Keyword.get(opts, :client_fun, fn messages, on_text, on_reasoning ->
-        Newbee.LLM.Client.stream_chat(client, messages, on_text, on_reasoning)
+      Keyword.get(opts, :client_fun, fn messages, on_text, on_reasoning, on_retry ->
+        Newbee.LLM.Client.stream_chat(client, messages, on_text, on_reasoning, on_retry: on_retry)
       end)
 
     # 进度监控（LLM-as-a-Verifier 落地）：每 every 步对轨迹前缀打连续分，
@@ -602,8 +607,8 @@ defmodule Newbee.Agent.Loop do
       |> inherit_session_id(state.client)
       |> inherit_client_field(state.client, :responses_checkpoint)
 
-    client_fun = fn messages, on_text, on_reasoning ->
-      Newbee.LLM.Client.stream_chat(client, messages, on_text, on_reasoning)
+    client_fun = fn messages, on_text, on_reasoning, on_retry ->
+      Newbee.LLM.Client.stream_chat(client, messages, on_text, on_reasoning, on_retry: on_retry)
     end
 
     emit(state, {:model_switched, client.model})
@@ -618,8 +623,8 @@ defmodule Newbee.Agent.Loop do
   def handle_call({:set_context_window, n}, _from, state) do
     client = Map.put(state.client, :context_window, n)
 
-    client_fun = fn messages, on_text, on_reasoning ->
-      Newbee.LLM.Client.stream_chat(client, messages, on_text, on_reasoning)
+    client_fun = fn messages, on_text, on_reasoning, on_retry ->
+      Newbee.LLM.Client.stream_chat(client, messages, on_text, on_reasoning, on_retry: on_retry)
     end
 
     {:reply, :ok,
@@ -974,6 +979,9 @@ defmodule Newbee.Agent.Loop do
   defp retryable_goal_error?({:stream_error, _reason}), do: true
   defp retryable_goal_error?({:upstream_error, _reason}), do: true
   defp retryable_goal_error?(:upstream_error), do: true
+  defp retryable_goal_error?({:empty_response, _reason}), do: true
+  defp retryable_goal_error?({:anthropic_stream_error, _reason}), do: true
+  defp retryable_goal_error?({:anthropic_stream_error, _reason, _content}), do: true
 
   defp retryable_goal_error?({:http_error, status, _body}) when status in [400, 408, 425, 429, 500, 502, 503, 529],
     do: true
@@ -1206,6 +1214,8 @@ defmodule Newbee.Agent.Loop do
       Newbee.DebugLog.log(:turn, "step #{step} messages=#{length(state.messages)}")
       on_text = fn delta -> emit(state, {:text, delta}) end
       on_reasoning = fn delta -> emit(state, {:reasoning, delta}) end
+      # 上游流中断自动重试时给用户一条可见提示（TUI/CLI/Web 各自渲染 :llm_retry）
+      on_retry = fn reason -> emit(state, {:llm_retry, reason}) end
 
       # I1：记录本次路由请求的可缓存前缀快照（Archive 摘要路径消费）。
       # 标准 LLM client + 会话才写；注入函数/无会话 no-op。
@@ -1218,7 +1228,7 @@ defmodule Newbee.Agent.Loop do
 
       Newbee.RequestEnvelope.record(state.session, state.client, request_messages)
 
-      case call_client(state.client_fun, request_messages, on_text, on_reasoning) do
+      case call_client(state.client_fun, request_messages, on_text, on_reasoning, on_retry) do
         {:ok, msg, usage} ->
           Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
           emit(state, {:usage, Map.put(usage, "model", client_model(state.client))})
@@ -1251,7 +1261,10 @@ defmodule Newbee.Agent.Loop do
                     [] ->
                       state = %{state | rule_streak: %{ids: [], count: 0}}
                       {state, steered} = consume_steering(state)
-                      if steered > 0, do: run_turn(state, step + 1), else: {{:text, msg["content"]}, state}
+
+                      if steered > 0,
+                        do: run_turn(state, step + 1),
+                        else: text_or_incomplete(state, msg, step)
 
                     hits ->
                       {state, allow_retry} = content_rule_retry_budget(state, hits)
@@ -1281,7 +1294,10 @@ defmodule Newbee.Agent.Loop do
                         emit(state, {:rule_hit, hits})
                         state = %{state | rule_streak: %{ids: [], count: 0}}
                         {state, steered} = consume_steering(state)
-                        if steered > 0, do: run_turn(state, step + 1), else: {{:text, msg["content"]}, state}
+
+                        if steered > 0,
+                          do: run_turn(state, step + 1),
+                          else: text_or_incomplete(state, msg, step)
                       end
                   end
 
@@ -1296,7 +1312,7 @@ defmodule Newbee.Agent.Loop do
                   {reply, %{state | rule_streak: %{ids: [], count: 0}}}
 
                 {:cont, state} ->
-                  state = %{state | rule_streak: %{ids: [], count: 0}}
+                  state = %{state | rule_streak: %{ids: [], count: 0}, incomplete_streak: 0}
                   state = state |> consume_steering() |> elem(0)
                   run_turn(state, step + 1)
               end
@@ -1315,6 +1331,74 @@ defmodule Newbee.Agent.Loop do
           {{:error, e}, state}
       end
     end
+  end
+
+  # ── 伪收尾拦截 ──
+  # "无工具调用"并不等于模型说完了：上游空流（适配器兜底成空 assistant）与 max_tokens
+  # 截断都会伪装成正常收尾，静默返回就让用户看到"跑着跑着就停了"却没有任何报错。
+  # 这里给有限次自动续跑；用尽后空回复明确报错，截断则放行已生成正文。
+
+  defp incomplete_turn(msg) do
+    cond do
+      msg["_stop_reason"] == "max_tokens" -> :truncated
+      String.trim(msg["content"] || "") == "" and (msg["tool_calls"] || []) == [] -> :empty_response
+      true -> nil
+    end
+  end
+
+  defp text_or_incomplete(state, msg, step) do
+    case incomplete_turn(msg) do
+      nil -> {{:text, msg["content"]}, %{state | incomplete_streak: 0}}
+      reason -> handle_incomplete_turn(state, msg, step, reason)
+    end
+  end
+
+  defp handle_incomplete_turn(state, msg, step, reason) do
+    attempt = state.incomplete_streak + 1
+
+    if attempt <= @incomplete_turn_retries do
+      Newbee.DebugLog.log(:turn, "step #{step} incomplete turn=#{reason} attempt=#{attempt}")
+      emit(state, {:llm_retry, incomplete_turn_notice(reason)})
+      state = %{state | incomplete_streak: attempt}
+
+      state =
+        inject_prompt(
+          state,
+          %{"role" => "system", "content" => incomplete_turn_reminder(reason)},
+          %{
+            source: "incomplete_turn",
+            reason: "上游空流/截断导致的伪收尾",
+            timing: "current_turn_retry",
+            step: step,
+            kind: reason
+          }
+        )
+
+      state = state |> consume_steering() |> elem(0)
+      run_turn(state, step + 1)
+    else
+      state = %{state | incomplete_streak: 0}
+      Newbee.DebugLog.log(:turn, "step #{step} incomplete turn=#{reason} exhausted")
+
+      # 截断且已吐正文：放行（用户至少看到半截）；什么都没有就明确报错而不是静默收尾。
+      if String.trim(msg["content"] || "") == "" do
+        {{:error, {:empty_response, reason}}, state}
+      else
+        {{:text, msg["content"]}, state}
+      end
+    end
+  end
+
+  defp incomplete_turn_notice(:truncated), do: "output truncated by max_tokens; continuing"
+  defp incomplete_turn_notice(_reason), do: "upstream returned an empty response; retrying"
+
+  defp incomplete_turn_reminder(:truncated) do
+    "[Truncated] 上一次输出被 max_tokens 截断，回答不完整。请从中断处继续，不要重复已输出的内容。"
+  end
+
+  defp incomplete_turn_reminder(_reason) do
+    "[Empty response] 上一次模型调用既没有正文也没有工具调用（上游空流）。" <>
+      "请重新给出这一步的结论：直接回答，或调用工具继续。"
   end
 
   # fallback 代码块也要带当前会话的 capability；否则 Tools.Media 会退回全局 current。
@@ -1474,8 +1558,9 @@ defmodule Newbee.Agent.Loop do
 
   defp image_opts(_state), do: []
 
-  defp call_client(fun, messages, on_text, on_reasoning) do
+  defp call_client(fun, messages, on_text, on_reasoning, on_retry) do
     case :erlang.fun_info(fun, :arity) do
+      {:arity, 4} -> fun.(messages, on_text, on_reasoning, on_retry)
       {:arity, 3} -> fun.(messages, on_text, on_reasoning)
       {:arity, 2} -> fun.(messages, on_text)
     end
@@ -2243,11 +2328,11 @@ defmodule Newbee.Agent.Loop do
 
     # 用量行（UI 回放）：带 _usage 的 assistant 消息落盘时拆成两条——
     # ① 独立 usage 行（前端 history 消费）；② 干净 assistant 消息（进 state.messages，
-    # 发给模型的历史绝不含 _usage，避免污染请求体）。
+    # 发给模型的历史绝不含 _usage / _stop_reason 这类私有控制字段，避免污染请求体）。
     if state.session && is_map(msg) && msg["_usage"] do
       usage = Map.get(msg, "_usage")
       Newbee.Session.append(state.session, %{"role" => "usage", "usage" => usage})
-      clean = Map.delete(msg, "_usage")
+      clean = msg |> Map.delete("_usage") |> Map.delete("_stop_reason")
       Newbee.Session.append(state.session, clean)
       %{state | messages: state.messages ++ [clean]}
     else

@@ -874,6 +874,18 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 .evo-rate.good { color: var(--nb-green); }
 .evo-rate.warn { color: var(--nb-warn); }
 
+.evo-approvals { display: flex; flex-direction: column; gap: 7px; padding: 0 10px 10px; }
+.evo-approval-record { border: 1px solid var(--nb-border); border-left: 3px solid var(--nb-green); padding: 8px 9px; background: var(--nb-bg-elev); }
+.evo-approval-record.retracted { border-left-color: var(--nb-red); opacity: .78; }
+.evo-approval-record-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.evo-approval-record-head strong { color: var(--nb-label-2); font-size: 11px; }
+.evo-approval-record-head span { color: var(--nb-label-caption); font: 10px var(--nb-mono); }
+.evo-approval-record p { margin: 4px 0 0; color: var(--nb-label-3); font-size: 10.5px; line-height: 1.45; }
+.evo-approval-record .evo-approval-meta { color: var(--nb-label-caption); font-size: 10px; line-height: 1.4; }
+.evo-retract { margin-top: 6px; border: 1px solid var(--nb-red); border-radius: 5px; background: transparent; color: var(--nb-red); padding: 4px 8px; cursor: pointer; font-size: 10px; }
+.evo-retract:hover { background: color-mix(in srgb, var(--nb-red) 12%, transparent); }
+
+
 .evo-audit-section { border-bottom: 0; }
 .evo-feed { display: flex; flex-direction: column; padding: 0 10px 14px; }
 .evo-event { border-bottom: 1px solid var(--nb-border); content-visibility: auto; contain-intrinsic-size: auto 48px; }

@@ -273,6 +273,7 @@
         </div>
         <div class="mc-actions">
           <button id="evo-trigger" class="mc-action-btn" title="立即让 Adapter 消费信号并运行一轮验证"><svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span>运行一轮</span></button>
+          <button id="evo-reset" class="mc-action-btn" title="清空自我进化的活动状态，保留全部审计记录">恢复初始状态</button>
           <button id="evo-refresh" class="icon-btn" title="刷新进化事实">↻</button>
         </div>
       </div>
@@ -326,8 +327,13 @@
         <div id="evo-releases" class="evo-releases"></div>
       </section>
 
+      <section class="evo-section evo-approval-section">
+        <div class="evo-section-head"><span>⑤ 自动处理记录</span><span class="evo-section-meta">系统做过什么、为什么、影响哪里、能否撤回</span></div>
+        <div id="evo-approvals" class="evo-approvals"></div>
+      </section>
+
       <section class="evo-section evo-audit-section">
-        <div class="evo-section-head"><span>⑤ 历史记录</span><span id="evo-events-size" class="evo-section-meta">-</span></div>
+        <div class="evo-section-head"><span>⑥ 全部历史记录</span><span id="evo-events-size" class="evo-section-meta">-</span></div>
         <div id="evo-feed" class="evo-feed"></div>
       </section>
 

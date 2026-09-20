@@ -58,4 +58,16 @@ defmodule Newbee.TUIStreamTest do
     assert List.last(s3.lines) == "b"
     assert length(s3.lines) == length(s2.lines) + 1
   end
+
+  # 上游流中断自动重试：必须给用户一行可见提示（否则"卡住 2 秒后重来"像模型抽风）
+  test "llm_retry 事件渲染为一行可见提示" do
+    state = %TUI{} |> TUI.push_line("› hi")
+
+    s = TUI.render_event(state, :llm_retry, {:llm_retry, :stream_read_error})
+
+    assert length(s.lines) == length(state.lines) + 1
+    assert List.last(s.lines) =~ "上游连接中断"
+    assert List.last(s.lines) =~ "stream_read_error"
+    assert List.last(s.lines) =~ "正在自动重试"
+  end
 end

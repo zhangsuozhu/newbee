@@ -7,6 +7,8 @@ defmodule Newbee.LLM.Responses do
   @overload_statuses [429, 500, 502, 503, 529]
   @overload_retries 5
   @overload_delay 1_000
+  @stream_read_retries 2
+  @stream_read_delay 1_000
   @stream_timeout 300_000
   @capability_key {__MODULE__, :capabilities}
 
@@ -18,7 +20,8 @@ defmodule Newbee.LLM.Responses do
     state = %{
       attempts: MapSet.new(),
       force_full: false,
-      replayed_previous: false
+      replayed_previous: false,
+      stream_read_retries: @stream_read_retries
     }
 
     run_request(client, logical_input, wire_tools, opts, state)
@@ -186,6 +189,7 @@ defmodule Newbee.LLM.Responses do
 
   defp tool_output_missing_error?({:http_error, _, body}), do: tool_output_missing_error?(body)
   defp tool_output_missing_error?({:response_error, body}), do: tool_output_missing_error?(body)
+  defp tool_output_missing_error?({:response_error, body, _content}), do: tool_output_missing_error?(body)
   defp tool_output_missing_error?(_), do: false
 
   defp run_request(client, logical_input, wire_tools, opts, state) do
@@ -236,7 +240,7 @@ defmodule Newbee.LLM.Responses do
     if MapSet.member?(state.attempts, attempt) do
       {:error, {:responses_retry_loop, attempt}}
     else
-      state = %{state | attempts: MapSet.put(state.attempts, attempt)}
+      state = %{state | attempts: MapSet.put(state.attempts, attempt)} |> Map.put(:last_attempt, attempt)
       on_text = Keyword.get(opts, :on_text, fn _ -> :ok end)
       on_reasoning = Keyword.get(opts, :on_reasoning, fn _ -> :ok end)
 
@@ -288,6 +292,9 @@ defmodule Newbee.LLM.Responses do
          continued?,
          error
        ) do
+    # 流中途失败时已吐给用户的正文（来自 finish_sse 的错误载荷）；为空才可整体重放。
+    content = response_error_content(error)
+
     cond do
       continued? and not state.replayed_previous and previous_response_not_found?(error) ->
         Newbee.DebugLog.log(:llm, "responses continuation expired; retrying full request")
@@ -330,8 +337,56 @@ defmodule Newbee.LLM.Responses do
         {:http_error, status, body} = error
         {:error, {:http_error, status, encoded(body)}}
 
+      content == "" and stream_read_error?(error) ->
+        retry_stream_read_error(client, logical_input, wire_tools, opts, state, error)
+
       true ->
         {:error, error}
+    end
+  end
+
+  # stream_read_error 是 200 + SSE 流中途的上游错误事件（与请求内容无关，重发通常成功），
+  # HTTP 层的状态码重试（@overload_statuses）覆盖不到它。这类失败时请求是可重放的：
+  # 正常流里正文 token 只回调一次且 accum 与 content 同步更新，所以 content == "" 意味着
+  # 用户还没看到任何正文/工具调用被采纳。工具调用本身幂等（快照保护 + 串行调用），
+  # 因此静默整体重发；重试前让上层知道丢弃已打印的增量，避免正文重复拼接。
+  # 保守地只匹配 code == "stream_read_error"，其他流内错误仍按原样抛出。
+  # 注意 attempt 指纹不含 stream_read_retries，重发同一配置会撞 state.attempts 的循环保护，
+  # 所以重试时把当前 attempt 从指纹集合里移除（靠 stream_read_retries 计数兜底防环）。
+
+  # finish_sse 的错误现在是 {:response_error, error, content}；归一化出 content，缺省视为空。
+  defp response_error_content({:response_error, _error, content}), do: content
+  defp response_error_content({:response_error, _error}), do: ""
+  defp response_error_content(_), do: ""
+
+  defp stream_read_error?({:response_error, body}), do: retryable_stream_code?(body)
+  defp stream_read_error?({:response_error, body, _content}), do: retryable_stream_code?(body)
+  defp stream_read_error?(_), do: false
+
+  # empty_stream：200 + 空 SSE 流（与请求内容无关，重放通常成功），走同一条重放通道。
+  defp retryable_stream_code?(%{"code" => code}), do: code in ["stream_read_error", "empty_stream"]
+  defp retryable_stream_code?(_), do: false
+
+  defp retry_stream_read_error(client, logical_input, wire_tools, opts, state, error) do
+    cond do
+      state.stream_read_retries <= 0 ->
+        {:error, error}
+
+      Newbee.LLM.Client.interrupted?(client) ->
+        {:error, error}
+
+      true ->
+        Newbee.DebugLog.log(:llm, "responses stream_read_error; retrying the same request")
+
+        on_retry = Keyword.get(opts, :on_retry, fn _reason -> :ok end)
+        on_retry.(:stream_read_error)
+        Process.sleep(@stream_read_delay)
+
+        run_request(client, logical_input, wire_tools, opts, %{
+          state
+          | stream_read_retries: state.stream_read_retries - 1,
+            attempts: MapSet.delete(state.attempts, Map.get(state, :last_attempt))
+        })
     end
   end
 
@@ -836,10 +891,28 @@ defmodule Newbee.LLM.Responses do
     end)
   end
 
-  defp finish_sse(%{error: error}) when not is_nil(error),
-    do: {:error, {:response_error, error}}
+  # 200 + 流里一个事件都没有（没有 response.created，也没有正文/工具调用/用量）：
+  # 网关抖动时会给一个空 SSE 流。绝不能当"成功的空回复"返回——主循环把"没有工具调用"
+  # 当成回合结束，用户看到的就是"跑着跑着停了"且全程没有报错。
+  # 复用 stream_read_error 的无正文重放通道（见 recover_or_error/8）。
+  defp finish_sse(%{error: nil, completed?: false, response_id: nil, content: "", reasoning: ""} = acc)
+       when map_size(acc.usage) == 0 and map_size(acc.tool_calls) == 0 do
+    {:error,
+     {:response_error, %{"code" => "empty_stream", "message" => "stream ended without any Response events"},
+      acc.content}}
+  end
+
+  defp finish_sse(%{error: error, content: content}) when not is_nil(error),
+    do: {:error, {:response_error, error, content}}
 
   defp finish_sse(acc) do
+    if acc.completed? == false do
+      Newbee.DebugLog.log(
+        :llm,
+        "responses stream ended without response.completed content=#{byte_size(acc.content)} tools=#{map_size(acc.tool_calls)}"
+      )
+    end
+
     message =
       %{"role" => "assistant", "content" => acc.content}
       |> maybe_put("tool_calls", assemble_stream_tool_calls(acc.tool_calls))
@@ -1138,6 +1211,9 @@ defmodule Newbee.LLM.Responses do
     do: previous_response_not_found?(body)
 
   defp previous_response_not_found?({:response_error, body}),
+    do: previous_response_not_found?(body)
+
+  defp previous_response_not_found?({:response_error, body, _content}),
     do: previous_response_not_found?(body)
 
   defp previous_response_not_found?(body) when is_binary(body) do

@@ -217,33 +217,41 @@ defmodule Newbee.Plugins.RepoMap do
   defp aliases_of(_), do: %{}
 
   # 模块规范名统一用点分字符串，避免 atom/string 混用
-  defp canonical(segs), do: Enum.join(segs, ".")
+  defp canonical(segs), do: Enum.map_join(segs, ".", &segment_text/1)
+
+  # 段里也可能不是 atom/binary：`__MODULE__.Runner`（本仓库 test 里就有）与
+  # `&__MODULE__.reload_file/1` 给出的是 [{:__MODULE__, meta, nil}, :Runner]。
+  # 这类引用无法脱离所在模块解析，按占位名处理——既不崩（旧实现直接 Enum.join，
+  # 抛 String.Chars not implemented for Tuple），也不会误配到同名的别的模块。
+  defp segment_text(seg) when is_atom(seg), do: Atom.to_string(seg)
+  defp segment_text(seg) when is_binary(seg), do: seg
+  defp segment_text({:__MODULE__, _meta, _ctx}), do: "__MODULE__"
+  defp segment_text(_other), do: ""
 
   defp hd_member([h | _]), do: h
   defp hd_member(other) when is_atom(other), do: other
 
-  # 解析一个引用节点到本工程完整模块名; 唯一后缀命中也算 (容相对引用)
-  # 段中可能混入运行时动态节点 (如 __MODULE__.Runner / unquote(...)),
-  # 此时引用无法静态解析, 直接跳过 (返回 nil) 而非崩溃。
-  # 事故: 2026-02 test/newbee/collaboration/chat_test.exs 的 __MODULE__.Runner
-  # 让 build(".") 整体不可用。
-  defp resolve_ref(segs, alias_map, known, index) do
-    expanded =
-      case alias_map[hd(segs)] do
-        nil -> segs
-        base -> base ++ tl(segs)
-      end
+# 解析一个引用节点到本工程完整模块名; 唯一后缀命中也算 (容相对引用)
+# 段中可能混入运行时动态节点 (如 __MODULE__.Runner / unquote(...)),
+# 此时引用无法静态解析, 直接跳过 (返回 nil) 而非崩溃。
+defp resolve_ref([], _alias_map, _known, _index), do: nil
 
-    if Enum.all?(expanded, &is_atom/1) do
-      full = Enum.join(expanded, ".")
+defp resolve_ref(segs, alias_map, known, index) do
+expanded =
+case alias_map[hd(segs)] do
+  nil -> segs
+  base -> base ++ tl(segs)
+end
 
-      if MapSet.member?(known, full) do
-        full
-      else
-        unique_suffix_indexed(full, index)
-      end
-    end
-  end
+full = expanded |> Enum.map(&segment_text/1) |> Enum.join(".")
+
+if MapSet.member?(known, full) do
+full
+else
+unique_suffix_indexed(full, index)
+end
+end
+
 
   # 后缀索引: 每个已知模块的所有真后缀 -> 命中名单, 查询 O(1)。
   # 旧实现每次引用全表 Enum.filter + String.split, 在 143 文件 x 数千引用下直接打爆 DEE reductions。

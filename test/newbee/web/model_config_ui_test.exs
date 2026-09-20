@@ -9,6 +9,8 @@ defmodule Newbee.Web.ModelConfigUiTest do
     assert html =~ ~s(option value="openai-completions")
     assert html =~ ~s(option value="openai-responses")
     assert html =~ ~s(option value="auto")
+    assert js =~ ~s(option value="anthropic")
+
     refute html =~ ~s(option value="responses")
 
     assert js =~ "modelApis: modelApis"

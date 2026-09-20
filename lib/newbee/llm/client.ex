@@ -180,6 +180,8 @@ defmodule Newbee.LLM.Client do
 
   defp default_responses_mode("responses"), do: :responses
   defp default_responses_mode("openai-responses"), do: :responses
+  defp default_responses_mode("anthropic"), do: :anthropic
+  defp default_responses_mode("anthropic-messages"), do: :anthropic
   defp default_responses_mode("auto"), do: :auto
   defp default_responses_mode(_), do: :chat
 
@@ -361,12 +363,22 @@ defmodule Newbee.LLM.Client do
   # 所以整个请求放到可杀的 worker；调用方每 50ms 检查一次 Esc 标志。
   defp stream_chat_request(%__MODULE__{} = client, messages, on_text, on_reasoning, opts) do
     tools = Keyword.get(opts, :tools, Newbee.Codec.tools())
+    # 上游流中断自动重试的通知回调；无则 no-op。
+    on_retry = Keyword.get(opts, :on_retry, fn _ -> :ok end)
 
     case client.responses_mode do
       :responses ->
         Newbee.LLM.Responses.request(client, messages, tools,
           on_text: on_text,
-          on_reasoning: on_reasoning
+          on_reasoning: on_reasoning,
+          on_retry: on_retry
+        )
+
+      :anthropic ->
+        Newbee.LLM.Anthropic.request(client, messages, tools,
+          on_text: on_text,
+          on_reasoning: on_reasoning,
+          on_retry: on_retry
         )
 
       _ ->
@@ -515,6 +527,7 @@ defmodule Newbee.LLM.Client do
 
     case client.responses_mode do
       :responses -> complete_responses(client, messages, opts)
+      :anthropic -> complete_anthropic(client, messages, opts)
       _ -> complete_chat(client, sanitize_messages(messages), opts)
     end
   end
@@ -530,6 +543,25 @@ defmodule Newbee.LLM.Client do
     )
 
     result = Newbee.LLM.Responses.complete(client, messages, opts)
+
+    Newbee.DebugLog.log(
+      :llm,
+      "complete done in #{System.monotonic_time(:millisecond) - t0}ms result=#{elem(result, 0)}"
+    )
+
+    observe_provider(result, client, t0, "complete", messages)
+    result
+  end
+
+  defp complete_anthropic(client, messages, opts) do
+    t0 = System.monotonic_time(:millisecond)
+
+    Newbee.DebugLog.log(
+      :llm,
+      "complete start model=#{client.model} messages=#{length(messages)} api=anthropic"
+    )
+
+    result = Newbee.LLM.Anthropic.complete(client, messages, opts)
 
     Newbee.DebugLog.log(
       :llm,
@@ -656,14 +688,16 @@ defmodule Newbee.LLM.Client do
           {false, 0, 0}
       end
 
-    Newbee.Environment.UsageTracker.observe_plugin("provider.openrouter", %{
-      success: success,
-      latency_ms: System.monotonic_time(:millisecond) - started_at,
-      tokens: tokens,
-      output_bytes: output_bytes,
-      model: client.model,
-      task_type: task_type
-    })
+    unless Newbee.Learning.Context.experimental?() do
+      Newbee.Environment.UsageTracker.observe_plugin("provider.openrouter", %{
+        success: success,
+        latency_ms: System.monotonic_time(:millisecond) - started_at,
+        tokens: tokens,
+        output_bytes: output_bytes,
+        model: client.model,
+        task_type: task_type
+      })
+    end
   rescue
     _ -> :ok
   end
@@ -1354,10 +1388,12 @@ defmodule Newbee.LLM.Client do
 
   defp sanitize_deferred?(_), do: false
 
-  defp normalize_responses_mode(mode) when mode in [:auto, :responses, :chat], do: mode
+  defp normalize_responses_mode(mode) when mode in [:auto, :responses, :chat, :anthropic], do: mode
   defp normalize_responses_mode("auto"), do: :auto
   defp normalize_responses_mode("responses"), do: :responses
   defp normalize_responses_mode("openai-responses"), do: :responses
+  defp normalize_responses_mode("anthropic"), do: :anthropic
+  defp normalize_responses_mode("anthropic-messages"), do: :anthropic
   defp normalize_responses_mode("chat"), do: :chat
   defp normalize_responses_mode("openai-completions"), do: :chat
   defp normalize_responses_mode(_), do: :chat

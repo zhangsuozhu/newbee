@@ -52,6 +52,11 @@ defmodule Newbee.EventStore do
     GenServer.call(store, {:append, topic, data})
   end
 
+  @doc "Append a control event and fsync before acknowledging, regardless of batch policy."
+  def append_sync(store, topic, data) when is_atom(topic) and is_map(data) do
+    GenServer.call(store, {:append_sync, topic, data}, 30_000)
+  end
+
   @doc "当前水位（最后一条事件 id，空流为 0）。"
   def watermark(store), do: GenServer.call(store, :watermark)
 
@@ -179,6 +184,7 @@ defmodule Newbee.EventStore do
   defp to_event(frame) do
     %{id: frame["id"], topic: String.to_atom(frame["topic"]), data: frame["data"], at: frame["at"]}
   end
+
   @doc "读取全部帧（含校验）：存档段（旧 → 新）+ 活动文件；每段内首个坏帧之后丢弃。"
   def read_frames(path) do
     (segments(path) |> Enum.flat_map(&segment_frames/1)) ++
@@ -212,7 +218,6 @@ defmodule Newbee.EventStore do
         []
     end
   end
-
 
   defp segments_dir(path), do: Path.join(Path.dirname(path), "events")
 
@@ -411,6 +416,11 @@ defmodule Newbee.EventStore do
   end
 
   @impl true
+  def handle_call({:append_sync, topic, data}, from, state) do
+    {:reply, reply, next} = handle_call({:append, topic, data}, from, %{state | durability: :event})
+    {:reply, reply, %{next | durability: state.durability}}
+  end
+
   def handle_call({:append, topic, data}, _from, state) do
     event = %{
       id: state.next_id,
@@ -443,6 +453,7 @@ defmodule Newbee.EventStore do
 
     {:reply, {:ok, event}, state}
   end
+
   # 以磁盘为准对齐内存状态：人工干预（重编号/清理残留）之后调用。
   # 水位取「活动文件末条」与「最新存档段末条」的较大者——并发追加期间做修复也不会回退。
   def handle_call(:resync, _from, state) do
@@ -461,10 +472,8 @@ defmodule Newbee.EventStore do
 
     {:ok, io} = File.open(state.path, [:append, :raw])
 
-    {:reply, {:ok, next_id - 1},
-     %{state | io: io, next_id: next_id, pending: 0, bytes: active_bytes(state.path)}}
+    {:reply, {:ok, next_id - 1}, %{state | io: io, next_id: next_id, pending: 0, bytes: active_bytes(state.path)}}
   end
-
 
   def handle_call(:watermark, _from, state), do: {:reply, state.next_id - 1, state}
 
@@ -530,7 +539,7 @@ defmodule Newbee.EventStore do
 
   defp config(opts, key, default) do
     Keyword.get(opts, key) ||
-      (Application.get_env(:newbee, __MODULE__, []) |> Keyword.get(key)) ||
+      Application.get_env(:newbee, __MODULE__, []) |> Keyword.get(key) ||
       default
   end
 
@@ -595,7 +604,6 @@ defmodule Newbee.EventStore do
       end
     end
   end
-
 
   defp reopen(state) do
     {:ok, io} = File.open(state.path, [:append, :raw])
@@ -673,7 +681,6 @@ defmodule Newbee.EventStore do
 
     :ok
   end
-
 
   defp stream_gzip(seg, out) do
     z = :zlib.open()

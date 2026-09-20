@@ -200,15 +200,26 @@ defmodule Newbee.Agent.LoopTest do
     Newbee.Session.delete(sid)
   end
 
-  test "模型返回空正文且无工具调用：不给历史落空 assistant（上游 400 根因）" do
+  test "模型返回空正文且无工具调用：不落空 assistant，且续跑而不是静默收尾（上游 400 根因）" do
     {:ok, ev} = Evaluator.start(mode: :local)
+    counter = start_supervised!({Agent, fn -> 0 end})
 
-    script = [
-      fn _messages, _on_text -> {:ok, %{"role" => "assistant", "content" => " \n "}, %{}} end
-    ]
+    script =
+      List.duplicate(
+        fn _messages, _on_text ->
+          case Agent.get_and_update(counter, fn n -> {n + 1, n + 1} end) do
+            1 -> {:ok, %{"role" => "assistant", "content" => " \n "}, %{}}
+            _ -> {:ok, %{"role" => "assistant", "content" => "fine"}, %{}}
+          end
+        end,
+        4
+      )
 
-    {:ok, kernel} = Loop.start_link(client: %{}, evaluator: ev, session: false, client_fun: scripted(script))
-    assert {:text, " \n "} = Loop.submit(kernel, "hi")
+    {:ok, kernel} =
+      Loop.start_link(client: %{}, evaluator: ev, session: false, client_fun: scripted(script))
+
+    # 空回复不再是"这一轮的答案"：注入提醒后续跑，拿到真正的内容
+    assert {:text, "fine"} = Loop.submit(kernel, "hi")
 
     msgs = :sys.get_state(kernel).messages
 
@@ -216,6 +227,50 @@ defmodule Newbee.Agent.LoopTest do
              m["role"] == "assistant" and String.trim(m["content"] || "") == "" and
                (m["tool_calls"] || []) == []
            end)
+  end
+
+  test "上游空流连着来：续跑用尽后明确报错，不再静默收尾" do
+    {:ok, ev} = Evaluator.start(mode: :local)
+    counter = start_supervised!({Agent, fn -> 0 end})
+
+    script =
+      List.duplicate(
+        fn _messages, _on_text ->
+          Agent.update(counter, &(&1 + 1))
+          {:ok, %{"role" => "assistant", "content" => ""}, %{}}
+        end,
+        6
+      )
+
+    {:ok, kernel} =
+      Loop.start_link(client: %{}, evaluator: ev, session: false, client_fun: scripted(script))
+
+    assert {:error, {:empty_response, :empty_response}} = Loop.submit(kernel, "hi")
+
+    # 首次 + 2 次自动续跑（@incomplete_turn_retries）后放弃，交给上层报错
+    assert Agent.get(counter, & &1) == 3
+  end
+
+  test "max_tokens 截断：注入截断提醒后续跑，而不是当成说完" do
+    {:ok, ev} = Evaluator.start(mode: :local)
+    test_pid = self()
+
+    script = [
+      fn _messages, _on_text ->
+        {:ok, %{"role" => "assistant", "content" => "半截", "_stop_reason" => "max_tokens"}, %{}}
+      end,
+      fn messages, _on_text ->
+        send(test_pid, {:second_call_contents, Enum.map(messages, & &1["content"])})
+        {:ok, %{"role" => "assistant", "content" => "完整回答"}, %{}}
+      end
+    ]
+
+    {:ok, kernel} =
+      Loop.start_link(client: %{}, evaluator: ev, session: false, client_fun: scripted(script))
+
+    assert {:text, "完整回答"} = Loop.submit(kernel, "hi")
+    assert_received {:second_call_contents, contents}
+    assert Enum.any?(contents, &(&1 =~ "[Truncated]"))
   end
 
   test "热加载后的活动 Loop：提交前清理旧空 assistant" do

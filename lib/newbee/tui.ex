@@ -1116,6 +1116,12 @@ defmodule Newbee.TUI do
     push_line(state, "\e[2m⚑ 进化线索已记录（重复失败模式）: #{String.slice(sig, 0, 60)}\e[0m")
   end
 
+  # 上游流中断自动重试（responses 路由的 stream_read_error）：给用户一行可见提示，
+  # 否则正文"卡住 2 秒后重来"看起来像模型抽风。
+  def render_event(%__MODULE__{} = state, :llm_retry, {:llm_retry, reason}) do
+    push_line(state, "\e[2m⟳ 上游连接中断（#{inspect(reason)}），正在自动重试…\e[0m")
+  end
+
   def render_event(%__MODULE__{} = state, :compacted, {:compacted, n}) do
     push_line(state, "\e[2m⏳ 历史已压缩 #{n} 条（事件日志原样保留）\e[0m")
   end

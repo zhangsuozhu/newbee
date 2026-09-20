@@ -1581,6 +1581,48 @@ defmodule Newbee.Web.Api do
     {:ok, %{events: project_evolution_events(n)}}
   end
 
+  defp dispatch_rpc("evolution.approval_history", p) do
+    n = min(max(p["n"] || 100, 1), 300)
+    {:ok, %{records: project_approval_history(n)}}
+  end
+
+  defp dispatch_rpc("evolution.retract", %{"changeId" => change_id} = p) when is_binary(change_id) do
+    reason = p["reason"] || "用户撤回这项自动改进"
+
+    case Process.whereis(Newbee.Environment.Coordinator) do
+      nil ->
+        {:error, "coordinator_down", "环境 Coordinator 未运行"}
+
+      _pid ->
+        case Newbee.Environment.Coordinator.retract(Newbee.Environment.Coordinator, change_id, reason, "web:user") do
+          {:ok, result} -> {:ok, result}
+          {:error, error} -> {:error, "retract_failed", inspect(error)}
+        end
+    end
+  end
+
+  defp dispatch_rpc("evolution.retract", _p),
+    do: {:error, "invalid_change", "缺少 changeId"}
+
+  defp dispatch_rpc("evolution.reset_learning", %{"confirm" => confirm} = p) do
+    if truthy?(confirm) do
+      case Process.whereis(Newbee.Environment.Coordinator) do
+        nil ->
+          {:error, "coordinator_down", "环境 Coordinator 未运行"}
+
+        _pid ->
+          reason = p["reason"] || "用户要求恢复自我进化初始状态"
+          {:ok, result} = Newbee.Environment.Coordinator.reset_evolution(Newbee.Environment.Coordinator, reason)
+          {:ok, result}
+      end
+    else
+      {:error, "confirmation_required", "需要明确确认才会恢复初始环境；历史审计记录不会删除"}
+    end
+  end
+
+  defp dispatch_rpc("evolution.reset_learning", _p),
+    do: {:error, "confirmation_required", "需要 confirm=true；恢复初始环境但不删除审计历史"}
+
   defp dispatch_rpc("evolution.approve", %{"changeId" => change_id}) when is_binary(change_id) do
     case Process.whereis(Newbee.Environment.Coordinator) do
       nil ->
@@ -1600,6 +1642,22 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("evolution.approve", _p),
     do: {:error, "invalid_change", "缺少 changeId"}
+
+  defp dispatch_rpc("evolution.approve_group", %{"groupId" => group_id}) when is_binary(group_id) do
+    case Process.whereis(Newbee.Environment.Coordinator) do
+      nil ->
+        {:error, "coordinator_down", "环境 Coordinator 未运行"}
+
+      _pid ->
+        case Newbee.Environment.Coordinator.approve_group(Newbee.Environment.Coordinator, group_id, "web:user") do
+          {:ok, result} -> {:ok, result}
+          {:error, reason} -> {:error, "approval_group_failed", inspect(reason)}
+        end
+    end
+  end
+
+  defp dispatch_rpc("evolution.approve_group", _p),
+    do: {:error, "invalid_group", "缺少 groupId"}
 
   defp dispatch_rpc("evolution.reevaluate", %{"changeId" => change_id})
        when is_binary(change_id) do
@@ -1739,6 +1797,8 @@ defmodule Newbee.Web.Api do
        autonomy_explain: autonomy_explain(autonomy),
        coordinator: json_safe(coord_state),
        changes: json_safe(changes),
+       approval_groups: json_safe(group_approval_cards(changes)),
+       approval_history: json_safe(project_approval_history(100)),
        pending_signals: json_safe(pending_signals),
        active_releases: json_safe(release_stats),
        last_evolution: json_safe(recent_evo),
@@ -3270,6 +3330,11 @@ defmodule Newbee.Web.Api do
       "terminal" => Newbee.Environment.Change.terminal?(change),
       "can_approve" => derived == "awaiting_approval",
       "can_reevaluate" => derived == "stale_base",
+      "can_retract" => change.status == :active and change.activated_revision == active_revision,
+      "approval_group" => change.approval_group || Newbee.Environment.ApprovalAudit.group_key(change),
+      "approval_mode" => change.approval_mode && to_string(change.approval_mode),
+      "activated_revision" => change.activated_revision,
+      "retraction_reason" => change.retraction_reason,
       "next_action" => change_next_action(derived),
       "reason" => change.reason,
       "reason_plain" => reason_plain,
@@ -3458,8 +3523,71 @@ defmodule Newbee.Web.Api do
     end
   end
 
+  defp group_approval_cards(changes) when is_list(changes) do
+    changes
+    |> Enum.filter(&(&1["can_approve"] == true))
+    |> Enum.group_by(fn change -> change["plugin_id"] || change["human_title"] || "environment" end)
+    |> Enum.map(fn {_key, members} ->
+      first = hd(members)
+      briefs = Enum.map(members, &(Map.get(&1, "brief") || %{}))
+      title = first["human_title"] || "环境改进"
+
+      %{
+        "group_id" => first["approval_group"] || first["plugin_id"] || title,
+        "title" => if(length(members) == 1, do: title, else: "合并审批：" <> title),
+        "change_ids" => Enum.map(members, & &1["change_id"]),
+        "count" => length(members),
+        "improvements" => briefs |> Enum.map(& &1["change_to"]) |> Enum.reject(&is_nil/1) |> Enum.uniq(),
+        "reason" =>
+          briefs |> Enum.map(&(&1["why"] || &1["found"])) |> Enum.reject(&is_nil/1) |> Enum.uniq() |> Enum.join("；"),
+        "impact_scope" =>
+          briefs |> Enum.map(& &1["risk_undo"]) |> Enum.reject(&is_nil/1) |> Enum.uniq() |> Enum.join("；"),
+        "reversible" => true,
+        "requires_human" => true
+      }
+    end)
+    |> Enum.sort_by(& &1["title"])
+  end
+
+  defp project_approval_history(n) do
+    ["change_auto_approved", "change_approved", "change_retracted"]
+    |> then(fn topics ->
+      project_event_tail()
+      |> Enum.filter(&(&1["topic"] in topics))
+      |> Enum.take(-n)
+      |> Enum.reverse()
+    end)
+    |> Enum.map(fn event ->
+      payload = event["data"] || %{}
+
+      %{
+        "id" => event["id"],
+        "topic" => event["topic"],
+        "at" => event["at"],
+        "decision" => payload["decision_label"] || event["topic"],
+        "change_id" => payload["change_id"],
+        "change_ids" => payload["change_ids"] || [payload["change_id"]],
+        "summary" => payload["summary"] || payload["title"] || "环境改进",
+        "improvement" => payload["improvement"] || payload["change_to"] || "暂无改进说明",
+        "reason" => payload["reason"] || payload["why"] || "暂无原因说明",
+        "impact_scope" => payload["impact_scope"] || payload["risk_undo"] || "影响范围未记录",
+        "reversible" => payload["reversible"] != false,
+        "rollback_to_revision" => payload["rollback_to_revision"] || payload["target_revision"]
+      }
+    end)
+  end
+
   defp project_evolution_events(n) do
-    prefixes = ["change_", "revision_", "release_", "generation_", "snapshot_", "evaluation_"]
+    prefixes = [
+      "change_",
+      "revision_",
+      "release_",
+      "generation_",
+      "snapshot_",
+      "evaluation_",
+      "self_evolution_",
+      "learning_"
+    ]
 
     project_event_tail()
     |> Enum.filter(fn event ->

@@ -8,38 +8,36 @@ File.rm_rf(Path.join(System.tmp_dir!(), "newbee-test-caps"))
 Application.put_env(:newbee, :colony_background, false)
 ExUnit.start(exclude: [:node])
 
-test_tmp_root = Path.expand(System.tmp_dir!())
-user_store_root = Path.expand(Path.join(System.user_home!(), ".newbee"))
-existing_global_root = Application.get_env(:newbee, :global_root_override)
+original_override = Application.get_env(:newbee, :global_root_override)
+original_test_root = Application.get_env(:newbee, :test_global_root)
 
-if is_binary(existing_global_root) do
-  expanded = Path.expand(existing_global_root)
+test_global_root =
+Path.join(
+System.tmp_dir!(),
+"newbee-test-global-#{System.pid()}-#{System.unique_integer([:positive])}"
+)
 
-  if expanded == user_store_root or String.starts_with?(expanded, user_store_root <> "/") do
-    raise "refusing to run tests against the user store: " <> expanded
-  end
+Application.put_env(:newbee, :global_root_override, test_global_root)
+
+ExUnit.after_suite(fn _results ->
+expanded_root = Path.expand(test_global_root)
+expanded_tmp = Path.expand(System.tmp_dir!())
+
+if Path.dirname(expanded_root) == expanded_tmp and
+ String.starts_with?(Path.basename(expanded_root), "newbee-test-global-") do
+File.rm_rf!(expanded_root)
+else
+raise "refusing to remove unsafe test global root: #{expanded_root}"
 end
 
-if is_nil(existing_global_root) do
-  test_global_root =
-    Path.join(
-      test_tmp_root,
-      "newbee-test-global-#{System.pid()}-#{System.unique_integer([:positive])}"
-    )
-
-  # Always override the durable store in tests, even if GlobalStore was compiled in dev.
-  File.mkdir_p!(test_global_root)
-  Application.put_env(:newbee, :global_root_override, test_global_root)
-  Application.put_env(:newbee, :test_global_root, test_global_root)
-
-  ExUnit.after_suite(fn _results ->
-    Application.delete_env(:newbee, :global_root_override)
-    Application.delete_env(:newbee, :test_global_root)
-
-    if Path.dirname(test_global_root) == test_tmp_root do
-      File.rm_rf!(test_global_root)
-    else
-      raise "refusing to remove test root outside the temp directory: " <> test_global_root
-    end
-  end)
+case original_override do
+nil -> Application.delete_env(:newbee, :global_root_override)
+path -> Application.put_env(:newbee, :global_root_override, path)
 end
+
+case original_test_root do
+nil -> Application.delete_env(:newbee, :test_global_root)
+path -> Application.put_env(:newbee, :test_global_root, path)
+end
+end)
+

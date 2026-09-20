@@ -1,11 +1,9 @@
 defmodule Newbee.Tools.Hive do
   @moduledoc """
-  Persistent collaboration: revision-CAS Board, DAG, event waits, Lead acceptance. Returns `{:ok, _} | {:error, _, _}` (`personas/0` returns `[name]` directly).
+  Persistent collaboration: revision-CAS Board, DAG, event waits, Lead acceptance. Returns `{:ok, _} | {:error, _, _}`; `personas/0` → `[name]`.
 
-  Workers may only submit `submitted`, never rewrite task contracts; `succeeded` is written solely by the Lead after
-  structured acceptance on the host — callers pass no attestation. Command acceptance runs project code and only the
-  Lead may create it; not a sandbox. `write_scope` diagnoses conflicts, not locks. Personas, forks and spawn/payload
-  sizes are hard-capped; capabilities bind tool-call identity, they don't isolate BEAM/RPC code.
+  Command acceptance runs project code, Lead-only — not a sandbox; workers never rewrite task contracts. `write_scope`
+  diagnoses conflicts, not locks; personas/forks/payloads are hard-capped; capabilities bind tool-call identity, not isolation.
 
   ## Runnable example
       # Hive = Newbee.Tools.Hive; gid/tid/sid = existing group/task/session ids
@@ -256,7 +254,7 @@ defmodule Newbee.Tools.Hive do
 
   def send(_, _, _, _), do: {:error, "bad_request", "invalid message arg types"}
 
-  @doc "Hand a request to the right local Hive or cross-host group backend."
+  @doc "Route a request to the right local Hive or cross-host group backend."
   def dispatch(group_id, title, opts \\ [])
 
   def dispatch(group_id, title, opts) when is_binary(group_id) and is_binary(title) and is_list(opts) do
@@ -296,7 +294,7 @@ defmodule Newbee.Tools.Hive do
 
   def shared(_, _), do: {:error, "bad_request", "group_id and path must be texts"}
 
-  @doc "Project chat for a bound session: snapshot | topic.open | message.post | discussion.start | discussion.stop | decision.apply. Structured @mentions (mention_all too) wake only named representatives, stay inside the topic call budget, and never execute commands."
+  @doc "Project chat: snapshot | topic.open | message.post | discussion.start/stop | decision.apply; @mentions (also mention_all) wake only named representatives within the topic call budget; commands never run."
   def chat(group_id, action, params \\ %{})
 
   def chat(group_id, action, params) when is_binary(group_id) and is_binary(action) and is_map(params) do
@@ -365,7 +363,7 @@ defmodule Newbee.Tools.Hive do
 
   def interrupt(_, _), do: {:error, "bad_request", "group_id and target_session_id must be texts"}
 
-  @doc "Ask a member to reconsider at its next turn boundary; never interrupts the running turn. Opts: reason (required)."
+  @doc "Ask a member to reconsider at its next turn boundary; the running turn is never interrupted."
   def request_preempt(group_id, to_session_id, reason, opts \\ [])
 
   def request_preempt(group_id, to_session_id, reason, opts)
