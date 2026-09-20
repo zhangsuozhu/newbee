@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>newbee</title>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  <link rel="stylesheet" href="/style.css?v=20260912-theme-pass19" />
+  <link rel="stylesheet" href="/style.css?v=20260920-session-delete" />
   <link rel="stylesheet" href="/vendor/xterm.css?v=5.6.0" />
 
 <script src="/theme.js?v=20260912-theme-pass6"></script>
@@ -30,8 +30,15 @@
       </button>
     </div>
     <div id="session-list" class="session-list"></div>
-
-
+    <div class="session-group-actions hidden" hidden>
+      <span id="selected-session-count">选择会话</span>
+      <button id="delete-selected-sessions" class="icon-btn session-delete-selected" title="删除选中的会话" aria-label="删除选中的会话" disabled>
+        <svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      </button>
+      <button id="new-group" class="icon-btn group-icon-btn hidden" title="组成工作组（高级）" aria-label="组成工作组" disabled hidden>
+        <svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
+      </button>
+    </div>
     <div class="sidebar-foot">
       <div id="cwd-label" class="cwd-label" title="当前会话工作目录"></div>
       <div class="model-row"><div id="model-label" class="model-label" title="点击切换模型"></div>
@@ -593,7 +600,7 @@
 <script src="/vendor/qrcodegen.js"></script>
 <script src="/vendor/xterm.js?v=5.6.0"></script>
 
-<script src="/app.js?v=workbench-10"></script>
+<script src="/app.js?v=session-delete-1"></script>
 
 
 

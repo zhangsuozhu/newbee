@@ -62,6 +62,24 @@ assert surface =~ ~s|id="input"|
 assert surface =~ ~s|id="terminal-panel"|
 end
 
+  test "勾选会话后侧栏出现批量删除按钮" do
+    home = File.read!(Path.expand("priv/web/index.html"))
+    js = File.read!(Path.expand("priv/web/app.js"))
+    css = File.read!(Path.expand("priv/web/style.css"))
+
+    assert home =~ ~s|id="delete-selected-sessions"|
+    assert home =~ ~s|class="session-group-actions hidden"|
+    assert js =~ "function requestDeleteSelectedSessions()"
+    assert js =~ ~s|bind("delete-selected-sessions", requestDeleteSelectedSessions)|
+    assert js =~ ~s|bar.classList.toggle("hidden", n === 0)|
+    assert js =~ "bar.hidden = n === 0"
+    assert js =~ ~s|rpc("session.delete", { sessionId: s.id })|
+    assert css =~ ".session-group-actions"
+    assert css =~ ".session-delete-selected"
+    assert css =~ "#session-list:has(+ .session-group-actions:not(.hidden)) .session-select"
+    assert File.read!(Path.expand("priv/web/workspace.html")) =~ ~s|id="delete-selected-sessions"|
+  end
+
 
 
   test "工作卡显示任务 cwd，目录入口保留 taskId" do

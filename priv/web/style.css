@@ -265,6 +265,21 @@ body {
 .session-more:hover:not(:disabled) { background: var(--nb-border); color: var(--nb-label-1); }
 .session-more:disabled { opacity: .6; cursor: default; }
 
+.session-group-actions {
+  display: flex; align-items: center; gap: 7px; flex: none;
+  border-top: 1px solid var(--nb-border);
+  padding: 9px 3px 0;
+  color: var(--nb-label-caption); font-size: 11px;
+}
+.session-group-actions span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-group-actions button:disabled { opacity: .45; cursor: default; }
+.session-delete-selected { color: var(--nb-red); }
+.session-delete-selected:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--nb-red) 12%, transparent); color: var(--nb-red);
+}
+#session-list:has(+ .session-group-actions:not(.hidden)) .session-select { opacity: 1; }
+
+
 .sidebar-foot { border-top: 1px solid var(--nb-border); padding-top: 10px; }
 .model-label { font-family: var(--nb-mono); font-size: 12px; color: var(--nb-accent-soft);
   cursor: pointer; padding: 4px 6px; border-radius: 6px; transition: background var(--nb-dur);
@@ -3790,6 +3805,12 @@ button { font-size: var(--ui-fs-ui); }
   color: var(--nb-red);
   background: color-mix(in srgb, var(--nb-red) 15%, var(--nb-neu-hover));
 }
+:is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-delete-selected:hover:not(:disabled) {
+  color: var(--nb-red);
+  background: color-mix(in srgb, var(--nb-red) 15%, var(--nb-neu-hover));
+}
+
+
 
 /* 新拟物多选框：内凹槽、常显轮廓、暖色选中勾。 */
 :is([data-theme="neumorphic"], [data-theme="neumorphic-dark"]) .session-select {
