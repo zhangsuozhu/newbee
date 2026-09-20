@@ -2982,6 +2982,7 @@ case "goal_round": break;
 function initGroups() {
 const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
 bind("new-group", openGroupModal);
+bind("delete-selected-sessions", requestDeleteSelectedSessions);
 bind("group-modal-cancel", () => $("group-modal")?.classList.add("hidden"));
 bind("group-modal-confirm", createGroup);
 bind("delegate-session", openDelegateModal);
@@ -3450,7 +3451,52 @@ bind("delegate-session", openDelegateModal);
       }
     }, { confirmLabel: "删除", confirmClass: "btn-deny" });
   }
-
+  function requestDeleteSelectedSessions() {
+    const ids = Array.from(state.selectedSessions || []);
+    if (!ids.length) {
+      line("error", "请先勾选要删除的会话");
+      return;
+    }
+    const sessions = ids.map((id) => (state.allSessions || []).find((x) => x.id === id) || { id, title: id });
+    const busy = sessions.find((s) => s.busy);
+    if (busy) {
+      line("error", "会话正在运行中，无法删除。请先点“停止”或等待完成。");
+      return;
+    }
+    const n = sessions.length;
+    const names = sessions.map((s) => "「" + String(s.title || s.id).slice(0, 40) + "」");
+    const preview = n <= 3 ? names.join("、") : names.slice(0, 3).join("、") + " 等 " + n + " 个";
+    const prompt = n === 1
+      ? "删除会话" + names[0] + "？此操作不可恢复。"
+      : "删除选中的 " + n + " 个会话" + preview + "？此操作不可恢复。";
+    confirmDialog(prompt, async () => {
+      const deleted = [];
+      const notices = [];
+      let failed = null;
+      for (const s of sessions) {
+        try {
+          const res = await rpc("session.delete", { sessionId: s.id });
+          clearTiming(s.id);
+          try {
+            if (state.sessionUnread) delete state.sessionUnread[s.id];
+            if (state.sessionSeen) delete state.sessionSeen[s.id];
+          } catch (_e) {}
+          deleted.push(s.id);
+          if (state.selectedSessions) state.selectedSessions.delete(s.id);
+          if (res && Array.isArray(res.notices)) notices.push(...res.notices);
+        } catch (err) {
+          failed = err && err.message ? err.message : String(err);
+          break;
+        }
+      }
+      try { saveSessionUnread(); saveSessionSeen(); updateSessionTitleBadge(); } catch (_e) {}
+      if (deleted.includes(state.sid)) await leaveDeletedCurrentSession(deleted);
+      await loadSessions();
+      for (const notice of notices) line("notice", notice);
+      if (failed) line("error", (deleted.length ? ("已删除 " + deleted.length + " 个，其余失败: ") : "删除失败: ") + failed);
+      else if (deleted.length) line("notice", "已删除 " + deleted.length + " 个会话");
+    }, { confirmLabel: n === 1 ? "删除" : "删除 " + n + " 个", confirmClass: "btn-deny" });
+  }
 
   let xgroupLoadSeq = 0;
   function xCollapsed(gid) { try { return localStorage.getItem("xgroup.collapsed." + gid) === "1"; } catch (e) { return false; } }
@@ -4393,10 +4439,16 @@ box.appendChild(label);
   function updateSelectedSessionCount() {
     const n = state.selectedSessions ? state.selectedSessions.size : 0;
     const label = $("selected-session-count");
-if (label) label.textContent = n ? `${n} 个已选` : "选择会话";
-
-    const button = $("new-group");
-    if (button) button.disabled = n === 0;
+    if (label) label.textContent = n ? `${n} 个已选` : "选择会话";
+    const bar = document.querySelector(".session-group-actions");
+    if (bar) {
+      bar.classList.toggle("hidden", n === 0);
+      bar.hidden = n === 0;
+    }
+    const groupBtn = $("new-group");
+    if (groupBtn) groupBtn.disabled = n === 0;
+    const delBtn = $("delete-selected-sessions");
+    if (delBtn) delBtn.disabled = n === 0;
   }
 
   // 轻量刷新会话运行状态：只更新已渲染列表项的状态点，不重建 DOM（避免闪烁）。
