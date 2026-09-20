@@ -1,4 +1,5 @@
 import { state, memberById, refresh, attentionFor } from './store.js';
+import { canAbandon, toggleDismiss, abandonWork } from './workactions.js?v=inbox-1';
 import { rpc, toast } from './api.js';
 import { form, confirmAction } from './forms.js';
 import { cardMenu, esc, statusLabel } from './util.js';
@@ -221,6 +222,11 @@ export function buildWorkflowCard(t, ctx) {
           : settled ? '已恢复这项工作' : '已请求恢复这项工作，等待执行器确认';
       toast(message);
     }]);
+    // 待办的两个出口：忽略只影响自己看到的列表；结束工作让执行器已经不在的任务进终态。
+    const dismissed = (state.data?.dismissed_task_ids || []).includes(t.id);
+    lowFreq.push([dismissed ? '恢复提醒' : '不再提醒', () => toggleDismiss(state.colonyId, t, dismissed).then(refresh)]);
+    if (canAbandon(t)) lowFreq.push(['结束这项工作', () => abandonWork(state.colonyId, t).then((done) => { if (done) refresh(); })]);
+
     if (t.owner_kind !== 'human' && ['executing','integrating'].includes(w.phase) && t.status !== 'blocked') lowFreq.push(['立即中止', async () => {
       const input = await form('中止这项工作', [{name:'reason',label:'停止原因',multiline:true,required:true,help:'停止执行进程；已发生的文件修改和外部操作不会自动撤回。'}], '立即中止');
       if (!input) return;

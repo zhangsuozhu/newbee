@@ -51,6 +51,7 @@ defmodule Newbee.Colony.Task do
       "next_step" => nil,
       "evidence" => [],
       "limitations" => [],
+      "dismissals" => %{},
       "session_id" => Map.get(attrs, "session_id"),
       "cwd" => Map.get(attrs, "cwd"),
       "source" => Map.get(attrs, "source") || "user",
@@ -142,6 +143,48 @@ defmodule Newbee.Colony.Task do
     last = Map.get(task, "heartbeat_at") || Map.get(task, "claimed_at") || 0
     now - last > @claim_timeout_ms
   end
+
+  @doc """
+  忽略提醒：按查看者记录（个人可见，不改变任务状态）。
+
+  只要任务没有实质变化（`revision`/`status`/`result` 都没动），它就不再进入该查看者的待办；
+  一旦负责人推进、状态翻转或成果更新，忽略自动失效，任务重新回到列表。
+  """
+  def dismiss(task, viewer, now \\ nil) when is_binary(viewer) do
+    mark = %{
+      "at" => now || now_ms(),
+      "revision" => Map.get(task, "revision", 0),
+      "status" => Map.get(task, "status"),
+      "result" => Map.get(task, "result")
+    }
+
+    Map.update(task, "dismissals", %{viewer => mark}, fn
+      map when is_map(map) -> Map.put(map, viewer, mark)
+      _ -> %{viewer => mark}
+    end)
+  end
+
+  def restore(task, viewer) when is_binary(viewer) do
+    Map.update(task, "dismissals", %{}, fn
+      map when is_map(map) -> Map.delete(map, viewer)
+      _ -> %{}
+    end)
+  end
+
+  def dismissed?(task, viewer) when is_binary(viewer) do
+    mark =
+      case Map.get(task, "dismissals") do
+        %{} = map -> Map.get(map, viewer)
+        _ -> nil
+      end
+
+    is_map(mark) and
+      Map.get(mark, "revision") == Map.get(task, "revision") and
+      Map.get(mark, "status") == Map.get(task, "status") and
+      Map.get(mark, "result") == Map.get(task, "result")
+  end
+
+  def dismissed?(_task, _viewer), do: false
 
   @doc """
   状态迁移。event: start/block/unblock/complete/fail/cancel/release；
@@ -316,6 +359,8 @@ defmodule Newbee.Colony.Task do
   @doc "对外视图：附上计算出来的 stimulus。"
   def public(task, now \\ nil) do
     task
+    # 忽略提醒是查看者私有状态：不下发给其他成员，由服务端按查看者折算成 dismissed_task_ids。
+    |> Map.drop(["dismissals"])
     |> Map.put("stimulus", Float.round(stimulate(task, now), 3))
     |> Map.put("is_terminal", terminal?(task))
   end

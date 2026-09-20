@@ -3081,21 +3081,18 @@ bind("delegate-session", openDelegateModal);
   // Colony 融进原会话：待处理出现在侧栏顶部，验收出现在输入区上方。
   let workInboxTimer = 0;
   let workInbox = {items: [], review: null};
-  function workTerminal(task) { return ["done", "cancelled"].includes(task.status); }
-  function workAttention(task, viewer) {
-    if (workTerminal(task)) return null;
-    const mine = task.owner_kind === "human" && task.assigned_bee_id === viewer.actorId;
-    if (task.status === "pending_review") {
-      return viewer.canManage && !task.integration_required ? {reason: "等待你验收", section: "results"} : null;
-    }
-    if (task.waiting_for === "user") return {reason: "等待你答复", section: "overview"};
-    if (task.status === "blocked") return {reason: "工作受阻", section: "overview"};
-    if (mine) return {reason: "由你负责", section: "overview"};
-    return null;
+  // 责任判定只有一份：与蜂群工作台共用 priv/web/colony/workview.js?v=inbox-1。
+  // app.js 是普通脚本不能静态 import，所以按需动态 import 同一个模块——不再抄第二份规则。
+  let workAttentionPolicy = null;
+  async function loadWorkAttentionPolicy() {
+    if (!workAttentionPolicy) workAttentionPolicy = await import("/colony/workview.js?v=inbox-1");
+    return workAttentionPolicy;
   }
+
   async function loadWorkInbox() {
     if (document.hidden || workspaceSurface) return;
     try {
+      const policy = await loadWorkAttentionPolicy();
       const listed = await rpc("colony.list", {});
       const colonies = listed.colonies || [];
       const items = [];
@@ -3105,17 +3102,25 @@ bind("delegate-session", openDelegateModal);
         if (!colony || !colony.id) continue;
         const view = await rpc("colony.view", {colonyId: colony.id});
         if (view.changed === false) continue;
-        const viewer = {canManage: view.can_manage === true, actorId: view.actor_bee_id};
+        const viewer = {
+          canManage: view.can_manage === true,
+          actorId: view.actor_bee_id,
+          dismissedIds: new Set(view.dismissed_task_ids || [])
+        };
         const tasks = view.tasks || [];
         const honeys = (view.honey && view.honey.recent) || [];
-        for (const task of tasks) {
-          const action = workAttention(task, viewer);
+        // 子任务的提醒折到它所属的工作上：同一条工作只占一行。
+        const attention = policy.attentionWorks(tasks, viewer);
+        for (const task of attention) {
+          const action = policy.workAttention(task, tasks, viewer);
           if (!action) continue;
           items.push({colonyId: colony.id, colonyName: colony.name || "蜂群", task, action});
         }
         if (!review && viewer.canManage) {
-          const honey = honeys.find((h) => ["pending_review", "auto_verified"].includes(h.review_state));
-          if (honey) review = {colonyId: colony.id, honey, task: tasks.find((t) => t.id === honey.task_id) || null};
+          const pending = policy.pendingReviewHoney(tasks, honeys, attention, viewer);
+          if (pending.length) {
+            review = {colonyId: colony.id, honey: pending[0], task: tasks.find((t) => t.id === pending[0].task_id) || null};
+          }
         }
       }
       workInbox = {items, review};
@@ -3123,6 +3128,7 @@ bind("delegate-session", openDelegateModal);
       renderWorkReview();
     } catch (_e) {}
   }
+
   function startWorkInbox() {
     if (workInboxTimer) clearInterval(workInboxTimer);
     loadWorkInbox();
@@ -3140,15 +3146,45 @@ bind("delegate-session", openDelegateModal);
     label.textContent = "需要你处理 · " + items.length;
     box.appendChild(label);
     items.slice(0, 8).forEach((item) => {
-      const row = document.createElement("button");
-      row.type = "button";
+      // 行里要嵌「不再提醒」按钮，而 button 不能套 button：行本身用 div + role/键盘处理。
+      const row = document.createElement("div");
       row.className = "session-item work-inbox-item";
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
       const title = String(item.task.title || "未命名工作").replace(/\s+/g, " ").trim().slice(0, 36);
-      row.innerHTML = `<span class="t">${escapeHtml(title)}</span><span class="meta">${escapeHtml(item.action.reason)}</span>`;
+      const meta = (item.colonyName ? item.colonyName + " · " : "") + item.action.reason;
+      const text = document.createElement("span");
+      text.className = "work-inbox-text";
+      text.innerHTML = `<span class="t">${escapeHtml(title)}</span><span class="meta">${escapeHtml(meta)}</span>`;
+      const dismiss = document.createElement("button");
+      dismiss.type = "button";
+      dismiss.className = "work-inbox-dismiss";
+      dismiss.title = "不再提醒（工作有新进展时会自动回来）";
+      dismiss.setAttribute("aria-label", "不再提醒");
+      dismiss.textContent = "×";
+      dismiss.onclick = (e) => { e.stopPropagation(); dismissWorkItem(item); };
+      row.append(text, dismiss);
       row.onclick = () => openWorkItem(item);
+      row.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openWorkItem(item); } };
       box.appendChild(row);
     });
+    if (items.length > 8) {
+      const more = document.createElement("div");
+      more.className = "work-inbox-more";
+      more.textContent = "还有 " + (items.length - 8) + " 条，去对应蜂群的工作台处理";
+      box.appendChild(more);
+    }
   }
+  async function dismissWorkItem(item) {
+    try {
+      await rpc("colony.work.dismiss", {colonyId: item.colonyId, taskId: item.task.id});
+      workInbox.items = (workInbox.items || []).filter((x) => x !== item);
+      renderWorkInbox();
+    } catch (e) {
+      line("error", "不再提醒失败: " + (e.message || e));
+    }
+  }
+
   async function openWorkItem(item) {
     const sid = item.task.session_id;
     if (sid) {

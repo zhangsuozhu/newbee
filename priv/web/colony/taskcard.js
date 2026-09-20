@@ -4,6 +4,7 @@ import { state, memberById, refresh, attentionFor } from './store.js';
 import { rpc, toast } from './api.js';
 import { form, confirmAction } from './forms.js';
 import { renderInline, renderMarkdown } from './md.js';
+import { canAbandon, toggleDismiss, abandonWork } from './workactions.js?v=inbox-1';
 
 export function isTerminal(status) { return ['done', 'failed', 'cancelled'].includes(status); }
 function workspaceFailure(task) { return typeof task.next_step === 'string' && /workspace_(unsupported_file|missing|git_failed)/.test(task.next_step); }
@@ -133,6 +134,11 @@ ${Array.isArray(value) ? value.map(v => typeof v === 'string' ? v : JSON.stringi
     }));
     menu.push(['补充要求', () => revise(task)]);
     if (state.data?.can_manage) menu.push(['请成员协作', () => collaborate(task)]);
+    // 待办的两个出口：忽略只影响自己看到的列表，结束工作让执行器已经不在的任务进终态。
+    const dismissed = (state.data?.dismissed_task_ids || []).includes(task.id);
+    menu.push([dismissed ? '恢复提醒' : '不再提醒', () => toggleDismiss(state.colonyId, task, dismissed).then(refresh)]);
+    if (state.data?.can_manage && canAbandon(task)) menu.push(['结束这项工作', () => abandonWork(state.colonyId, task).then((done) => { if (done) refresh(); })]);
+
     if (task.owner_kind === 'human' && task.assigned_bee_id === state.data?.actor_bee_id) {
       if (task.status === 'pending') actions.append(action('我来处理', guard(() => rpc('colony.task.transition', {colonyId:state.colonyId, taskId:task.id, event:'start'}).then(refresh))));
       if (task.status !== 'pending_review') actions.append(action('提交成果', async () => {

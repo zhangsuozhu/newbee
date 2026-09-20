@@ -41,26 +41,31 @@ defmodule Newbee.Web.HiveUiTest do
     assert js =~ "collab_task_updated"
   end
 
-# 登录后主页是原会话界面；Colony 作为待处理和验收嵌进该界面。
-test "会话主页保留原界面，并把蜂群待处理嵌进侧栏" do
-home = File.read!(Path.expand("priv/web/index.html"))
-js = File.read!(Path.expand("priv/web/app.js"))
-surface = File.read!(Path.expand("priv/web/workspace.html"))
+  # 登录后主页是原会话界面；Colony 作为待处理和验收嵌进该界面。
+  test "会话主页保留原界面，并把蜂群待处理嵌进侧栏" do
+    home = File.read!(Path.expand("priv/web/index.html"))
+    js = File.read!(Path.expand("priv/web/app.js"))
+    surface = File.read!(Path.expand("priv/web/workspace.html"))
 
-assert home =~ ~s|id="session-list"|
-assert home =~ ~s|src="/app.js|
-assert home =~ ~s|id="work-inbox"|
-assert home =~ ~s|id="work-review-bar"|
-refute home =~ ~s|id="colony-entry"|
-refute home =~ "colony/app.js"
-refute home =~ ~s|id="colony-list"|
-assert js =~ "startWorkInbox"
-assert js =~ "colony.honey.review"
-refute js =~ "请从蜂群中打开一个 AI 对话"
+    assert home =~ ~s|id="session-list"|
+    assert home =~ ~s|src="/app.js|
+    assert home =~ ~s|id="work-inbox"|
+    assert home =~ ~s|id="work-review-bar"|
+    refute home =~ ~s|id="colony-entry"|
+    refute home =~ "colony/app.js"
+    refute home =~ ~s|id="colony-list"|
+    assert js =~ "startWorkInbox"
+    assert js =~ "colony.honey.review"
+    assert js =~ "loadWorkAttentionPolicy"
+    assert js =~ "/colony/workview.js"
+    assert js =~ "colony.work.dismiss"
+    refute js =~ ~s|function workAttention(task, viewer)|
 
-assert surface =~ ~s|id="input"|
-assert surface =~ ~s|id="terminal-panel"|
-end
+    refute js =~ "请从蜂群中打开一个 AI 对话"
+
+    assert surface =~ ~s|id="input"|
+    assert surface =~ ~s|id="terminal-panel"|
+  end
 
   test "勾选会话后侧栏出现批量删除按钮" do
     home = File.read!(Path.expand("priv/web/index.html"))
@@ -79,8 +84,6 @@ end
     assert css =~ "#session-list:has(+ .session-group-actions:not(.hidden)) .session-select"
     assert File.read!(Path.expand("priv/web/workspace.html")) =~ ~s|id="delete-selected-sessions"|
   end
-
-
 
   test "工作卡显示任务 cwd，目录入口保留 taskId" do
     taskcard = File.read!("priv/web/colony/taskcard.js")
@@ -109,7 +112,6 @@ end
     composer = File.read!("priv/web/colony/composer.js")
     colony = File.read!("priv/web/colony.html")
 
-
     assert drill =~ "成果验收"
     assert drill =~ "renderWorkHistory"
     assert drill =~ "work-collab-panel"
@@ -125,7 +127,6 @@ end
     assert composer =~ "aria-describedby"
     assert composer =~ "给当前工作补充要求"
     assert colony =~ ~s|aria-label="发起新工作或发送群聊消息"|
-
   end
 
   test "Bun 执行真实 Hive UI helper 与 CAS mutation 行为" do

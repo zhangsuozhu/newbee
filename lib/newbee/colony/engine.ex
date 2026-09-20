@@ -1046,7 +1046,7 @@ defmodule Newbee.Colony.Engine do
   # ───────────────────────── 视图 ─────────────────────────
 
   @doc "蜂群总览（前端轮询用）：成员、任务树、成果、信号、Trace、统计。"
-  def view(colony_id) do
+  def view(colony_id, opts \\ []) do
     with {:ok, colony} <- fetch_colony(colony_id),
          # 解散是软删除：list_colonies 会过滤、成员凭据会失效；这里也必须拒绝，
          # 否则客户端（localStorage 里还记着这个群）会一直渲染一个已不存在的蜂群并空转轮询。
@@ -1058,6 +1058,10 @@ defmodule Newbee.Colony.Engine do
       trace_page = Store.trace_page(colony_id, limit: 200, channel: "colony")
       trace = trace_page["trace"]
       now = now_ms()
+      viewer = Keyword.get(opts, :viewer_bee_id)
+
+      # 「忽略提醒」是查看者私有状态：服务端折算成 id 列表下发，客户端只负责展示。
+      dismissed = for task <- tasks, Task.dismissed?(task, viewer), do: task["id"]
 
       {:ok,
        %{
@@ -1073,7 +1077,8 @@ defmodule Newbee.Colony.Engine do
          "trace" => trace,
          "trace_page" => trace_page["trace_page"],
          "stats" => colony_stats(colony_id),
-         "view_revision" => view_signature(colony, bees, tasks, honey, signals, trace)
+         "dismissed_task_ids" => dismissed,
+         "view_revision" => view_signature(colony, bees, tasks, honey, signals, trace, dismissed)
        }}
     end
   end
@@ -2197,15 +2202,15 @@ defmodule Newbee.Colony.Engine do
   end
 
   # 视图指纹：对参与视图的原始记录（含控制状态）做确定性哈希。
-  # 前端轮询传 sinceRevision，一致即返回轻量响应，不必每 3 秒重传整棵视图；
-  # 只哈希持久记录，不哈希随时间衰减的派生值（如 task.stimulus），否则指纹每轮都变。
-  defp view_signature(colony, bees, tasks, honey, signals, trace) do
+  # 只哈希持久记录，不哈希随时间衰减的派生值（如 task.stimulus）；查看者的忽略状态也要入哈希，
+  # 否则「不再提醒」后客户端拿到的仍是 sinceRevision 相同的旧视图。
+  defp view_signature(colony, bees, tasks, honey, signals, trace, dismissed) do
     controls =
       Store.all("controls")
       |> Enum.filter(&(Map.get(&1, "colony_id") == colony["id"]))
       |> Enum.sort_by(& &1["id"])
 
-    {colony, bees, tasks, honey, signals, trace, controls}
+    {colony, bees, tasks, honey, signals, trace, controls, dismissed}
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)

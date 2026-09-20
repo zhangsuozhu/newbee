@@ -2542,7 +2542,19 @@ svg.ico {
 .work-inbox.hidden{display:none}
 .work-inbox .session-group-label{margin:0;padding:6px 8px 4px;border-top:0;color:var(--nb-accent)}
 .work-inbox-item{width:100%;text-align:left;background:transparent;border:0;cursor:pointer}
+.work-inbox-text{display:block;min-width:0}
 .work-inbox-item .meta{color:var(--nb-label-3)}
+/* 「不再提醒」：常驻可见（触屏没有 hover），hover/focus 时才高亮。 */
+.work-inbox-dismiss{
+  position:absolute;right:6px;top:50%;transform:translateY(-50%);
+  width:24px;height:24px;padding:0;border:none;border-radius:6px;
+  background:transparent;color:var(--nb-label-3);cursor:pointer;
+  font-size:15px;line-height:1;opacity:.55;
+  transition:opacity var(--nb-dur) var(--nb-ease),background var(--nb-dur) var(--nb-ease);
+}
+.work-inbox-dismiss:hover,.work-inbox-dismiss:focus-visible{opacity:1;background:var(--nb-border);color:var(--nb-label-1)}
+.work-inbox-more{padding:6px 10px 2px;font-size:11px;color:var(--nb-label-caption)}
+
 #work-review-bar{gap:8px}
 
 .session-group{margin:4px 0;border-radius:12px;overflow:hidden;border:1px solid var(--nb-border);background:var(--nb-bg-elev)}
