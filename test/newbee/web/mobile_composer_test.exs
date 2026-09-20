@@ -2,7 +2,8 @@
 defmodule Newbee.Web.MobileComposerTest do
   use ExUnit.Case, async: true
 
-  @index "priv/web/index.html"
+  # 会话界面（含移动端详情抽屉）现在挂在工作区表面上。
+  @index "priv/web/workspace.html"
   @css "priv/web/style.css"
   @js "priv/web/app.js"
 
@@ -31,10 +32,11 @@ defmodule Newbee.Web.MobileComposerTest do
     assert hide_at < show_at,
            "the desktop hide rule must precede the mobile rule, otherwise the cascade hides the handle"
 
-    assert Regex.match?(~r/\.mobile-details \{ order: 1; overflow: hidden; max-height: 0;/, css)
+    assert Regex.match?(~r/\.mobile-details \{ order: 1; overflow: hidden; max-height: 26px;/, css)
     assert Regex.match?(~r/\.mobile-details\.open \{ max-height: 168px; \}/, css)
     assert Regex.match?(~r/\.composer-card \{ order: 3; \}/, css)
     assert Regex.match?(~r/#composer \{ display: flex; flex-direction: column; \}/, css)
+    assert Regex.match?(~r/\.msg-boxed \{.*?overflow-wrap: anywhere; word-break: break-word;/s, css)
   end
 
   test "the drawer opens by drag or tap, and only on mobile", %{js: js} do
@@ -45,5 +47,16 @@ defmodule Newbee.Web.MobileComposerTest do
     assert block =~ "isMobile()"
     assert block =~ "setOpen("
     assert block =~ "OPEN_H"
+  end
+
+  test "history pagination is manual and preserves the reading anchor", %{js: js} do
+    assert js =~ "function renderLoadMoreBtn(remaining)"
+    assert js =~ "查看更早的 ${Math.min(HISTORY_PAGE, remaining)} 条"
+    assert js =~ "const anchorTop = anchor?.getBoundingClientRect().top;"
+    assert js =~ "anchor.getBoundingClientRect().top - anchorTop"
+    assert js =~ "state.stickBottom = false;"
+    assert js =~ "transcriptEl.style.overflowAnchor = 'none';"
+    assert js =~ "已显示更早的 ${offset - start} 条消息"
+    refute js =~ "function initInfiniteHistory()"
   end
 end

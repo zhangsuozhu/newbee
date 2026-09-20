@@ -454,6 +454,17 @@ defmodule Newbee.Collaboration.Workspace do
     end
   end
 
+  defp remove_workspace(%{"kind" => "git_worktree", "root" => root, "path" => path}) do
+    with :ok <- ensure_workspace_path(root, path),
+         :ok <- File.rm(base_snapshot_path(path)),
+         :ok <- remove_git_worktree(root, path) do
+      :ok
+    else
+      {:error, :enoent} -> remove_git_worktree(root, path)
+      error -> error
+    end
+  end
+
   defp remove_workspace(%{"root" => root, "path" => path}) do
     with :ok <- ensure_workspace_path(root, path) do
       File.rm(base_snapshot_path(path))
@@ -466,6 +477,49 @@ defmodule Newbee.Collaboration.Workspace do
   end
 
   defp remove_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
+
+  defp remove_git_worktree(root, path) do
+    expanded_path = Path.expand(path)
+
+    case System.cmd("git", ["worktree", "list", "--porcelain"],
+           cd: Path.expand(root),
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        registered? =
+          output
+          |> String.split("\n")
+          |> Enum.any?(fn line -> String.trim(line) == "worktree " <> expanded_path end)
+
+        if registered? do
+          remove_registered_git_worktree(root, expanded_path)
+        else
+          remove_unregistered_workspace(expanded_path)
+        end
+
+      {output, _status} ->
+        {:error, "workspace_cleanup_failed", String.trim(output)}
+    end
+  rescue
+    error in ErlangError -> {:error, "workspace_cleanup_failed", Exception.message(error)}
+  end
+
+  defp remove_registered_git_worktree(root, path) do
+    case System.cmd("git", ["worktree", "remove", "--force", path],
+           cd: Path.expand(root),
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} -> :ok
+      {output, _status} -> {:error, "workspace_cleanup_failed", String.trim(output)}
+    end
+  end
+
+  defp remove_unregistered_workspace(path) do
+    case File.rm_rf(path) do
+      {:ok, _} -> :ok
+      {:error, reason, _} -> {:error, "workspace_cleanup_failed", inspect(reason)}
+    end
+  end
 
   @doc false
   def snapshot(root, opts \\ [])
@@ -500,7 +554,8 @@ defmodule Newbee.Collaboration.Workspace do
         with :ok <- reject_symlink_path(Path.dirname(destination)),
              :ok <- File.mkdir_p(Path.dirname(destination)),
              {:ok, content} <- decode_snapshot_file_safe(entry),
-             :ok <- File.write(destination, content) do
+             :ok <- File.write(destination, content),
+             :ok <- File.chmod(destination, entry_mode(entry)) do
           {:cont, :ok}
         else
           {:error, reason} -> {:halt, {:error, "workspace_copy_failed", inspect(reason)}}
@@ -533,7 +588,7 @@ defmodule Newbee.Collaboration.Workspace do
             {:ok, {:ok, %File.Stat{type: :regular, size: size}}} when size > limits.max_file_bytes ->
               {:halt, {:error, "workspace_snapshot_limit", "文件超过冻结大小上限 " <> child_rel}}
 
-            {:ok, {:ok, %File.Stat{type: :regular}}} ->
+            {:ok, {:ok, %File.Stat{type: :regular, mode: mode}}} ->
               case File.read(child) do
                 {:ok, content} ->
                   next_bytes = total_bytes + byte_size(content)
@@ -546,7 +601,7 @@ defmodule Newbee.Collaboration.Workspace do
                       {:halt, {:error, "workspace_snapshot_limit", "冻结源树超过字节上限"}}
 
                     true ->
-                      {:cont, {:ok, Map.put(files, child_rel, snapshot_file(content)), next_bytes}}
+                      {:cont, {:ok, Map.put(files, child_rel, snapshot_file(content, mode)), next_bytes}}
                   end
 
                 {:error, reason} ->
@@ -554,7 +609,11 @@ defmodule Newbee.Collaboration.Workspace do
               end
 
             {:ok, {:ok, %File.Stat{type: :symlink}}} ->
-              {:halt, {:error, "workspace_unsupported_file", "不支持符号链接 " <> child_rel}}
+              if ignorable_tool_symlink?(child_rel) do
+                {:cont, {:ok, files, total_bytes}}
+              else
+                {:halt, {:error, "workspace_unsupported_file", "不支持符号链接 " <> child_rel}}
+              end
 
             {:ok, {:ok, _}} ->
               {:cont, {:ok, files, total_bytes}}
@@ -570,6 +629,11 @@ defmodule Newbee.Collaboration.Workspace do
   defp excluded_entry?(name),
     do: MapSet.member?(@excluded_entries, name) or String.starts_with?(name, "_build") or sensitive_entry?(name)
 
+  defp ignorable_tool_symlink?(path) do
+    [first | _] = Path.split(path)
+    first in [".agents", ".claude", ".codex", ".cursor"]
+  end
+
   defp sensitive_entry?(name) do
     downcased = String.downcase(name)
 
@@ -579,10 +643,25 @@ defmodule Newbee.Collaboration.Workspace do
       String.ends_with?(downcased, ".p12") or String.ends_with?(downcased, ".pfx")
   end
 
-  defp snapshot_file(content) do
+  defp snapshot_file(content, mode) do
     {encoding, stored} = if String.valid?(content), do: {"utf8", content}, else: {"base64", Base.encode64(content)}
-    %{"sha256" => sha256(content), "bytes" => byte_size(content), "encoding" => encoding, "content" => stored}
+
+    %{
+      "sha256" => sha256(content),
+      "bytes" => byte_size(content),
+      "mode" => :erlang.band(mode, 0o777),
+      "encoding" => encoding,
+      "content" => stored
+    }
   end
+
+  # 旧 sidecar 没有 mode，按普通文件权限兼容；新快照只允许 rwx 权限位，
+  # 不把 setuid/setgid/sticky 位带入隔离工作区。
+  defp entry_mode(%{"mode" => mode}) when is_integer(mode) and mode >= 0 and mode <= 0o777, do: mode
+  defp entry_mode(_), do: 0o644
+
+  defp valid_entry_mode?(nil), do: true
+  defp valid_entry_mode?(mode), do: is_integer(mode) and mode >= 0 and mode <= 0o777
 
   defp snapshot_ref(snapshot), do: sha256(:erlang.term_to_binary(snapshot))
   defp sha256(content), do: :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
@@ -617,6 +696,7 @@ defmodule Newbee.Collaboration.Workspace do
     |> Enum.reduce_while({:ok, 0, 0}, fn {relative, entry}, {:ok, count, bytes} ->
       with :ok <- safe_relative_path(relative),
            {:ok, content} <- decode_snapshot_file_safe(entry),
+           true <- valid_entry_mode?(entry["mode"]),
            true <- count < limits.max_files,
            true <- byte_size(content) <= limits.max_file_bytes,
            true <- bytes + byte_size(content) <= limits.max_bytes,

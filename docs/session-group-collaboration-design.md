@@ -1,5 +1,7 @@
 # 会话群协作设计：跨会话消息与派生会话共同工作
 
+> **历史设计与实现记录**：后续协作重构统一采用 [蜂群协作设计 v2](bee-colony-collaboration-design.md)。下文的“当前”“已实现”均为原记录时点的描述，不代表 v2 完成状态。
+
 > **当前实现说明（2026-09）**：本文保留部分历史提案用于追溯；当前协作入口是 `Newbee.Tools.Hive` 与 `Newbee.Collaboration.Coordinator`。文中的 `Newbee.Tools.Collaboration`、`Newbee.ExecutionContext` 仅代表历史概念，不是当前可调用模块。
 
 > **状态**：核心已落地。已实现：群/成员/消息/任务事件溯源（含重启恢复）、notify/queue/wake 三种消息投递（queue/wake 经会话队列驱动一轮模型工作，忙时排队去重，不打断当前工具调用）、让另一个 AI 帮忙（会话创建+分派）、任务报告与结果回收、成员移除保护、WebUI 左侧分组 + Mission Control 协作/工作项面板、投递方式选择与徽标。未实现：跨会话权限审批卡、任务结果卡/文件归因、独立 worktree 与按子会话审查集成。

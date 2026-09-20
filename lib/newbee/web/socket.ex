@@ -19,14 +19,20 @@ defmodule Newbee.Web.Socket do
   @max_terminal_input_bytes 64_000
 
   @impl true
-  def init(%{assigns: %{session: sid}}) do
+  def init(%{assigns: %{session: sid} = assigns}) do
     Newbee.Bus.subscribe()
     {:ok, _pid, _sid} = WSession.ensure(sid)
-    {:ok, %{sid: sid, terminal: nil}}
+    {:ok, %{sid: sid, terminal: nil, token: Map.get(assigns, :token)}}
   end
 
   @impl true
-  def handle_in({text, [opcode: :text]}, st) do
+  def handle_in(frame, st) do
+    if Newbee.Colony.Membership.session_access(st[:token], st.sid, :write) == :ok,
+      do: dispatch_in(frame, st),
+      else: {:ok, st}
+  end
+
+  defp dispatch_in({text, [opcode: :text]}, st) do
     case Jason.decode(text) do
       {:ok, %{"type" => "terminal_open"}} ->
         terminal_open(st)
@@ -127,24 +133,40 @@ defmodule Newbee.Web.Socket do
     end
   end
 
-  def handle_in(_, st), do: {:ok, st}
+  defp dispatch_in(_, st), do: {:ok, st}
 
   @impl true
-  def handle_info({:newbee_event, :terminal_event, {:terminal_event, sid, event, payload}}, %{sid: sid} = st) do
+  def handle_info(event, st) do
+    member = match?({:ok, _, _}, Newbee.Colony.Membership.authenticate(st[:token]))
+
+    scoped =
+      case event do
+        {:newbee_event, topic, _} when topic in [:web_event, :terminal_event] -> true
+        _ -> false
+      end
+
+    cond do
+      Newbee.Colony.Membership.session_access(st[:token], st.sid) != :ok -> {:stop, :normal, st}
+      member and not scoped -> {:ok, st}
+      true -> dispatch_info(event, st)
+    end
+  end
+
+  defp dispatch_info({:newbee_event, :terminal_event, {:terminal_event, sid, event, payload}}, %{sid: sid} = st) do
     frame = terminal_frame(event, payload)
     {:push, [{:text, frame}], st}
   end
 
-  def handle_info({:newbee_event, :web_event, {:web_event, sid, kind, payload}}, %{sid: sid} = st) do
+  defp dispatch_info({:newbee_event, :web_event, {:web_event, sid, kind, payload}}, %{sid: sid} = st) do
     frame = Jason.encode_to_iodata!(%{type: "event", sessionId: sid, kind: to_string(kind), payload: payload})
     {:push, [{:text, frame}], st}
   end
 
-  def handle_info(
-        {:newbee_event, :collab_event, %{"session_ids" => session_ids} = event},
-        %{sid: sid} = st
-      )
-      when is_list(session_ids) do
+  defp dispatch_info(
+         {:newbee_event, :collab_event, %{"session_ids" => session_ids} = event},
+         %{sid: sid} = st
+       )
+       when is_list(session_ids) do
     if sid in session_ids do
       frame =
         Jason.encode_to_iodata!(%{
@@ -170,7 +192,7 @@ defmodule Newbee.Web.Socket do
                   snapshot_created snapshot_restored
                   generation_switched generation_switch_failed)a
 
-  def handle_info({:newbee_event, topic, payload}, st) when topic in @evo_topics do
+  defp dispatch_info({:newbee_event, topic, payload}, st) when topic in @evo_topics do
     frame =
       Jason.encode_to_iodata!(%{
         type: "system",
@@ -182,8 +204,8 @@ defmodule Newbee.Web.Socket do
   end
 
   # 其它会话的事件、以及总线上其它事件，直接忽略
-  def handle_info({:newbee_event, _, _}, st), do: {:ok, st}
-  def handle_info(_, st), do: {:ok, st}
+  defp dispatch_info({:newbee_event, _, _}, st), do: {:ok, st}
+  defp dispatch_info(_, st), do: {:ok, st}
 
   @impl true
   def terminate(_reason, st) do
@@ -246,17 +268,20 @@ defmodule Newbee.Web.Socket do
   end
 
   # 终端唤醒：AI 一轮结束后人在终端里继续操作，点工具栏「让 AI 跟进」即走这里。
-  # take_context 先收割未落袋的手动输入，再复用 prompt 路径：空闲直达 do_submit 起新一轮，
-  # 正忙或 boot 中则排队，不丢不插队。
   defp terminal_wake(st) do
-    content =
-      case Newbee.Web.Terminal.take_context(st.sid) do
-        {:ok, text} when is_binary(text) -> text
-        _ -> ""
-      end
+    case Newbee.Web.Terminal.take_context(st.sid) do
+      {:ok, text} when is_binary(text) ->
+        cast_session(st.sid, &WSession.prompt(&1, wake_prompt(text)))
+        {:ok, st}
 
-    cast_session(st.sid, &WSession.prompt(&1, wake_prompt(content)))
-    {:ok, st}
+      {:error, :timeout} ->
+        terminal_error(st, "读取终端上下文超时，请稍后重试「让 AI 跟进」")
+
+      _other ->
+        # 终端没开或不可用：仍允许跟进，只是没有手动上下文。
+        cast_session(st.sid, &WSession.prompt(&1, wake_prompt("")))
+        {:ok, st}
+    end
   end
 
   defp wake_prompt(content) do

@@ -422,6 +422,13 @@ defmodule Newbee.Session do
     end
   end
 
+  @doc "该会话是否还存在（transcript 是唯一事实来源；用于过滤已删除的对话）。"
+  def exists?(id) when is_binary(id) do
+    File.regular?(Path.join(root(), id <> ".jsonl"))
+  end
+
+  def exists?(_), do: false
+
   @doc "删除会话：transcript + artifacts 目录 + 索引。返回 :ok | {:error, reason}。"
   def delete(id) when is_binary(id) do
     transcript = Path.join(root(), "#{id}.jsonl")

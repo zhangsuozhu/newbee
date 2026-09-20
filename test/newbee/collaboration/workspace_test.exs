@@ -109,12 +109,86 @@ defmodule Newbee.Collaboration.WorkspaceTest do
     refute File.exists?(Path.join(workspace["path"], ".appimage-cache"))
     assert {:ok, _} = Workspace.cleanup(terminal_task(workspace, "rejected"))
 
+    agents_link = Path.join(root, ".agents/skills/git-commit-conventions")
+    File.mkdir_p!(Path.dirname(agents_link))
+    File.ln_s!(root, agents_link)
+    assert {:ok, tool_workspace} = Workspace.prepare(root, "child-tool-links", :auto)
+
+    assert {:ok, _} = Workspace.cleanup(terminal_task(tool_workspace, "rejected"))
+
     File.ln_s!(Path.join(root, "base.txt"), Path.join(root, "source-link.txt"))
 
     assert {:error, "workspace_unsupported_file", message} =
              Workspace.prepare(root, "child-source-link", :auto)
 
     assert message =~ "source-link.txt"
+  end
+
+  test "文件快照保留可执行权限，物化副本不会把 755 降成 644", %{root: root} do
+    script = Path.join(root, "run.sh")
+    File.write!(script, "#!/bin/sh\necho ok\n")
+    :ok = File.chmod(script, 0o755)
+
+    assert {:ok, snapshot} = Workspace.snapshot(root)
+    assert snapshot["run.sh"]["mode"] == 0o755
+
+    target = Path.join(System.tmp_dir!(), "newbee-materialized-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(target) end)
+    assert :ok = Workspace.materialize_snapshot(snapshot, target)
+    assert :erlang.band(File.stat!(Path.join(target, "run.sh")).mode, 0o777) == 0o755
+  end
+
+  test "Git 工作树路径也保留可执行权限", %{root: _root} do
+    git_root = Path.join(System.tmp_dir!(), "newbee-git-workspace-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(git_root)
+    on_exit(fn -> File.rm_rf!(git_root) end)
+
+    script = Path.join(git_root, "bin/run.sh")
+    File.mkdir_p!(Path.dirname(script))
+    File.write!(script, "#!/bin/sh\necho ok\n")
+    :ok = File.chmod(script, 0o755)
+
+    for args <- [
+          ["init", "-q"],
+          ["config", "user.email", "test@example.invalid"],
+          ["config", "user.name", "Workspace Test"],
+          ["add", "."],
+          ["commit", "-qm", "base"]
+        ] do
+      {_output, 0} = System.cmd("git", args, cd: git_root, stderr_to_stdout: true)
+    end
+
+    task = %{
+      "id" => "task-git-mode-#{System.unique_integer([:positive])}",
+      "workflow" => %{},
+      "workspace_source" => git_root
+    }
+
+    :ok = Newbee.Colony.Store.put_task(task)
+
+    assert {:ok, workspace_path} = Newbee.Colony.Workspace.ensure(task, git_root)
+    {:ok, stored_task} = Newbee.Colony.Store.get_task(task["id"])
+    workspace = stored_task["workspace"]
+    assert workspace["kind"] == "git_worktree"
+    assert workspace_path == workspace["path"]
+    assert :erlang.band(File.stat!(Path.join(workspace["path"], "bin/run.sh")).mode, 0o777) == 0o755
+    assert {:ok, _} = Workspace.cleanup(terminal_task(workspace, "rejected"))
+    {worktrees, 0} = System.cmd("git", ["worktree", "list", "--porcelain"], cd: git_root, stderr_to_stdout: true)
+    refute worktrees =~ workspace["path"]
+    assert :ok = Workspace.discard_orphan(workspace)
+  end
+
+  test "旧快照缺少 mode 仍可读取，非法 mode 被拒绝", %{root: root} do
+    assert {:ok, snapshot} = Workspace.snapshot(root)
+    legacy = Map.update!(snapshot, "base.txt", &Map.delete(&1, "mode"))
+    target = Path.join(System.tmp_dir!(), "newbee-legacy-snapshot-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(target) end)
+
+    assert :ok = Workspace.materialize_snapshot(legacy, target)
+    assert :erlang.band(File.stat!(Path.join(target, "base.txt")).mode, 0o777) == 0o644
+
+    invalid = put_in(snapshot, ["base.txt", "mode"], 0o1000)
+    assert {:error, "workspace_snapshot_invalid", _} = Workspace.materialize_snapshot(invalid, target)
   end
 
   defp terminal_task(workspace, review_status) do

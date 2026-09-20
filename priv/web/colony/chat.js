@@ -1,0 +1,788 @@
+// 蜂群前端 · 消息流：全部使用主界面的 .msg 组件（msg-user / msg-assistant / msg-tool）
+// 不再自创气泡样式；群聊、一对一、深钻共用同一套卡片。
+import { renderWorkBoard } from './workflow.js';
+import { esc, fmtAgo, fmtTime, kindLabel, signalLabel, statusLabel } from "./util.js";
+import { buildTaskCard, isTerminal, statusChip } from "./taskcard.js";
+import { state, memberById, openHome, attentionTasks, pendingReviewResults, emit } from "./store.js";
+import { rpc, toast } from "./api.js";
+import { refresh } from "./store.js";
+import { form } from './forms.js';
+import { renderMarkdown } from "./md.js";
+import { reviewModel } from './workview.js';
+
+// 卡片标题去掉指令前缀，避免用户原话在标题和正文之间重复占屏。
+function shortTitle(text, max = 34) {
+  const s = String(text || '').replace(/^\s*(请?帮我|帮忙)?(完成|做|处理)[:：]?\s*/, '').trim();
+  return s.length > max ? s.slice(0, max) + '…' : s;
+}
+
+
+export function renderGroupView(flow, ctx) {
+  const data = state.data || {};
+  const tasks = data.tasks || [];
+  const attention = attentionTasks();
+  const attentionIds = new Set(attention.map(t => t.id));
+  const pending = pendingReviewResults();
+  const visible = tasks.filter(t => !t.workflow_root);
+  const active = visible.filter(t => !isTerminal(t.status) && !attentionIds.has(t.id));
+  const finished = visible.filter(t => isTerminal(t.status));
+  const counts = {attention: attention.length + pending.length, active: active.length, finished: finished.length};
+  const requested = ['attention', 'active', 'finished'].includes(state.workFilter) ? state.workFilter : 'attention';
+  const selected = requested;
+
+  const topTabs = document.createElement('nav');
+  topTabs.className = 'group-view-tabs'; topTabs.setAttribute('aria-label', '蜂群内容');
+  for (const [id, label] of [['work', '工作台'], ['messages', '群聊']]) {
+    const tab = document.createElement('button'); tab.type = 'button'; tab.textContent = label;
+    const on = state.groupTab === id;
+    tab.setAttribute('aria-pressed', String(on)); tab.setAttribute('aria-selected', String(on));
+    tab.onclick = () => openHome(id);
+    topTabs.append(tab);
+  }
+  flow.append(topTabs);
+  if (state.groupTab === 'messages') {
+    const hiddenTasks = new Set(tasks.filter(t => t.workflow || t.workflow_root).map(t => t.id));
+    const internalResults = new Set(tasks.filter(t => t.integration_required).map(t => t.result));
+    const trace = (data.trace || []).filter(t => t.channel === 'colony' && !['tool_call','tool','refresh','capabilities'].includes(t.type) && !(t.type === 'task' && hiddenTasks.has(t.task_id || t.data?.task_id)) && !(t.type === 'honey' && internalResults.has(t.data?.honey_id)));
+    if (!trace.length) flow.appendChild(emptyNote('还没有公开消息。在下面输入一句话，Bee 们都会看到。'));
+    renderMessageTimeline(flow, ctx, trace, data, internalResults);
+    return;
+  }
+
+  const filters = document.createElement('nav');
+  filters.className = 'work-status-tabs'; filters.setAttribute('aria-label', '工作状态');
+  for (const [id, label] of [['attention', '待我处理'], ['active', '进行中'], ['finished', '已完成']]) {
+    const tab = document.createElement('button'); tab.type = 'button';
+    tab.textContent = `${label} · ${counts[id]}`;
+    const on = selected === id;
+    tab.setAttribute('aria-pressed', String(on)); tab.setAttribute('aria-selected', String(on));
+    tab.onclick = () => { state.workFilter = id; ctx.openHome('work'); };
+    filters.append(tab);
+  }
+  flow.append(filters);
+
+  const summary = document.createElement('p'); summary.className = 'work-summary';
+  summary.textContent = selected === 'attention'
+    ? (counts.attention ? '需要你决定、答复或验收的工作集中在这里。处理完后会自动移出。' : '暂时没有需要你处理的工作。')
+    : selected === 'active'
+      ? (counts.active ? '这里显示正在推进的工作；需要你介入时会进入“待我处理”。' : '暂时没有进行中的工作。')
+      : (counts.finished ? '已完成的工作和验收结果集中在这里。' : '还没有已完成的工作。');
+  flow.append(summary);
+
+  if (selected === 'attention') {
+    for (const h of pending) flow.append(honeyNode({type:'honey', text:h.title, ts:h.created_at, data:{honey_id:h.id}}, ctx));
+    for (const task of attention) flow.append(buildTaskCard(task, ctx, {full: true}));
+  } else if (selected === 'active') {
+    renderWorkBoard(flow, ctx, active);
+    const independent = active.filter(t => !t.workflow);
+    if (independent.length) {
+      const heading = document.createElement('div'); heading.className = 'work-section-head';
+      heading.innerHTML = '<h2>独立工作</h2><span>正在由一只 Bee 直接处理</span>';
+      flow.append(heading);
+      for (const task of independent) flow.append(buildTaskCard(task, ctx));
+    }
+  } else {
+    const archive = document.createElement('section'); archive.className = 'work-archive';
+    for (const task of finished) archive.append(buildTaskCard(task, ctx, {compact: true}));
+    if (archive.childElementCount) flow.append(archive);
+  }
+  if (!flow.querySelector('[data-task-id], .honey-card, .work-archive')) {
+    flow.append(emptyNote(selected === 'attention' ? '没有需要处理的工作。' : selected === 'active' ? '在下方输入需求，就能开始一项新工作。' : '完成的工作会保留在这里。'));
+  }
+}
+function renderMessageTimeline(flow, ctx, trace, data, internalResults) {
+  const page = data.trace_page;
+  if (page?.has_more && page.before_seq != null) {
+    const older = document.createElement('button');
+    older.type = 'button'; older.className = 'btn-ghost trace-load-older';
+    older.textContent = '加载更早消息';
+    older.onclick = async () => {
+      older.disabled = true; older.textContent = '正在加载…';
+      try {
+        const result = await rpc('colony.trace.list', {colonyId: state.colonyId, beforeSeq: page.before_seq, snapshotSeq: page.snapshot_seq, limit: 200});
+        state.data = {...state.data, trace: [...(result.trace || []), ...(state.data.trace || [])], trace_page: result.trace_page};
+        emit();
+      } catch (error) {
+        older.disabled = false; older.textContent = '加载更早消息';
+        toast(error.message || '历史消息加载失败', true);
+      }
+    };
+    flow.append(older);
+  }
+
+  // 群里最多的噪音是机械进度行（「工具已返回，处理中」）。它们没有额外信息，
+  // 收成一行「工具执行 N 次」，点开看时间；其余事件照旧。
+  let prevSender = null;
+  let noise = [];
+  const flushNoise = () => {
+    if (!noise.length) return;
+    const node = noiseNode(noise);
+    if (noise.length) flow.appendChild(node);
+  };
+
+  // 同一成果在轨迹里会留下多条事件（产出、验收…），而成果卡渲染的是该成果的「当前」
+  // 状态与正文——两条都画就是两张一模一样、状态相同的卡。只保留最后一条（最终状态）。
+  // 群聊是时间线，但卡片本身看不出事件差异，去重比重复更有用。
+  const honeySeen = new Set();
+  const timelineTrace = [];
+  for (let i = trace.length - 1; i >= 0; i--) {
+    const t = trace[i];
+    if (t.type === 'honey') {
+      const hid = t.data && t.data.honey_id;
+      if (hid) {
+        if (honeySeen.has(hid)) continue;
+        honeySeen.add(hid);
+      }
+    }
+    timelineTrace.push(t);
+  }
+  timelineTrace.reverse();
+  for (const group of groupTrace(timelineTrace)) {
+    if (isNoise(group.first)) { noise.push(...group.items); continue; }
+    flushNoise();
+    const node = traceNode(group.first, ctx);
+    const key = senderKey(group.first);
+    if (key && key === prevSender) node.classList.add("cont");
+    if (group.items.length > 1) annotateRepeat(node, group);
+    flow.appendChild(node);
+    prevSender = key;
+  }
+  flushNoise();
+  const displayedHoney = new Set(trace.filter(t => t.type === 'honey').map(t => t.data?.honey_id));
+  for (const honey of data.honey?.recent || []) {
+    if (!internalResults.has(honey.id) && !displayedHoney.has(honey.id)) flow.appendChild(honeyNode({type:'honey', text:honey.title, ts:honey.created_at, data:{honey_id:honey.id}}, ctx));
+  }
+}
+
+// 机械进度行：无附带数据、文本是执行器的心跳。
+function isNoise(t) {
+  if (t.data && Object.keys(t.data).length) return false;
+  return /^工具已返回[，,]?\s*处理中$/.test((t.text || "").trim());
+}
+
+function noiseNode(items) {
+  const node = document.createElement("div");
+  node.className = "msg msg-tool noise-row";
+  const head = document.createElement("div");
+  head.className = "tool-head";
+  head.innerHTML =
+    `<span class="kind-dot" aria-hidden="true"></span>` +
+    `<span class="card-kind">执行</span>` +
+    `<span class="diffstat">工具执行 ${items.length} 次</span>` +
+    `<span class="tool-dur">${esc(fmtAgo(items[items.length - 1].ts))}</span>`;
+  node.appendChild(head);
+  const list = document.createElement("div");
+  list.className = "tool-result repeat-list";
+  list.hidden = true;
+  list.textContent = items.map((t) => `· ${absTime(t.ts)}`).join("\n");
+  node.appendChild(list);
+  head.onclick = () => { list.hidden = !list.hidden; };
+  return node;
+}
+
+function senderKey(t) {
+  if (t.type !== "message") return null;
+  if (t.data && t.data.from === "colony") return "colony";
+  return t.bee_id || "unknown";
+}
+
+// 聚合键：同类型 + 同文本（消息按发送者；决定按问题文本，同一个问题只出现一次）。
+function groupKey(t) {
+  if (t.type === "honey" || t.type === "task") return null; // 工作与成果各自成卡
+  if (t.type === "message") return "message|" + (t.bee_id || "") + "|" + (t.text || "").trim();
+  if (t.type === "decision") return "decision|" + (t.text || "").trim();
+  return [t.type, (t.data && t.data.kind) || "", (t.text || "").trim()].join("|");
+}
+// 这些类型的事件重复出现时合并成一个 ×N（控制确认、生命周期、系统提示、心跳）。
+const COLLAPSIBLE = new Set(["control", "lifecycle", "system", "tool_call", "tool", "refresh", "switch", "capabilities", "decision"]);
+
+function groupTrace(trace) {
+  const out = [];
+  const byKey = new Map();
+  for (const t of trace) {
+    const key = groupKey(t);
+    if (key && COLLAPSIBLE.has(t.type)) {
+      const seen = byKey.get(key);
+      if (seen) { seen.items.push(t); continue; }
+    }
+    const last = out[out.length - 1];
+
+    if (key && last && last.key === key) { last.items.push(t); continue; }
+    const group = { key, first: t, items: [t] };
+    out.push(group);
+    if (key && COLLAPSIBLE.has(t.type)) byKey.set(key, group);
+  }
+  return out;
+}
+
+function annotateRepeat(node, group) {
+  const head = node.querySelector(".tool-head") || node;
+  const badge = document.createElement("span");
+  badge.className = "chip-mini repeat-chip";
+  badge.textContent = "×" + group.items.length;
+  const first = group.items[0], last = group.items[group.items.length - 1];
+  badge.title = `${fmtAgo(first.ts)} — ${fmtAgo(last.ts)}，共 ${group.items.length} 次`;
+  const dur = head.querySelector(".tool-dur");
+  if (dur) head.insertBefore(badge, dur); else head.appendChild(badge);
+  const list = document.createElement("div");
+  list.className = "tool-result repeat-list";
+  list.hidden = true;
+  list.textContent = group.items.map((t) => `· ${absTime(t.ts)}`).join("\n");
+  node.appendChild(list);
+  head.title = "点开看每次发生的时间";
+  head.addEventListener("click", () => { list.hidden = !list.hidden; });
+}
+
+export function renderDMView(flow, ctx) {
+  const trail = state.trail;
+  if (!trail) {
+    flow.appendChild(emptyNote("正在加载这只 Bee 的工作轨迹…"));
+    return;
+  }
+  const tasks = trail.tasks || [];
+  const taskById = new Map(tasks.map((t) => [t.id, t]));
+  flow.appendChild(beeCard(trail, ctx, tasks));
+
+  const trace = trail.trace || [];
+  if (!trace.length) {
+    flow.appendChild(emptyNote("它还没有工作记录。在下面输入一句话，就是直接给它下指令。"));
+    return;
+  }
+
+  let records = flow;
+  if (trail.bee?.kind === 'ai') {
+    records = document.createElement('details'); records.className = 'work-records';
+    const summary = document.createElement('summary'); summary.textContent = `成员动态 · ${trace.length} 条`;
+    records.append(summary); flow.append(records);
+  }
+
+  // 任务第一次出现 → 完整任务卡（即「新建任务」那一刻）；
+  // 之后同一任务的状态变化 → 收成一条细状态行，避免刷屏。
+  const seenTask = new Set();
+  for (const t of trace) {
+    const task = t.task_id ? taskById.get(t.task_id) : null;
+    if (task && !seenTask.has(task.id)) {
+      seenTask.add(task.id);
+      records.appendChild(buildTaskCard(task, ctx));
+      continue;
+    }
+    const node = traceNode(t, ctx);
+    if (task) node.classList.add("cont");
+    records.appendChild(node);
+  }
+}
+
+// ── Bee 头卡：身份 + 进行中任务（可深钻）+ 历史任务（折叠）+ 新建任务 ──
+function beeCard(trail, ctx, tasks) {
+  const bee = trail.bee || {};
+  const node = document.createElement("div");
+  node.className = "msg msg-assistant msg-boxed";
+
+  const caps = (bee.capabilities || []).join(" / ");
+  node.innerHTML = `
+    <div class="msg-from">
+      <span class="sess-dot ${bee.status === "working" ? "busy" : "online"}"></span>
+      <span class="from-name">${esc(bee.display || "Bee")}</span>
+      <span>${esc(kindLabel(bee.kind))} 成员</span>
+      <span>${esc(caps || "")}</span>
+    </div>`;
+
+  const active = tasks.filter((t) => !isTerminal(t.status));
+  const history = tasks.filter((t) => isTerminal(t.status));
+
+  // 进行中：最多 3 条，点一条就地深钻
+  const row = document.createElement("div");
+  row.className = "bee-tasks";
+  if (active.length) {
+    for (const t of active.slice(0, 3)) {
+      const chip = document.createElement("button");
+      chip.className = "bee-task";
+      chip.innerHTML = `${esc(t.title)} <span class="chip-mini ${statusChip(t.status)}">${esc(statusLabel(t.status))}</span>`;
+      chip.onclick = () => ctx.openTask(t.id, t.title);
+      row.appendChild(chip);
+    }
+    if (active.length > 3) {
+      const more = document.createElement("span");
+      more.className = "bee-task-more";
+      more.textContent = `还有 ${active.length - 3} 条进行中`;
+      row.appendChild(more);
+    }
+  } else {
+    const none = document.createElement("span");
+    none.className = "bee-task-more";
+    none.textContent = "当前没有进行中的任务";
+    row.appendChild(none);
+  }
+  node.appendChild(row);
+
+  const actions = document.createElement("div");
+  actions.className = "bee-task-actions";
+  const newTask = document.createElement("button");
+  newTask.className = "btn-ghost";
+  newTask.textContent = "＋ 新任务";
+  newTask.title = "给这只 Bee 建一个任务（直接派给它）";
+  newTask.onclick = () => ctx.prefillTask();
+  actions.appendChild(newTask);
+
+  // 历史任务：折叠一行；展开后每条可深钻
+  if (history.length) {
+    const toggle = document.createElement("button");
+    toggle.className = "btn-ghost";
+    toggle.textContent = `历史任务 (${history.length}) ▸`;
+    const list = document.createElement("div");
+    list.className = "bee-task-history";
+    list.hidden = true;
+    for (const t of history) {
+      const item = document.createElement("button");
+      item.className = "bee-task-row";
+      item.innerHTML =
+        `<span class="bee-task-title">${esc(t.title)}</span>` +
+        `<span class="chip-mini ${statusChip(t.status)}">${esc(statusLabel(t.status))}</span>` +
+        `<span class="bee-task-time">${esc(fmtTime(t.completed_at || t.updated_at || t.created_at))}</span>`;
+      item.onclick = () => ctx.openTask(t.id, t.title);
+      list.appendChild(item);
+    }
+    toggle.onclick = () => {
+      list.hidden = !list.hidden;
+      toggle.textContent = `历史任务 (${history.length}) ${list.hidden ? "▸" : "▾"}`;
+    };
+    actions.appendChild(toggle);
+    node.appendChild(actions);
+    node.appendChild(list);
+    return node;
+  }
+
+  node.appendChild(actions);
+  return node;
+}
+
+// ── 通用节点分发 ──
+export function traceNode(t, ctx) {
+  const taskId = t.task_id || t.data?.task_id || t.data?.taskId;
+  if (t.type === 'task' && taskId) {
+    const task = (state.data?.tasks || []).find(item => item.id === taskId);
+    if (task) return buildTaskCard(task, ctx);
+  }
+  if (t.type === "message") return messageNode(t);
+  if (t.type === "honey") return honeyNode(t, ctx);
+  return toolNode(t);
+}
+
+// ── 消息：我（Queen）右对齐，其他成员左对齐（与主界面一致）──
+function messageNode(t) {
+  const who = memberById(t.bee_id);
+  const fromColony = !!(t.data && t.data.from === "colony");
+  const self = state.data && who && who.id === state.data.actor_bee_id;
+
+  const mentions = (t.data && t.data.mentions) || [];
+
+  if (self) {
+    const node = document.createElement("div");
+    node.className = "msg msg-user";
+    node.innerHTML = renderWithMentions(t.text, mentions);
+    const mine = attachmentsRow(t);
+    if (mine) node.appendChild(mine);
+    node.appendChild(timeEl(t.ts));
+    return node;
+  }
+
+  const name = fromColony ? "Colony" : who ? who.display : "成员";
+  // 点名你 / @all：在卡片级别标出来，扫一眼就知道哪句要你回。
+  const me = memberById(state.data && state.data.actor_bee_id);
+  const text = String(t.text || "");
+  const toAll = mentions.some((m) => String(m).trim().toLowerCase() === "all") || /@all(?![\\p{L}\\p{N}_])/u.test(text);
+  const toMe = !!(me && me.display) && (mentions.some((m) => String(m) === String(me.display)) || text.includes("@" + me.display));
+  const node = document.createElement("div");
+  node.className = "msg msg-assistant msg-boxed" + (toMe ? " msg-to-me" : toAll ? " msg-to-all" : "");
+  const from = document.createElement("div");
+  from.className = "msg-from";
+  from.innerHTML =
+    `<span class="sess-dot ${fromColony ? "online" : (who && who.status === "working" ? "busy" : "online")}"></span>` +
+    `<span class="from-name"${who ? ` style="--member-hue: ${memberHue(who.id)}"` : ""}>${esc(name)}</span>` +
+    `<span class="from-kind">${esc(fromColony ? "系统" : who ? kindLabel(who.kind) : "")}</span>` +
+    (toMe ? '<span class="chip-mini accent from-flag">点名你</span>' : toAll ? '<span class="chip-mini from-flag">@全体</span>' : "");
+  const body = document.createElement("div");
+  body.className = "md";
+  body.innerHTML = renderMarkdown(t.text || "");
+  highlightMentions(body, mentions);
+  node.appendChild(from);
+  // 很长的发言默认折一段：一条消息不该占满整屏。
+  if (text.length > 900) {
+    const wrap = document.createElement("div");
+    wrap.className = "msg-clamped";
+    wrap.appendChild(body);
+    const more = document.createElement("button");
+    more.type = "button"; more.className = "md-more";
+    more.textContent = "展开这条消息";
+    more.onclick = () => { const on = wrap.classList.toggle("msg-clamped"); more.textContent = on ? "展开这条消息" : "收起"; };
+    node.append(wrap, more);
+  } else {
+    node.appendChild(body);
+  }
+  const atts = attachmentsRow(t);
+  if (atts) node.appendChild(atts);
+  node.appendChild(timeEl(t.ts));
+  return node;
+}
+
+// @ 点名高亮：先转义，再把 @名字 包成 chip（仿微信群里的高亮 @）
+function renderWithMentions(text, mentions) {
+  const safe = esc(text || "");
+  if (!mentions || !mentions.length) return safe;
+  let out = safe;
+  for (const m of mentions) {
+    const token = "@" + esc(m);
+    out = out.split(token).join(`<span class="mention">${token}</span>`);
+  }
+  return out;
+}
+
+// Markdown 渲染后的 @ 高亮：只改文本节点，不碰标签和属性。
+function highlightMentions(root, mentions) {
+  if (!mentions || !mentions.length) return;
+  const tokens = [...new Set(mentions.map((m) => `@${String(m)}`).filter((tk) => tk.length > 1))]
+    .sort((a, b) => b.length - a.length);
+  if (!tokens.length) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    if (isMentionExcluded(node, root)) continue;
+    const text = node.nodeValue || "";
+    const fragment = mentionFragment(text, tokens);
+    if (fragment) node.parentNode.replaceChild(fragment, node);
+  }
+}
+
+function isMentionExcluded(node, root) {
+  let element = node.parentElement;
+  while (element) {
+    if (element.matches("code, pre, a")) return true;
+    if (element === root) break;
+    element = element.parentElement;
+  }
+  return root.nodeType === Node.ELEMENT_NODE && root.matches("code, pre, a");
+}
+
+function mentionFragment(text, tokens) {
+  let cursor = 0;
+  const fragment = document.createDocumentFragment();
+  let found = false;
+  while (cursor < text.length) {
+    let matchIndex = -1;
+    let matchToken = null;
+    for (const token of tokens) {
+      const index = text.indexOf(token, cursor);
+      if (index !== -1 && (matchIndex === -1 || index < matchIndex)) {
+        matchIndex = index;
+        matchToken = token;
+      }
+    }
+    if (matchIndex === -1) break;
+    if (matchIndex > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, matchIndex)));
+    const mention = document.createElement("span");
+    mention.className = "mention";
+    mention.textContent = matchToken;
+    fragment.appendChild(mention);
+    cursor = matchIndex + matchToken.length;
+    found = true;
+  }
+  if (!found) return null;
+  if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)));
+  return fragment;
+}
+
+
+// 附件（主界面的 .msg-user-files / .msg-user-file 同款样式）
+function attachmentsRow(t) {
+  const atts = (t.data && t.data.attachments) || [];
+  if (!atts.length) return null;
+  const box = document.createElement("div");
+  box.className = "msg-user-files";
+  for (const a of atts) {
+    const chip = document.createElement("span");
+    chip.className = "msg-user-file";
+    chip.textContent = `📎 ${a.name || a.id}`;
+    chip.title = `${a.name || ""}${a.size ? ` (${a.size} bytes)` : ""}${a.path ? `\\n${a.path}` : ""}`;
+    box.appendChild(chip);
+  }
+  return box;
+}
+
+// 事件类型的中文标签：群聊里出现的是「动态」这类词，不是内部事件名。
+const TYPE_LABEL = {
+  task: "工作", lifecycle: "动态", command: "指令", tool_call: "工具", tool: "工具",
+  signal: "信号", dispatch: "派发", system: "系统", decision: "决定", control: "控制",
+  honey: "成果", message: "消息", refresh: "刷新", switch: "切换", capabilities: "能力",
+};
+
+// ── 事件卡：任务 / 生命周期 / 指令 / 工具调用 / 信号（复用主界面 .msg-tool）──
+
+function toolNode(t) {
+  const node = document.createElement("div");
+  node.className = "msg msg-tool";
+
+  const head = document.createElement("div");
+  head.className = "tool-head";
+  const sigKind = t.data && t.data.kind;
+  head.innerHTML =
+    `<span class="kind-dot" aria-hidden="true"></span>` +
+    `<span class="card-kind">${esc(TYPE_LABEL[t.type] || t.type || "动态")}</span>` +
+    `<span class="diffstat">${esc(t.text || "")}</span>` +
+    (t.type === "signal" && sigKind ? `<span class="chip-mini accent">${esc(signalLabel(sigKind))}</span>` : "") +
+    `<span class="tool-dur" title="${esc(absTime(t.ts))}">${esc(fmtAgo(t.ts))}</span>`;
+  node.appendChild(head);
+
+  const raw = String(t.text || "").trim();
+  const dataDetail = detailText(t);
+  const detail = [raw, dataDetail].filter((value, index, values) => value && (index === 0 || value !== raw)).join("\n").slice(0, 4000);
+  if (detail) {
+    const res = document.createElement("div");
+    res.className = "tool-result";
+    res.textContent = detail;
+    res.hidden = true;
+    node.appendChild(res);
+    const hint = document.createElement("span");
+    hint.className = "tool-detail-hint";
+    hint.textContent = "详情";
+    hint.title = "展开工具操作详情";
+    head.insertBefore(hint, head.querySelector(".tool-dur"));
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    head.setAttribute("aria-expanded", "false");
+    const toggle = () => {
+      const open = res.hidden;
+      res.hidden = !open;
+      head.setAttribute("aria-expanded", String(open));
+    };
+    head.onclick = toggle;
+    head.onkeydown = (event) => {
+      if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); }
+    };
+  }
+  return node;
+}
+
+function detailText(t) {
+  const d = t.data;
+  if (!d || typeof d !== "object") return "";
+  const bits = [];
+  if (d.tool) bits.push(`工具：${d.tool}`);
+  if (d.cmd) bits.push(`指令：${d.cmd}`);
+  if (d.task_id) bits.push(`任务：${d.task_id}`);
+  if (d.bee_id) bits.push(`执行：${beeName(d.bee_id)}`);
+  if (d.to) bits.push(`状态：${d.from || "?"} → ${d.to}`);
+  if (d.kind) bits.push(`类型：${signalLabel(d.kind)}`);
+  if (d.summary) bits.push(d.summary);
+  if (d.ok === false) bits.push("结果：失败");
+  // 其余字段兜底展示：工具的报错与输出常常就落在没枚举到的键里
+  // （出错卡以前只显示「工具执行出错」，点开也看不到原因）。
+  const used = new Set(["tool", "cmd", "task_id", "bee_id", "to", "from", "kind", "summary", "ok"]);
+  for (const [k, v] of Object.entries(d)) {
+    if (used.has(k) || v === null || v === undefined || v === "" || v === false) continue;
+    const text = typeof v === "string" ? v : JSON.stringify(v);
+    bits.push(`${k}: ${String(text).slice(0, 400)}`);
+  }
+  return bits.join("\n").slice(0, 2000);
+}
+
+// ── 成果卡：内容 + 验收（内联通过 / 打回）──
+export function honeyNode(t, ctx) {
+  const id = t.data?.honey_id || t.data?.id;
+  const live = (state.drill?.honey || []).find(h => h.id === id) || (state.data?.honey?.recent || []).find(h => h.id === id);
+  const d = {...(t.data || {}), ...(live || {})};
+  const task = state.drill?.task?.id === d.task_id ? state.drill.task
+    : (state.drill?.tasks || []).find(item => item.id === d.task_id) || (state.data?.tasks || []).find(item => item.id === d.task_id);
+  const model = reviewModel(task, d);
+  const reviewState = d.review_state || d.review?.state || 'pending_review';
+  const honeyId = d.honey_id || d.id;
+  const pending = !!honeyId && ['pending_review', 'auto_verified'].includes(reviewState);
+  const node = document.createElement('article'); node.className = 'msg msg-tool honey-card'; node.dataset.honeyId = honeyId || '';
+  if (pending) node.dataset.honeyPending = '1';
+  const head = document.createElement('div'); head.className = 'tool-head';
+  head.innerHTML = `<span class="card-kind kind-honey">成果</span><span class="diffstat" title="${esc(d.title || t.text || '成果')}">${esc(shortTitle(d.title || t.text || '成果', 34))}</span>` +
+    `<span class="chip-mini ${honeyChip(reviewState)}">${esc(honeyStateLabel(reviewState))}</span>` +
+    `<span class="tool-dur" title="${esc(absTime(d.created_at || t.ts))}">${esc(fmtAgo(d.created_at || t.ts))}</span>`;
+  node.append(head);
+  const delivery = document.createElement('section'); delivery.className = 'honey-delivery';
+  const heading = document.createElement('h3'); heading.textContent = '本次交付'; delivery.append(heading);
+  if (d.content) {
+    const body = document.createElement('div'); body.className = 'honey-result md'; body.innerHTML = renderMarkdown(d.content);
+    const more = clampBlock(body, d.content, '查看完整成果'); delivery.append(body); if (more) delivery.append(more);
+  } else {
+    const missing = document.createElement('p'); missing.textContent = '该成果未提供交付正文。'; delivery.append(missing);
+  }
+  if (d.content_ref) {
+    const ref = document.createElement('p'); ref.className = 'honey-source'; ref.textContent = `成果位置：${d.content_ref}`; delivery.append(ref);
+  }
+  const links = document.createElement('div'); links.className = 'honey-review-links';
+  if (task && ctx.openTask) links.append(reviewLink('查看执行记录', () => ctx.openTask(task.id, task.title, 'execution')));
+  if (task?.workspace && ctx.openDirectory) links.append(reviewLink('查看工作区', () => ctx.openDirectory(task.id)));
+  delivery.append(links); node.append(delivery, reviewEvidence(model));
+
+  const actions = document.createElement('div'); actions.className = 'honey-actions';
+  if (pending && state.data?.can_manage) {
+    const unavailable = model.revision !== 'matching' || !task;
+    for (const [label, verdict, cls] of [['接受这次交付', 'accept', 'btn-allow'], ['提出修改', 'reject', 'btn-deny']]) {
+      const control = reviewBtn(label, verdict, cls, honeyId, node); control.disabled = unavailable;
+      if (unavailable) control.title = '工作要求与交付未确认一致，不能直接验收。';
+      actions.append(control);
+    }
+    if (unavailable) {
+      const reason = document.createElement('p'); reason.className = 'honey-review-notice';
+      reason.textContent = model.revision === 'changed' ? '工作要求已变化，请核对当前要求与旧成果；服务端会拒绝直接验收。' : '缺少成果或工作的要求修订信息，暂不能直接验收。';
+      node.append(reason);
+    }
+  } else if (pending) {
+    const note = document.createElement('p'); note.className = 'honey-review-notice'; note.textContent = '等待有管理权限的负责人验收；你可以查看交付与记录。'; node.append(note);
+  }
+  node.append(actions);
+  return node;
+}
+
+function reviewLink(label, action) {
+  const button = document.createElement('button'); button.type = 'button'; button.className = 'btn-ghost';
+  button.textContent = label; button.onclick = action; return button;
+}
+function reviewEvidence(model) {
+  const section = document.createElement('section'); section.className = 'honey-review-evidence';
+  const heading = document.createElement('h3'); heading.textContent = '验收依据'; section.append(heading);
+  const baseline = document.createElement('p'); baseline.className = `honey-baseline ${model.revision}`;
+  baseline.textContent = {matching: '工作要求与本次交付一致', changed: '工作要求已变化，本次交付对应旧要求', unknown: '工作要求对应关系尚未确认'}[model.revision];
+  section.append(baseline);
+  const code = document.createElement('p'); code.className = 'honey-source';
+  code.textContent = model.gitRevision ? `交付声明的代码版本：${model.gitRevision}（未比较当前工作区）` : '代码基线：未记录本次交付的代码版本，不代表当前代码已验证。';
+  section.append(code);
+  const table = document.createElement('table'); table.className = 'honey-evidence-table';
+  const caption = document.createElement('caption'); caption.textContent = '验收条件与检查记录'; table.append(caption);
+  const head = document.createElement('thead'); const headRow = document.createElement('tr');
+  for (const label of ['验收条件', '检查依据', '状态']) { const cell = document.createElement('th'); cell.scope = 'col'; cell.textContent = label; headRow.append(cell); }
+  head.append(headRow); table.append(head);
+  const body = document.createElement('tbody');
+  for (const item of model.criteria) {
+    const row = document.createElement('tr'); const criterion = document.createElement('th'); criterion.scope = 'row'; criterion.textContent = item.criterion;
+    const source = document.createElement('td'); source.textContent = item.checks.length ? item.checks.map(check => check.detail || check.check || check.criterion).join('\n') : '未提供对应检查记录';
+    const status = document.createElement('td'); status.className = `honey-evidence-status ${item.status}`;
+    status.textContent = {passed: '预检报告通过', failed: '预检未通过', unverified: '未验证'}[item.status];
+    row.append(criterion, source, status); body.append(row);
+  }
+  if (!model.criteria.length) {
+    const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 3; cell.textContent = '未记录验收条件，请对照目标核查交付。'; row.append(cell); body.append(row);
+  }
+  table.append(body); section.append(table);
+  const caveat = document.createElement('p'); caveat.className = 'honey-review-notice'; caveat.textContent = '预检报告不等于人工验收；执行摘要或多位 Bee 的同意不证明验收条件已满足。'; section.append(caveat);
+  if (model.otherChecks.length) {
+    const details = document.createElement('details'); const title = document.createElement('summary'); title.textContent = '其他预检记录（未关联验收条件）'; details.append(title);
+    for (const check of model.otherChecks) {
+      const line = document.createElement('p'); line.textContent = `${check.check || check.criterion || '检查'}：${check.ok === true ? '报告通过' : check.ok === false ? '未通过' : '结果未知'}${check.detail ? ' · ' + check.detail : ''}`; details.append(line);
+    }
+    section.append(details);
+  }
+  const limits = document.createElement('h4'); limits.textContent = '未验证项与限制'; section.append(limits);
+  const list = document.createElement('ul');
+  const unknown = model.criteria.filter(row => row.status === 'unverified').map(row => `未验证：${row.criterion}`);
+  for (const text of [...unknown, ...model.limitations, ...(!model.limitations.length ? ['提交者尚未说明验证范围，不能据此认为没有限制。'] : [])]) {
+    const item = document.createElement('li'); item.textContent = text; list.append(item);
+  }
+  section.append(list);
+  const records = document.createElement('details'); records.className = 'honey-evidence-records';
+  const title = document.createElement('summary'); title.textContent = `执行记录引用 · ${model.records.length}`; records.append(title);
+  for (const record of model.records) {
+    const entry = document.createElement('p'); const identity = record?.id || (record?.seq != null ? `记录 ${record.seq}` : '未提供定位信息');
+    entry.textContent = `${identity} · ${typeof record === 'string' ? record : record?.text || '未提供摘要'}`; records.append(entry);
+  }
+  if (!model.records.length) { const empty = document.createElement('p'); empty.textContent = '未提供可定位的执行记录引用。'; records.append(empty); }
+  section.append(records); return section;
+}
+
+function reviewBtn(label, verdict, cls, honeyId, card) {
+  const b = document.createElement('button'); b.type = 'button'; b.className = cls; b.textContent = label;
+  const colonyId = state.colonyId;
+  b.onclick = async () => {
+    if (card.getAttribute('aria-busy') === 'true') return;
+    let needsRefresh = false;
+    card.setAttribute('aria-busy', 'true');
+    const controls = [...card.querySelectorAll('.honey-actions button')]; controls.forEach(button => { button.disabled = true; });
+    card.querySelector('.honey-review-error')?.remove();
+    try {
+      let note = '';
+      if (verdict === 'reject') {
+        const answer = await form('提出修改', [{name: 'note', label: '需要补齐什么', multiline: true, required: true}], '退回修改');
+        if (!answer) return; note = answer.note;
+      }
+      await rpc('colony.honey.review', {colonyId, honeyId, verdict, note});
+      if (state.colonyId === colonyId) { toast(verdict === 'accept' ? '已验收这次交付' : '已退回修改'); await refresh(); }
+    } catch (error) {
+      const message = document.createElement('p'); message.className = 'honey-review-error'; message.setAttribute('role', 'alert');
+      message.textContent = error.code === 'timeout' ? '验收结果待确认，请刷新工作后确认；不要重复提交。' : error.message || '验收失败，原成果保留。';
+      needsRefresh = ['timeout', 'stale_result'].includes(error.code);
+      if (needsRefresh) message.append(reviewLink('刷新工作确认', () => refresh()));
+      card.append(message);
+    } finally {
+      card.removeAttribute('aria-busy'); controls.forEach(button => { button.disabled = needsRefresh; });
+    }
+  };
+  return b;
+}
+
+
+function honeyChip(s) {
+  return { pending_review: "warn", auto_verified: "accent", accepted: "ok", rejected: "bad" }[s] || "";
+}
+
+function honeyStateLabel(s) {
+  return { pending_review: "待验收", auto_verified: "预检通过", accepted: "已验收", rejected: "已打回" }[s] || "";
+}
+
+function beeName(id) {
+  const m = memberById(id);
+  return m ? m.display : id;
+}
+
+// 每个成员一个稳定色相：多人发言时靠颜色就能分辨谁在说。
+function memberHue(id) {
+  let h = 0;
+  for (const ch of String(id || "")) h = (h * 31 + ch.codePointAt(0)) % 360;
+  return h;
+}
+
+function absTime(ts) {
+  const d = new Date(ts || Date.now());
+  return d.toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function timeEl(ts) {
+  const t = document.createElement("time");
+  t.className = "msg-time";
+  t.dateTime = new Date(ts || Date.now()).toISOString();
+  t.title = absTime(ts);
+  t.textContent = fmtAgo(ts);
+  return t;
+}
+
+// 长成果默认折叠：给个高度上限，点按钮再展开。
+function clampBlock(body, raw, label) {
+  if (!raw || raw.length < 480) return null;
+  body.classList.add("clamped");
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "md-more";
+  more.textContent = label;
+  more.onclick = () => {
+    const on = body.classList.toggle("clamped");
+    more.textContent = on ? label : "收起";
+  };
+  return more;
+}
+
+function emptyNote(text) {
+  const node = document.createElement("div");
+  node.className = "msg colony-note";
+  const ico = document.createElement("span");
+  ico.className = "colony-note-ico";
+  ico.textContent = "🐝";
+  const body = document.createElement("span");
+  body.textContent = text;
+  node.append(ico, body);
+  return node;
+}

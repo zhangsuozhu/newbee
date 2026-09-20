@@ -231,24 +231,27 @@ defmodule Newbee.Plugins.RepoMap do
   defp hd_member([h | _]), do: h
   defp hd_member(other) when is_atom(other), do: other
 
-  # 解析一个引用节点到本工程完整模块名; 唯一后缀命中也算 (容相对引用)
-  defp resolve_ref([], _alias_map, _known, _index), do: nil
+# 解析一个引用节点到本工程完整模块名; 唯一后缀命中也算 (容相对引用)
+# 段中可能混入运行时动态节点 (如 __MODULE__.Runner / unquote(...)),
+# 此时引用无法静态解析, 直接跳过 (返回 nil) 而非崩溃。
+defp resolve_ref([], _alias_map, _known, _index), do: nil
 
-  defp resolve_ref(segs, alias_map, known, index) do
-    expanded =
-      case alias_map[hd(segs)] do
-        nil -> segs
-        base -> base ++ tl(segs)
-      end
+defp resolve_ref(segs, alias_map, known, index) do
+expanded =
+case alias_map[hd(segs)] do
+  nil -> segs
+  base -> base ++ tl(segs)
+end
 
-    full = expanded |> Enum.map(&segment_text/1) |> Enum.join(".")
+full = expanded |> Enum.map(&segment_text/1) |> Enum.join(".")
 
-    if MapSet.member?(known, full) do
-      full
-    else
-      unique_suffix_indexed(full, index)
-    end
-  end
+if MapSet.member?(known, full) do
+full
+else
+unique_suffix_indexed(full, index)
+end
+end
+
 
   # 后缀索引: 每个已知模块的所有真后缀 -> 命中名单, 查询 O(1)。
   # 旧实现每次引用全表 Enum.filter + String.split, 在 143 文件 x 数千引用下直接打爆 DEE reductions。

@@ -1,6 +1,137 @@
 /* newbee WebUI 前端（移植 dsh client/web 会话 shell 语义，无构建依赖原生 JS）。
  * 信道：REST RPC（POST /api/<method>）+ WebSocket 事件下行（/ws?session=）。 */
 (() => {
+  // The embedded workspace has an explicit inspection/guidance scope controlled by its trusted parent.
+  function embedMode() { return new URLSearchParams(location.search).get("embed") === "1"; }
+  function notifyEmbedPanel(panel, open) {
+    if (!embedMode() || window.parent === window) return;
+    window.parent.postMessage({newbeeWorkspace: "panel", panel, open, sessionId: state.sid, inspectionId}, location.origin);
+  }
+  const inspectionMode = new URLSearchParams(location.search).get('inspect') === '1';
+  const inspectionId = new URLSearchParams(location.search).get('inspectionId');
+  let inspectionReady = false, guidanceEnabled = false;
+  function inspectionNotify(type, payload = {}) {
+    workspaceNotify(type, {sessionId: state.sid || new URLSearchParams(location.search).get('session'), inspectionId, ...payload});
+  }
+  function setGuidance(enabled) {
+    guidanceEnabled = enabled;
+    document.documentElement.classList.toggle('execution-guidance', enabled);
+    const composer = $('composer');
+    if (inspectionMode && composer) composer.classList.toggle('hidden', !enabled);
+    if (inspectionMode) inspectionNotify('guidance', {enabled});
+    if (enabled) $('input')?.focus({preventScroll: true});
+  }
+  function initEmbedPanels() {
+    const commands = new Map();
+    if (inspectionMode) setGuidance(false);
+
+    window.addEventListener("message", async (event) => {
+      if (event.origin !== location.origin || event.source !== window.parent) return;
+      const data = event.data || {};
+      if (data.sessionId && data.sessionId !== state.sid) return;
+      if (inspectionMode && data.inspectionId && data.inspectionId !== inspectionId) return;
+      if (data.newbeeCommand === 'inspect-status' && inspectionReady) inspectionNotify('session-ready');
+      if (data.newbeeCommand === 'guide' && inspectionReady) setGuidance(true);
+      if (data.newbeeCommand === 'quote') {
+        const selection = window.getSelection();
+        const element = selection?.anchorNode?.parentElement;
+        const record = element?.closest('[data-seq], [data-id], .msg');
+        inspectionNotify('quote', {text: selection?.toString() || '', recordId: record?.dataset.seq || record?.dataset.id || record?.id || null});
+      }
+      // Only the trusted parent may submit a command, with a fixed session and request id.
+
+      if (data.newbeeCommand === "panel") {
+        if (data.panel === "terminal") setTerminalPanel(!!data.open);
+        if (data.panel === "monitor") setMCOpen(!!data.open);
+      }
+      if (data.newbeeCommand === 'send' && typeof data.text === 'string' && data.text.trim()) {
+        if (!data.commandId || !inspectionReady || !state.sid) return;
+        let request = commands.get(data.commandId);
+        if (!request) {
+          setGuidance(true);
+          request = send(data.text, true, data.commandId).then(result => result || {status: 'rejected', message: '未提交，请在执行输入区重试'});
+          commands.set(data.commandId, request);
+        }
+        const result = await request;
+        inspectionNotify('sent', {commandId: data.commandId, ...result});
+      }
+    });
+    // Escape closes local panels first; it never silently navigates away or cancels execution.
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      const modalOpen = document.querySelector("dialog[open], .modal:not(.hidden), #cmd-palette:not(.hidden), #qa-overlay:not(.hidden), #login-overlay:not(.hidden)");
+      if (modalOpen || !embedMode()) return;
+      const effortMenu = $("effort-segments");
+      if (effortMenu && !effortMenu.classList.contains("hidden")) return;
+      if (MC.open) {
+        event.preventDefault();
+        event.stopPropagation();
+        setMCOpen(false);
+        return;
+      }
+      if (state.terminal?.open) {
+        event.preventDefault();
+        event.stopPropagation();
+        $("terminal-close")?.click();
+        return;
+      }
+      if (!inspectionMode) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (event.target !== $('input') || !guidanceEnabled) inspectionNotify('close-inspector');
+    }, true);
+    workspaceNotify('ready');
+    if (inspectionReady) inspectionNotify('session-ready');
+  }
+
+  // 复制文本：优先 Clipboard API；不安全上下文（例如用 http://局域网IP 打开）里
+  // navigator.clipboard 不存在，退回 execCommand；两条路都失败必须如实返回 false——
+  // 以前是无条件显示「已复制」，失败时用户以为复制成功，粘贴出来还是旧内容。
+  async function copyToClipboard(text) {
+    const value = String(text == null ? "" : text);
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch (_) { /* 落到下面的兜底 */ }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = value;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 复制按钮统一反馈：成功「已复制」，失败「复制失败」+ 一行提示，然后还原标签。
+  function copyWithFeedback(btn, text, label) {
+    const restore = label != null ? label : btn ? btn.textContent : "";
+    const restoreFocus = btn && document.activeElement === btn ? btn : null;
+    copyToClipboard(text).then((ok) => {
+      // execCommand fallback temporarily focuses a hidden textarea; return focus only if the user stayed on this button.
+      if (restoreFocus && document.activeElement === document.body && document.body.contains(restoreFocus)) {
+        restoreFocus.focus({ preventScroll: true });
+      }
+      if (btn) btn.textContent = ok ? "已复制" : "复制失败";
+      if (!ok) line("notice", "复制失败：浏览器不允许写入剪贴板，请手动选中复制");
+      setTimeout(() => { if (btn) btn.textContent = restore; }, 1500);
+    });
+  }
+
+
+  const workspaceSurface = new URLSearchParams(location.search).get("surface");
+  function workspaceNotify(type, payload = {}) {
+    if (window.parent !== window) window.parent.postMessage({newbeeWorkspace: type, ...payload}, location.origin);
+  }
   const ICO_FOLDER = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><path d="M3 8V6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v2"/><path d="M3 8l2.4 9.1A2 2 0 0 0 7.3 19h12.2a1 1 0 0 0 1-1.3L18 11H5L3 8z"/></svg>';
   const ICO_SIDEBAR_COLLAPSE = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg>';
   const ICO_SIDEBAR_EXPAND = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg>';
@@ -738,6 +869,7 @@ const flow = $("flow");
     if (!panel || !toggle) return;
 
     state.terminal.open = open;
+    notifyEmbedPanel("terminal", open);
     panel.classList.toggle("hidden", !open);
     toggle.classList.toggle("is-active", open);
     toggle.setAttribute("aria-expanded", open ? "true" : "false");
@@ -1324,13 +1456,7 @@ case "goal_round": break;
     btn.className = "msg-copy";
     btn.title = "复制整条回复";
     btn.textContent = "⧉";
-    btn.onclick = () => {
-      const raw = d.dataset.raw || d.innerText || "";
-      navigator.clipboard.writeText(raw).then(() => {
-        btn.textContent = "已复制";
-        setTimeout(() => (btn.textContent = "⧉"), 1500);
-      });
-    };
+    btn.onclick = () => copyWithFeedback(btn, d.dataset.raw || d.innerText || "", "\u29C9");
     d.appendChild(btn);
     return d;
   }
@@ -1348,6 +1474,7 @@ case "goal_round": break;
   }
 
   function line(kind, text, md) {
+    if (workspaceSurface && kind === "error") workspaceNotify("error", {message: String(text)});
     const d = el(`msg-${kind}`, text || "", md);
     scrollBottom();
     return d;
@@ -1624,10 +1751,7 @@ case "goal_round": break;
     btn.textContent = "⧉";
     btn.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      navigator.clipboard.writeText(btn.dataset.text || "").then(() => {
-        btn.textContent = "已复制";
-        setTimeout(() => (btn.textContent = "⧉"), 1200);
-      });
+      copyWithFeedback(btn, btn.dataset.text || "", "\u29C9");
     });
     return btn;
   }
@@ -2855,11 +2979,13 @@ case "goal_round": break;
     // 兼容旧调用：协作不再切换成独立页面。
   }
 
-  function initGroups() {
-    $("new-group").onclick = openGroupModal;
-    $("group-modal-cancel").onclick = () => $("group-modal").classList.add("hidden");
-    $("group-modal-confirm").onclick = createGroup;
-    $("delegate-session").onclick = openDelegateModal;
+function initGroups() {
+const bind = (id, fn) => { const el = $(id); if (el) el.onclick = fn; };
+bind("new-group", openGroupModal);
+bind("group-modal-cancel", () => $("group-modal")?.classList.add("hidden"));
+bind("group-modal-confirm", createGroup);
+bind("delegate-session", openDelegateModal);
+
     $("delegate-cancel").onclick = () => $("delegate-modal").classList.add("hidden");
     $("delegate-confirm").onclick = delegateSession;
     $("delegate-acceptance-add").onclick = () => addAcceptanceRow("command", "", "", "delegate-acceptance-list");
@@ -2951,6 +3077,113 @@ case "goal_round": break;
       renderSessionList();
     }
   }
+  // Colony 融进原会话：待处理出现在侧栏顶部，验收出现在输入区上方。
+  let workInboxTimer = 0;
+  let workInbox = {items: [], review: null};
+  function workTerminal(task) { return ["done", "cancelled"].includes(task.status); }
+  function workAttention(task, viewer) {
+    if (workTerminal(task)) return null;
+    const mine = task.owner_kind === "human" && task.assigned_bee_id === viewer.actorId;
+    if (task.status === "pending_review") {
+      return viewer.canManage && !task.integration_required ? {reason: "等待你验收", section: "results"} : null;
+    }
+    if (task.waiting_for === "user") return {reason: "等待你答复", section: "overview"};
+    if (task.status === "blocked") return {reason: "工作受阻", section: "overview"};
+    if (mine) return {reason: "由你负责", section: "overview"};
+    return null;
+  }
+  async function loadWorkInbox() {
+    if (document.hidden || workspaceSurface) return;
+    try {
+      const listed = await rpc("colony.list", {});
+      const colonies = listed.colonies || [];
+      const items = [];
+      let review = null;
+      for (const row of colonies) {
+        const colony = row.colony || row;
+        if (!colony || !colony.id) continue;
+        const view = await rpc("colony.view", {colonyId: colony.id});
+        if (view.changed === false) continue;
+        const viewer = {canManage: view.can_manage === true, actorId: view.actor_bee_id};
+        const tasks = view.tasks || [];
+        const honeys = (view.honey && view.honey.recent) || [];
+        for (const task of tasks) {
+          const action = workAttention(task, viewer);
+          if (!action) continue;
+          items.push({colonyId: colony.id, colonyName: colony.name || "蜂群", task, action});
+        }
+        if (!review && viewer.canManage) {
+          const honey = honeys.find((h) => ["pending_review", "auto_verified"].includes(h.review_state));
+          if (honey) review = {colonyId: colony.id, honey, task: tasks.find((t) => t.id === honey.task_id) || null};
+        }
+      }
+      workInbox = {items, review};
+      renderWorkInbox();
+      renderWorkReview();
+    } catch (_e) {}
+  }
+  function startWorkInbox() {
+    if (workInboxTimer) clearInterval(workInboxTimer);
+    loadWorkInbox();
+    workInboxTimer = setInterval(loadWorkInbox, 8000);
+  }
+  function renderWorkInbox() {
+    const box = $("work-inbox");
+    if (!box) return;
+    const items = workInbox.items || [];
+    box.innerHTML = "";
+    if (!items.length) { box.classList.add("hidden"); box.hidden = true; return; }
+    box.classList.remove("hidden"); box.hidden = false;
+    const label = document.createElement("div");
+    label.className = "session-group-label";
+    label.textContent = "需要你处理 · " + items.length;
+    box.appendChild(label);
+    items.slice(0, 8).forEach((item) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "session-item work-inbox-item";
+      const title = String(item.task.title || "未命名工作").replace(/\s+/g, " ").trim().slice(0, 36);
+      row.innerHTML = `<span class="t">${escapeHtml(title)}</span><span class="meta">${escapeHtml(item.action.reason)}</span>`;
+      row.onclick = () => openWorkItem(item);
+      box.appendChild(row);
+    });
+  }
+  async function openWorkItem(item) {
+    const sid = item.task.session_id;
+    if (sid) {
+      if (state.sid !== sid) await resume(sid);
+      return;
+    }
+    line("notice", (item.task.title || "这项工作") + "还没有执行会话，可在输入区直接说明下一步。");
+  }
+  function renderWorkReview() {
+    const bar = $("work-review-bar");
+    if (!bar) return;
+    const review = workInbox.review;
+    if (!review || $("permission-bar") && !$("permission-bar").classList.contains("hidden")) {
+      bar.classList.add("hidden");
+      return;
+    }
+    $("work-review-text").textContent = (review.task && review.task.title ? review.task.title + " · " : "") + "有成果待你验收";
+    bar.classList.remove("hidden");
+  }
+  async function reviewCurrentWork(verdict) {
+    const review = workInbox.review;
+    if (!review) return;
+    try {
+      await rpc("colony.honey.review", {colonyId: review.colonyId, honeyId: review.honey.id, verdict});
+      line("notice", verdict === "accept" ? "已接受这次交付" : "已打回，等待补充");
+      await loadWorkInbox();
+    } catch (e) {
+      line("error", "验收失败: " + (e.message || e));
+    }
+  }
+  document.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "work-review-yes") reviewCurrentWork("accept");
+    if (e.target && e.target.id === "work-review-no") reviewCurrentWork("reject");
+  });
+
+
 
   // 组成员必须只出现一次；没有在当前组索引中的会话才属于其他会话。
   function groupedSessionIds() {
@@ -3324,9 +3557,7 @@ case "goal_round": break;
   function xOpen(id) { const el = document.getElementById(id); if (el) el.classList.remove("hidden"); }
   function xClose(id) { const el = document.getElementById(id); if (el) el.classList.add("hidden"); }
   function xCopy(text, btn) {
-    const done = () => { if (btn) { const o = btn.textContent; btn.textContent = "已复制"; setTimeout(() => { btn.textContent = o; }, 1200); } };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
-    else { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); } catch (e) {} ta.remove(); done(); }
+    copyWithFeedback(btn, text);
   }
   // ── 群卡片 ─────────────────────────────────────────────────────────────
   // 一眼看懂：谁在线（x/y 在线）、几个会话几个任务、下一步点哪里。
@@ -3410,31 +3641,17 @@ case "goal_round": break;
   function renderXGroups(box, kw, ctx) {
     const gs = state.xgroups || [];
     const list = gs.filter((g) => !kw || String(g.name || "").toLowerCase().includes(kw) || String(g.project_id || "").toLowerCase().includes(kw));
-    // 没群就不占地方：不渲染分区标题与占位文案。
-    // 搜索无匹配时整块跳过（此时建群/加群是无关操作）；平时只保留两个入口按钮。
-    if (!list.length) {
-      if (kw) return;
-      const em = document.createElement("div");
-      em.className = "xgroup-empty";
-      const row = document.createElement("div");
-      row.className = "xgroup-empty-actions";
-      const mkEmptyBtn = (txt, tip, cls, fn) => { const b = document.createElement("button"); b.className = "xg-btn " + cls; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; row.appendChild(b); };
-      mkEmptyBtn("建群", "建一个项目协作群", "xg-main", openXCreate);
-      mkEmptyBtn("加群", "用加群码加入协作群", "", openXJoin);
-      em.appendChild(row);
-      box.appendChild(em);
-      return;
-    }
-    const label = document.createElement("div");
-    label.className = "session-group-label xzone-head";
-    const ztitle = document.createElement("span");
-    ztitle.className = "xzone-title";
-    ztitle.textContent = "项目协作群 · " + list.length;
-    label.appendChild(ztitle);
-    const mkZone = (txt, tip, fn) => { const b = document.createElement("button"); b.className = "xg-btn"; b.textContent = txt; b.title = tip; b.onclick = (e) => { e.stopPropagation(); fn(); }; label.appendChild(b); };
-    mkZone("建群", "建一个项目协作群", openXCreate);
-    mkZone("加群", "用加群码加入协作群", openXJoin);
-    box.appendChild(label);
+// 没群就不占地方。任务协作走侧栏「需要你处理」，不在这里再建第二套入口。
+if (!list.length) return;
+const label = document.createElement("div");
+label.className = "session-group-label xzone-head";
+const ztitle = document.createElement("span");
+ztitle.className = "xzone-title";
+ztitle.textContent = "已连接的环境 · " + list.length;
+label.appendChild(ztitle);
+box.appendChild(label);
+
+
 
     list.forEach((g) => {
       const det = (state.xgroupDetail || {})[g.id] || {};
@@ -4176,7 +4393,8 @@ case "goal_round": break;
   function updateSelectedSessionCount() {
     const n = state.selectedSessions ? state.selectedSessions.size : 0;
     const label = $("selected-session-count");
-    if (label) label.textContent = n ? `${n} 个已选` : "选择会话组成工作组";
+if (label) label.textContent = n ? `${n} 个已选` : "选择会话";
+
     const button = $("new-group");
     if (button) button.disabled = n === 0;
   }
@@ -4328,9 +4546,10 @@ case "goal_round": break;
     dirState.hidden = false;
     $("dir-hidden-toggle").checked = false;
     $("dir-new-name").value = "";
+    const requestedCwd = new URLSearchParams(location.search).get("cwd");
     try {
       const home = await rpc("workspace.home", {});
-      dirState.cur = home.home || "/";
+      dirState.cur = requestedCwd || state.cwd || home.home || "/";
       try {
         const listing = await rpc("workspace.listDir", { path: dirState.cur });
         renderDirPicker(listing);
@@ -4428,6 +4647,12 @@ case "goal_round": break;
   $("dir-confirm").addEventListener("click", async () => {
     const picked = dirState.cur;
     if (!picked) return;
+    if (!state.sid) {
+      const taskId = new URLSearchParams(location.search).get("task");
+      workspaceNotify("changed", {cwd: picked, taskId: taskId || null});
+      closeDirPicker();
+      return;
+    }
     closeDirPicker();
     try {
       const updated = await rpc("session.cwd", { sessionId: state.sid, cwd: picked });
@@ -4435,6 +4660,7 @@ case "goal_round": break;
       updateCwdLabel(state.cwd);
       await loadSessions();
       line("notice", "当前会话工作目录已切换为 " + state.cwd);
+      workspaceNotify("changed");
     } catch (err) {
       line("error", "切换工作目录失败: " + err.message);
     }
@@ -4530,6 +4756,7 @@ case "goal_round": break;
 
   async function resume(sid) {
     const seq = ++resumeSeq;
+    inspectionReady = false;
     const stale = () => seq !== resumeSeq || state.sid !== sid;
     disconnectSocket();
     exitGroupMode();
@@ -4618,6 +4845,8 @@ case "goal_round": break;
     const firstUser = (hist.messages || []).find(m => m && m.role === "user");
     const title = firstUser ? String(firstUser.content || "").replace(/\s+/g, " ").trim().slice(0, 48) : "";
     $("session-title").textContent = title || (hasUserMessage ? sid : "新会话");
+    inspectionReady = true;
+    if (inspectionMode) inspectionNotify('session-ready');
   }
 
   function renderWelcome() {
@@ -4672,55 +4901,58 @@ case "goal_round": break;
     input.focus();
   }
 
-  async function newSession(cwd) {
-    if (state.creatingSession) return;
-    const btn = $("new-session");
-    const prevSid = state.sid;
-    state.creatingSession = true;
-    btn.disabled = true;
-    btn.textContent = "⏳ 创建中…";
+const NEW_SESSION_ICON = '<svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+async function newSession(cwd) {
+if (state.creatingSession) return;
+const btn = $("new-session");
+const prevSid = state.sid;
+state.creatingSession = true;
+if (btn) btn.disabled = true;
 
-    // 前端先生成 sessionId 并立即落本地 + 连 ws（socket init 会在后端幂等 ensure）。
-    // 即使 HTTP 应答被热加载/网络打断，重试同一个 id 也不会造出重复会话。
-    const sid = genSessionId();
-    prepareNewSessionUI(cwd || null, sid);
-    // 指定 cwd 时让带 cwd 的 session.create 先行，避免 ws ensure 抢先建出无 cwd 会话。
-    if (!cwd) connect();
+// 前端先生成 sessionId 并立即落本地 + 连 ws（socket init 会在后端幂等 ensure）。
+// 即使 HTTP 应答被热加载/网络打断，重试同一个 id 也不会造出重复会话。
+const sid = genSessionId();
+prepareNewSessionUI(cwd || null, sid);
+// 指定 cwd 时让带 cwd 的 session.create 先行，避免 ws ensure 抢先建出无 cwd 会话。
+if (!cwd) connect();
 
-    const payload = cwd ? { sessionId: sid, cwd } : { sessionId: sid };
-    try {
-      let created;
-      try {
-        created = await rpc("session.create", payload);
-      } catch (firstErr) {
-        await new Promise((r) => setTimeout(r, 250));
-        created = await rpc("session.create", payload);
-      }
-      state.cwd = created.cwd || cwd || null;
-      updateCwdLabel(state.cwd);
-      try {
-        await resume(created.sessionId || sid);
-      } catch (firstResumeErr) {
-        await new Promise((r) => setTimeout(r, 250));
-        await resume(created.sessionId || sid);
-      }
-    } catch (err) {
-      if (prevSid) {
-        try {
-          await resume(prevSid);
-          line("error", "新建会话失败: " + err.message);
-        } catch (restoreErr) {
-          line("error", "新建会话失败: " + err.message);
-          line("error", "恢复原会话失败: " + restoreErr.message);
-        }
-      } else {
-        line("error", "新建会话失败: " + err.message);
-      }
-    } finally {
-      state.creatingSession = false;
-      btn.disabled = false;
-      btn.textContent = "+ 新会话";
-    }
+const payload = cwd ? { sessionId: sid, cwd } : { sessionId: sid };
+try {
+let created;
+try {
+  created = await rpc("session.create", payload);
+} catch (firstErr) {
+  await new Promise((r) => setTimeout(r, 250));
+  created = await rpc("session.create", payload);
+}
+state.cwd = created.cwd || cwd || null;
+updateCwdLabel(state.cwd);
+try {
+  await resume(created.sessionId || sid);
+} catch (firstResumeErr) {
+  await new Promise((r) => setTimeout(r, 250));
+  await resume(created.sessionId || sid);
+}
+} catch (err) {
+if (prevSid) {
+  try {
+    await resume(prevSid);
+    line("error", "新建会话失败: " + err.message);
+  } catch (restoreErr) {
+    line("error", "新建会话失败: " + err.message);
+    line("error", "恢复原会话失败: " + restoreErr.message);
+  }
+} else {
+  line("error", "新建会话失败: " + err.message);
+}
+} finally {
+state.creatingSession = false;
+if (btn) {
+  btn.disabled = false;
+  btn.innerHTML = NEW_SESSION_ICON;
+}
+}
+
   }
 
   // 分页加载常量
@@ -4749,8 +4981,11 @@ case "goal_round": break;
     MC._replaying = false;
     MC.steps = [];
     renderMCSteps();
-    initInfiniteHistory();
     scrollBottom(true);
+    const renderedSid = state.sid;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (state.sid === renderedSid && state.stickBottom) scrollBottom(true);
+    }));
   }
 
 
@@ -4929,7 +5164,8 @@ case "goal_round": break;
     }
     if (kind === "image") {
       const img = document.createElement("img");
-      img.src = mediaUrl(p.url, "_t=" + Date.now());
+      loadMediaElement(p, img, body);
+
       img.alt = p.caption || p.name || "媒体";
       img.className = "nb-zoomable";
       img.addEventListener("click", (e) => { e.stopPropagation(); openLightbox(img.src, img.alt); });
@@ -4938,13 +5174,15 @@ case "goal_round": break;
       const au = document.createElement("audio");
       au.controls = true;
       au.preload = "metadata";
-      au.src = mediaUrl(p.url, "_t=" + Date.now());
+      loadMediaElement(p, au, body);
+
       body.appendChild(au);
     } else if (kind === "video") {
       const vd = document.createElement("video");
       vd.controls = true;
       vd.preload = "metadata";
-      vd.src = mediaUrl(p.url, "_t=" + Date.now());
+      loadMediaElement(p, vd, body);
+
       body.appendChild(vd);
     } else if (kind === "text") {
       // 实时事件带正文；历史记录只带元数据，因此由受保护的媒体 URL 补读正文。
@@ -4957,11 +5195,56 @@ case "goal_round": break;
     scrollBottom();
   }
 
+  async function fetchMediaBlob(p) {
+    const url = new URL(p.url, location.href);
+    if (url.origin !== location.origin || !url.pathname.startsWith('/media/')) {
+      throw new Error('Invalid media URL');
+    }
+    const headers = {};
+    if (state.token) headers.authorization = "Bearer " + state.token;
+    const response = await fetch(url.href, {credentials: 'same-origin', headers});
+    if (!response.ok) throw new Error('Media request failed: ' + response.status);
+    return response.blob();
+  }
+
+  async function loadMediaElement(p, element, body) {
+    try {
+      const blob = await fetchMediaBlob(p);
+      if (!body.isConnected) return;
+      const url = URL.createObjectURL(blob);
+      element.src = url;
+      // Keep the URL valid for playback and lightbox; release it when the card leaves the DOM.
+      const observer = new MutationObserver(() => {
+        if (!element.isConnected) { URL.revokeObjectURL(url); observer.disconnect(); }
+      });
+      observer.observe(flow, {childList: true, subtree: true});
+    } catch (_) {
+      if (!body.isConnected) return;
+      const error = document.createElement('p');
+      error.textContent = '媒体加载失败，请检查登录状态后重试。';
+      const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试加载';
+      retry.onclick = () => { error.remove(); retry.remove(); loadMediaElement(p, element, body); };
+      body.append(error, retry);
+    }
+  }
+
   function appendMediaDownload(p, body) {
+
     body.className = "media-body";
     body.innerHTML = "";
     const a = document.createElement("a");
-    a.href = mediaUrl(p.url);
+a.href = '#';
+a.addEventListener('click', async event => {
+event.preventDefault();
+try {
+  const url = URL.createObjectURL(await fetchMediaBlob(p));
+  const download = document.createElement('a');
+  download.href = url; download.download = p.name || 'file';
+  document.body.append(download); download.click(); download.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+} catch (_) { a.textContent = '下载失败，请检查登录状态后重试'; }
+});
+
     a.download = p.name || "file";
     a.className = "media-download";
     a.textContent = "下载 " + (p.name || "文件");
@@ -5128,66 +5411,65 @@ case "goal_round": break;
   }
 
   function renderLoadMoreBtn(remaining) {
-    const flowEl = $("flow");
-    const btn = document.createElement("div");
-    btn.className = "load-more-btn";
-    btn.id = "load-more";
-    btn.innerHTML = `<button class="btn-ghost" style="margin:8px auto;display:block;font-size:12px">↑ 加载更早 ${remaining} 条消息</button>`;
-    btn.addEventListener("click", () => loadEarlier());
-    flowEl.insertBefore(btn, flowEl.firstChild);
+    const flowEl = $('flow');
+    let region = $('load-more');
+    if (!region) {
+      region = document.createElement('div'); region.id = 'load-more'; region.className = 'load-more-btn';
+      const button = document.createElement('button'); button.className = 'btn-ghost'; button.type = 'button';
+      button.style.cssText = 'margin:8px auto;display:block;font-size:12px';
+      button.addEventListener('click', () => { void loadEarlier(); });
+      const status = document.createElement('span'); status.setAttribute('role', 'status');
+      region.append(button, status); flowEl.insertBefore(region, flowEl.firstChild);
+    }
+    const button = region.querySelector('button');
+    button.textContent = remaining > 0 ? `↑ 查看更早的 ${Math.min(HISTORY_PAGE, remaining)} 条 · 还有 ${remaining} 条` : '已到会话开头';
+    button.setAttribute('aria-disabled', String(remaining <= 0));
+    region.removeAttribute('aria-busy');
   }
-
-  let loadingEarlier = false; // 防重入
+  let loadingEarlier = false;
   async function loadEarlier() {
     if (loadingEarlier || historyOffset <= 0) return;
+    const sid = state.sid, generation = resumeSeq;
+    const transcriptEl = $('transcript'), flowEl = $('flow'), region = $('load-more');
+    if (!region) return;
     loadingEarlier = true;
+    region.setAttribute('aria-busy', 'true');
+    region.querySelector('button').setAttribute('aria-disabled', 'true');
+    region.querySelector('button').textContent = '正在显示更早消息…';
+    const anchor = Array.from(flowEl.children).find(node => node !== region && node.classList.contains('msg'));
+    const anchorTop = anchor?.getBoundingClientRect().top;
+    const scrollTop = transcriptEl.scrollTop, stickBottom = state.stickBottom;
+    const behavior = transcriptEl.style.scrollBehavior, overflowAnchor = transcriptEl.style.overflowAnchor;
+    const offset = historyOffset, start = Math.max(0, offset - HISTORY_PAGE);
+    const existing = new Set(flowEl.childNodes);
+    state.stickBottom = false;
+    transcriptEl.style.scrollBehavior = 'auto'; transcriptEl.style.overflowAnchor = 'none';
     try {
-      const flowEl = $("flow");
-      const transcriptEl = $("transcript");
-      const oldHeight = transcriptEl.scrollHeight;
-
-      // 先摘走旧按钮（避免被当旧内容一起摘走）
-      const oldBtn = $("load-more");
-      if (oldBtn) oldBtn.remove();
-
-      // 把当前已显示的内容整体摘下来（顺序保持）
-      const oldNodes = Array.from(flowEl.childNodes);
-      flowEl.innerHTML = ""; // 清空 flow 本身保留
-
-      const newSkip = Math.max(0, historyOffset - HISTORY_PAGE);
-      const start = newSkip;
-      const end = historyOffset;
-      historyOffset = newSkip;
-
-      // 更早消息渲染进空 flow：appendChild 天然从头到尾顺序正确
       MC._replaying = true;
-      allHistoryMsgs.slice(start, end).forEach((m) => { renderOneMsg(m); });
+      allHistoryMsgs.slice(start, offset).forEach(renderOneMsg);
       MC._replaying = false;
-
-      // 把原有内容整体挂回末尾（更早的在顶部，旧内容在下方）
-      oldNodes.forEach((n) => flowEl.appendChild(n));
-
-      // 补偿高度差，视觉上当前内容不动
-      requestAnimationFrame(() => {
-        transcriptEl.scrollTop = transcriptEl.scrollHeight - oldHeight;
-      });
-
-      // 仍有更早消息则在最前放按钮
-      if (historyOffset > 0) renderLoadMoreBtn(historyOffset);
+      const generated = Array.from(flowEl.childNodes).filter(node => !existing.has(node));
+      const fragment = document.createDocumentFragment(); generated.forEach(node => fragment.append(node));
+      flowEl.insertBefore(fragment, region.nextSibling);
+      historyOffset = start;
+      renderLoadMoreBtn(start);
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      if (state.sid !== sid || resumeSeq !== generation) return;
+      if (anchor?.isConnected) transcriptEl.scrollTop = Math.max(0, scrollTop + anchor.getBoundingClientRect().top - anchorTop);
+      region.querySelector('[role=status]').textContent = `已显示更早的 ${offset - start} 条消息`;
+    } catch (error) {
+      if (state.sid === sid && resumeSeq === generation) {
+        Array.from(flowEl.childNodes).filter(node => !existing.has(node)).forEach(node => node.remove());
+        historyOffset = offset;
+        renderLoadMoreBtn(offset);
+        region.querySelector('[role=status]').textContent = '显示失败，请重试';
+      }
     } finally {
+      MC._replaying = false;
+      transcriptEl.style.scrollBehavior = behavior; transcriptEl.style.overflowAnchor = overflowAnchor;
+      if (state.sid === sid && resumeSeq === generation) state.stickBottom = stickBottom;
       loadingEarlier = false;
     }
-  }
-
-  // 触顶自动加载（窗口式渐进：向上滚到顶自动加载更早对话）
-  function initInfiniteHistory() {
-    const t = $("transcript");
-    if (!t || t.dataset.infinityBound) return;
-    t.dataset.infinityBound = "1";
-    t.addEventListener("scroll", () => {
-      if (historyOffset <= 0 || loadingEarlier || state.busy) return;
-      if (t.scrollTop <= 40) loadEarlier();
-    });
   }
 
   // ── 文件附件（上传 / 粘贴 / 预览）──
@@ -5364,7 +5646,7 @@ case "goal_round": break;
       cBtn.className = "msg-copy";
       cBtn.title = "复制消息";
       cBtn.textContent = "\u29C9";
-      cBtn.onclick = () => { navigator.clipboard.writeText(text).then(() => { cBtn.textContent = "已复制"; setTimeout(() => cBtn.textContent = "\u29C9", 1500); }); };
+      cBtn.onclick = () => copyWithFeedback(cBtn, text, "\u29C9");
       d.appendChild(cBtn);
     }
     scrollBottom();
@@ -5523,7 +5805,10 @@ case "goal_round": break;
     }
   }
   // 发送
-  async function send(forcedText) {
+  async function send(forcedText, requireAck = false, suppliedQueueId = null) {
+    if (inspectionMode && (!inspectionReady || !guidanceEnabled)) return {status: 'rejected', message: '请先点击指导这只 Bee'};
+    if (inspectionMode && /^\/new(?:\s|$)/.test(forcedText ?? input.value)) { line('notice', '请在成员概览中创建新会话，当前检查保持在原执行。'); return {status: 'rejected', message: '当前检查不能切换到新会话'}; }
+    if (requireAck && /^\/(new|btw)(?:\s|$)/.test(forcedText || '')) return {status: 'rejected', message: '请在执行输入区使用会话命令'};
     state.eventCreatedAt = new Date().toISOString();
     const text = (forcedText == null ? input.value : forcedText).trim();
     if (text) setInterrupted(false);
@@ -5562,7 +5847,7 @@ case "goal_round": break;
     }
 
     if ((!text && attachments.length === 0) || !state.sid) return;
-    const queueId = genQueueId();
+    const queueId = suppliedQueueId || genQueueId();
     const wasBusy = state.busy === true;
     if (!wasBusy) state.turnKind = attachments.length > 0 ? "images" : "text";
 
@@ -5600,19 +5885,21 @@ case "goal_round": break;
           text,
           queueId,
         });
-      } else if (state.ws && state.ws.readyState === 1) {
+      } else if (!requireAck && state.ws && state.ws.readyState === 1) {
         state.ws.send(JSON.stringify({ type: "prompt", text, queueId }));
       } else {
         await rpc("session.prompt", { sessionId: state.sid, text, queueId });
       }
       clearAttachments();
+      return {status: 'accepted', queued: wasBusy, message: wasBusy ? '已收到，等待当前步骤结束后处理' : '已收到，等待执行器处理'};
     } catch (e) {
       line("error", e.message);
       state.pendingPrompts.delete(queueId);
       state.queue = (state.queue || []).filter((it) => it && it.id !== queueId);
       renderQueue();
       state.busy = wasBusy; setBusy(wasBusy);
-
+      if (!input.value) { input.value = text; saveDraft(text); autoGrow(); }
+      return {status: 'rejected', message: e.message || '发送失败'};
     }
   }
   function composerCanWhip(busy = state.busy) {
@@ -5792,7 +6079,8 @@ case "goal_round": break;
     $("model-confirm").onclick = async () => {
       if (!pending.provider || !pending.model) return;
       try {
-        await rpc("session.selectModel", { sessionId: state.sid, provider: pending.provider, model: pending.model });
+        await rpc(state.sid ? "session.selectModel" : "llm.selectDefault", { sessionId: state.sid, provider: pending.provider, model: pending.model });
+        workspaceNotify("changed");
         $("model-label").textContent = pending.provider + "/" + pending.model;
         $("model-modal").classList.add("hidden");
       } catch (e) {
@@ -6091,12 +6379,7 @@ case "goal_round": break;
     root.querySelectorAll(".md-copy").forEach((btn) => {
       if (btn.dataset.bound) return;
       btn.dataset.bound = "1";
-      btn.onclick = () => {
-        navigator.clipboard.writeText(btn.dataset.code || "").then(() => {
-          btn.textContent = "已复制";
-          setTimeout(() => (btn.textContent = "复制"), 1500);
-        });
-      };
+      btn.onclick = () => copyWithFeedback(btn, btn.dataset.code || "", "复制");
     });
   }
 
@@ -6114,9 +6397,10 @@ case "goal_round": break;
    const effortBtn = $("effort-btn");
    const effortBtnText = $("effort-btn-text");
    if (effortWrap && effortBtn) {
-     const closeEffort = () => {
+     const closeEffort = (focus = false) => {
        effortWrap.classList.add("hidden");
        effortBtn.setAttribute("aria-expanded", "false");
+       if (focus) effortBtn.focus({ preventScroll: true });
      };
      const renderSegs = (active) => {
        effortWrap.innerHTML = "";
@@ -6131,7 +6415,7 @@ case "goal_round": break;
          b.onclick = async (e) => {
            e.stopPropagation();
            renderSegs(lv);
-           closeEffort();
+           closeEffort(true);
            if (!state.sid) return;
            try {
              await rpc("session.setEffort", { sessionId: state.sid, effort: lv });
@@ -6156,7 +6440,7 @@ case "goal_round": break;
        else closeEffort();
      };
      document.addEventListener("click", (e) => { if (!e.target.closest(".effort-pick")) closeEffort(); });
-     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEffort(); });
+      document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEffort(true); });
      // resume 时按会话恢复选中档（nil → medium，兼容旧 auto/off）
      window.__restoreEffort = (effort) => renderSegs(effort === "off" ? "none" : (effort === "auto" ? "medium" : (effort || "medium")));
      renderSegs("medium");
@@ -6463,9 +6747,9 @@ case "goal_round": break;
     const name = $("mcfg-name").value.trim();
     const baseUrl = $("mcfg-baseurl").value.trim();
     let apiKey = $("mcfg-apikey").value.trim();
-    if (!name) { line("error", "厂家名称不能为空"); return null; }
-    if (!baseUrl) { line("error", "Base URL 不能为空"); return null; }
-    if (!apiKey) { line("error", "API Key 不能为空（可填 ${ENV_VAR}）"); return null; }
+    if (!name) { mcfgState('厂家名称不能为空', 'dirty'); $('mcfg-name').focus(); return null; }
+    if (!baseUrl) { mcfgState('Base URL 不能为空', 'dirty'); $('mcfg-baseurl').focus(); return null; }
+    if (!apiKey) { mcfgState('API Key 不能为空（可使用环境变量）', 'dirty'); $('mcfg-apikey').focus(); return null; }
     if (apiKey === MCFG.origKey) apiKey = null;
 
     const models = [], modelApis = {}, ctxw = {}, modelRespCont = {};
@@ -6526,6 +6810,7 @@ case "goal_round": break;
       MCFG.roles = data.roles || {};
       mcfgRenderList(); mcfgFlush();
       mcfgState("已保存", "saved");
+      workspaceNotify("changed");
       line("notice", "模型配置已保存");
       const def = MCFG.roles.default;
       if (def) $("model-label").textContent = def.provider + "/" + def.model;
@@ -6794,7 +7079,8 @@ const resetBtn = $("evo-reset");
       $("evo-autonomy").textContent = st.autonomy_label || st.autonomy || "-";
       const axEl = $("evo-autonomy-explain");
       if (axEl) { axEl.textContent = st.autonomy_explain || ""; axEl.title = st.autonomy_explain || ""; }
-      const decideCount = (st.changes || []).filter((c) => c.can_approve).length;
+      const changes = Array.isArray(st.changes) ? st.changes : [];
+      const decideCount = changes.filter((c) => c.can_approve).length;
       $("evo-open-count").textContent = coordinator ? (decideCount || coordinator.open_count || 0) : "-";
       $("evo-release-count").textContent = coordinator ? coordinator.active_count || 0 : "-";
       $("evo-signal-count").textContent = (st.pending_signals || []).length;
@@ -6806,7 +7092,12 @@ const resetBtn = $("evo-reset");
       health.textContent = !online ? "离线" : degraded ? "已退化" : "健康";
       health.className = "evo-health-pill " + (!online || degraded ? "degraded" : "healthy");
 
-      renderEvoChanges(st.changes || [], st.approval_groups || []);
+const changeSignature = JSON.stringify([changes, st.approval_groups || []]);
+if (MC.evoChangesSignature !== changeSignature) {
+  MC.evoChangesSignature = changeSignature;
+  renderEvoChanges(changes, st.approval_groups || []);
+}
+
       renderEvoSignals(st.pending_signals || []);
       renderEvoReleases(st.active_releases || []);
       renderEvoApprovals(st.approval_history || []);
@@ -7449,11 +7740,14 @@ function renderEvoApprovals(records) {
 
   function setMCOpen(open) {
     MC.open = open;
+    notifyEmbedPanel("monitor", open);
     const panel = $("mission-control");
     const expandBtn = $("mc-expand");
     if (open) {
       panel.classList.remove("hidden");
       expandBtn.classList.add("hidden");
+      const focusTarget = $("mc-collapse");
+      if (focusTarget) focusTarget.focus({ preventScroll: true });
       refreshMCFiles();
       if (MC.tab === "evolution") refreshEvolution();
       if (MC.tab === "overview") refreshMCOverview();
@@ -7463,6 +7757,12 @@ function renderEvoApprovals(records) {
     } else {
       panel.classList.add("hidden");
       expandBtn.classList.remove("hidden");
+      const focusTarget = embedMode() && window.parent !== window
+        ? window.parent.document.getElementById("mc-expand")
+        : expandBtn;
+      if (focusTarget && !focusTarget.hidden && focusTarget.getClientRects().length) {
+        focusTarget.focus({ preventScroll: true });
+      }
       stopDebugPolling();
     }
     try { localStorage.setItem("newbee-mc-open", open ? "1" : "0"); } catch (e) {}
@@ -7989,7 +8289,7 @@ function renderEvoApprovals(records) {
       // Ctrl+N: 新会话
       if (mod && e.key === "n") {
         e.preventDefault();
-        newSession();
+        workspaceNotify("new-conversation");
       }
 
       // Ctrl+1/2/3/4: 切换 MC tab（MC 打开时）
@@ -8088,11 +8388,7 @@ function renderEvoApprovals(records) {
     renderFileViewer();
   });
   $("file-viewer-copy").addEventListener("click", () => {
-    navigator.clipboard.writeText(fileViewer.content).then(() => {
-      const button = $("file-viewer-copy");
-      button.textContent = "已复制";
-      setTimeout(() => { button.textContent = "复制"; }, 1200);
-    });
+    copyWithFeedback($("file-viewer-copy"), fileViewer.content, "复制");
   });
   $("file-viewer-diff").addEventListener("click", () => {
     if (!fileViewer.path) return;
@@ -8255,6 +8551,7 @@ function renderEvoApprovals(records) {
   }
 
   function showLogin() {
+    workspaceNotify("login");
     const ov = $("login-overlay");
     if (ov) ov.classList.remove("hidden");
     refreshCaptcha();
@@ -8688,30 +8985,74 @@ function renderEvoApprovals(records) {
     }
   }
 
-  // 实际启动逻辑（登录成功后或免认证时调用）
-  async function bootApp() {
-    initTheme();
-    initSound();
-    initSidebar();
-    initEvolution();
-    initMissionControl();
-    initCmdPalette();
-    initTerminal();
-    initGlobalKeys();
-    initAtComplete();
-    initGroups();
-    await loadGroups();
-    const host = await rpc("host.describe", {});
-    $("model-label").textContent = host.model || "(no model)";
-    if (!state.sid) {
-      await newSession();
-    } else {
-      await resume(state.sid);
-    }
-    loadSessions();
-    startStats();
-    startUnreadPoll();
+// 实际启动逻辑（登录成功后或免认证时调用）
+// 工作区组件只打开指定功能；主页仍是会话列表。
+async function bootApp() {
+initTheme();
+initSound();
+if (workspaceSurface === "auth") {
+workspaceNotify("authenticated");
+return;
+}
+initSidebar();
+initEvolution();
+initMissionControl();
+initTerminal();
+const sid = new URLSearchParams(location.search).get("session");
+if (sid) state.sid = sid;
+if (embedMode()) initEmbedPanels();
+if (workspaceSurface) {
+let target;
+if (workspaceSurface === "models") {
+  await openModels(); target = $("model-modal");
+} else if (workspaceSurface === "config") {
+  await openModelConfig(); target = $("mcfg-modal");
+} else if (workspaceSurface === "directory") {
+  await openDirPicker(); target = $("dir-modal");
+  if (!sid) {
+    $("dir-new-btn").classList.add("hidden");
+    $("dir-new-name").classList.add("hidden");
   }
+} else if (workspaceSurface === "qr") {
+  openQuickAccess(); target = $("qa-overlay");
+} else {
+  workspaceNotify("error", {message: "未知功能"});
+  return;
+}
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") workspaceNotify("closed");
+});
+if (target) {
+  if (target.classList.contains("modal")) {
+    target.addEventListener("mousedown", event => {
+      if (event.target === target) workspaceNotify("closed");
+    });
+  }
+  const observer = new MutationObserver(() => {
+    if (target.classList.contains("hidden")) {
+      observer.disconnect(); workspaceNotify("closed");
+    }
+  });
+  observer.observe(target, {attributes: true, attributeFilter: ["class"]});
+}
+workspaceNotify("ready");
+return;
+}
+initCmdPalette();
+initGlobalKeys();
+initAtComplete();
+initGroups();
+await loadGroups();
+const host = await rpc("host.describe", {});
+$("model-label").textContent = host.model || "(no model)";
+if (sid) await resume(sid);
+else await newSession();
+loadSessions();
+startWorkInbox();
+startStats();
+startUnreadPoll();
+}
+
 
   // ── 启动 ──
   (async () => {
@@ -8723,16 +9064,22 @@ function renderEvoApprovals(records) {
       const auth = await rpc("auth.status", {});
 
       if (auth.auth_required && !auth.authenticated) {
+        if (inspectionMode) inspectionNotify('session-error', {code: 'unauthorized', message: '登录已过期，请重新登录后重试'});
         if (state.token) setToken(null);
         showLogin();
         return;
       }
 
       hideLogin();
-      await bootApp();
+      try { await bootApp(); } catch (error) {
+        if (inspectionMode) inspectionNotify('session-error', {code: error.code, message: error.message});
+        if (workspaceSurface) workspaceNotify("error", {message: error.message});
+        else line("error", error.message);
+      }
     } catch (e) {
       showLogin();
       loginError(`无法确认登录状态: ${e.message}`);
+      if (inspectionMode) inspectionNotify('session-error', {code: e.code, message: `无法确认登录状态：${e.message}`});
     }
   })();
   // ── 手机扫码免登录进入（Quick Access）──

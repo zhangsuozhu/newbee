@@ -72,6 +72,20 @@ defmodule Newbee.Web.CssSingleSourceTest do
     assert js =~ "const ansi = light"
   end
 
+  test "embedded theme sync refreshes terminal colors" do
+    js = File.read!("priv/web/theme.js")
+
+    assert js =~ "window.dispatchEvent(new Event(\"newbee:theme\"));"
+    refute js =~ "if (window.parent === window) window.dispatchEvent"
+  end
+
+  test "html entrypoints do not expose source line markers" do
+    for path <- ["priv/web/index.html", "priv/web/workspace.html"] do
+      html = File.read!(path)
+      refute Regex.match?(~r/^[ \t]*[0-9]+\|/m, html)
+    end
+  end
+
   # app.js 是 ~8.6k 行手写大文件：字符串匹配断言抓不到括号错位这类语法问题
   # （曾经在插入 doneBubble 时吃掉 addAssistantChrome 的收尾 `}`，只有浏览器里才暴露）。
   # 这里用真正的 JS 打包器解析一遍（`bun build` 会完整解析；
@@ -81,19 +95,73 @@ defmodule Newbee.Web.CssSingleSourceTest do
     bun = System.find_executable("bun") || "/home/alanx/.bun/bin/bun"
 
     if File.exists?(bun) do
-      out = Path.join(System.tmp_dir!(), "newbee-js-parse-check.js")
+      out =
+        Path.join(
+          System.tmp_dir!(),
+          "newbee-js-parse-" <> Integer.to_string(System.unique_integer([:positive])) <> ".js"
+        )
 
-      for rel <- ["priv/web/app.js", "priv/web/theme.js", "priv/web/project-chat.js"] do
+      for rel <- [
+            "priv/web/app.js",
+            "priv/web/theme.js",
+            "priv/web/project-chat.js",
+            "priv/web/colony/chat.js",
+            "priv/web/colony/app.js",
+            "priv/web/colony/store.js",
+            "priv/web/colony/taskcard.js",
+            "priv/web/colony/workflow.js",
+            "priv/web/colony/workview.js",
+            "priv/web/colony/drill.js",
+            "priv/web/colony/sidebar.js",
+            "priv/web/colony/workbench.js"
+          ] do
         path = Path.expand(rel)
         assert File.exists?(path), "#{rel} 不存在"
 
         {msg, code} =
-          System.cmd(bun, ["build", path, "--target", "browser", "--outfile", out], stderr_to_stdout: true)
+          System.cmd(
+            bun,
+            [
+              "build",
+              path,
+              "--target",
+              "browser",
+              "--external",
+              "./workflow.js?v=*",
+              "--external",
+              "./drill.js?v=*",
+              "--external",
+              "./workbench.js?v=*",
+              "--external",
+              "./taskcard.js?v=*",
+              "--external",
+              "./shell.js?v=*",
+              "--external",
+              "./chat.js?v=*",
+              "--external",
+              "./composer.js?v=*",
+              "--outfile",
+              out
+            ],
+            stderr_to_stdout: true
+          )
 
         File.rm(out)
         assert code == 0, "#{rel} 不是合法 JavaScript：\n#{msg}"
       end
     end
+  end
+
+  test "colony mention highlighting stays inside safe text nodes" do
+    js = File.read!("priv/web/colony/chat.js")
+
+    assert js =~ "function highlightMentions(root, mentions)"
+    assert js =~ "document.createDocumentFragment()"
+    assert js =~ "document.createTextNode"
+    assert js =~ "mention.textContent = matchToken"
+    assert js =~ "element.matches(\"code, pre, a\")"
+    refute js =~ "span.innerHTML = html"
+    refute js =~ "html.split(esc(tk))"
   end
 
   # 回归：最终交付（done）曾经走纯文本总结卡渲染路径，既没有气泡也没有复制按钮，

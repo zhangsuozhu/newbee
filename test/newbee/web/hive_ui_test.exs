@@ -5,7 +5,6 @@ defmodule Newbee.Web.HiveUiTest do
 
   test "Web 协作 UI 只使用 Hive Board 合同" do
     js = File.read!(@app_path)
-    html = File.read!(Path.expand("priv/web/index.html"))
 
     for method <- [
           ~s|rpc("hive.board"|,
@@ -18,6 +17,7 @@ defmodule Newbee.Web.HiveUiTest do
         ] do
       assert js =~ method
     end
+
     refute js =~ ~s|rpc("group.task.list"|
     refute js =~ ~s|rpc("group.task.create"|
     refute js =~ ~s|rpc("group.task.claim"|
@@ -39,13 +39,75 @@ defmodule Newbee.Web.HiveUiTest do
     assert js =~ "已清理半成品组"
     assert js =~ "renderSubmission"
     assert js =~ "collab_task_updated"
+  end
 
-    assert html =~ ~s|id="mc-task-conflicts"|
-    assert html =~ ~s|id="delegate-acceptance-list"|
-    assert html =~ ~s|id="delegate-persona"|
-    assert html =~ ~s|id="delegate-fork-turns"|
-    assert html =~ ~s|id="delegate-depends"|
-    assert html =~ ~s|id="delegate-write-scope"|
+# 登录后主页是原会话界面；Colony 作为待处理和验收嵌进该界面。
+test "会话主页保留原界面，并把蜂群待处理嵌进侧栏" do
+home = File.read!(Path.expand("priv/web/index.html"))
+js = File.read!(Path.expand("priv/web/app.js"))
+surface = File.read!(Path.expand("priv/web/workspace.html"))
+
+assert home =~ ~s|id="session-list"|
+assert home =~ ~s|src="/app.js|
+assert home =~ ~s|id="work-inbox"|
+assert home =~ ~s|id="work-review-bar"|
+refute home =~ ~s|id="colony-entry"|
+refute home =~ "colony/app.js"
+refute home =~ ~s|id="colony-list"|
+assert js =~ "startWorkInbox"
+assert js =~ "colony.honey.review"
+refute js =~ "请从蜂群中打开一个 AI 对话"
+
+assert surface =~ ~s|id="input"|
+assert surface =~ ~s|id="terminal-panel"|
+end
+
+
+
+  test "工作卡显示任务 cwd，目录入口保留 taskId" do
+    taskcard = File.read!("priv/web/colony/taskcard.js")
+    workflow = File.read!("priv/web/colony/workflow.js")
+    shell = File.read!("priv/web/colony/shell.js")
+    css = File.read!("priv/web/colony/colony.css")
+    app = File.read!("priv/web/colony/app.js")
+
+    assert taskcard =~ "className = 'work-cwd'"
+    assert taskcard =~ "work-cwd-path"
+    assert workflow =~ "className = 'work-cwd'"
+    assert shell =~ "taskIdOverride"
+    assert shell =~ "params.set('task', taskId)"
+    assert css =~ ".work-cwd-path"
+    assert css =~ "#flow > [data-drill-section][hidden]"
+    assert app =~ "const todo = attention.length + pendingHoney;"
+  end
+
+  test "工作详情提供成果、历史、协作和可恢复的 Esc 关闭行为" do
+    drill = File.read!("priv/web/colony/drill.js")
+    workbench = File.read!("priv/web/colony/workbench.js")
+    store = File.read!("priv/web/colony/store.js")
+    app = File.read!("priv/web/colony/app.js")
+    taskcard = File.read!("priv/web/colony/taskcard.js")
+    workflow = File.read!("priv/web/colony/workflow.js")
+    composer = File.read!("priv/web/colony/composer.js")
+    colony = File.read!("priv/web/colony.html")
+
+
+    assert drill =~ "成果验收"
+    assert drill =~ "renderWorkHistory"
+    assert drill =~ "work-collab-panel"
+    assert drill =~ "没有不可变快照"
+    assert drill =~ "if (t.type === 'honey') return false;"
+    assert drill =~ "node.append(summary);"
+    assert taskcard =~ "direct.onclick"
+    assert workflow =~ "direct.onclick"
+    assert workbench =~ "closeInspector();"
+    refute workbench =~ "history.back()"
+    assert store =~ "'section'"
+    assert app =~ "drill.js?v=workbench-"
+    assert composer =~ "aria-describedby"
+    assert composer =~ "给当前工作补充要求"
+    assert colony =~ ~s|aria-label="发起新工作或发送群聊消息"|
+
   end
 
   test "Bun 执行真实 Hive UI helper 与 CAS mutation 行为" do
@@ -271,5 +333,18 @@ defmodule Newbee.Web.HiveUiTest do
 
         assert status == 0, output
     end
+  end
+
+  test "群头部提供群管理操作且成员数保持在右侧" do
+    sidebar = File.read!("priv/web/colony/sidebar.js")
+    manage = File.read!("priv/web/colony/manage.js")
+    css = File.read!("priv/web/colony/colony.css")
+
+    assert sidebar =~ "session-group-menu-btn"
+    assert sidebar =~ "renameColony"
+    assert sidebar =~ "dissolveColony"
+    assert manage =~ "colony.rename"
+    assert manage =~ "colony.dissolve"
+    assert css =~ ".session-group-menu-btn"
   end
 end

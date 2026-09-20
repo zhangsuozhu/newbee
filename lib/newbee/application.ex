@@ -11,6 +11,7 @@ defmodule Newbee.Application do
     children =
       [
         Newbee.Bus,
+        Newbee.Colony.Store,
         Newbee.EventLog,
         Newbee.DEE.Rules,
         Newbee.Staging,
@@ -28,6 +29,8 @@ defmodule Newbee.Application do
         {Task.Supervisor, name: Newbee.Collaboration.Chat.Tasks},
         Newbee.Collaboration.Chat.Runner,
         Newbee.Collaboration.CrossHost.Connections,
+        Newbee.Colony.Runtime,
+        Newbee.Colony.Remote,
         Newbee.Collaboration.Capability,
         Newbee.Browser
       ] ++

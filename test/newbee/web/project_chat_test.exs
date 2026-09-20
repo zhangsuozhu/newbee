@@ -93,7 +93,13 @@ defmodule Newbee.Web.ProjectChatTest do
 
     assert %{"error" => _} = chat(base, gid, "representative.create", %{device_id: a["id"], name: []})
     assert %{"ok" => %{"representatives" => [_]}} = chat(base, gid, "snapshot")
-    assert Req.get!(base <> "/").body =~ "/project-chat.js"
+# 登录后主页是会话界面；Colony 待处理嵌在该页。
+assert Req.get!(base <> "/").body =~ "/app.js"
+refute Req.get!(base <> "/").body =~ "/colony/app.js"
+assert Req.get!(base <> "/").body =~ "work-inbox"
+assert Req.get!(base <> "/workspace.html").body =~ "/app.js"
+
+
     response = Req.get!(base <> "/project-chat.js")
     assert response.status == 200
     assert response.body =~ "window.NewbeeProjectChat"

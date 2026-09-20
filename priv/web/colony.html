@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>蜂群 · newbee</title>
+  <script src="/theme.js?v=20260912-theme-pass9"></script>
+  <link rel="stylesheet" href="/style.css?v=20260912-theme-pass19" />
+  <link rel="stylesheet" href="/colony/colony.css?v=workbench-32" />
+  <link rel="stylesheet" href="/colony/shell.css?v=20260912-theme-pass9" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+</head>
+<body class="colony-home">
+<div id="app">
+  <aside id="sidebar">
+<div class="brand">
+<span class="logo"><svg class="ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8.5 5v8L12 21l-8.5-5V8L12 3z"/><path d="M8.5 10.5h7M8.5 13.5h7"/></svg></span>
+<span class="name">蜂群</span>
+<a id="session-home" class="icon-btn" href="/" title="返回会话" aria-label="返回会话">会话</a>
+<button id="sidebar-toggle" class="icon-btn" title="收起侧栏"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
+</div>
+
+
+    <div class="session-tools">
+      <div class="session-search">
+        <input id="colony-filter" type="search" placeholder="搜索蜂群 / 工作 / 成员…" />
+      </div>
+      <button id="new-colony" class="icon-btn new-session-icon" title="新建蜂群" aria-label="新建蜂群">
+        <svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+
+    <div id="colony-list" class="session-list"></div>
+
+    <div class="sidebar-foot">
+      <div id="cwd-label" class="cwd-label" title="当前会话工作目录"></div>
+      <div class="model-row"><div id="model-label" class="model-label" title="点击切换模型"></div>
+      <button id="model-config-btn" class="model-config-btn" title="模型配置（厂家 / 模型 / 参数）">
+        <svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button></div>
+
+      <button id="logout-btn" class="logout-btn hidden" title="退出登录">
+        <svg class="ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <span>退出登录</span>
+      </button>
+    </div>
+  </aside>
+
+<button id="sidebar-expand" class="sidebar-expand hidden" title="展开侧栏"><svg class="ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M9 3v18"/><path d="m14 9 3 3-3 3"/></svg></button>
+  <main id="main">
+    <header id="topbar">
+      <div class="topbar-head">
+        <!-- 改名入口在工作台 workspace.html，蜂群页这里只是位置指示，不挂双击提示 -->
+        <span id="session-title" class="session-title">群聊</span>
+        <span id="session-meta" class="session-meta"></span>
+      </div>
+      <span id="status-dot" class="dot" title="状态"></span>
+      <button id="colony-pause" class="icon-btn pause-btn hidden" title="暂停全群 AI" aria-label="暂停全群 AI" hidden>❚❚</button>
+      <span id="current-op" class="current-op hidden"></span>
+      <span id="usage-label" class="usage"></span>
+      <button id="to-bottom" class="to-bottom icon-btn" title="回到底部">↓</button>
+
+
+      <button id="qa-show" class="icon-btn qa-icon-btn" title="手机扫码登录" aria-label="手机扫码登录">
+        <svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/><path d="M14 14h3v3h-3z"/><path d="M21 14v3M14 21h3"/></svg>
+      </button>
+      <button id="terminal-toggle" class="icon-btn" title="打开终端" aria-label="打开终端" aria-expanded="false"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 17 4-4-4-4"/><path d="M12 19h8"/></svg></button>
+
+      <button id="mc-expand" class="icon-btn" title="打开 Mission Control"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="3"/><path d="M15 3v18"/><path d="m13 9-3 3 3 3"/></svg></button>
+      <div class="theme-menu-wrap">
+        <button id="theme-toggle" class="icon-btn theme-icon-btn" data-theme-button title="选择界面风格" aria-label="选择界面风格" aria-haspopup="menu" aria-controls="theme-menu" aria-expanded="false">
+          <svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a10 10 0 0 0 0 20c1.1 0 2-.9 2-2 0-.5-.2-1-.6-1.4-.4-.4-.6-.9-.6-1.4a2 2 0 0 1 2-2h1.8A5.4 5.4 0 0 0 22 9.8C22 5.5 17.5 2 12 2z"/><circle cx="8.5" cy="7.5" r=".7" fill="currentColor" stroke="none"/><circle cx="13.5" cy="6.5" r=".7" fill="currentColor" stroke="none"/><circle cx="17.5" cy="10.5" r=".7" fill="currentColor" stroke="none"/><circle cx="6.5" cy="12.5" r=".7" fill="currentColor" stroke="none"/></svg>
+        </button>
+        <div id="theme-menu" class="theme-menu hidden" role="menu" aria-label="界面风格">
+          <button type="button" class="theme-menu-item" data-theme-value="dark" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-dark"></span><span>深色</span><span class="theme-menu-check" aria-hidden="true">✓</span></button>
+          <button type="button" class="theme-menu-item" data-theme-value="light" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-light"></span><span>浅色</span><span class="theme-menu-check" aria-hidden="true">✓</span></button>
+          <button type="button" class="theme-menu-item" data-theme-value="neumorphic" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-neumorphic"></span><span>浅色拟物</span><span class="theme-menu-check" aria-hidden="true">✓</span></button>
+          <button type="button" class="theme-menu-item" data-theme-value="neumorphic-dark" role="menuitemradio" aria-checked="false"><span class="theme-swatch theme-swatch-neumorphic-dark"></span><span>深色拟物</span><span class="theme-menu-check" aria-hidden="true">✓</span></button>
+        </div>
+      </div>
+      <button id="sound-toggle" class="icon-btn" title="关闭提示音"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg></button>
+    </header>
+
+    <!-- 面包屑：深钻任务 / 打开成员对话时，标题下显示「群聊 › 层级」并可点回上层 -->
+    <div id="session-sub" class="colony-sub"></div>
+
+    <div id="review-bar" class="review-strip hidden">
+      <span class="review-ico" aria-hidden="true">📦</span>
+      <div class="review-main">
+        <strong class="review-title" id="review-text">待你验收</strong>
+        <span class="review-items" id="review-preview"></span>
+      </div>
+      <button id="review-go" class="review-btn">去验收</button>
+    </div>
+
+    <div id="transcript" class="transcript"><div id="flow" class="flow"></div></div>
+
+    <!-- 内嵌真实 newbee 会话（点 Bee 的某个对话时使用） -->
+    <div id="embed-host" class="embed-host hidden"><iframe id="embed-frame" title="newbee 对话"></iframe></div>
+
+    <footer id="composer">
+      <div class="colony-quick" id="quick-bar"></div>
+      <div class="composer-card">
+        <div id="drop-overlay" class="drop-overlay hidden">松开以添加文件到输入框</div>
+        <div class="composer-row">
+          <div class="composer-attach">
+            <button id="attach-btn" class="icon-btn" title="上传文件（图片也可直接粘贴）" aria-label="上传文件"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+            <div class="effort-pick" id="effort-pick">
+              <button id="effort-btn" class="icon-btn effort-btn" title="思考强度：模型推理深度" aria-label="思考强度" aria-haspopup="true" aria-expanded="false"><svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5a3 3 0 1 0-5.9.8A3.5 3.5 0 0 0 4 9.5c0 .9.3 1.7.9 2.3A3.5 3.5 0 0 0 6 18h1"/><path d="M12 5a3 3 0 1 1 5.9.8A3.5 3.5 0 0 1 20 9.5c0 .9-.3 1.7-.9 2.3A3.5 3.5 0 0 1 18 18h-1"/><path d="M9 18v2a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-2"/><path d="M12 5v17"/></svg><span id="effort-btn-text" class="effort-btn-text">中</span></button>
+              <div id="effort-segments" class="effort-segments hidden" role="menu" aria-label="思考强度"></div>
+            </div>
+            <input type="file" id="file-input" multiple hidden />
+          </div>
+          <textarea id="input" rows="1" placeholder="说点什么…" aria-label="发起新工作或发送群聊消息" aria-describedby="scope-hint"></textarea>
+          <div class="composer-actions">
+            <button id="send" class="btn-icon-round btn-send" title="发送 (Enter)" aria-label="发送">
+              <svg class="ico send-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div id="attach-preview" class="attach-preview hidden"></div>
+    </footer>
+  </main>
+</div>
+
+<div id="colony-toast" class="colony-toast" hidden></div>
+
+<script type="module" src="/colony/app.js?v=workbench-47"></script>
+</body>
+</html>
