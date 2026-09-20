@@ -1,5 +1,5 @@
 // 蜂群前端 · 状态中心（订阅 + 轮询）
-import { attentionWorks, workAttention, pendingReviewHoney } from './workview.js';
+import { attentionWorks, workAttention, pendingReviewHoney } from './workview.js?v=inbox-1';
 import { rpc, toast, isMemberSession } from "./api.js";
 
 const listeners = new Set();
@@ -479,9 +479,16 @@ export async function restoreLocation() {
 }
 
 // One responsibility policy for counts, cards and the actionable inbox.
+// One responsibility policy for counts, cards and the actionable inbox.
 export function workViewer() {
-  return {canManage: state.data?.can_manage === true, actorId: state.data?.actor_bee_id};
+  return {
+    canManage: state.data?.can_manage === true,
+    actorId: state.data?.actor_bee_id,
+    // 服务端按查看者算好的忽略集合（见 Engine.view/2）。
+    dismissedIds: new Set(state.data?.dismissed_task_ids || [])
+  };
 }
+
 export function attentionTasks() {
   return attentionWorks(state.data?.tasks || [], workViewer());
 }

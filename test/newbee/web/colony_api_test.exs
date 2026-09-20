@@ -503,4 +503,61 @@ defmodule Newbee.Web.ColonyApiTest do
                "text" => "过期请求"
              })
   end
+
+  test "待办可以先忽略：只有本查看者看不到，工作有实质变化后自动回来", %{cid: cid, actor: actor} do
+    {:ok, task} = Work.create(cid, %{"title" => "需要你答复的旧工作"})
+    {:ok, _blocked} = Engine.transition_task(cid, task["id"], "block", bee_id: actor)
+
+    assert %{"ok" => before} = rpc("colony.view", %{"colonyId" => cid})
+    refute task["id"] in before["dismissed_task_ids"]
+
+    assert %{"ok" => %{"task" => _}} =
+             rpc("colony.work.dismiss", %{"colonyId" => cid, "taskId" => task["id"]})
+
+    assert %{"ok" => after_dismiss} = rpc("colony.view", %{"colonyId" => cid})
+    assert task["id"] in after_dismiss["dismissed_task_ids"]
+
+    # 忽略要能被增量轮询看见：否则工作台拿到 sinceRevision 相同的旧视图，点了没反应。
+    assert %{"ok" => %{"changed" => true}} =
+             rpc("colony.view", %{"colonyId" => cid, "sinceRevision" => before["view_revision"]})
+
+    # 负责人推进工作 → 快照失配，忽略自动失效（工作重新进入待办）
+    {:ok, _running} = Engine.transition_task(cid, task["id"], "unblock", bee_id: actor)
+    assert %{"ok" => after_progress} = rpc("colony.view", %{"colonyId" => cid})
+    refute task["id"] in after_progress["dismissed_task_ids"]
+
+    # 手动恢复提醒
+    assert %{"ok" => %{"task" => _}} =
+             rpc("colony.work.dismiss", %{"colonyId" => cid, "taskId" => task["id"]})
+
+    assert %{"ok" => %{"task" => _}} =
+             rpc("colony.work.restore", %{"colonyId" => cid, "taskId" => task["id"]})
+
+    assert %{"ok" => after_restore} = rpc("colony.view", %{"colonyId" => cid})
+    refute task["id"] in after_restore["dismissed_task_ids"]
+  end
+
+  test "执行器已经不在的工作可以由人结束（终态，不再有待办）", %{cid: cid, actor: actor} do
+    {:ok, task} = Work.create(cid, %{"title" => "心跳超时的工作"})
+    {:ok, _blocked} = Engine.transition_task(cid, task["id"], "block", bee_id: actor)
+
+    assert %{"ok" => %{"task" => cancelled}} =
+             rpc("colony.work.abandon", %{
+               "colonyId" => cid,
+               "taskId" => task["id"],
+               "note" => "执行器已经不在"
+             })
+
+    assert cancelled["status"] == "cancelled"
+    assert is_nil(cancelled["waiting_for"])
+    refute cancelled["resume_needed"]
+    assert cancelled["completed_at"] != nil
+
+    assert %{"error" => %{"code" => "terminal"}} =
+             rpc("colony.work.abandon", %{"colonyId" => cid, "taskId" => task["id"]})
+
+    # 终态任务的忽略没有意义，直接拒绝（避免把它再塞回待办）
+    assert %{"error" => %{"code" => "terminal"}} =
+             rpc("colony.work.dismiss", %{"colonyId" => cid, "taskId" => task["id"]})
+  end
 end

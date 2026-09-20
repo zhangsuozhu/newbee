@@ -9,8 +9,9 @@ defmodule Newbee.Web.ColonyApi do
   """
 
   alias Newbee.Colony.Engine
+  alias Newbee.Colony.Work
 
-  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.cwd colony.dissolve colony.view colony.drill colony.workspace.cleanup colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.cwd colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow)
+  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.cwd colony.dissolve colony.view colony.drill colony.workspace.cleanup colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.cwd colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow colony.work.dismiss colony.work.restore colony.work.abandon)
 
   @doc "dispatch/2 返回 {:ok, value} | {:error, code, message}。"
   def dispatch("colony.invite.redeem", p),
@@ -44,7 +45,7 @@ defmodule Newbee.Web.ColonyApi do
         "colony.view" ->
           since = p["sinceRevision"]
 
-          with {:ok, view} <- Engine.view(cid) do
+          with {:ok, view} <- Engine.view(cid, viewer_bee_id: actor && actor["id"]) do
             rev = view["view_revision"]
 
             if since != nil and since == rev do
@@ -191,6 +192,23 @@ defmodule Newbee.Web.ColonyApi do
                  ),
                do: {:ok, %{"task" => task}}
 
+        # 「不再提醒 / 结束工作」是待办唯一的两个出口：忽略只影响自己的展示，
+        # 结束工作把执行器已经不在的任务置为终态（否则它只能永远赖在「需要你处理」里）。
+        "colony.work.dismiss" ->
+          with {:ok, task} <- Work.dismiss(cid, p["taskId"], actor["id"]) do
+            {:ok, %{"task" => task}}
+          end
+
+        "colony.work.restore" ->
+          with {:ok, task} <- Work.restore(cid, p["taskId"], actor["id"]) do
+            {:ok, %{"task" => task}}
+          end
+
+        "colony.work.abandon" ->
+          with {:ok, task} <- Work.abandon(cid, p["taskId"], actor["id"], p["note"]) do
+            {:ok, %{"task" => task}}
+          end
+
         "colony.work.revise" ->
           with {:ok, task} <-
                  Newbee.Colony.Work.revise(cid, p["taskId"], p["changes"] || %{}, actor["id"]),
@@ -260,7 +278,7 @@ defmodule Newbee.Web.ColonyApi do
 
   defp authorize_request(method, p, actor, role) do
     owner_only =
-      ~w(colony.create colony.bootstrap colony.dissolve colony.rename colony.cwd colony.work.cwd colony.bee.add colony.bee.remove colony.control colony.invite.create colony.remote.join colony.honey.review colony.task.claim colony.task.decompose colony.honey.add colony.workspace.cleanup colony.signal.emit)
+      ~w(colony.create colony.bootstrap colony.dissolve colony.rename colony.cwd colony.work.cwd colony.bee.add colony.bee.remove colony.control colony.invite.create colony.remote.join colony.honey.review colony.task.claim colony.task.decompose colony.honey.add colony.workspace.cleanup colony.signal.emit colony.work.abandon)
 
     cond do
       method not in @methods ->
@@ -341,7 +359,7 @@ defmodule Newbee.Web.ColonyApi do
 
       "colony.view" ->
         with {:ok, cid} <- need(payload, "colonyId"),
-             {:ok, view} <- Engine.view(cid) do
+             {:ok, view} <- Engine.view(cid, viewer_bee_id: g(payload, "actorBeeId")) do
           {:ok, view}
         end
 

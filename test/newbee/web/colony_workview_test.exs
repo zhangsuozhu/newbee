@@ -52,6 +52,15 @@ defmodule Newbee.Web.ColonyWorkviewTest do
     assert.equal(reviewModel(null,honey).revision,'unknown');
     assert.equal(reviewModel(review,honey).gitRevision,null); // Requirement matching is not code validation.
     assert.equal(reviewModel({...review,acceptance:[]},honey).criteria.length,0);
+    // 「不再提醒」是查看者私有状态（服务端折算成 dismissed_task_ids），忽略后不再进待办；
+    // 被忽略的子任务也不该把父任务折上来——否则忽略等于没效果。
+    const dismissing = {canManage:true, actorId:'owner', dismissedIds:new Set(['blocked'])};
+    assert.equal(attentionAction(blocked, dismissing), null);
+    // 任务有实质变化后服务端不再列出它，前端只是查表——所以「重新出现」不需要前端额外逻辑。
+    assert.equal(attentionAction(blocked, {canManage:true, actorId:'owner'}).reason, '等待你答复');
+    const childDismissed = {canManage:true, actorId:'owner', dismissedIds:new Set(['child'])};
+    assert.deepEqual(attentionWorks([parent,child], childDismissed), []);
+
     console.log('presentation policies passed');
     """
 

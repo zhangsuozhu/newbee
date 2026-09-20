@@ -1,7 +1,16 @@
 // Pure presentation policy; execution and authorization remain on the server.
+//
+// 「一项工作是否需要你动手」只有这一份判定：蜂群工作台（store.js）和宿主侧栏（app.js，
+// 通过动态 import 复用本模块）都读这里。此前 app.js 抄过一份旧规则，结果同一份数据在两处
+// 给出不同的待办（子任务不折叠、成员门槛丢失、心跳超时被误报成「等待你答复」）。
 const terminal = task => ['done', 'cancelled'].includes(task.status);
+// 服务端按查看者折算好 dismissed_task_ids；这里只查表，不重复实现「什么算实质变化」。
+export const isDismissed = (task, viewer = {}) =>
+  !!(viewer.dismissedIds && typeof viewer.dismissedIds.has === 'function' && viewer.dismissedIds.has(task.id));
 export function attentionAction(task, viewer = {}) {
   if (terminal(task)) return null;
+  if (isDismissed(task, viewer)) return null;
+
   const mine = task.owner_kind === 'human' && task.assigned_bee_id === viewer.actorId;
   if (task.status === 'pending_review') {
     return viewer.canManage && !task.integration_required

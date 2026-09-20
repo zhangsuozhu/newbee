@@ -1,5 +1,8 @@
 defmodule Newbee.Colony.Work do
   @moduledoc "Work ownership, durable context, dispatch outbox and evidence-backed acceptance."
+  # 人结束工作时写进 next_step 的固定说明（可附原因）。
+  @abandon_next_step "已由人结束这项工作，不再推进。"
+
   alias Newbee.Colony.{Store, Task, Bee, Id, Control, Honey, Trace}
 
   def create(cid, attrs) do
@@ -256,6 +259,123 @@ defmodule Newbee.Colony.Work do
       _ -> {:error, "forbidden", "当前身份不是蜂群成员"}
     end
   end
+
+  @doc """
+  忽略/恢复一项工作的提醒（按人，个人可见）：只影响「需要你处理」是否展示，不改变工作状态。
+
+  忽略根任务时连同子任务一起记下：否则子任务仍会把父任务折回待办，忽略等于没效果。
+  """
+  def dismiss(cid, tid, actor), do: set_dismissal(cid, tid, actor, :dismiss)
+  def restore(cid, tid, actor), do: set_dismissal(cid, tid, actor, :restore)
+
+  defp set_dismissal(cid, tid, actor, op) do
+    with {:ok, _} <- member(cid, actor) do
+      Store.transaction(fn data ->
+        task = get_in(data, ["tasks", tid])
+
+        cond do
+          task == nil or task["colony_id"] != cid ->
+            {:error, "not_found", "工作不在当前群"}
+
+          Task.terminal?(task) ->
+            {:error, "terminal", "工作已结束，无需提醒"}
+
+          true ->
+            ids = related_work_ids(data, cid, tid)
+
+            next =
+              Enum.reduce(ids, data, fn id, acc ->
+                case get_in(acc, ["tasks", id]) do
+                  %{"colony_id" => ^cid} = current ->
+                    updated =
+                      if op == :dismiss, do: Task.dismiss(current, actor), else: Task.restore(current, actor)
+
+                    put_in(acc, ["tasks", id], updated)
+
+                  _ ->
+                    acc
+                end
+              end)
+
+            {:ok, {:ok, get_in(next, ["tasks", tid])}, next}
+        end
+      end)
+    end
+  end
+
+  defp related_work_ids(data, cid, tid) do
+    data["tasks"]
+    |> Map.values()
+    |> Enum.filter(fn t ->
+      t["colony_id"] == cid and
+        (t["id"] == tid or t["parent_task_id"] == tid or t["workflow_root"] == tid)
+    end)
+    |> Enum.map(& &1["id"])
+    |> Enum.uniq()
+  end
+
+  @doc """
+  由人结束一项不再推进的工作（owner 专属，终态）。
+
+  执行器已经不在、任务却卡在「等你答复」时，这是唯一能真正把它清出待办的动作：
+  置为 cancelled、清空等待与重投标记，未投递的 delivery 也不会再唤醒执行器。
+  """
+  def abandon(cid, tid, actor, note \\ nil) do
+    with {:ok, colony} <- Store.get_colony(cid),
+         :ok <- Control.authorize(colony, actor),
+         {:ok, _} <- member(cid, actor) do
+      Store.transaction(fn data ->
+        task = get_in(data, ["tasks", tid])
+
+        cond do
+          task == nil or task["colony_id"] != cid ->
+            {:error, "not_found", "工作不在当前群"}
+
+          Task.terminal?(task) ->
+            {:error, "terminal", "工作已结束"}
+
+          true ->
+            case Task.transition(task, "cancel", bee_id: actor) do
+              {:ok, cancelled} ->
+                cancelled =
+                  cancelled
+                  |> Map.put("waiting_for", nil)
+                  |> Map.put("resume_needed", false)
+                  |> Map.put("next_step", abandon_note(note))
+
+                {next, _entry} =
+                  data
+                  |> put_in(["tasks", tid], cancelled)
+                  |> Store.put_entry(
+                    "trace",
+                    Trace.entry(%{
+                      "colony_id" => cid,
+                      "bee_id" => actor,
+                      "task_id" => tid,
+                      "type" => "task",
+                      "text" => "已结束工作「#{cancelled["title"]}」：人决定不再推进",
+                      "data" => %{"status" => "cancelled", "note" => note}
+                    })
+                  )
+
+                {:ok, {:ok, cancelled}, next}
+
+              _ ->
+                {:error, "invalid_transition", "当前状态不允许结束工作"}
+            end
+        end
+      end)
+    end
+  end
+
+  defp abandon_note(note) when is_binary(note) do
+    case String.trim(note) do
+      "" -> @abandon_next_step
+      text -> @abandon_next_step <> "原因：" <> String.slice(text, 0, 200)
+    end
+  end
+
+  defp abandon_note(_note), do: @abandon_next_step
 
   def submit(cid, tid, attrs, actor) do
     with {:ok, _} <- member(cid, actor) do
