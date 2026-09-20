@@ -22,6 +22,14 @@ defmodule Newbee.LLM.Config do
 
   def roles, do: @roles
 
+  @doc "Return the expanded API key for a named provider, or nil. Host-side only."
+  def provider_api_key(name) when is_binary(name) do
+    case load()["providers"][name] do
+      %{"apiKey" => key} -> expand_env(key)
+      _ -> nil
+    end
+  end
+
   @doc "加载配置；找不到文件时回退到内置默认（OpenRouter + env key）。"
   def load do
     case resolve_path() do

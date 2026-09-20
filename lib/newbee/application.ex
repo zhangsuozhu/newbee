@@ -27,6 +27,7 @@ defmodule Newbee.Application do
         Newbee.Collaboration.CrossHost.Extensions,
         Newbee.Collaboration.Chat.Room,
         {Task.Supervisor, name: Newbee.Collaboration.Chat.Tasks},
+        {Task.Supervisor, name: Newbee.Compaction.Tasks},
         Newbee.Collaboration.Chat.Runner,
         Newbee.Collaboration.CrossHost.Connections,
         Newbee.Colony.Runtime,
