@@ -29,6 +29,10 @@ defmodule Newbee.Agent.Loop do
             compaction_max_tokens: 1_024,
             compaction_output_reserve: nil,
             auto_compact: true,
+            compaction_config: nil,
+            compaction_deps: %{},
+            jev_breaker: %{failures: 0, retry_at_ms: nil},
+            jev_projection: nil,
             # 会话唯一绝对工作根；启动时物化，切换时与 evaluator/prompt 同步。
             root: nil,
             # 宿主 pid + monitor 引用（web 会话进程）；pid 用于模型调用边界领取 steering。
@@ -263,6 +267,27 @@ defmodule Newbee.Agent.Loop do
 
     {session, prior_messages} = session
 
+    compaction_config =
+      Keyword.get(opts, :compaction_config) || Newbee.Compaction.Config.load()
+
+    compaction_deps = Keyword.get(opts, :compaction_deps, %{})
+
+    {prior_messages, jev_projection} =
+      case session do
+        nil ->
+          {prior_messages, nil}
+
+        session ->
+          {restored, projection, restore_stats} =
+            Newbee.Compaction.restore(session, prior_messages, compaction_config)
+
+          if restore_stats.outcome == :restore_ignored do
+            Newbee.DebugLog.log(:compact, "jev restore ignored reason=" <> inspect(restore_stats.reason))
+          end
+
+          {restored, projection}
+      end
+
     # J-Space：登记当前会话，供 Newbee.Tools.JSpace 定位 ledger
     if session, do: Newbee.Session.set_current(session.id)
 
@@ -318,6 +343,10 @@ defmodule Newbee.Agent.Loop do
        compaction_max_tokens: Keyword.get(opts, :compaction_max_tokens, 1_024),
        compaction_output_reserve: Keyword.get(opts, :compaction_output_reserve),
        auto_compact: Keyword.get(opts, :auto_compact, true),
+       compaction_config: compaction_config,
+       compaction_deps: compaction_deps,
+       jev_breaker: Newbee.Compaction.Breaker.new(),
+       jev_projection: jev_projection,
        root: root
      }}
   end
@@ -1197,139 +1226,148 @@ defmodule Newbee.Agent.Loop do
       emit(state, {:turn_long, step})
     end
 
-    {state, overflow} =
-      case maybe_auto_compact(state, step) do
-        {:ok, compacted} ->
-          {%{compacted | messages: repair_history(compacted.messages)}, nil}
+    compact_result = maybe_auto_compact(state, step)
 
-        {:error, details, overflow_state} ->
-          emit(overflow_state, {:context_overflow, details})
-          Newbee.DebugLog.log(:compact, "context overflow, refuse provider call")
-          {overflow_state, details}
-      end
+    case compact_result do
+      {:interrupted, interrupted_state} ->
+        emit(interrupted_state, {:interrupted, nil})
+        {{:interrupted, nil}, interrupted_state}
 
-    if overflow != nil do
-      {{:error, {:context_overflow, overflow}}, state}
-    else
-      Newbee.DebugLog.log(:turn, "step #{step} messages=#{length(state.messages)}")
-      on_text = fn delta -> emit(state, {:text, delta}) end
-      on_reasoning = fn delta -> emit(state, {:reasoning, delta}) end
-      # 上游流中断自动重试时给用户一条可见提示（TUI/CLI/Web 各自渲染 :llm_retry）
-      on_retry = fn reason -> emit(state, {:llm_retry, reason}) end
+      _ ->
+        {state, overflow} =
+          case compact_result do
+            {:ok, compacted} ->
+              {%{compacted | messages: repair_history(compacted.messages)}, nil}
 
-      # I1：记录本次路由请求的可缓存前缀快照（Archive 摘要路径消费）。
-      # 标准 LLM client + 会话才写；注入函数/无会话 no-op。
-      request_messages = Newbee.Collaboration.Chat.execution_messages(state.messages, state.session, state.root)
-
-      request_messages =
-        if compaction_budget(%{state | messages: request_messages}).status == :hard_limit,
-          do: state.messages,
-          else: request_messages
-
-      Newbee.RequestEnvelope.record(state.session, state.client, request_messages)
-
-      case call_client(state.client_fun, request_messages, on_text, on_reasoning, on_retry) do
-        {:ok, msg, usage} ->
-          Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
-          emit(state, {:usage, Map.put(usage, "model", client_model(state.client))})
-          state = %{state | usage: merge_usage(state.usage, usage)}
-          # 用量持久化（UI 历史回放）：附加到 assistant 消息私有字段，
-          # 仅前端 history 消费；发模型的 messages 不含 _usage（见 request_messages）
-          msg = Map.put(msg, "_usage", usage)
-
-          # 上游（DeepSeek/OpenRouter 系）拒绝 content 为空的 assistant 消息（400）：
-          # 模型偶发返回"空正文且无工具调用"（只吐思考流/空串），该消息一旦落进
-          # transcript，后续整个历史请求都会 400 卡死。空回复无信息量，不进历史
-          # （同时也保持原 msg 继续走下方空文本回合结束逻辑）。
-          state =
-            if empty_assistant_msg?(msg) do
-              Newbee.DebugLog.log(:turn, "step #{step} empty assistant response dropped")
-              state
-            else
-              push_msg(state, msg)
-            end
-
-          case Newbee.Codec.extract_tool_calls(msg) do
-            [] ->
-              # 降级通道 (§4.2)：模型偶发在正文输出 ```elixir 代码块时容错执行
-              case Newbee.Codec.FallbackParser.extract(msg["content"] || "") do
-                {[], _cleaned} ->
-                  Newbee.DebugLog.log(:turn, "step #{step} no tool calls, turn end")
-
-                  # 流监控（§4.5）：正文 + 思考流一并检查沉睡规则（scope 分流见 stream_rule_hits）
-                  case stream_rule_hits(msg) do
-                    [] ->
-                      state = %{state | rule_streak: %{ids: [], count: 0}}
-                      {state, steered} = consume_steering(state)
-
-                      if steered > 0,
-                        do: run_turn(state, step + 1),
-                        else: text_or_incomplete(state, msg, step)
-
-                    hits ->
-                      {state, allow_retry} = content_rule_retry_budget(state, hits)
-                      # 规则命中热度（§8.5 profiling 输入）
-                      Newbee.Environment.UsageTracker.observe_rules(hits)
-
-                      if allow_retry do
-                        # 沉睡规则命中正文（§4.5 流监控）：注入提醒，模型下轮纠正
-                        emit(state, {:rule_hit, hits})
-                        injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
-                        reminder = %{"role" => "system", "content" => "[Sleeping-rule hit] " <> injections}
-
-                        state =
-                          inject_prompt(state, reminder, %{
-                            source: "sleeping_rule",
-                            reason: "模型可见正文或隐藏思考流命中沉睡规则",
-                            timing: "current_turn_retry",
-                            step: step,
-                            trigger: visible_rule_trigger(msg["content"] || "", hits),
-                            rules: rule_audit_details(hits)
-                          })
-
-                        state = state |> consume_steering() |> elem(0)
-                        run_turn(state, step + 1)
-                      else
-                        # 熔断：同一组规则连续命中已达上限，放行原文避免无限重试烧 token
-                        emit(state, {:rule_hit, hits})
-                        state = %{state | rule_streak: %{ids: [], count: 0}}
-                        {state, steered} = consume_steering(state)
-
-                        if steered > 0,
-                          do: run_turn(state, step + 1),
-                          else: text_or_incomplete(state, msg, step)
-                      end
-                  end
-
-                {blocks, cleaned} ->
-                  Newbee.DebugLog.log(:turn, "step #{step} fallback: #{length(blocks)} elixir blocks")
-                  execute_fallback(blocks, cleaned, state, step)
-              end
-
-            calls ->
-              case execute_calls(calls, state) do
-                {:halt, reply, state} ->
-                  {reply, %{state | rule_streak: %{ids: [], count: 0}}}
-
-                {:cont, state} ->
-                  state = %{state | rule_streak: %{ids: [], count: 0}, incomplete_streak: 0}
-                  state = state |> consume_steering() |> elem(0)
-                  run_turn(state, step + 1)
-              end
+            {:error, details, overflow_state} ->
+              emit(overflow_state, {:context_overflow, details})
+              Newbee.DebugLog.log(:compact, "context overflow, refuse provider call")
+              {overflow_state, details}
           end
 
-        {:interrupted, content} ->
-          # Esc 中断：终止整个 turn（部分生成的 assistant 消息不入历史，
-          # 避免悬空 tool_calls 触发 DeepSeek 400）
-          Newbee.DebugLog.log(:turn, "step #{step} interrupted")
-          emit(state, {:interrupted, content})
-          {{:interrupted, content}, state}
+        if overflow != nil do
+          {{:error, {:context_overflow, overflow}}, state}
+        else
+          Newbee.DebugLog.log(:turn, "step #{step} messages=#{length(state.messages)}")
+          on_text = fn delta -> emit(state, {:text, delta}) end
+          on_reasoning = fn delta -> emit(state, {:reasoning, delta}) end
+          # 上游流中断自动重试时给用户一条可见提示（TUI/CLI/Web 各自渲染 :llm_retry）
+          on_retry = fn reason -> emit(state, {:llm_retry, reason}) end
 
-        {:error, e} ->
-          Newbee.DebugLog.log(:turn, "step #{step} llm error #{inspect(e)}")
-          emit(state, {:error, e})
-          {{:error, e}, state}
-      end
+          # I1：记录本次路由请求的可缓存前缀快照（Archive 摘要路径消费）。
+          # 标准 LLM client + 会话才写；注入函数/无会话 no-op。
+          request_messages = Newbee.Collaboration.Chat.execution_messages(state.messages, state.session, state.root)
+
+          request_messages =
+            if compaction_budget(%{state | messages: request_messages}).status == :hard_limit,
+              do: state.messages,
+              else: request_messages
+
+          Newbee.RequestEnvelope.record(state.session, state.client, request_messages)
+
+          case call_client(state.client_fun, request_messages, on_text, on_reasoning, on_retry) do
+            {:ok, msg, usage} ->
+              Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
+              emit(state, {:usage, Map.put(usage, "model", client_model(state.client))})
+              state = %{state | usage: merge_usage(state.usage, usage)}
+              # 用量持久化（UI 历史回放）：附加到 assistant 消息私有字段，
+              # 仅前端 history 消费；发模型的 messages 不含 _usage（见 request_messages）
+              msg = Map.put(msg, "_usage", usage)
+
+              # 上游（DeepSeek/OpenRouter 系）拒绝 content 为空的 assistant 消息（400）：
+              # 模型偶发返回"空正文且无工具调用"（只吐思考流/空串），该消息一旦落进
+              # transcript，后续整个历史请求都会 400 卡死。空回复无信息量，不进历史
+              # （同时也保持原 msg 继续走下方空文本回合结束逻辑）。
+              state =
+                if empty_assistant_msg?(msg) do
+                  Newbee.DebugLog.log(:turn, "step #{step} empty assistant response dropped")
+                  state
+                else
+                  push_msg(state, msg)
+                end
+
+              case Newbee.Codec.extract_tool_calls(msg) do
+                [] ->
+                  # 降级通道 (§4.2)：模型偶发在正文输出 ```elixir 代码块时容错执行
+                  case Newbee.Codec.FallbackParser.extract(msg["content"] || "") do
+                    {[], _cleaned} ->
+                      Newbee.DebugLog.log(:turn, "step #{step} no tool calls, turn end")
+
+                      # 流监控（§4.5）：正文 + 思考流一并检查沉睡规则（scope 分流见 stream_rule_hits）
+                      case stream_rule_hits(msg) do
+                        [] ->
+                          state = %{state | rule_streak: %{ids: [], count: 0}}
+                          {state, steered} = consume_steering(state)
+
+                          if steered > 0,
+                            do: run_turn(state, step + 1),
+                            else: text_or_incomplete(state, msg, step)
+
+                        hits ->
+                          {state, allow_retry} = content_rule_retry_budget(state, hits)
+                          # 规则命中热度（§8.5 profiling 输入）
+                          Newbee.Environment.UsageTracker.observe_rules(hits)
+
+                          if allow_retry do
+                            # 沉睡规则命中正文（§4.5 流监控）：注入提醒，模型下轮纠正
+                            emit(state, {:rule_hit, hits})
+                            injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
+                            reminder = %{"role" => "system", "content" => "[Sleeping-rule hit] " <> injections}
+
+                            state =
+                              inject_prompt(state, reminder, %{
+                                source: "sleeping_rule",
+                                reason: "模型可见正文或隐藏思考流命中沉睡规则",
+                                timing: "current_turn_retry",
+                                step: step,
+                                trigger: visible_rule_trigger(msg["content"] || "", hits),
+                                rules: rule_audit_details(hits)
+                              })
+
+                            state = state |> consume_steering() |> elem(0)
+                            run_turn(state, step + 1)
+                          else
+                            # 熔断：同一组规则连续命中已达上限，放行原文避免无限重试烧 token
+                            emit(state, {:rule_hit, hits})
+                            state = %{state | rule_streak: %{ids: [], count: 0}}
+                            {state, steered} = consume_steering(state)
+
+                            if steered > 0,
+                              do: run_turn(state, step + 1),
+                              else: text_or_incomplete(state, msg, step)
+                          end
+                      end
+
+                    {blocks, cleaned} ->
+                      Newbee.DebugLog.log(:turn, "step #{step} fallback: #{length(blocks)} elixir blocks")
+                      execute_fallback(blocks, cleaned, state, step)
+                  end
+
+                calls ->
+                  case execute_calls(calls, state) do
+                    {:halt, reply, state} ->
+                      {reply, %{state | rule_streak: %{ids: [], count: 0}}}
+
+                    {:cont, state} ->
+                      state = %{state | rule_streak: %{ids: [], count: 0}, incomplete_streak: 0}
+                      state = state |> consume_steering() |> elem(0)
+                      run_turn(state, step + 1)
+                  end
+              end
+
+            {:interrupted, content} ->
+              # Esc 中断：终止整个 turn（部分生成的 assistant 消息不入历史，
+              # 避免悬空 tool_calls 触发 DeepSeek 400）
+              Newbee.DebugLog.log(:turn, "step #{step} interrupted")
+              emit(state, {:interrupted, content})
+              {{:interrupted, content}, state}
+
+            {:error, e} ->
+              Newbee.DebugLog.log(:turn, "step #{step} llm error #{inspect(e)}")
+              emit(state, {:error, e})
+              {{:error, e}, state}
+          end
+        end
     end
   end
 
@@ -2390,7 +2428,86 @@ defmodule Newbee.Agent.Loop do
 
       true ->
         retain = max(trunc(state.context_window * state.compaction_retain), 512)
-        compact_until_budget(state, retain, step, budget, 3)
+        now_ms = System.monotonic_time(:millisecond)
+        config = state.compaction_config || Newbee.Compaction.Config.legacy()
+
+        if config.mode != :jev or is_nil(state.session) or
+             not Newbee.Compaction.Breaker.allow?(state.jev_breaker, now_ms) do
+          compact_until_budget(state, retain, step, budget, 3)
+        else
+          case try_jev_compaction(state) do
+            {:ok, next_state} ->
+              {:ok, next_state}
+
+            {:interrupted, next_state} ->
+              {:interrupted, next_state}
+
+            {:fallback, next_state} ->
+              compact_until_budget(next_state, retain, step, compaction_budget(next_state), 3)
+          end
+        end
+    end
+  end
+
+  defp try_jev_compaction(state) do
+    interrupt? = fn ->
+      Newbee.LLM.Client.interrupted?(state.client) or Newbee.Colony.Control.loop_blocked?(state.render)
+    end
+
+    context = %{
+      session: state.session,
+      projection: state.jev_projection,
+      budget_opts: compaction_budget_opts(state),
+      interrupt?: interrupt?
+    }
+
+    result =
+      try do
+        Newbee.Compaction.try_prune(state.messages, context, state.compaction_config, state.compaction_deps)
+      rescue
+        _ -> {:error, :internal_error, %{reason: :internal_error, request_count: 0}}
+      catch
+        _, _ -> {:error, :internal_error, %{reason: :internal_error, request_count: 0}}
+      end
+
+    now_ms = System.monotonic_time(:millisecond)
+
+    case result do
+      {:ok, %{messages: messages, projection: projection, stats: stats}} ->
+        emit(state, {:jev_compaction, Map.put(stats, :outcome, :accepted)})
+        Newbee.DebugLog.log(:compact, "jev accepted saved=" <> to_string(stats.saved_tokens_est))
+
+        {:ok,
+         %{
+           state
+           | messages: messages,
+             jev_projection: projection,
+             jev_breaker: Newbee.Compaction.Breaker.success(state.jev_breaker)
+         }}
+
+      {:interrupted, stats} ->
+        emit(state, {:jev_compaction, Map.merge(stats, %{outcome: :interrupted, reason: :interrupted})})
+        {:interrupted, state}
+
+      {:skip, :insufficient_reduction, stats} ->
+        emit(state, {:jev_compaction, Map.merge(stats, %{outcome: :skipped, reason: :insufficient_reduction})})
+        {:fallback, %{state | jev_breaker: Newbee.Compaction.Breaker.success(state.jev_breaker)}}
+
+      {:skip, reason, stats} ->
+        emit(state, {:jev_compaction, Map.merge(stats, %{outcome: :skipped, reason: reason})})
+        {:fallback, %{state | jev_breaker: Newbee.Compaction.Breaker.skip(state.jev_breaker)}}
+
+      {:error, reason, stats} ->
+        emit(state, {:jev_compaction, Map.merge(stats, %{outcome: :fallback, reason: reason})})
+
+        breaker =
+          if Newbee.Compaction.Breaker.service_failure?(reason) do
+            Newbee.Compaction.Breaker.failure(state.jev_breaker, reason, now_ms, state.compaction_config)
+          else
+            Newbee.Compaction.Breaker.skip(state.jev_breaker)
+          end
+
+        {:fallback, %{state | jev_breaker: breaker}}
     end
   end
 
@@ -2463,12 +2580,16 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp compaction_budget(state) do
-    Newbee.Agent.ContextBudget.assess(state.messages,
+    Newbee.Agent.ContextBudget.assess(state.messages, compaction_budget_opts(state))
+  end
+
+  defp compaction_budget_opts(state) do
+    [
       context_window: state.context_window,
       soft_ratio: state.compaction_threshold,
       hard_ratio: 0.95,
       output_reserve: compaction_output_reserve(state)
-    )
+    ]
   end
 
   defp compaction_output_reserve(%{compaction_output_reserve: nil} = state), do: state.compaction_max_tokens
@@ -2491,7 +2612,26 @@ defmodule Newbee.Agent.Loop do
   # 压缩（§4.6 视图维护）：有会话走 Archive——transcript 永不覆写，归档区间成为
   # 可寻址段（history:// 拉取），汇总消息由段 digest 确定性装配，LLM 只在蒸馏新段
   # 时用一次。无会话（session: false 的测试/ephemeral 模式）退回旧的内存压扁路径。
-  defp compact_state(%{session: nil} = state, retain_target) do
+  defp compact_state(state, retain_target) do
+    original_session = state.session
+    {next_state, count} = legacy_compact_state(state, retain_target)
+
+    next_state =
+      if count > 0 do
+        case Newbee.Compaction.invalidate(original_session) do
+          :ok -> :ok
+          {:error, reason} -> Newbee.DebugLog.log(:compact, "jev projection clear failed " <> inspect(reason))
+        end
+
+        %{next_state | jev_projection: nil}
+      else
+        next_state
+      end
+
+    {next_state, count}
+  end
+
+  defp legacy_compact_state(%{session: nil} = state, retain_target) do
     body = tl(state.messages)
     {old, recent} = split_for_retention(body, retain_target)
 
@@ -2507,7 +2647,7 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
-  defp compact_state(state, retain_target) do
+  defp legacy_compact_state(state, retain_target) do
     # base = 本会话 system 基底（messages 头部，不进 transcript）。
     # 传给 Archive：摘要请求走 envelope 重放真实请求前缀（详见 prefix-cache 方案）。
     base = hd(state.messages)
@@ -2543,7 +2683,7 @@ defmodule Newbee.Agent.Loop do
       # Archive 故障绝不伤会话：内存压扁仅改内存视图，session 必须保留，下轮可重试。
       # 此前 session: nil 会使后续 push_msg 不再落盘，等于永久丢持久化。
       Newbee.DebugLog.log(:compact, "archive failed " <> inspect(e) <> "; fallback ephemeral, session kept")
-      {ephemeral, n} = compact_state(%{state | session: nil}, retain_target)
+      {ephemeral, n} = legacy_compact_state(%{state | session: nil}, retain_target)
       {%{ephemeral | session: state.session}, n}
   end
 
