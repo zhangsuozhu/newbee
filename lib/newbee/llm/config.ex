@@ -48,7 +48,7 @@ defmodule Newbee.LLM.Config do
 
     unless provider, do: raise("model.json: 未知 provider #{inspect(provider_name)}")
 
-    api = get_in(provider, ["modelApis", model]) || provider["api"] || "openai-completions"
+    api = api_for(provider, model)
 
     Newbee.LLM.Client.new(
       provider: provider_name,
@@ -593,6 +593,26 @@ defmodule Newbee.LLM.Config do
     File.write!(target, Jason.encode_to_iodata!(cfg, pretty: true))
     :ok
   end
+
+  defp api_for(provider, model) do
+    model_api = get_in(provider, ["modelApis", model])
+    configured = model_api || provider["api"] || "openai-completions"
+
+    if is_nil(model_api) and opencode_go_base_url?(provider["baseUrl"]) and
+         configured in ["auto", "responses", "response", "openai-responses"] do
+      "openai-completions"
+    else
+      configured
+    end
+  end
+
+  # OpenCode Go exposes /responses as an OpenAI-compatible chat route.
+  defp opencode_go_base_url?(base_url) when is_binary(base_url) do
+    normalized = String.downcase(base_url)
+    String.contains?(normalized, "/zen/go/") or String.ends_with?(normalized, "/zen/go")
+  end
+
+  defp opencode_go_base_url?(_), do: false
 
   # "a/b/c" → {"a", "b/c"}（a 是已知 provider）；"c" → {当前 provider, "c"}
   defp split_model_id("", _cfg), do: {:error, :bad_model_id}

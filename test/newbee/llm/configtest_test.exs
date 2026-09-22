@@ -360,3 +360,75 @@ defmodule Newbee.LLM.ConfigTest do
     end
   end
 end
+
+defmodule Newbee.LLM.OpenCodeProtocolTest do
+  use ExUnit.Case, async: false
+
+  test "OpenCode Go maps MiMo to chat even when the provider default is Responses" do
+    with_model_config(
+      %{
+        "providers" => %{
+          "opencode" => %{
+            "baseUrl" => "https://opencode.ai/zen/go/v1",
+            "api" => "openai-responses",
+            "apiKey" => "k",
+            "models" => ["mimo-v2.6-flash"]
+          }
+        },
+        "roles" => %{"default" => %{"provider" => "opencode", "model" => "mimo-v2.6-flash"}}
+      },
+      fn ->
+        client = Newbee.LLM.Config.client_for("default")
+        assert client.api == "openai-completions"
+        assert client.responses_mode == :chat
+      end
+    )
+  end
+
+  test "standard OpenCode Zen keeps an explicit Responses provider" do
+    with_model_config(
+      %{
+        "providers" => %{
+          "opencode" => %{
+            "baseUrl" => "https://opencode.ai/zen/v1",
+            "api" => "openai-responses",
+            "apiKey" => "k",
+            "models" => ["mimo-v2.6-flash"]
+          }
+        },
+        "roles" => %{"default" => %{"provider" => "opencode", "model" => "mimo-v2.6-flash"}}
+      },
+      fn ->
+        client = Newbee.LLM.Config.client_for("default")
+        assert client.api == "openai-responses"
+        assert client.responses_mode == :responses
+      end
+    )
+  end
+
+  defp with_model_config(config, fun) do
+    dir =
+      Path.join(
+        System.tmp_dir!(),
+        "newbee-opencode-protocol-#{System.unique_integer([:positive])}"
+      )
+
+    path = Path.join(dir, "model.json")
+    File.mkdir_p!(dir)
+    File.write!(path, Jason.encode!(config))
+
+    previous = System.get_env("NEWBEE_MODEL_JSON")
+    System.put_env("NEWBEE_MODEL_JSON", path)
+
+    try do
+      fun.()
+    after
+      case previous do
+        nil -> System.delete_env("NEWBEE_MODEL_JSON")
+        value -> System.put_env("NEWBEE_MODEL_JSON", value)
+      end
+
+      File.rm_rf!(dir)
+    end
+  end
+end
