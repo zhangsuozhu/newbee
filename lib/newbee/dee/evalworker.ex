@@ -184,6 +184,7 @@ defmodule Newbee.DEE.EvalWorker do
   def handle_call(:quiesce, _from, state), do: {:reply, :ok, %{state | quiesced: true}}
   def handle_call(:unquiesce, _from, state), do: {:reply, :ok, %{state | quiesced: false}}
   def handle_call(:bindings_summary, _from, state), do: {:reply, summarize(state.binding), state}
+  def handle_call(:bindings_count, _from, state), do: {:reply, length(state.binding), state}
   def handle_call(:dump_bindings, _from, state), do: {:reply, state.binding, state}
 
   def handle_call({:set_cwd, _cwd}, _from, %{active: active} = state) when not is_nil(active) do

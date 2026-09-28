@@ -3400,13 +3400,14 @@ defmodule Newbee.Web.Session do
     "⚠ 会话未就绪（模型配置无效或缺少 API key）。请点击右上角模型选择器换一个模型，或修正 ~/.newbee/model.json 后重试。"
   end
 
-  # DEE 绑定数：优先 EvaluatorPool（generation 路由），否则具名 Evaluator
+  # 状态栏只需要个数。bindings_summary 会 inspect 每个值（最多 10KB），
+  # 每 2 秒一次会卡住求值器并制造大量临时二进制。
   defp bindings_count(st) do
     task =
       Task.async(fn ->
         case st.kernel && Newbee.SessionEvaluators.lookup(st.kernel) do
           {:ok, evaluator} when is_pid(evaluator) ->
-            length(Newbee.DEE.Evaluator.bindings_summary(evaluator, 300))
+            Newbee.DEE.Evaluator.bindings_count(evaluator, 300)
 
           _ ->
             0
@@ -3414,10 +3415,10 @@ defmodule Newbee.Web.Session do
       end)
 
     case Task.yield(task, 400) do
-      {:ok, n} ->
+      {:ok, n} when is_integer(n) ->
         n
 
-      nil ->
+      _ ->
         Task.shutdown(task, :brutal_kill)
         0
     end

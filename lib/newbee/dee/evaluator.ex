@@ -70,6 +70,9 @@ defmodule Newbee.DEE.Evaluator do
 
   def bindings_summary(server \\ __MODULE__, timeout \\ 5_000), do: GenServer.call(server, :bindings_summary, timeout)
 
+  @doc "绑定个数。状态栏轮询用，不 inspect 值。"
+  def bindings_count(server \\ __MODULE__, timeout \\ 5_000), do: GenServer.call(server, :bindings_count, timeout)
+
   @doc "Binding Continuity step 0（§4.4）：进入静默——拒收新 step。"
   def quiesce(server \\ __MODULE__), do: GenServer.call(server, :quiesce, 30_000)
 
@@ -212,6 +215,19 @@ defmodule Newbee.DEE.Evaluator do
         case remote_call(state.standby, :bindings_summary) do
           {:ok, summary} -> {:reply, summary, promote_standby(state)}
           _dead_or_timeout -> {:reply, [], state}
+        end
+    end
+  end
+
+  def handle_call(:bindings_count, _from, state) do
+    case remote_call(primary_target(state), :bindings_count) do
+      {:ok, n} when is_integer(n) ->
+        {:reply, n, state}
+
+      _dead_or_timeout ->
+        case remote_call(state.standby, :bindings_count) do
+          {:ok, n} when is_integer(n) -> {:reply, n, promote_standby(state)}
+          _dead_or_timeout -> {:reply, 0, state}
         end
     end
   end

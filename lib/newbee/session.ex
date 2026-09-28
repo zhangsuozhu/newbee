@@ -52,7 +52,24 @@ defmodule Newbee.Session do
     end)
   end
 
+  # 目录 mtime 不变时复用合并结果。往已有 transcript 追加不会改目录 mtime，
+  # 所以热路径不再 wildcard + stat 全部会话。新建/删除会改目录 mtime，缓存失效后重扫。
+  # persist 在本目录写临时文件，落盘后按新 mtime 回填。
   defp merged_index do
+    mtime = sessions_dir_mtime()
+
+    case :ets.lookup(index_table(), :merged) do
+      [{:merged, ^mtime, entries}] when is_list(entries) ->
+        entries
+
+      _ ->
+        entries = compute_merged_index()
+        cache_index(entries, mtime)
+        entries
+    end
+  end
+
+  defp compute_merged_index do
     idx = read_index()
     fs = fs_scan_entries()
     fs_map = Map.new(fs, fn e -> {e["id"], e} end)
@@ -76,16 +93,47 @@ defmodule Newbee.Session do
     |> Enum.sort_by(fn e -> e["mtime"] || e["created"] end, :desc)
   end
 
+  defp sessions_dir_mtime do
+    case File.stat(root()) do
+      {:ok, stat} -> posix_mtime(stat.mtime)
+      _ -> 0
+    end
+  end
+
+  defp index_table do
+    name = :newbee_session_index
+
+    case :ets.whereis(name) do
+      :undefined ->
+        try do
+          :ets.new(name, [:named_table, :public, :set, {:read_concurrency, true}])
+        catch
+          :error, :badarg -> name
+        end
+
+      tid ->
+        tid
+    end
+  end
+
+  defp cache_index(entries, mtime \\ nil) do
+    :ets.insert(index_table(), {:merged, mtime || sessions_dir_mtime(), entries})
+    :ok
+  end
+
   defp persist_index(entries) do
     File.mkdir_p!(root())
 
     tmp =
       index() <>
         ".tmp-" <>
-        Integer.to_string(System.unique_integer([:positive])) <> "-" <> Integer.to_string(:erlang.monotonic_time())
+        Integer.to_string(System.unique_integer([:positive])) <>
+        "-" <>
+        Integer.to_string(:erlang.monotonic_time())
 
     File.write!(tmp, Jason.encode_to_iodata!(entries))
     File.rename!(tmp, index())
+    cache_index(entries)
     :ok
   rescue
     e ->
@@ -198,9 +246,13 @@ defmodule Newbee.Session do
   @doc "追加一条消息到 transcript。"
   def append(%__MODULE__{transcript: t, id: id}, %{"role" => _} = msg) do
     msg = Map.put_new(msg, "created_at", local_iso())
-    File.write!(t, [Jason.encode_to_iodata!(msg), "\n"], [:append])
-    touch_index(id)
+    iodata = [Jason.encode_to_iodata!(msg), "\n"]
+    File.write!(t, iodata, [:append])
+    touch_index(id, bytes: IO.iodata_length(iodata), user_text: index_user_text(msg))
   end
+
+  defp index_user_text(%{"role" => "user", "content" => content}), do: content_text(content)
+  defp index_user_text(_), do: nil
 
   @doc "Seal abandoned tool calls before a recovered kernel accepts new input. Never call on a running turn."
   def seal_pending_tools(%__MODULE__{} = session) do
@@ -721,54 +773,97 @@ defmodule Newbee.Session do
     end
   end
 
+  @doc false
+  def transcript_scan_count do
+    case :ets.lookup(index_table(), :transcript_scans) do
+      [{:transcript_scans, n}] when is_integer(n) -> n
+      _ -> 0
+    end
+  end
+
+  defp note_transcript_scan do
+    :ets.update_counter(index_table(), :transcript_scans, {2, 1}, {:transcript_scans, 0})
+  end
+
+  # 冷路径才读 transcript。按字节数行，只解码可能是用户消息的行，避免 split 出全部行再逐条 JSON。
   defp fast_transcript_stats(fp) do
+    note_transcript_scan()
+
     case File.read(fp) do
       {:ok, ""} ->
         {0, ""}
 
       {:ok, bin} ->
-        lines = String.split(bin, "\n", trim: true)
-        {length(lines), fast_title_from_lines(lines)}
+        scan_transcript_bin(bin, 0, nil, nil, false)
 
       _ ->
         {0, ""}
     end
   end
 
-  defp fast_title_from_lines(lines) do
-    {first, last} = scan_user_texts(lines, nil, nil)
+  defp scan_transcript_bin(<<>>, count, first, last, _settled) do
+    {count, title_from_user_bounds(first, last)}
+  end
 
-    cond do
-      is_nil(first) -> ""
-      String.length(first) >= 4 -> title([%{"role" => "user", "content" => first}])
-      true -> title([%{"role" => "user", "content" => first}, %{"role" => "user", "content" => last || first}])
+  defp scan_transcript_bin(<<"\n", rest::binary>>, count, first, last, settled) do
+    scan_transcript_bin(rest, count, first, last, settled)
+  end
+
+  defp scan_transcript_bin(bin, count, first, last, settled) do
+    case :binary.match(bin, "\n") do
+      {pos, 1} ->
+        line = binary_part(bin, 0, pos)
+        rest = binary_part(bin, pos + 1, byte_size(bin) - pos - 1)
+        {first, last, settled} = take_user_line(line, first, last, settled)
+        scan_transcript_bin(rest, count + 1, first, last, settled)
+
+      :nomatch ->
+        {first, last, _settled} = take_user_line(bin, first, last, settled)
+        {count + 1, title_from_user_bounds(first, last)}
     end
   end
 
-  defp scan_user_texts([], first, last), do: {first, last}
+  defp take_user_line(_line, first, last, true), do: {first, last, true}
 
-  defp scan_user_texts([line | rest], first, last) do
-    case Jason.decode(line) do
-      {:ok, %{"role" => "user", "content" => content}} ->
-        text = content_text(content)
+  defp take_user_line(line, first, last, false) do
+    if String.contains?(line, "\"role\":\"user\"") do
+      case Jason.decode(line) do
+        {:ok, %{"role" => "user", "content" => content}} ->
+          text = content_text(content)
 
-        cond do
-          is_nil(first) and String.length(text) >= 4 -> {text, text}
-          is_nil(first) -> scan_user_texts(rest, text, text)
-          true -> scan_user_texts(rest, first, text)
-        end
+          cond do
+            is_nil(first) and String.length(text) >= 4 -> {text, text, true}
+            is_nil(first) -> {text, text, false}
+            true -> {first, text, false}
+          end
 
-      _ ->
-        scan_user_texts(rest, first, last)
+        _ ->
+          {first, last, false}
+      end
+    else
+      {first, last, false}
     end
   end
 
-  defp touch_index(id) do
+  defp title_from_user_bounds(nil, _), do: ""
+
+  defp title_from_user_bounds(first, last) do
+    msgs =
+      if String.length(first) >= 4 or last in [nil, first] do
+        [%{"role" => "user", "content" => first}]
+      else
+        [%{"role" => "user", "content" => first}, %{"role" => "user", "content" => last}]
+      end
+
+    title(msgs)
+  end
+
+  defp touch_index(id, opts \\ []) do
     # 删除墓碑：索引写入本身也可能是迟到的复活路径（append / set_cwd 等都会 touch）
     if recently_deleted?(id) do
       :ok
     else
-      do_touch_index(id)
+      do_touch_index(id, opts)
     end
   rescue
     e ->
@@ -776,8 +871,10 @@ defmodule Newbee.Session do
       :ok
   end
 
-  defp do_touch_index(id) do
+  defp do_touch_index(id, opts) do
     now = System.system_time(:second)
+    bytes = Keyword.get(opts, :bytes, 0)
+    user_text = Keyword.get(opts, :user_text)
     merged = merged_index()
     idx_map = Map.new(merged, fn e -> {e["id"], e} end)
     existing = Map.get(idx_map, id)
@@ -789,11 +886,76 @@ defmodule Newbee.Session do
         created_from_id(id) || now
       end
 
-    updated = %{"id" => id, "mtime" => now, "created" => created}
-    new_map = Map.put(idx_map, id, updated)
-    new_list = new_map |> Map.values() |> Enum.sort_by(fn e -> e["mtime"] || e["created"] end, :desc)
+    base = %{"id" => id, "mtime" => now, "created" => created}
+
+    updated =
+      case incremental_cache(existing, id, bytes, user_text) do
+        {:ok, fields} -> Map.merge(base, fields)
+        :miss -> base
+      end
+
+    new_list =
+      idx_map
+      |> Map.put(id, updated)
+      |> Map.values()
+      |> Enum.sort_by(fn e -> e["mtime"] || e["created"] end, :desc)
+
     persist_index(new_list)
   end
+
+  # 索引里的 size/count/title 与文件一致时直接加一，避免为了侧栏重读整个 transcript。
+  defp incremental_cache(existing, id, bytes, user_text) when is_integer(bytes) and bytes >= 0 do
+    existing = existing || %{}
+
+    cached? =
+      is_integer(existing["size"]) and is_integer(existing["count"]) and
+        is_binary(existing["auto_title"])
+
+    path = Path.join(root(), id <> ".jsonl")
+
+    known_size = existing["size"]
+
+    case File.stat(path) do
+      {:ok, stat} when cached? and stat.size == known_size + bytes ->
+        count = existing["count"] + if(bytes > 0, do: 1, else: 0)
+
+        {:ok,
+         %{
+           "size" => stat.size,
+           "count" => count,
+           "auto_title" => refresh_auto_title(existing["auto_title"], user_text)
+         }}
+
+      {:ok, %{size: 0}} when bytes == 0 and not cached? ->
+        {:ok, %{"size" => 0, "count" => 0, "auto_title" => ""}}
+
+      _ ->
+        :miss
+    end
+  end
+
+  defp incremental_cache(_existing, _id, _bytes, _user_text), do: :miss
+
+  defp refresh_auto_title(current, nil), do: current || ""
+
+  defp refresh_auto_title(current, text) when is_binary(text) do
+    current = if is_binary(current), do: current, else: ""
+
+    if String.length(current) >= 4 do
+      current
+    else
+      msgs =
+        if current == "" do
+          [%{"role" => "user", "content" => text}]
+        else
+          [%{"role" => "user", "content" => current}, %{"role" => "user", "content" => text}]
+        end
+
+      title(msgs)
+    end
+  end
+
+  defp refresh_auto_title(current, _text), do: current || ""
 
   # 从会话 id 前缀解析创建时间（YYYYMMDD-HHMMSS-xxxx / YYYYMMDD-HHMMSSxxxx），失败返回 nil。
   # id 前缀是本地时间，需按本地 UTC 偏移换算成 unix 秒（与 System.system_time(:second) 同基准）。

@@ -72,6 +72,16 @@ defmodule Newbee.DEE.EvaluatorTest do
     assert b.size >= 10_000
   end
 
+  test "bindings_count 只数个数，不 inspect 大值", %{ev: ev} do
+    Evaluator.eval(ev, "secret = String.duplicate(\"x\", 200_000)\nplain = 1", [])
+    assert Evaluator.bindings_count(ev) == 2
+
+    {count_us, 2} = :timer.tc(fn -> Evaluator.bindings_count(ev) end)
+    {summary_us, summary} = :timer.tc(fn -> Evaluator.bindings_summary(ev) end)
+    assert length(summary) == 2
+    assert count_us * 3 < summary_us
+  end
+
   test "reset 清空绑定", %{ev: ev} do
     Evaluator.eval(ev, "x = 1", [])
     Evaluator.reset(ev)
