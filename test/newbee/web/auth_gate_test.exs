@@ -61,7 +61,7 @@ defmodule Newbee.Web.AuthGateTest do
       conn = post_rpc("auth.captcha", %{})
       assert conn.status == 200
       body = Jason.decode!(conn.resp_body)
-      assert body["result"]["ok"]["svg"] =~ "<svg"
+      assert body["result"]["ok"]["image"] =~ "data:image/png;base64,"
 
       conn2 = post_rpc("auth.status", %{})
       assert conn2.status == 200

@@ -76,9 +76,12 @@ defmodule Newbee.Web.AuthTest do
   end
 
   describe "图形验证码" do
-    test "生成 SVG + 一次性校验" do
+    test "生成 PNG + 一次性校验" do
       cap = Auth.gen_captcha()
-      assert String.starts_with?(cap.svg, "<svg")
+      assert String.starts_with?(cap.image, "data:image/png;base64,")
+      png = Base.decode64!(String.replace_prefix(cap.image, "data:image/png;base64,", ""))
+      assert binary_part(png, 0, 8) == <<137, 80, 78, 71, 13, 10, 26, 10>>
+      refute Map.has_key?(cap, :svg), "不能再返回矢量字段（脚本可解析）"
       assert cap.id != ""
       assert Auth.verify_captcha(cap.id, cap.text)
     end
