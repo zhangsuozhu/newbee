@@ -1,0 +1,279 @@
+defmodule Newbee.Web.CaptchaGlyphs do
+  @moduledoc """
+  登录验证码字模：离线用 DejaVu Sans Bold 栅格化出的位图游程（run-length）编码。
+
+  SVG 里只写 `<path>`（矩形游程），**不再下发 `<text>`**：此前用 `<text>` 逐字绘制，
+  脚本能直接从 payload 正则出验证码答案（浏览器轮次 R49 实测 T7Bv/CZBa/Bxft 被服务端
+  接受为正确验证码），图形验证码对自动化形同虚设；改成字形路径后要脚本做像素/模板识别，
+  不再是一行正则的事。
+
+  数据来源（离线一次性生成）：
+    font = /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf  size = 26
+  每个字形 `{w, h, runs}`，`runs` 为 base64 打包的三元组 (x0, x1, y) 游程列表。
+  """
+
+  @glyphs %{
+    "A" => %{
+      w: 20,
+      h: 19,
+      runs:
+        "BwwABw0BBg0CBg0DBQ4EBQ4FBQgGCw4GBAgHCw8HBAgICw8IBAcJDA8JAwcKDBAKAwcLDBALAxEMAhENAhEOAQUPDhIPAQUQDhIQAQQRDxIRAAQSDxMS"
+    },
+    "B" => %{
+      w: 16,
+      h: 19,
+      runs:
+        "AAsAAA0BAA4CAAQDCg4DAAQECg4EAAQFCg4FAAQGCg4GAA0HAAwIAA4JAAQKCg4KAAQLCw8LAAQMCw8MAAQNCw8NAAQOCw8OAAQPCg8PAA4QAA0RAAsS"
+    },
+    "C" => %{w: 16, h: 19, runs: "Bw0ABQ8BAw8CAggDDg8DAgYEAQUFAQUGAAUHAAQIAAQJAAQKAAULAQUMAQUNAgYOAggPDg8PAw8QBQ8RBw0S"},
+    "D" => %{
+      w: 18,
+      h: 19,
+      runs:
+        "AAoAAA0BAA4CAAQDCg8DAAQECxAEAAQFDBAFAAQGDREGAAQHDREHAAQIDREIAAQJDREJAAQKDREKAAQLDRELAAQMDREMAAQNDBANAAQOCxAOAAQPCg8PAA4QAA0RAAoS"
+    },
+    "E" => %{w: 14, h: 19, runs: "AA0AAA0BAA0CAAQDAAQEAAQFAAQGAAwHAAwIAAwJAAQKAAQLAAQMAAQNAAQOAAQPAA0QAA0RAA0S"},
+    "F" => %{w: 14, h: 19, runs: "AA0AAA0BAA0CAAQDAAQEAAQFAAQGAAwHAAwIAAwJAAQKAAQLAAQMAAQNAAQOAAQPAAQQAAQRAAQS"},
+    "G" => %{
+      w: 18,
+      h: 19,
+      runs:
+        "Bw4ABREBAxECAggDDhEDAgYEEREEAQUFAQUGAAUHAAQICxEIAAQJCxEJAAQKCxEKAAULDhELAQUMDhEMAQUNDhENAgYODhEOAggPDhEPAxEQBRERBw4S"
+    },
+    "H" => %{
+      w: 17,
+      h: 19,
+      runs:
+        "AAQADBAAAAQBDBABAAQCDBACAAQDDBADAAQEDBAEAAQFDBAFAAQGDBAGABAHABAIABAJAAQKDBAKAAQLDBALAAQMDBAMAAQNDBANAAQODBAOAAQPDBAPAAQQDBAQAAQRDBARAAQSDBAS"
+    },
+    "J" => %{
+      w: 8,
+      h: 24,
+      runs: "AwcAAwcBAwcCAwcDAwcEAwcFAwcGAwcHAwcIAwcJAwcKAwcLAwcMAwcNAwcOAwcPAwcQAwcRAwcSAwcTAgcUAAYVAAUWAAMX"
+    },
+    "K" => %{
+      w: 18,
+      h: 19,
+      runs:
+        "AAQADBAAAAQBCw8BAAQCCg4CAAQDCQ0DAAQECAwEAAQFBwsFAAoGAAkHAAgIAAgJAAkKAAoLAAQMBgsMAAQNBwwNAAQOCA0OAAQPCQ4PAAQQCg8QAAQRCxARAAQSDBES"
+    },
+    "L" => %{w: 14, h: 19, runs: "AAQAAAQBAAQCAAQDAAQEAAQFAAQGAAQHAAQIAAQJAAQKAAQLAAQMAAQNAAQOAAQPAA0QAA0RAA0S"},
+    "M" => %{
+      w: 21,
+      h: 19,
+      runs:
+        "AAYADxQAAAYBDxQBAAcCDhQCAAcDDhQDAAgEDRQEAAgFDRQFAAQGBggGDA8GERQGAAQHBgkHDA8HERQHAAQIBwkIDA4IERQIAAQJBw4JERQJAAQKBw0KERQKAAQLCA0LERQLAAQMCA0MERQMAAQNCQwNERQNAAQOCQwOERQOAAQPERQPAAQQERQQAAQRERQRAAQSERQS"
+    },
+    "N" => %{
+      w: 17,
+      h: 19,
+      runs:
+        "AAUADRAAAAYBDRABAAYCDRACAAcDDRADAAcEDRAEAAgFDRAFAAgGDRAGAAQHBgkHDRAHAAQIBgkIDRAIAAQJBwoJDRAJAAQKBwoKDRAKAAQLCAsLDRALAAQMCBAMAAQNCRANAAQOChAOAAQPChAPAAQQCxAQAAQRCxARAAQSDBAS"
+    },
+    "P" => %{
+      w: 16,
+      h: 19,
+      runs: "AAsAAA0BAA4CAAQDCg4DAAQECw8EAAQFCw8FAAQGCw8GAAQHCw8HAAQICg4IAA4JAA0KAAsLAAQMAAQNAAQOAAQPAAQQAAQRAAQS"
+    },
+    "Q" => %{
+      w: 20,
+      h: 23,
+      runs:
+        "Bw0ABA8BAxACAgcDDBEDAQYEDRIEAQUFDhIFAQUGDhIGAAUHDxMHAAQIDxMIAAQJDxMJAAQKDxMKAAULDxMLAQUMDhIMAQUNDhINAQYODRIOAgcPDBEPAxAQBA8RBw4SCw4TDA8UDRAVDREW"
+    },
+    "R" => %{
+      w: 17,
+      h: 19,
+      runs:
+        "AAsAAA0BAA0CAAQDCQ4DAAQECg4EAAQFCg4FAAQGCg4GAAQHCg4HAAQICQ0IAAwJAAsKAAwLAAQMCA0MAAQNCQ4NAAQOCg4OAAQPCw8PAAQQCw8QAAQRDBARAAQSDBAS"
+    },
+    "S" => %{
+      w: 15,
+      h: 19,
+      runs: "BAsAAg0BAQ0CAAQDCg0DAAMEAAMFAAQGAAYHAQoIAQwJAw0KBg4LCQ4MCg4NAAAOCg4OAAMPCQ0PAA0QAAwRAwoS"
+    },
+    "T" => %{w: 18, h: 19, runs: "ABEAABEBABECBgoDBgoEBgoFBgoGBgoHBgoIBgoJBgoKBgoLBgoMBgoNBgoOBgoPBgoQBgoRBgoS"},
+    "U" => %{
+      w: 17,
+      h: 19,
+      runs:
+        "AAQADBAAAAQBDBABAAQCDBACAAQDDBADAAQEDBAEAAQFDBAFAAQGDBAGAAQHDBAHAAQIDBAIAAQJDBAJAAQKDBAKAAQLDBALAAQMDBAMAQQNDBANAQUOCw8OAQYPCg8PAg4QAw0RBQsS"
+    },
+    "V" => %{
+      w: 20,
+      h: 19,
+      runs:
+        "AAQADxMAAQUBDxIBAQUCDhICAQUDDhIDAgYEDREEAgYFDREFAwYGDREGAwcHDBAHAwcIDBAIBAcJDA8JBAgKCw8KBAgLCw8LBQkMCw4MBQ4NBQ4OBg0PBg0QBw0RBwwS"
+    },
+    "W" => %{
+      w: 27,
+      h: 19,
+      runs:
+        "AAQACw8AFhoAAAQBCw8BFhoBAAQCCg8CFhkCAQQDChADFRkDAQUEChAEFRkEAQUFChAFFRkFAQUGCQwGDhAGFRgGAgUHCQwHDhAHFBgHAgUICQsIDhEIFBgIAgYJCQsJDxEJFBgJAgYKCQsKDxEKFBcKAwYLCAsLDxELExcLAwYMCAoMDxcMAwoNDxcNAwoOEBYOAwoPEBYPBAoQEBYQBAkREBYRBAkSERYS"
+    },
+    "X" => %{
+      w: 18,
+      h: 19,
+      runs:
+        "AAQADREAAQUBDBABAQYCCxACAgYDCw8DAwcECg4EAw4FBA0GBQwHBgsIBgsJBQwKBQwLBA0MAwcNCg4NAwcOCg4OAgYPCw8PAQUQDBAQAQURDBERAAQSDRES"
+    },
+    "Y" => %{
+      w: 19,
+      h: 19,
+      runs: "AAQADRIAAQUBDREBAQYCDBACAgYDCxADAwcECw8EAwgFCg4FBA4GBQ0HBQwIBgwJBwsKBwsLBwsMBwsNBwsOBwsPBwsQBwsRBwsS"
+    },
+    "Z" => %{w: 17, h: 19, runs: "AA8AAA8BAA8CCg8DCQ4ECA0FCA0GBwwHBgsIBQoJBAoKBAkLAwgMAgcNAQYOAAYPABAQABARABAS"},
+    "a" => %{w: 15, h: 14, runs: "AwoAAQwBAQ0CAQIDCQ0DCg0EAw0FAQ0GAQ4HAAQICg4IAAQJCg4JAAQKCQ4KAQ4LAQgMCg4MAwcNCg4N"},
+    "b" => %{
+      w: 15,
+      h: 20,
+      runs:
+        "AAQAAAQBAAQCAAQDAAQEAAQFAAQGBwsGAAwHAA0IAAUJCQ4JAAQKCg4KAAQLCw4LAAQMCw4MAAQNCw4NAAQOCw4OAAQPCg4PAAUQCQ4QAA0RAAwSAAQTBwsT"
+    },
+    "c" => %{w: 13, h: 14, runs: "BQoAAwwBAgwCAQYDDAwDAQUEAAQFAAQGAAQHAAQIAQUJAQYKCwwKAgwLAwwMBQoN"},
+    "d" => %{
+      w: 15,
+      h: 20,
+      runs:
+        "Cw4ACw4BCw4CCw4DCw4ECw4FBAgGCw4GAgkHCw4HAQ4IAQUJCQ4JAQQKCg4KAAQLCw4LAAQMCw4MAAQNCw4NAAQOCw4OAQQPCg4PAQUQCg4QAQ4RAgkSCw4SBAgTCw4T"
+    },
+    "e" => %{w: 15, h: 14, runs: "BQoAAwwBAg0CAQUDCQ0DAQQECg4EAAQFCw4FAA4GAA4HAA4IAQQJAQUKDQ4KAg4LAw4MBQwN"},
+    "f" => %{w: 12, h: 20, runs: "BQsABAsBAwsCAwcDAwYEAwYFAAoGAAoHAAoIAwYJAwYKAwYLAwYMAwYNAwYOAwYPAwYQAwYRAwYSAwYT"},
+    "g" => %{
+      w: 15,
+      h: 19,
+      runs:
+        "BAgACw4AAgkBCw4BAQ4CAQUDCQ4DAQQECg4EAAQFCw4FAAQGCw4GAAQHCw4HAAQICw4IAQQJCg4JAQUKCQ4KAQ4LAgkMCw4MBAgNCw4NCg4OAgIPCQ4PAg0QAgwRBAoS"
+    },
+    "h" => %{
+      w: 14,
+      h: 20,
+      runs:
+        "AAQAAAQBAAQCAAQDAAQEAAQFAAQGBwsGAAwHAA0IAAUJCQ0JAAQKCg0KAAQLCg0LAAQMCg0MAAQNCg0NAAQOCg0OAAQPCg0PAAQQCg0QAAQRCg0RAAQSCg0SAAQTCg0T"
+    },
+    "j" => %{
+      w: 8,
+      h: 25,
+      runs: "AwcAAwcBAwcCAwcDAwcGAwcHAwcIAwcJAwcKAwcLAwcMAwcNAwcOAwcPAwcQAwcRAwcSAwcTAwcUAwYVAAYWAAUXAAQY"
+    },
+    "k" => %{
+      w: 15,
+      h: 20,
+      runs:
+        "AAQAAAQBAAQCAAQDAAQEAAQFAAQGCQ4GAAQHCA0HAAQIBwwIAAQJBgoJAAkKAAgLAAgMAAgNAAkOAAQPBgoPAAQQBwsQAAQRCAwRAAQSCQ0SAAQTCg4T"
+    },
+    "m" => %{
+      w: 23,
+      h: 14,
+      runs:
+        "AAQABwoAEBMAAAwBDhUBABUCAAUDCQ4DEhYDAAQECQ0EEhYEAAQFCQ0FEhYFAAQGCQ0GEhYGAAQHCQ0HEhYHAAQICQ0IEhYIAAQJCQ0JEhYJAAQKCQ0KEhYKAAQLCQ0LEhYLAAQMCQ0MEhYMAAQNCQ0NEhYN"
+    },
+    "n" => %{
+      w: 14,
+      h: 14,
+      runs: "AAQABwsAAAwBAA0CAAUDCQ0DAAQECg0EAAQFCg0FAAQGCg0GAAQHCg0HAAQICg0IAAQJCg0JAAQKCg0KAAQLCg0LAAQMCg0MAAQNCg0N"
+    },
+    "p" => %{
+      w: 15,
+      h: 19,
+      runs:
+        "AAQABwsAAAwBAA0CAAUDCQ4DAAQECg4EAAQFCw4FAAQGCw4GAAQHCw4HAAQICw4IAAQJCg4JAAUKCQ4KAA0LAAwMAAQNBwsNAAQOAAQPAAQQAAQRAAQS"
+    },
+    "q" => %{
+      w: 15,
+      h: 19,
+      runs:
+        "BAgACw4AAgkBCw4BAQ4CAQUDCQ4DAQQECg4EAAQFCw4FAAQGCw4GAAQHCw4HAAQICw4IAQQJCg4JAQUKCg4KAQ4LAgkMCw4MBAgNCw4NCw4OCw4PCw4QCw4RCw4S"
+    },
+    "r" => %{w: 11, h: 14, runs: "AAQABwoAAAQBBgoBAAoCAAYDCgoDAAUEAAQFAAQGAAQHAAQIAAQJAAQKAAQLAAQMAAQN"},
+    "s" => %{w: 13, h: 14, runs: "AwkAAQsBAQsCAAQDCgsDAAQEAQcFAQsGAgwHBgwICQwJAQEKCAwKAQwLAQsMAwkN"},
+    "t" => %{w: 12, h: 18, runs: "AwYAAwYBAwYCAwYDAAsEAAsFAAsGAwYHAwYIAwYJAwYKAwYLAwYMAwYNAwcOAwoPAwoQBQoR"},
+    "u" => %{
+      w: 14,
+      h: 14,
+      runs:
+        "AAQACg0AAAQBCg0BAAQCCg0CAAQDCg0DAAQECg0EAAQFCg0FAAQGCg0GAAQHCg0HAAQICg0IAAQJCQ0JAAQKCA0KAQ0LAQgMCg0MAwcNCg0N"
+    },
+    "v" => %{
+      w: 15,
+      h: 14,
+      runs: "AAMACw4AAAMBCg4BAAQCCg4CAQQDCg0DAQUECQ0EAgUFCQwFAgUGCQwGAgYHCAwHAwYICAsIAwsJBAoKBAoLBAoMBQkN"
+    },
+    "w" => %{
+      w: 22,
+      h: 14,
+      runs:
+        "AAMACQwAEhUAAAQBCQwBERUBAQQCCA0CERQCAQQDCA0DERQDAQQECA0EERQEAQUFCA0FEBQFAgUGCAkGDA4GEBMGAgUHBwkHDA4HEBMHAgUIBwkIDA4IEBMIAgkJDBMJAwgKDRIKAwgLDRILAwgMDRIMBAgNDRIN"
+    },
+    "x" => %{
+      w: 15,
+      h: 14,
+      runs: "AAQACg4AAQUBCQ0BAgUCCQwCAgYDCAsDAwsEBAoFBQkGBAoHBAoIAwsJAgYKCAwKAQULCQ0LAQQMCQ0MAAQNCg4N"
+    },
+    "y" => %{
+      w: 15,
+      h: 19,
+      runs:
+        "AAMACw4AAAMBCg4BAAQCCg0CAQQDCg0DAQUECQ0EAgUFCQwFAgUGCQwGAwYHCAsHAwYICAsIBAsJBAoKBAoLBQkMBQkNBgkOBQgPAggQAgcRAgYS"
+    },
+    "z" => %{w: 13, h: 14, runs: "AAwAAAwBAAwCBwwDBgsEBQoFBAkGAwgHAgcIAQYJAAUKAAwLAAwMAAwN"},
+    "2" => %{w: 14, h: 19, runs: "AgkAAAsBAAwCAAIDBwwDAAAECA0ECQ0FCQ0GCAwHCAwIBwsJBgoKBQkLBAgMAwcNAgYOAQUPAA0QAA0RAA0S"},
+    "3" => %{w: 14, h: 19, runs: "AgkAAQsBAQwCAQEDBwwDCA0ECQwFCAwGBwwHAwoIAwoJAwwKCAwLCQ0MCQ0NCQ0OAAEPCA0PAAwQAAsRAgkS"},
+    "4" => %{
+      w: 16,
+      h: 19,
+      runs: "BwwABwwBBgwCBQwDBQwEBAcFCQwFAwYGCQwGAwUHCQwHAgUICQwIAQQJCQwJAAMKCQwKAAMLCQwLAA8MAA8NAA8OCQwPCQwQCQwRCQwS"
+    },
+    "5" => %{w: 14, h: 19, runs: "AQwAAQwBAQwCAQQDAQQEAQQFAQkGAQsHAQwIAQEJCA0JCQ0KCQ0LCQ0MCQ0NCQ0OAAEPCA0PAAwQAAsRAgkS"},
+    "6" => %{
+      w: 15,
+      h: 19,
+      runs:
+        "BQsAAwwBAgwCAQYDDAwDAQQEAAQFAAMGBgoGAAwHAA0IAAUJCQ0JAAQKCg0KAAQLCg4LAAQMCg4MAAQNCg4NAAQOCg0OAQUPCQ0PAgwQAwsRBAkS"
+    },
+    "7" => %{w: 14, h: 19, runs: "AA0AAA0BAA0CCQ0DCAwECAwFBwsGBwsHBgoIBgoJBgoKBQkLBQkMBAgNBAgOAwcPAwcQAwYRAgYS"},
+    "8" => %{
+      w: 14,
+      h: 19,
+      runs:
+        "AwoAAgwBAQwCAAUDCQ0DAAQECQ0EAAQFCQ0FAAQGCQ0GAQUHCQwHAgsIAwoJAQwKAAQLCQ0LAAMMCg0MAAMNCg0NAAMOCg0OAAQPCQ0PAA0QAQwRAwoS"
+    },
+    "9" => %{
+      w: 15,
+      h: 19,
+      runs:
+        "BQoAAwsBAgwCAQUDCQ0DAQQECg4EAAQFCg4FAAQGCg4GAAQHCg4HAQQICg4IAQUJCQ4JAQ4KAg4LBAgMCw4MCg4NCg0OAgIPCA0PAgwQAgsRAwkS"
+    }
+  }
+
+  @doc "字形表：char => %{w, h, runs(base64)}；键与 Newbee.Web.Auth 的 @captcha_chars 一致。"
+  def table, do: @glyphs
+
+  @doc "取一个字形，runs 解成 [{x0, x1, y}]；未知字符返回 :error。"
+  def glyph(ch) when is_binary(ch) do
+    case Map.fetch(@glyphs, ch) do
+      {:ok, %{w: w, h: h, runs: b64}} ->
+        with {:ok, bin} <- Base.decode64(b64) do
+          runs = for <<x0::8, x1::8, y::8 <- bin>>, do: {x0, x1, y}
+          {:ok, %{w: w, h: h, runs: runs}}
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  @doc "把一个字形的游程拼成 SVG path 数据（1 单位 = 1 个像素方格）。"
+  def path_data(runs) when is_list(runs) do
+    Enum.map_join(runs, fn {x0, x1, y} ->
+      w = x1 - x0 + 1
+
+      "M" <>
+        Integer.to_string(x0) <>
+        " " <> Integer.to_string(y) <> "h" <> Integer.to_string(w) <> "v1h-" <> Integer.to_string(w) <> "z"
+    end)
+  end
+
+  @doc "字形表里的最大字高（布局/居中用）。"
+  def max_height, do: @glyphs |> Map.values() |> Enum.map(& &1.h) |> Enum.max()
+end

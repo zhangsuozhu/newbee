@@ -209,6 +209,11 @@ defmodule Newbee.Web.Router do
 
   # ── 静态资源 + SPA fallback ──
 
+  # 只下发浏览器真正需要的资产扩展名。priv/web 里同时躺着服务端模板（pair.html.eex）
+  # 和编辑/工具残留（app.js.newbee-edit-backup-*）：实测这两类都曾以 200 直接回给客户端，
+  # 远程暴露时等于把任何落进 priv/web 的文件暴露出去（静态路径不受认证约束）。
+  @static_exts ~w(.js .mjs .css .html .htm .svg .png .jpg .jpeg .gif .ico .webp .avif .json .map .txt .md .woff .woff2 .ttf .otf .eot .webmanifest)
+
   defp serve_static(conn) do
     root = priv_web()
     path = conn.request_path |> String.trim_leading("/")
@@ -217,6 +222,10 @@ defmodule Newbee.Web.Router do
 
     cond do
       not inside_root?(Path.expand(file), Path.expand(root)) ->
+        send_resp(conn, 403, "forbidden")
+
+      File.regular?(file) and not servable_static?(file) ->
+        # 文件存在但不是浏览器资产：明确拒绝，不要退回 SPA fallback 把 index.html 塞过去
         send_resp(conn, 403, "forbidden")
 
       File.regular?(file) ->
@@ -234,6 +243,15 @@ defmodule Newbee.Web.Router do
       true ->
         send_resp(conn, 404, "newbee webui 前端未构建：priv/web/index.html 不存在")
     end
+  end
+
+  @doc false
+  def servable_static?(file) when is_binary(file) do
+    base = Path.basename(file)
+    ext = file |> Path.extname() |> String.downcase()
+
+    ext in @static_exts and not String.starts_with?(base, ".") and
+      not String.contains?(base, ".newbee-edit-backup-")
   end
 
   # ── 扫码授权页渲染 ──

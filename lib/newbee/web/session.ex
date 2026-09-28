@@ -154,10 +154,23 @@ defmodule Newbee.Web.Session do
   def sweep_stale_empty(older_than_secs \\ 3600) do
     Newbee.Session.stale_empty_ids(older_than_secs)
     |> Enum.reject(fn sid -> match?({:ok, _}, lookup(sid)) end)
+    |> Enum.reject(&in_any_group?/1)
     |> Enum.map(fn sid ->
       :ok = Newbee.Session.delete(sid)
       sid
     end)
+  end
+
+  # 组内会话不能被后台清扫：Coordinator 的 group.members 仍引用它，直接删会留下悬空成员，
+  # 前端据此渲染出「幽灵组员」行（点它做批量/菜单删除会报会话不存在）。
+  # 现场：全量回归 R741/R742 判失败，R746 诊断 DOM63 行里20 行是已删组员、全部 inGroup=true。
+  defp in_any_group?(sid) do
+    case Newbee.Collaboration.Coordinator.groups_for_session(sid) do
+      groups when is_list(groups) -> groups != []
+      _ -> false
+    end
+  rescue
+    _ -> false
   end
 
   @doc "销毁会话：停 web 会话进程（如活着）+ 删除底层存储（transcript/artifacts/索引）。"
@@ -1141,6 +1154,10 @@ defmodule Newbee.Web.Session do
       {:ok, client} ->
         stats = load_stats(sid)
 
+        # 预热上下文窗口缓存：Kernel init 和 :state 轮询都会读它，而 provider /models
+        # 探测实测可达 7s+。这里先在后台开跑，等 Kernel 真去读时通常已命中缓存。
+        Newbee.LLM.Client.context_window_nowait(client)
+
         state = %__MODULE__{
           kernel: nil,
           sid: sid,
@@ -1670,7 +1687,7 @@ defmodule Newbee.Web.Session do
        effort: st.client && st.client.reasoning_effort,
        usage: usage,
        context_tokens: st.context_tokens,
-       context_window: st.client && Newbee.LLM.Client.context_window(st.client),
+       context_window: st.client && Newbee.LLM.Client.context_window_nowait(st.client),
        goal: goal,
        awaiting_permission:
          st.kernel != nil and Process.alive?(st.kernel) and

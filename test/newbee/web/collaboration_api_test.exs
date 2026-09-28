@@ -22,6 +22,16 @@ defmodule Newbee.Web.CollaborationApiTest do
   end
 
   test "创建群、添加现有会话并双向发消息" do
+    for sid <- ["session-a", "session-b"] do
+      {:ok, _pid, ^sid} = Newbee.Web.Session.ensure(sid, File.cwd!())
+      :ok = Newbee.Session.mark_created(sid)
+    end
+
+    on_exit(fn ->
+      Newbee.Web.Session.destroy("session-a")
+      Newbee.Web.Session.destroy("session-b")
+    end)
+
     group =
       post_rpc("group.create", %{
         "sessionId" => "session-a",
@@ -113,13 +123,14 @@ defmodule Newbee.Web.CollaborationApiTest do
     ids = Enum.map(result["activity"], & &1["event_id"])
     assert ids == Enum.sort(ids)
 
-    denied =
+    readable =
       post_rpc("group.activity.list", %{
         "groupId" => group["group_id"],
         "sessionId" => "outsider"
       })
+      |> ok!()
 
-    assert %{"error" => %{"code" => "not_member"}} = denied["result"]
+    assert Enum.map(readable["activity"], & &1["topic"]) == topics
   end
 
   test "父会话可启动群内子会话" do
@@ -170,7 +181,7 @@ defmodule Newbee.Web.CollaborationApiTest do
     refute child in Newbee.Session.list()
   end
 
-  test "非成员不能读取消息" do
+  test "非成员可读取消息，但不能发送消息" do
     group =
       post_rpc("group.create", %{"sessionId" => "session-a", "title" => "私有群"})
       |> ok!()
@@ -181,7 +192,17 @@ defmodule Newbee.Web.CollaborationApiTest do
         "sessionId" => "outsider"
       })
 
-    assert %{"error" => %{"code" => "not_member"}} = response["result"]
+    assert %{"messages" => []} = response["result"]["ok"]
+
+    denied =
+      post_rpc("collab.message.send", %{
+        "groupId" => group["group_id"],
+        "senderSessionId" => "outsider",
+        "body" => "不允许写入",
+        "commandId" => "outsider-write"
+      })
+
+    assert %{"error" => %{"code" => "not_member"}} = denied["result"]
   end
 
   test "组内会话删除时自动移出工作组，协调者删除时自动解散工作组" do

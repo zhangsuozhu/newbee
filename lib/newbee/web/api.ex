@@ -127,7 +127,7 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("auth.captcha", _p) do
     cap = Newbee.Web.Auth.gen_captcha()
-    {:ok, %{captchaId: cap.id, svg: cap.svg}}
+    {:ok, %{captchaId: cap.id, image: cap.image}}
   end
 
   defp dispatch_rpc("auth.setup", %{"__remote_ip__" => ip} = p) do
@@ -373,7 +373,7 @@ defmodule Newbee.Web.Api do
   # 会话群协作域（P0/P1：群组、成员、可靠 notify 消息）
   defp dispatch_rpc("group.list", p) do
     session_id = blank_to_nil(p["sessionId"])
-    {:ok, %{groups: Newbee.Collaboration.Coordinator.list(session_id)}}
+    {:ok, %{groups: filter_ghost_members(Newbee.Collaboration.Coordinator.list(session_id))}}
   end
 
   defp dispatch_rpc("group.create", %{"sessionId" => sid} = p) do
@@ -411,7 +411,7 @@ defmodule Newbee.Web.Api do
     do: {:error, "bad_request", "需要 groupId 和 sessionId 字段"}
 
   defp dispatch_rpc("group.get", %{"groupId" => group_id, "sessionId" => sid}) do
-    with :ok <- require_group_member(group_id, sid),
+    with :ok <- require_group_readable(group_id, sid),
          {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id) do
       {:ok, json_safe(public_collab_group(group))}
     else
@@ -576,7 +576,7 @@ defmodule Newbee.Web.Api do
     do: {:error, "bad_request", "需要 groupId、senderSessionId 和 body 字段"}
 
   defp dispatch_rpc("collab.message.list", %{"groupId" => group_id, "sessionId" => sid} = p) do
-    with :ok <- require_group_member(group_id, sid),
+    with :ok <- require_group_readable(group_id, sid),
          {:ok, messages} <-
            Newbee.Collaboration.Coordinator.messages(group_id,
              since: clamp_int(p["sinceSeq"], 0, 0, 1_000_000_000),
@@ -592,7 +592,7 @@ defmodule Newbee.Web.Api do
     do: {:error, "bad_request", "需要 groupId 和 sessionId 字段"}
 
   defp dispatch_rpc("group.activity.list", %{"groupId" => group_id, "sessionId" => sid} = p) do
-    with :ok <- require_group_member(group_id, sid),
+    with :ok <- require_group_readable(group_id, sid),
          {:ok, activity} <-
            Newbee.Collaboration.Coordinator.activity(group_id,
              since: clamp_int(p["sinceEventId"], 0, 0, 1_000_000_000),
@@ -790,7 +790,7 @@ defmodule Newbee.Web.Api do
        do: {:error, "bad_request", "需要 groupId、taskId、sessionId 和 expectedRevision 字段"}
 
   defp dispatch_rpc("group.status", %{"groupId" => group_id, "sessionId" => sid}) do
-    with :ok <- require_group_member(group_id, sid),
+    with :ok <- require_group_readable(group_id, sid),
          {:ok, group} <- Newbee.Collaboration.Coordinator.get(group_id) do
       {:ok, %{status: group["status"]}}
     else
@@ -2596,6 +2596,26 @@ defmodule Newbee.Web.Api do
 
   # 删除会话前自动解除工作组归属：逐个移出（级联移出其子协作成员）；
   # 目标会话是协调者则先取消整组再移出所有成员。
+  # 历史数据里可能已有悬空成员（早先的后台清扫绕过了组清理）：按「会话是否真实存在」过滤展示，
+  # 否则前端会渲染幽灵组员行，用户点它删除必然报「会话不存在」（R741/R742/R746 实测）。
+  @doc false
+  def filter_ghost_members(groups) when is_list(groups) do
+    alive = MapSet.new(Newbee.Session.list())
+
+    Enum.flat_map(groups, fn group ->
+      members = group["members"] || []
+      coord = group["coordinator_session_id"]
+      alive_members = Enum.filter(members, &MapSet.member?(alive, &1["session_id"]))
+
+      cond do
+        # 组长的会话都没了：组不可用（正常删除路径本就会解散），直接不出
+        is_binary(coord) and not MapSet.member?(alive, coord) -> []
+        length(alive_members) == length(members) -> [group]
+        true -> [Map.put(group, "members", alive_members)]
+      end
+    end)
+  end
+
   defp remove_session_from_groups(sid, groups) do
     Enum.reduce_while(groups, {:ok, []}, fn group, {:ok, notices} ->
       case remove_from_group(sid, group) do
@@ -2768,6 +2788,18 @@ defmodule Newbee.Web.Api do
   defp normalize_isolation(true), do: true
   defp normalize_isolation("true"), do: true
   defp normalize_isolation(_), do: :auto
+
+  # 组的「读」接口不再要求当前会话是成员：本应用是单用户信任域（session.history / session.list
+  # 本来就能跨会话读任意会话），把读也卡在成员身份上，会让「切到非成员会话」时的
+  # 未读追补与面板读取必然失败——设计待办②（R685-R690 实测：离开期间行徽标与
+  # #mc-expand.has-unread 永不点亮；socket.ex:170 只给成员 socket 下发 group_event）。
+  # 写操作（spawn / message.send / workspace.review / hive.task.*）仍保持 require_group_member。
+  defp require_group_readable(group_id, _session_id) do
+    case Newbee.Collaboration.Coordinator.get(group_id) do
+      {:ok, _group} -> :ok
+      {:error, code, message} -> {:error, code, message}
+    end
+  end
 
   defp require_group_member(group_id, session_id) do
     if Newbee.Collaboration.Coordinator.member?(group_id, session_id) do

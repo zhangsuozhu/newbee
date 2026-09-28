@@ -287,7 +287,7 @@ defmodule Newbee.Web.Auth do
     id = Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
     text = for _ <- 1..4, into: "", do: <<Enum.random(@captcha_chars)>>
     put({:captcha, id}, %{text: String.downcase(text), expires: System.system_time(:millisecond) + @captcha_ttl_ms})
-    %{id: id, svg: captcha_svg(text), text: text}
+    %{id: id, image: captcha_image_uri(text), text: text}
   end
 
   def verify_captcha(id, answer) when is_binary(id) and is_binary(answer) do
@@ -358,84 +358,12 @@ defmodule Newbee.Web.Auth do
 
   def setup(_), do: {:error, "bad_request", "缺少 password"}
 
-  # ── SVG 验证码 ──
+  # ── 图形验证码（服务端栅格化 PNG）──
 
-  defp captcha_svg(text) do
-    width = 132
-    height = 44
-
-    glyphs =
-      text
-      |> String.graphemes()
-      |> Enum.with_index()
-      |> Enum.map(fn {ch, i} ->
-        x = 16 + i * 27 + :rand.uniform(5) - 2
-        y = 30 + :rand.uniform(6) - 3
-        rot = :rand.uniform(50) - 25
-        size = 22 + :rand.uniform(6)
-
-        "<text x=\"" <>
-          Integer.to_string(x) <>
-          "\" y=\"" <>
-          Integer.to_string(y) <>
-          "\" transform=\"rotate(" <>
-          Integer.to_string(rot) <>
-          " " <>
-          Integer.to_string(x) <>
-          " " <>
-          Integer.to_string(y) <>
-          ")\" font-family=\"monospace\" font-size=\"" <>
-          Integer.to_string(size) <>
-          "\" font-weight=\"700\" fill=\"" <>
-          svg_color(60, 150) <>
-          "\">" <> ch <> "</text>"
-      end)
-
-    noise_lines =
-      for _ <- 1..4 do
-        "<line x1=\"" <>
-          Integer.to_string(:rand.uniform(width)) <>
-          "\" y1=\"" <>
-          Integer.to_string(:rand.uniform(height)) <>
-          "\" x2=\"" <>
-          Integer.to_string(:rand.uniform(width)) <>
-          "\" y2=\"" <>
-          Integer.to_string(:rand.uniform(height)) <>
-          "\" stroke=\"" <>
-          svg_color(120, 200) <>
-          "\" stroke-width=\"1.4\"/>"
-      end
-
-    noise_dots =
-      for _ <- 1..25 do
-        "<circle cx=\"" <>
-          Integer.to_string(:rand.uniform(width)) <>
-          "\" cy=\"" <>
-          Integer.to_string(:rand.uniform(height)) <>
-          "\" r=\"" <>
-          Float.to_string((:rand.uniform(15) + 5) / 10) <>
-          "\" fill=\"" <> svg_color(100, 190) <> "\"/>"
-      end
-
-    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" <>
-      Integer.to_string(width) <>
-      "\" height=\"" <>
-      Integer.to_string(height) <>
-      "\" viewBox=\"0 0 " <>
-      Integer.to_string(width) <>
-      " " <>
-      Integer.to_string(height) <>
-      "\"><rect width=\"100%\" height=\"100%\" fill=\"" <>
-      svg_color(230, 245) <>
-      "\"/>" <>
-      Enum.join(noise_lines) <> Enum.join(noise_dots) <> Enum.join(glyphs) <> "</svg>"
-  end
-
-  defp svg_color(lo, hi) do
-    r = lo + :rand.uniform(hi - lo)
-    g = lo + :rand.uniform(hi - lo)
-    b = lo + :rand.uniform(hi - lo)
-    "rgb(" <> Integer.to_string(r) <> "," <> Integer.to_string(g) <> "," <> Integer.to_string(b) <> ")"
+  # 服务端直接下发 data URI：payload 里没有 <svg>/<text>，脚本无法再靠一行正则读出答案
+  # （旧实现 R49 实测被脚本读出并被服务端接受为正确验证码）。渲染见 Newbee.Web.CaptchaImage。
+  defp captcha_image_uri(text) do
+    "data:image/png;base64," <> Base.encode64(Newbee.Web.CaptchaImage.render(text))
   end
 
   # ── 内部 ──

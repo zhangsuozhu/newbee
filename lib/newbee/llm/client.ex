@@ -269,21 +269,79 @@ defmodule Newbee.LLM.Client do
   def context_window(%__MODULE__{context_window: n}) when is_integer(n) and n > 0, do: n
 
   def context_window(%__MODULE__{} = client) do
-    cache = :persistent_term.get(@context_cache_key, %{})
-    key = {client.base_url, client.model}
-
-    case Map.fetch(cache, key) do
+    case cached_context_window(client) do
       {:ok, n} ->
         n
 
-      :error ->
-        n = fetch_context_window(client)
-        :persistent_term.put(@context_cache_key, Map.put(cache, key, n))
-        n
+      _ ->
+        # 同步语义不变：宁可在这里等，也要拿到真实窗口（Kernel 启动/切模型时用）
+        put_cached_context_window(client, fetch_context_window(client))
     end
   end
 
   def context_window(client) when is_map(client), do: Map.get(client, :context_window) || @default_context_window
+
+  @doc """
+  非阻塞取上下文窗口：显式配置 > 进程内缓存 > nil。
+
+  未命中时**后台**补一次 provider 探测（同一 {base_url, model} 只补一次，60s 内不重复），
+  调用方立刻返回 nil。provider `/models` 实测可能要 7s+（模型清单很大 / 链路慢），
+  在 GenServer 同步取会把该进程卡到 RPC 超时——WebUI 冷启首屏 `session.state`
+  每次 5s 超时即此因。返回 nil 是安全的：前端 `context_window > 0` 才渲染用量标签，
+  缓存填上后下一次轮询自然显示。
+  """
+  def context_window_nowait(%__MODULE__{context_window: n}) when is_integer(n) and n > 0, do: n
+
+  def context_window_nowait(%__MODULE__{} = client) do
+    case cached_context_window(client) do
+      {:ok, n} ->
+        n
+
+      :error ->
+        mark_context_window_pending(client)
+        spawn(fn -> put_cached_context_window(client, fetch_context_window(client)) end)
+        nil
+
+      :pending ->
+        nil
+    end
+  end
+
+  def context_window_nowait(client) when is_map(client), do: Map.get(client, :context_window)
+
+  @pending_ttl_ms 60_000
+
+  defp context_window_key(client), do: {client.base_url, client.model}
+
+  defp cached_context_window(client) do
+    case Map.fetch(:persistent_term.get(@context_cache_key, %{}), context_window_key(client)) do
+      {:ok, n} when is_integer(n) and n > 0 ->
+        {:ok, n}
+
+      {:ok, {:pending, at}} when is_integer(at) ->
+        if System.monotonic_time(:millisecond) - at < @pending_ttl_ms, do: :pending, else: :error
+
+      _ ->
+        :error
+    end
+  end
+
+  defp mark_context_window_pending(client) do
+    cache = :persistent_term.get(@context_cache_key, %{})
+
+    :persistent_term.put(
+      @context_cache_key,
+      Map.put(cache, context_window_key(client), {:pending, System.monotonic_time(:millisecond)})
+    )
+  end
+
+  defp put_cached_context_window(client, n) when is_integer(n) and n > 0 do
+    cache = :persistent_term.get(@context_cache_key, %{})
+    :persistent_term.put(@context_cache_key, Map.put(cache, context_window_key(client), n))
+    n
+  end
+
+  defp put_cached_context_window(_client, _n), do: nil
 
   defp fetch_context_window(client) do
     with {:ok, %{status: 200, body: body}} <-
