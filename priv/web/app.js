@@ -182,10 +182,11 @@
         i++;
         while (i < lines.length && !/^\s*`{3}\s*$/.test(lines[i])) { body.push(lines[i]); i++; }
         i++; // 跳过闭合 ```
+        const codeText = body.join("\n");
         out.push(
           `<pre class="md-code"><div class="md-code-head"><span>${escapeHtml(lang || "code")}</span>` +
-          `<button class="md-copy" data-code="${escapeHtml(body.join("\n")).replace(/"/g, "&quot;")}">复制</button></div>` +
-          `<code>${escapeHtml(body.join("\n"))}</code></pre>`
+          `<button class="md-copy" type="button">复制</button></div>` +
+          `<code>${escapeHtml(codeText)}</code></pre>`
         );
         continue;
       }
@@ -1603,8 +1604,12 @@ case "goal_round": break;
     // 把当前流式文本块渲染定稿并清空 residue，避免下一段 text 到来时
     // 把上一段残留的 streamAcc 连同新 delta 一起渲染（旧文本重复出现）。
     function flushTextBlock() {
+      if (streamTimer) { clearTimeout(streamTimer); streamTimer = 0; }
+      if (streamRaf) { cancelAnimationFrame(streamRaf); streamRaf = 0; }
+      streamMd = { src: "", end: 0, html: "" };
       if (!state.currentAssistant) { streamAcc = ""; return; }
       const _savedBar = state.currentAssistant.querySelector(":scope > .msg-usage");
+      state.currentAssistant.dataset.raw = streamAcc;
       state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
       addAssistantChrome(state.currentAssistant);
       bindCopyButtons(state.currentAssistant);
@@ -1616,6 +1621,76 @@ case "goal_round": break;
   let replayPendingUsage = null; // 回放时 usage 行先于 assistant 行到达，暂存等下个气泡
   let streamAcc = "";
   let streamRaf = 0;
+  let streamTimer = 0;
+  let streamPaintAt = 0;
+  let streamMd = { src: "", end: 0, html: "" };
+  const STREAM_PAINT_MS = 80;
+
+  // 空白行（围栏外）或未闭合围栏起点之前的 HTML 可以缓存，流式时只重绘尾巴。
+  function markdownCommitEnd(text) {
+    let fence = 0;
+    let lastBlank = 0;
+    let fenceStart = -1;
+    let i = 0;
+    while (i <= text.length) {
+      const nl = text.indexOf("\n", i);
+      const end = nl === -1 ? text.length : nl;
+      const line = text.slice(i, end);
+      const hasNl = nl !== -1;
+      if (/^\s*`{3}/.test(line)) {
+        if (fence % 2 === 0) fenceStart = i;
+        fence += 1;
+      }
+      if (hasNl && line.trim() === "" && fence % 2 === 0) lastBlank = nl + 1;
+      if (!hasNl) break;
+      i = nl + 1;
+    }
+    if (fence % 2 === 1 && fenceStart >= 0) return fenceStart;
+    return lastBlank;
+  }
+
+  function streamingMarkdown(text) {
+    const end = markdownCommitEnd(text);
+    let stableHtml = "";
+    if (end > 0 && streamMd.end === end && text.startsWith(streamMd.src)) {
+      stableHtml = streamMd.html;
+    } else if (end > 0) {
+      const stable = text.slice(0, end);
+      stableHtml = renderMarkdown(stable);
+      streamMd = { src: stable, end: end, html: stableHtml };
+    } else {
+      streamMd = { src: "", end: 0, html: "" };
+    }
+    const tail = end > 0 ? text.slice(end) : text;
+    return stableHtml + (tail ? renderMarkdown(tail) : "");
+  }
+
+  function paintStream() {
+    if (!state.currentAssistant) return;
+    const saved = state.currentAssistant.querySelector(":scope > .msg-usage");
+    state.currentAssistant.dataset.raw = streamAcc;
+    state.currentAssistant.innerHTML = streamingMarkdown(streamAcc);
+    addAssistantChrome(state.currentAssistant);
+    bindCopyButtons(state.currentAssistant);
+    if (saved) state.currentAssistant.appendChild(saved);
+    scrollBottom();
+  }
+
+  function scheduleStreamPaint() {
+    if (streamRaf || streamTimer) return;
+    const wait = Math.max(0, STREAM_PAINT_MS - (performance.now() - streamPaintAt));
+    const run = () => {
+      streamTimer = 0;
+      streamRaf = requestAnimationFrame(() => {
+        streamRaf = 0;
+        streamPaintAt = performance.now();
+        paintStream();
+      });
+    };
+    if (wait === 0 || streamAcc.endsWith("\n")) run();
+    else streamTimer = setTimeout(run, wait);
+  }
+
   function appendStream(delta, createdAt) {
     archiveReasoning();
     const d = typeof delta === "string" ? delta : "";
@@ -1632,20 +1707,7 @@ case "goal_round": break;
       state.currentAssistant = addAssistantChrome(el("msg-assistant", "", false, createdAt));
       if (state._pendingUsage) { attachUsageToBubble(state.currentAssistant, state._pendingUsage); state._pendingUsage = null; }
     }
-    state.currentAssistant.dataset.raw = streamAcc;
-    if (!streamRaf) {
-      streamRaf = requestAnimationFrame(() => {
-        streamRaf = 0;
-        if (state.currentAssistant) {
-          const _savedBar = state.currentAssistant.querySelector(":scope > .msg-usage");
-          state.currentAssistant.innerHTML = renderMarkdown(streamAcc);
-          addAssistantChrome(state.currentAssistant);
-          bindCopyButtons(state.currentAssistant);
-          if (_savedBar) state.currentAssistant.appendChild(_savedBar);
-          scrollBottom();
-        }
-      });
-    }
+    scheduleStreamPaint();
   }
 
   // reasoning 渲染对齐 dsh ReasoningRow：默认折叠的 disclosure。
@@ -5026,6 +5088,8 @@ box.appendChild(label);
   // 两个会话的输出混在一起。切会话前必须整体复位。
   function resetStreamState() {
     streamAcc = "";
+    streamMd = { src: "", end: 0, html: "" };
+    if (streamTimer) { clearTimeout(streamTimer); streamTimer = 0; }
     if (streamRaf) { cancelAnimationFrame(streamRaf); streamRaf = 0; }
     if (reasoningRaf) { cancelAnimationFrame(reasoningRaf); reasoningRaf = 0; }
     state.currentAssistant = null;
@@ -6001,18 +6065,31 @@ try {
   function renderBtwText(payload) {
     const entry = state.btwCards.get(payload.id);
     if (!entry) return;
-    entry.answer.dataset.raw = (entry.answer.dataset.raw || "") + String(payload.delta || "");
+    entry.raw = (entry.raw || entry.answer.dataset.raw || "") + String(payload.delta || "");
     entry.answer.dataset.hasText = "1";
-    entry.answer.innerHTML = renderMarkdown(entry.answer.dataset.raw);
-    scrollBottom();
+    if (entry.paintTimer) return;
+    entry.paintTimer = setTimeout(() => {
+      entry.paintTimer = 0;
+      entry.answer.dataset.raw = entry.raw;
+      entry.answer.innerHTML = renderMarkdown(entry.raw);
+      bindCopyButtons(entry.answer);
+      scrollBottom();
+    }, 80);
   }
 
   function finishBtw(payload) {
     const entry = state.btwCards.get(payload.id);
     if (!entry) return;
-    if (!entry.answer.dataset.hasText && payload.content) {
+    if (entry.paintTimer) { clearTimeout(entry.paintTimer); entry.paintTimer = 0; }
+    if (entry.raw) {
+      entry.answer.dataset.raw = entry.raw;
+      entry.answer.dataset.hasText = "1";
+      entry.answer.innerHTML = renderMarkdown(entry.raw);
+      bindCopyButtons(entry.answer);
+    } else if (!entry.answer.dataset.hasText && payload.content) {
       entry.answer.dataset.raw = String(payload.content);
       entry.answer.innerHTML = renderMarkdown(entry.answer.dataset.raw);
+      bindCopyButtons(entry.answer);
     }
     entry.card.classList.add("btw-done");
   }
@@ -6691,7 +6768,10 @@ try {
     root.querySelectorAll(".md-copy").forEach((btn) => {
       if (btn.dataset.bound) return;
       btn.dataset.bound = "1";
-      btn.onclick = () => copyWithFeedback(btn, btn.dataset.code || "", "复制");
+      btn.onclick = () => {
+        const code = btn.closest(".md-code")?.querySelector("code")?.textContent || "";
+        copyWithFeedback(btn, code, "复制");
+      };
     });
   }
 
