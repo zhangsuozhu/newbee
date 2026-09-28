@@ -373,13 +373,29 @@ const flow = $("flow");
   let soundCtx = null;
   let lastSoundAt = 0;
   let lastSoundKind = "";
+  // 浏览器策略：没有用户手势前 AudioContext 必须 suspended，直接 new/resume 会被拦下（console 刷 AudioContext was not allowed to start），且那一次提示音永久丢失。
+  // 手势前的最近一次提示音先暂存，首次点击/按键后 5s 内补播：既不刷警告也不漏通知。
+  let soundUnlocked = false;
+  let pendingSound = null;
   function soundEnabled() { try { return localStorage.getItem("newbee.sound") !== "off"; } catch (e) { return true; } }
   function applySoundUI() { const btn = $("sound-toggle"); if (!btn) return; const on = soundEnabled(); const svgOn = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>'; const svgOff = '<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5z"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></svg>'; btn.innerHTML = on ? svgOn : svgOff; btn.style.opacity = on ? "1" : "0.45"; btn.title = on ? "关闭提示音" : "开启提示音"; }
-  function ensureSoundCtx() { try { if (!soundCtx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; soundCtx = new AC(); } if (soundCtx.state === "suspended") soundCtx.resume(); return soundCtx; } catch (e) { return null; } }
+  function ensureSoundCtx() { try { if (!soundUnlocked) return null; if (!soundCtx) { const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return null; soundCtx = new AC(); } return soundCtx; } catch (e) { return null; } }
   function tone(freq, delay, dur, type, vol) { try { const ctx = ensureSoundCtx(); if (!ctx) return; const t0 = ctx.currentTime + delay; const o = ctx.createOscillator(); const g = ctx.createGain(); o.type = type || "sine"; o.frequency.setValueAtTime(freq, t0); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(vol || 0.18, t0 + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur); o.connect(g); g.connect(ctx.destination); o.start(t0); o.stop(t0 + dur + 0.05); } catch (e) {} }
-  function playSound(kind) { try { if (!soundEnabled()) return; const now = Date.now(); if (kind === lastSoundKind && now - lastSoundAt < 800) return; lastSoundKind = kind; lastSoundAt = now; ensureSoundCtx(); if (kind === "done") { tone(660, 0, 0.12, "sine", 0.2); tone(880, 0.13, 0.18, "sine", 0.2); } else if (kind === "ask") { tone(520, 0, 0.14, "sine", 0.2); tone(780, 0.15, 0.12, "sine", 0.16); } else if (kind === "error") { tone(200, 0, 0.22, "square", 0.12); tone(140, 0.16, 0.28, "square", 0.12); } else if (kind === "interrupted") { tone(320, 0, 0.1, "triangle", 0.18); } else { tone(600, 0, 0.08, "sine", 0.14); } } catch (e) {} }
+  function playSound(kind) { try { if (!soundEnabled()) return; const now = Date.now(); if (kind === lastSoundKind && now - lastSoundAt < 800) return; if (!soundUnlocked) { pendingSound = { kind: kind, at: now }; return; } lastSoundKind = kind; lastSoundAt = now; ensureSoundCtx(); if (kind === "done") { tone(660, 0, 0.12, "sine", 0.2); tone(880, 0.13, 0.18, "sine", 0.2); } else if (kind === "ask") { tone(520, 0, 0.14, "sine", 0.2); tone(780, 0.15, 0.12, "sine", 0.16); } else if (kind === "error") { tone(200, 0, 0.22, "square", 0.12); tone(140, 0.16, 0.28, "square", 0.12); } else if (kind === "interrupted") { tone(320, 0, 0.1, "triangle", 0.18); } else { tone(600, 0, 0.08, "sine", 0.14); } } catch (e) {} }
   function triggerEventSound(kind) { if (kind === "done" || kind === "goal_done") playSound("done"); else if (kind === "ask" || kind === "goal_ask" || kind === "permission_ask") playSound("ask"); else if (kind === "error") playSound("error"); else if (kind === "interrupted") playSound("interrupted"); else if (kind === "text_end" || kind === "turn_end") playSound("info"); }
-  function initSound() { applySoundUI(); const btn = $("sound-toggle"); if (btn) btn.onclick = () => { try { const on = soundEnabled(); localStorage.setItem("newbee.sound", on ? "off" : "on"); } catch (e) {} applySoundUI(); if (soundEnabled()) playSound("info"); }; const unlock = () => { ensureSoundCtx(); }; try { document.addEventListener("pointerdown", unlock, { once: true }); document.addEventListener("keydown", unlock, { once: true }); } catch (e) {} }
+  // 顶栏真实高度（含边框/换行变化）：MC 桌面端要让开顶栏，靠这个变量定位
+  function syncTopbarHeight() {
+    const tb = document.getElementById("topbar");
+    if (!tb) return;
+    document.documentElement.style.setProperty("--topbar-h", Math.round(tb.getBoundingClientRect().height) + "px");
+  }
+  syncTopbarHeight();
+  window.addEventListener("resize", syncTopbarHeight);
+
+  // 修饰键组合的首个 keydown（如 Ctrl+M 的 Control）在部分浏览器拿不到音频用户激活，
+  // 会建出 suspended 上下文并刷 "AudioContext was not allowed to start"（实测 mission 轮次 2-4 条）；
+  // 纯按键/点击创建则 0 告警，所以带 ctrl/meta/alt 的 keydown 先不解锁，等下一次真实手势。
+  function initSound() { applySoundUI(); const btn = $("sound-toggle"); if (btn) btn.onclick = () => { try { const on = soundEnabled(); localStorage.setItem("newbee.sound", on ? "off" : "on"); } catch (e) {} applySoundUI(); if (soundEnabled()) playSound("info"); else pendingSound = null; }; const unlock = (e) => { try { if (e && e.type === "keydown" && (e.ctrlKey || e.metaKey || e.altKey)) return; if (!soundUnlocked) { soundUnlocked = true; ensureSoundCtx(); const q = pendingSound; pendingSound = null; if (q && soundEnabled() && Date.now() - q.at <= 5000) playSound(q.kind); } if (soundCtx && soundCtx.state === "suspended") soundCtx.resume(); } catch (e) {} }; try { document.addEventListener("pointerdown", unlock); document.addEventListener("keydown", unlock); } catch (e) {} }
 
   const state = {
     sid: localStorage.getItem("newbee.sid") || null,
@@ -770,6 +786,7 @@ const flow = $("flow");
 
   function terminalRequestOpen() {
     if (!state.terminal.open) return false;
+    terminalResetExecEchoFilter();
     if (!terminalSend({ type: "terminal_open" })) {
       state.terminal.connected = false;
       state.terminal.resize = false;
@@ -901,6 +918,7 @@ const flow = $("flow");
 
   function closeTerminal(sendFrame) {
     const panel = $("terminal-panel");
+    terminalResetExecEchoFilter();
     if (sendFrame !== false) terminalSend({ type: "terminal_close" });
     if (document.fullscreenElement === panel && document.exitFullscreen) document.exitFullscreen().catch(() => {});
     terminalFallbackFullscreen(false);
@@ -957,10 +975,35 @@ const flow = $("flow");
       .replace(/\r/g, "\n");
   }
 
-  function terminalAppend(text) {
+  // Hold a possible private echo prefix across PTY frames; flush incomplete text after a short idle.
+  const terminalExecEchoPrefix = "printf '\\033]777;newbee-done;nbee";
+  const terminalExecEchoSuffix = ";%s\\007' \"$?\"";
+  const terminalExecEchoLength = terminalExecEchoPrefix.length + 16 + terminalExecEchoSuffix.length;
+  let terminalExecEchoPending = "";
+  let terminalExecEchoTimer = null;
+
+  function terminalResetExecEchoFilter() {
+    if (terminalExecEchoTimer) clearTimeout(terminalExecEchoTimer);
+    terminalExecEchoPending = "";
+    terminalExecEchoTimer = null;
+  }
+
+  function terminalExecEchoIsPrefix(value) {
+    if (!value || value.length >= terminalExecEchoLength) return false;
+    if (value.length <= terminalExecEchoPrefix.length) return terminalExecEchoPrefix.startsWith(value);
+    if (!value.startsWith(terminalExecEchoPrefix)) return false;
+    const rest = value.slice(terminalExecEchoPrefix.length);
+    const token = rest.slice(0, 16);
+    if (!/^[A-Za-z0-9_-]*$/.test(token)) return false;
+    if (token.length < 16) return rest === token;
+    const suffix = rest.slice(16);
+    return suffix.length < terminalExecEchoSuffix.length && terminalExecEchoSuffix.startsWith(suffix);
+  }
+
+  function terminalWriteVisible(text) {
     if (!text) return;
     if (state.terminal.term) {
-      state.terminal.term.write(String(text));
+      state.terminal.term.write(text);
       return;
     }
     const output = $("terminal-output");
@@ -972,6 +1015,42 @@ const flow = $("flow");
       : next;
     output.scrollTop = output.scrollHeight;
   }
+
+  function terminalAppend(text) {
+    const combined = terminalExecEchoPending + String(text);
+    terminalExecEchoPending = "";
+    if (terminalExecEchoTimer) {
+      clearTimeout(terminalExecEchoTimer);
+      terminalExecEchoTimer = null;
+    }
+
+    let visible = combined.replace(/printf '\\033]777;newbee-done;nbee[A-Za-z0-9_-]{16};%s\\007' "\$\?"(?:\r\n|\n)?/g, "");
+    let pendingStart = -1;
+    const firstCandidate = Math.max(0, combined.length - terminalExecEchoLength);
+    for (let start = firstCandidate; start < combined.length; start++) {
+      if (terminalExecEchoIsPrefix(combined.slice(start))) {
+        pendingStart = start;
+        break;
+      }
+    }
+
+    if (pendingStart >= 0) {
+      terminalExecEchoPending = combined.slice(pendingStart);
+      visible = visible.slice(0, Math.max(0, visible.length - terminalExecEchoPending.length));
+    }
+
+    terminalWriteVisible(visible);
+    if (terminalExecEchoPending) {
+      terminalExecEchoTimer = setTimeout(() => {
+        const pending = terminalExecEchoPending;
+        terminalExecEchoPending = "";
+        terminalExecEchoTimer = null;
+        terminalWriteVisible(pending);
+      }, 500);
+    }
+  }
+
+
 
   function terminalDecode(frame) {
     if (frame.encoding !== "base64") return typeof frame.data === "string" ? frame.data : "";
@@ -1837,6 +1916,34 @@ case "goal_round": break;
 
   let groupRenderSeq = 0;
 
+  // 切回成员会话后追补离开期间错过的协作动态。
+  // 服务端只把 group_event 下发给「绑定会话属于组成员」的 socket（socket.ex 里 sid in session_ids 才推帧），
+  // 且 group.activity.list 要求调用者是成员；所以离开期间（socket 绑到非成员会话）错过的动态
+  // 必须回来后按 collabSeen 拉取补齐，否则行徽标与 #mc-expand.has-unread 永远不亮
+  // （浏览器轮次 R687/R688 复现：切回成员会话且未看协作，未读仍为0）。
+  async function syncCollabUnreadFromActivity(seq) {
+    try {
+      const groups = (state.groups || []).filter((g) => g && g.group_id);
+      // 并发追补：历史组会越积越多，串行每组一次 RPC 会让徽标晚几秒才出现（R697/R701 偶发、R702-704 稳定失败）
+      await Promise.all(groups.map(async (g) => {
+        const gid = g.group_id;
+        const since = Number((state.collabSeen || {})[gid] || 0);
+        try {
+          const res = await rpc("group.activity.list", {
+            groupId: gid, sessionId: state.sid, sinceEventId: since, limit: 100
+          });
+          if (seq !== undefined && seq !== groupLoadSeq) return;
+          for (const ev of (res && res.activity) || []) {
+            const evId = ev && (ev.event_id || ev.eventId || ev.id);
+            if (evId) bumpCollabUnread(gid, evId);
+          }
+        } catch (_memberErr) { /* 当前会话不是该组成员时无查询权限：忽略 */ }
+      }));
+      updateCollabBadges();
+      if (typeof renderSessionList === "function") renderSessionList();
+    } catch (_e) {}
+  }
+
   async function loadGroups() {
     const sid = state.sid;
     const seq = ++groupLoadSeq;
@@ -1878,6 +1985,7 @@ case "goal_round": break;
     rebuildGroupIndex();
     renderSessionList();
     await loadActiveGroup(sid, seq);
+    await syncCollabUnreadFromActivity(seq);
   }
 
   async function loadActiveGroup(expectedSid = state.sid, expectedSeq = groupLoadSeq) {
@@ -1976,6 +2084,9 @@ case "goal_round": break;
     if (state.collabUnread) delete state.collabUnread[groupId];
     saveCollabSeen();
     updateCollabBadges();
+    // 行徽标（.session-group-unread）是渲染进 HTML 的，必须重绘才会消失：
+    // 只调 updateCollabBadges 时徽标会一直挂到下一次列表重绘（R697 实测：看完协作后仍显示「1 未读」）
+    if (typeof renderSessionList === "function") renderSessionList();
   }
   function bumpCollabUnread(groupId, eventId) {
     if (!groupId) return;
@@ -2254,7 +2365,10 @@ case "goal_round": break;
       return '<article class="collab-message' + mine + '"><div class="collab-message-head"><b>' + escapeHtml(sessionDisplayName(message.sender_session_id)) + "</b><span>→ " + escapeHtml(target) + "</span>" + kindBadge + deliveryBadge + '<time title="' + escapeHtml(full) + '">' + escapeHtml(at) + "</time></div><div>" + escapeHtml(message.body || "") + "</div></article>";
     }).join("") : '<div class="collab-empty">还没有协作消息</div>';
     list.scrollTop = list.scrollHeight;
-    markCollabSeen(group.group_id);
+    // 只有真的在看协作（MC 打开且停在协作/任务页签）才记已读：
+    // 无条件 markCollabSeen 会把「刚切回来、还没打开协作」的未读立刻清掉，
+    // 与 bumpCollabUnread 的 viewingCollabNow 豁免条件保持对称（R689/R691 实测本组行徽标始终为 nil）。
+    if (viewingCollabNow()) markCollabSeen(group.group_id);
 
   }
 
@@ -2654,8 +2768,29 @@ case "goal_round": break;
   }
 
 
+  // 建组失败后的自愈：剔除已不在列表里的（被服务端清扫/删除的）幽灵会话，
+  // 否则「请重试一次」会拿着不存在的会话一直重试（R659/R660 复现）。
+  function pruneGroupSelectionToLoaded() {
+    try {
+      const have = new Set((state.allSessions || []).map((s) => s.id));
+      let pruned = 0;
+      for (const sid of [...state.selectedSessions]) {
+        if (!have.has(sid)) { state.selectedSessions.delete(sid); pruned++; }
+      }
+      if (Array.isArray(state.pendingGroupMembers)) {
+        state.pendingGroupMembers = state.pendingGroupMembers.filter((id) => have.has(id));
+      }
+      if (pruned) renderSessionList();
+    } catch (_e) {}
+  }
+
   async function createGroup() {
     if (!state.sid) return;
+    // 提交前先对齐服务端会话列表：服务端会后台清扫超时空会话，不对齐就会拿「幽灵会话」
+    // 去建组/加人，必然报「会话不存在」（浏览器轮次 R659/R663 实测）。
+    // 必须在捕获 ids 之前做，否则 prune 换掉的是 state.pendingGroupMembers、ids 仍是旧数组。
+    try { await loadSessions(); } catch (_syncErr) {}
+    pruneGroupSelectionToLoaded();
     const ids = state.pendingGroupMembers || [];
     const title = $("group-name-input").value.trim();
     const goal = $("group-goal-input").value.trim();
@@ -2710,9 +2845,24 @@ case "goal_round": break;
         state.pendingGroupId = null;
         state.pendingGroupResult = null;
         await Promise.all([loadSessions(), loadGroups()]);
-        line("error", "组成工作组失败，已清理半成品组，请重试一次: " + e.message);
+        pruneGroupSelectionToLoaded();
+        const gone1 = /不存在|not_found|no_such/i.test((e && e.message) || "");
+        if (gone1) $("group-modal").classList.add("hidden");
+        line("error", gone1
+          ? "组成工作组失败，已清理半成品组: " + e.message + "（已刷新会话列表，请重新勾选仍存在的会话后重试）"
+          : "组成工作组失败，已清理半成品组，请重试一次: " + e.message);
       } else {
-        line("error", "组成工作组失败: " + e.message + "（已保留本次建组进度，重试不会重复建组）");
+        // 服务端会自动清扫超过1 小时的空会话（sweep_stale_empty），侧栏可能还显示这些「幽灵会话」：
+        // 失败后刷新列表让它们消失，并剔除已勾选但服务端已不存在的会话，
+        // 否则弹窗会一直卡住、用户拿不存在的会话反复重试
+        // （浏览器轮次 R654/R655 实测：modal 卡开、selected sid 在服务端 missing、后续 MC 面板也打不开）。
+        try { await loadSessions(); } catch (_refreshErr) {}
+        pruneGroupSelectionToLoaded();
+        const gone = /不存在|not_found|no_such/i.test((e && e.message) || "");
+        if (gone) $("group-modal").classList.add("hidden");
+        line("error", gone
+          ? "组成工作组失败: " + e.message + "（已刷新会话列表，请重新勾选仍存在的会话后重试）"
+          : "组成工作组失败: " + e.message + "（已保留本次建组进度，重试不会重复建组）");
       }
     } finally {
       button.disabled = false;
@@ -2820,11 +2970,23 @@ case "goal_round": break;
   function buildAcceptance(hostId) {
     const rows = Array.from(document.querySelectorAll("#" + hostId + " .task-accept-row"));
     const out = [];
+    // 弹窗会预置一行空占位：用户压根没填过时，别把占位行说成"你有一行没填"（文案误导）
+    const hasContent = rows.some((row) => {
+      const m = row.querySelector(".task-accept-main");
+      const x = row.querySelector(".task-accept-extra");
+      return (m && m.value.trim()) || (x && x.value.trim());
+    });
     for (const row of rows) {
       const kind = row.querySelector(".task-accept-kind").value;
       const main = row.querySelector(".task-accept-main").value.trim();
       const extra = row.querySelector(".task-accept-extra").value.trim();
-      if (!main) return { error: "成功标准有一行未填（程序或路径不能为空）" };
+      if (!main) {
+        return {
+          error: hasContent
+            ? "成功标准有一行未填（程序或路径不能为空）"
+            : "至少填写一条结构化验收标准（命令 / 文件存在 / 文件哈希）"
+        };
+      }
       if (kind === "command") {
         if (!acceptancePrograms.has(main)) return { error: "程序须单独填写，并属于验收白名单" };
         let args;
@@ -3041,6 +3203,8 @@ bind("delegate-session", openDelegateModal);
   // ── 会话管理 ──
   // 搜索关键字（"" 表示不过滤）；state.allSessions 缓存最近一次 session.list 响应
   let sessionFilter = "";
+  // 过滤时的补页序号：丢弃过期输入触发的加载循环
+  let sessionFilterLoadSeq = 0;
   let sessionListSeq = 0;
   async function loadSessions() {
     const seq = ++sessionListSeq;
@@ -3075,6 +3239,27 @@ bind("delegate-session", openDelegateModal);
       line("error", "加载更多会话失败: " + e.message);
     } finally {
       state.loadingMoreSessions = false;
+      renderSessionList();
+    }
+  }
+  // ── 搜索补页 ──
+  // 会话搜索是纯前端过滤（只匹配已加载的 state.allSessions，初始50 条）：第51 条之后的老会话
+  // 输入关键词会直接「查无此会话」且无任何提示（浏览器轮次 R605/R606 实测 matches=0、
+  // 而服务端 total=77/78）。有关键词时按需补页：命中即停、每次输入最多补 maxPages 页，
+  // 用序号丢弃过期的输入循环，避免连打字触发多路并发加载。
+  async function loadSessionsForFilter(maxPages) {
+    const seq = ++sessionFilterLoadSeq;
+    for (let i = 0; i < maxPages; i++) {
+      if (seq !== sessionFilterLoadSeq) return;
+      const kw = sessionFilter.trim().toLowerCase();
+      if (!kw) return;
+      const total = state.sessionsTotal || 0;
+      if ((state.allSessions || []).length >= total) return;
+      const hit = (state.allSessions || []).some((s) =>
+        sessionDisplayTitle(s).toLowerCase().includes(kw) || String(s.id).toLowerCase().includes(kw));
+      if (hit) return;
+      await loadMoreSessions();
+      if (seq !== sessionFilterLoadSeq) return;
       renderSessionList();
     }
   }
@@ -4355,6 +4540,11 @@ box.appendChild(label);
   if (document.getElementById("xj_code")) document.getElementById("xj_code").addEventListener("input", () => { clearTimeout(window.__xjPreview); window.__xjPreview = setTimeout(xPreviewCode, 350); });
   if (document.getElementById("xm_close")) document.getElementById("xm_close").onclick = () => xClose("xmanage-modal");
 
+  // 展示标题与搜索过滤共用同一套回退：空标题且0消息的会话在列表里显示为「新会话」，
+  // 过滤若只看 s.title/s.id，用户就搜不到自己眼前正显示着的那条（显示与搜索不一致）。
+  function sessionDisplayTitle(s) {
+    return String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\s+/g, " ").trim().slice(0, 40) || "(未命名)";
+  }
   function renderSessionList() {
     const box = $("session-list");
     openSwipeWrap = null;
@@ -4362,7 +4552,7 @@ box.appendChild(label);
     box.innerHTML = "";
     const kw = sessionFilter.trim().toLowerCase();
     const all = state.allSessions || [];
-    const visible = (s) => !kw || String(s.title || "").toLowerCase().includes(kw) || String(s.id).toLowerCase().includes(kw);
+    const visible = (s) => !kw || sessionDisplayTitle(s).toLowerCase().includes(kw) || String(s.id).toLowerCase().includes(kw);
     const rendered = new Set();
     const addItem = (s, child, ref) => {
       if (!visible(s) || rendered.has(s.id)) return null;
@@ -4373,7 +4563,7 @@ box.appendChild(label);
       const item = document.createElement("div");
       item.className = "session-item" + (s.id === state.sid ? " active" : "");
       item.dataset.sid = s.id;
-      const title = String(s.title || ((s.messages || 0) === 0 ? "新会话" : s.id)).replace(/\s+/g, " ").trim().slice(0, 40) || "(未命名)";
+      const title = sessionDisplayTitle(s);
       const stCls = s.busy ? "busy" : (s.running ? "online" : "offline");
       const role = ref && ref.role ? ref.role : "会话";
       const selected = state.selectedSessions && state.selectedSessions.has(s.id) ? " checked" : "";
@@ -4482,7 +4672,13 @@ box.appendChild(label);
       bar.hidden = n === 0;
     }
     const groupBtn = $("new-group");
-    if (groupBtn) groupBtn.disabled = n === 0;
+    if (groupBtn) {
+      groupBtn.disabled = n === 0;
+      // 组队入口跟随选中状态显示：按钮原先自带 hidden 且无人移除，
+      // 导致「组成工作组」永远点不到（R627/R628 复现：选中2 个会话后 hidden 仍为 true）。
+      groupBtn.hidden = n === 0;
+      groupBtn.classList.toggle("hidden", n === 0);
+    }
     const delBtn = $("delete-selected-sessions");
     if (delBtn) delBtn.disabled = n === 0;
   }
@@ -4592,15 +4788,22 @@ box.appendChild(label);
       inp.className = "session-title-input";
       inp.value = cur;
       inp.maxLength = 60;
+      // Enter 与 blur 会先后触发（换焦点时 blur 再来一次），必须幂等：
+      // 第二次进来时 inp 已被摘下，再 replaceWith 会抛 NotFoundError 成为未捕获拒绝。
+      let finished = false;
       const finish = async (commit) => {
+        if (finished) return;
+        finished = true;
         const v = inp.value.trim();
         const span = document.createElement("span");
         span.id = "session-title";
         span.className = "session-title";
         span.title = "双击重命名";
         span.textContent = commit && v ? v : cur;
-        inp.replaceWith(span);
-        attachTitleRename(span);
+        if (inp.isConnected) {
+          inp.replaceWith(span);
+          attachTitleRename(span);
+        }
         if (commit && v && v !== cur) {
           try {
             await rpc("session.rename", { sessionId: state.sid, title: v });
@@ -4809,7 +5012,12 @@ box.appendChild(label);
   const searchInput = $("session-search");
   if (searchInput) searchInput.addEventListener("input", (e) => {
     sessionFilter = e.target.value || "";
+    sessionFilterLoadSeq++; // 作废仍在跑的补页循环
     renderSessionList();
+    // 有关键词时按需把未加载的会话补齐，否则第51 条之后的老会话搜不到
+    if (sessionFilter.trim()) {
+      try { loadSessionsForFilter(6); } catch (err) {}
+    }
   });
 
   // 流式渲染状态（streamAcc / currentAssistant / currentReasoning / currentTool）
@@ -4846,10 +5054,11 @@ box.appendChild(label);
     const seq = ++resumeSeq;
     inspectionReady = false;
     const stale = () => seq !== resumeSeq || state.sid !== sid;
+    // closeTerminal 必须先于断开：否则 terminal_close 会在 state.ws=null 后被静默丢弃，旧 PTY 永远不会清理。
+    if (state.sid && state.sid !== sid) closeTerminal(true);
     disconnectSocket();
     exitGroupMode();
     if (state.sid && state.sid !== sid) discardAttachments(state.sid);
-    if (state.sid && state.sid !== sid) closeTerminal(true);
 
     state.sid = sid;
     // 切会话写回 localStorage：否则删除当前会话跳到下一个后刷新，
@@ -5887,7 +6096,14 @@ try {
     const sid = state.sid;
     try {
       if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify({ type: "clearQueue" }));
-      await rpc("session.clearQueue", { sessionId: sid });
+      const res = await rpc("session.clearQueue", { sessionId: sid });
+      // 以服务端返回为准同步栏位：服务端队列本就是空时（n=0）它不会广播 queue_updated，
+      // 只等事件会让「清空队列」点了没反应（浏览器轮次 R774 实测：点完8 秒栏位仍显示2 条）。
+      if (sid === state.sid) {
+        state.queue = (res && Array.isArray(res.queue)) ? res.queue : [];
+        state.queueCurrent = null;
+        renderQueue();
+      }
     } catch (e) {
       line("error", "清空队列失败: " + e.message);
     }
@@ -6017,7 +6233,15 @@ try {
 
   // ── 模型 ──
   async function openModels() {
-    const data = await rpc("llm.models", { sessionId: state.sid });
+    // 拉列表失败不能静默：原先没有 try/catch，llm.models 一失败就是未处理 rejection
+    // （页面既不开窗也不提示，console 还刷 pageerror/console.error）——浏览器轮次 R770 实测。
+    let data;
+    try {
+      data = await rpc("llm.models", { sessionId: state.sid });
+    } catch (e) {
+      line("error", "加载模型列表失败: " + e.message + "（请稍后重试，或检查 ~/.newbee/model.json 的 provider / apiKey）");
+      return;
+    }
     const providers = data.providers || [];
     const current = data.current || {};
     const curProvider = current.provider || "";
@@ -7020,6 +7244,18 @@ try {
       } catch (_e) {}
     };
     unreadPollTimer = setInterval(poll, 8000);
+    // 设计待办②：切到非成员会话时也要能实时看到组未读。
+    // 服务端只把 group_event 推给「绑定会话是成员」的 socket（socket.ex:170），
+    // 读接口已放宽为「组可读」，这里每10 秒按 collabSeen 增量追补一次；
+    // bumpCollabUnread 自带 eventId<=seen 幂等守卫，重复拉不会重复计数。
+    let collabSyncBusy = false;
+    window.__collabUnreadTimer = window.__collabUnreadTimer || setInterval(() => {
+      if (document.hidden || collabSyncBusy) return;
+      collabSyncBusy = true;
+      Promise.resolve(syncCollabUnreadFromActivity(groupLoadSeq))
+        .catch(() => {})
+        .finally(() => { collabSyncBusy = false; });
+    }, 10000);
   }
   async function refreshStats() {
     if (!state.sid) return;
@@ -8346,20 +8582,76 @@ function renderEvoApprovals(records) {
 
   // ── 全局键盘快捷键 ──
   function initGlobalKeys() {
+    // ── Esc 统一走捕获阶段 ──
+    // ① 普通模式此前没有面板/弹窗的 Esc 处理（embed 链被 !embedMode() 挡住）：
+    //    R845 实测 目录弹窗/扫码浮层/终端/MC 四项 after=true（按了没反应）。
+    // ② 终端聚焦时 xterm 在 target 上 stopPropagation，冒泡段的 document 监听器收不到：
+    //    R852 实测 capture 计数=1 而链条未执行 —— 所以整条链必须在捕获段。
+    // ③ 弹窗内焦点在输入字段时不关窗（模型搜索等局部 Esc 行为要保留），交给字段自己处理。
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      const modalOpen = document.querySelector("dialog[open]") ||
+        document.querySelector(".modal:not(.hidden):not(#cmd-palette)");
+      if (modalOpen) {
+        const ae0 = document.activeElement;
+        const inField = !!(ae0 && (ae0.tagName === "INPUT" || ae0.tagName === "TEXTAREA" || ae0.tagName === "SELECT" || ae0.isContentEditable));
+        if (inField) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const m = document.querySelector(".modal:not(.hidden):not(#cmd-palette)") || modalOpen;
+        const closer = m.querySelector("button[id$='-cancel'], button[id$='-close']");
+        if (closer) closer.click();
+        else if (m.classList) m.classList.add("hidden");
+        return;
+      }
+      const inInput = document.activeElement === $("input") || document.activeElement === $("cmd-input") || document.activeElement === $("terminal-input");
+      const ae = document.activeElement;
+      const focusInXterm = !!(ae && ae.classList && (ae.classList.contains("xterm-helper-textarea") || (ae.closest && ae.closest("#terminal-panel"))));
+      const qaEl = $("qa-overlay");
+      const qaOpen = qaEl && !qaEl.classList.contains("hidden");
+      const palEl = $("cmd-palette");
+      const palOpen = palEl && !palEl.classList.contains("hidden");
+      const effEl = $("effort-segments");
+      const effOpen = effEl && !effEl.classList.contains("hidden");
+      const termOpen = state.terminal && state.terminal.open;
+      if (qaOpen || palOpen || effOpen || MC.open || termOpen) {
+        e.preventDefault();
+        if (effOpen || palOpen) {
+          // 各自的独立 handler 负责收起，这里只拦住后续的 interrupt
+        } else {
+          e.stopPropagation();
+          if (qaOpen) {
+            window.__escChainActed = "qa";
+            closeQuickAccess();
+          } else if (MC.open) {
+            window.__escChainActed = "mc";
+            setMCOpen(false);
+          } else if (termOpen) {
+            window.__escChainActed = "terminal";
+            const tc = $("terminal-close");
+            if (tc) tc.click();
+          }
+        }
+        return;
+      }
+      if (state.busy && !inInput && !focusInXterm) {
+        e.preventDefault();
+        e.stopPropagation();
+        interrupt();
+      }
+    }, true);
     document.addEventListener("keydown", (e) => {
       // 模态优先：任何打开的对话框（聊天室/群管理，命令面板除外）拥有按键，
       // 全局快捷键不得穿透 —— 否则 Esc 会中断后台会话，Ctrl+M 会在弹窗下面开面板。
       const modalOpen = document.querySelector("dialog[open]") ||
         document.querySelector(".modal:not(.hidden):not(#cmd-palette)");
       if (modalOpen) return;
+      // Escape 全部交给上面的捕获阶段处理器（终端聚焦时 xterm 会在 target 上 stopPropagation，
+      // 冒泡段收不到 —— R852 实测 capture 计数=1 而链条 acted=null）
+      if (e.key === "Escape") return;
       // 不在输入框中时的快捷键
       const inInput = document.activeElement === $("input") || document.activeElement === $("cmd-input") || document.activeElement === $("terminal-input");
       const mod = e.ctrlKey || e.metaKey;
-      // Escape: 中断（全局）
-      if (e.key === "Escape" && state.busy && !inInput) {
-        e.preventDefault();
-        interrupt();
-      }
 
       // Ctrl+M: 打开/关闭 Mission Control
       if (mod && e.key === "m" && !e.shiftKey) {
@@ -8665,10 +8957,10 @@ function renderEvoApprovals(records) {
     try {
       const r = await rpc("auth.captcha", {});
       const img = $("login-captcha-img");
-      if (img && r.svg) {
+      if (img && r.image) {
         captchaLastRefresh = now;
         img.dataset.captchaId = r.captchaId;
-        img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(r.svg)));
+        img.src = r.image; // 服务端给的是 data:image/png;base64,…（矢量/文本一概不下发）
       }
     } catch (e) { /* 后端可能未要求认证 */ }
   }
@@ -9133,8 +9425,15 @@ initGroups();
 await loadGroups();
 const host = await rpc("host.describe", {});
 $("model-label").textContent = host.model || "(no model)";
-if (sid) await resume(sid);
-else await newSession();
+// 普通刷新（URL 没有 ?session=）也要回到上次会话：newbee.sid 一直在 localStorage 里维护着。
+// 只认 URL 参数会让每次 F5/直接打开 / 都 newSession()——
+// ① restoreDraft 的"刷新后恢复未发送文字"永远触发不了（浏览器轮次 R828-R830：刷新前后 sid 必变、草稿丢失）
+// ② 每次刷新都往侧栏塞一个空会话（loadmore 轮次里大量空会话即由此而来）
+const resumeSid = sid || (() => { try { return localStorage.getItem("newbee.sid"); } catch (e) { return null; } })();
+if (resumeSid) {
+  try { await resume(resumeSid); }
+  catch (e) { try { await newSession(); } catch (e2) {} }
+} else await newSession();
 loadSessions();
 startWorkInbox();
 startStats();
@@ -9148,27 +9447,44 @@ startUnreadPoll();
     updateLogoutBtn();
     await redeemQuickAccess();
 
-    try {
-      const auth = await rpc("auth.status", {});
+    // auth.status 失败分两种：真·需要登录（401/业务错误）与后端连不上（fetch 失败）。
+    // 后者弹登录框会让人以为要重新登录，实际只是服务重启/断网——这里原地自动重试；
+    // 也不整页 reload：后端没起来时 reload 会把用户甩到浏览器错误页。
+    const bootOnce = async (attempt) => {
+      try {
+        const auth = await rpc("auth.status", {});
 
-      if (auth.auth_required && !auth.authenticated) {
-        if (inspectionMode) inspectionNotify('session-error', {code: 'unauthorized', message: '登录已过期，请重新登录后重试'});
-        if (state.token) setToken(null);
+        if (auth.auth_required && !auth.authenticated) {
+          if (inspectionMode) inspectionNotify('session-error', {code: 'unauthorized', message: '登录已过期，请重新登录后重试'});
+          if (state.token) setToken(null);
+          showLogin();
+          return;
+        }
+
+        hideLogin();
+        try { await bootApp(); } catch (error) {
+          if (inspectionMode) inspectionNotify('session-error', {code: error.code, message: error.message});
+          if (workspaceSurface) workspaceNotify("error", {message: error.message});
+          else line("error", error.message);
+        }
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        const netErr = /Failed to fetch|NetworkError|Load failed|ERR_/i.test(msg);
+        if (netErr) {
+          if (inspectionMode) inspectionNotify('session-error', {code: 'offline', message: `连不上后端：${msg}`});
+          if (!workspaceSurface && (attempt === 1 || attempt % 10 === 0)) {
+            try { line("error", `连不上后端（${msg}），3 秒后自动重试`); } catch (_e) {}
+          }
+          setTimeout(() => bootOnce(attempt + 1), 3000);
+          return;
+        }
         showLogin();
-        return;
+        loginError(`无法确认登录状态: ${msg}`);
+        if (inspectionMode) inspectionNotify('session-error', {code: e.code, message: `无法确认登录状态：${msg}`});
       }
+    };
 
-      hideLogin();
-      try { await bootApp(); } catch (error) {
-        if (inspectionMode) inspectionNotify('session-error', {code: error.code, message: error.message});
-        if (workspaceSurface) workspaceNotify("error", {message: error.message});
-        else line("error", error.message);
-      }
-    } catch (e) {
-      showLogin();
-      loginError(`无法确认登录状态: ${e.message}`);
-      if (inspectionMode) inspectionNotify('session-error', {code: e.code, message: `无法确认登录状态：${e.message}`});
-    }
+    await bootOnce(1);
   })();
   // ── 手机扫码免登录进入（Quick Access）──
   // 电脑端已登录 → 生成一次性邀请码 → 二维码 URL 带 ?qk=CODE；

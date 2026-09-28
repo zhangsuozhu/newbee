@@ -35,7 +35,7 @@
       <button id="delete-selected-sessions" class="icon-btn session-delete-selected" title="删除选中的会话" aria-label="删除选中的会话" disabled>
         <svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
       </button>
-      <button id="new-group" class="icon-btn group-icon-btn hidden" title="组成工作组（高级）" aria-label="组成工作组" disabled hidden>
+      <button id="new-group" class="icon-btn group-icon-btn" title="组成工作组（高级）" aria-label="组成工作组" disabled>
         <svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
       </button>
     </div>
@@ -319,10 +319,13 @@
         <div id="evo-releases" class="evo-releases"></div>
       </section>
 
-      <section class="evo-section evo-audit-section">
-        <div class="evo-section-head"><span>⑤ 历史记录</span><span id="evo-events-size" class="evo-section-meta">-</span></div>
-        <div id="evo-feed" class="evo-feed"></div>
+      <section class="evo-section evo-approval-section">
+        <div class="evo-section-head"><span>⑤ 自动处理记录</span><span class="evo-section-meta">系统做过什么、为什么、影响哪里、能否撤回</span></div>
+        <div id="evo-approvals" class="evo-approvals"></div>
       </section>
+
+      <section class="evo-section evo-audit-section">
+        <div class="evo-section-head"><span>⑥ 全部历史记录</span><span id="evo-events-size" class="evo-section-meta">-</span></div>
 
     </div>
     <div id="mc-debug" class="mc-pane hidden">

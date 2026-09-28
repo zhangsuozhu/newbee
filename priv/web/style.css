@@ -936,6 +936,13 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
   transition: transform .25s ease;
 }
 #mission-control.hidden { transform: translateX(100%); }
+/* 桌面端 MC 是右侧380px 面板：不能从 top:0 盖住顶栏右半区，
+   否则委派/终端/主题/用量等控件在 MC 打开时点不到
+   （浏览器轮次 R809 实测 hit-test: covered=true, top="mc-title"）。
+   ≤900px 时 MC 是全屏浮层，维持 top:0。--topbar-h 由 app.js 实时同步。*/
+@media (min-width: 901px) {
+  #mission-control { top: var(--topbar-h, 56px); }
+}
 
 .mc-head {
   display: flex; align-items: center; justify-content: space-between;
