@@ -9,7 +9,7 @@
 [![Elixir](https://img.shields.io/badge/Elixir-1.18%2B-4e2a8e?logo=elixir)](https://elixir-lang.org)
 [![OTP](https://img.shields.io/badge/OTP-29-red?logo=erlang)](https://www.erlang.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Design](https://img.shields.io/badge/design-736_lines-blue)](DESIGN.md)
+[![Design](https://img.shields.io/badge/design-980_lines-blue)](DESIGN.md)
 
 <p align="center">
   <b>长期存活 · 版本化 · 可回退 · 自我进化</b><br/>
@@ -37,6 +37,7 @@
 | 单 loop 串行干活 | **Worker / Adapter 双模型** — 前台干活，后台进化，激励隔离 |
 | 单机孤军，跨机靠人肉搬运 | **跨主机协作群** — 多台机器一个项目；设备独立凭据、任务带票据、断线可续 |
 | 人是旁观者，agent 自说自话 | **人机同席聊天室** — 人类与模型同为群代表；@ 定向邀请、有限预算讨论、决议绑代码基线 |
+| 待办散落在各个会话 | **蜂群** — 人与 AI 平级成员；待办折进原会话侧栏，成果要验收才算完成 |
 | 上下文是日志，越积越乱 | **Event Sourcing** — 上下文是日志的物化视图，任意时点可重建 |
 
 > **Claude Code 是"模型吩咐工具干活"；newbee 是"模型住在它自己持续翻修、且每块砖都有质检记录的房子里干活"。**
@@ -57,7 +58,7 @@
 ### 2) 环境能力全模块化 · Everything is a Plugin
 > 没有例外层，没有旁路。一种形态，统一治理。
 
-- `tool | rule | prompt | workflow | provider | verifier | projection | stateful_service` 全是 Plugin
+- `tool | rule | prompt | workflow | adapter | provider | evaluator | verifier | projection | stateful_service` 全是 Plugin
 - 不可变 Release + 原子激活 + 一键回退 + 依赖解析 + 能力门校验
 - *No exceptions, no side doors. One abstraction to govern them all.*
 
@@ -126,11 +127,11 @@
 *The environment is a JIT compiler for cognition: lessons → sleeping rules → distilled tools. Hot paths get promoted; regressions get deoptimized. Zero cost until triggered.*
 
 ### 🔄 Event Sourcing + 物化视图
-上下文不是日志，是日志的**物化视图**。compaction 改视图不动日志，任意时点可重建。Event Store 单调 `event_id`、checksum frame、durability 三档、崩溃截断安全。
+上下文不是日志，是日志的**物化视图**。compaction 改视图不动日志，任意时点可重建。Event Store 单调 `event_id`、checksum frame、durability 三档、崩溃截断安全；活动日志超过阈值后封段 gzip，旧段仍参与重放。
 
-**会话档案库（Archive）把这句话落到会话 transcript 上**：压缩 = 归档（append-only 账本 + sha256 内容寻址段），不是覆写。早期对话分层蒸馏——确定性事实账本（用户意图逐字、文件、✗→✓ 错误对）+ 每段一次的 LLM digest（永不"摘要的摘要"）；被压缩的原文随时 `Newbee.read("history://q/关键词")` 拉回。**在 newbee 里，忘记不是一个不可逆操作。**
+**压缩有两条路径。** 非测试环境、且 `model.json` 的 `compaction.mode` 没有显式指定时，默认走 **Jev** 可回退压缩（密钥只从环境变量读取，默认 `TYPESAFE_API_KEY`；配置里写明文 key 会被拒绝）。Jev 失败，或显式 `"mode": "legacy"` 时，回落到 **Archive**：append-only 账本 + sha256 内容寻址段，不是覆写。早期对话分层蒸馏——确定性事实账本（用户意图逐字、文件、✗→✓ 错误对）+ 每段一次的 LLM digest（永不"摘要的摘要"）；被压缩的原文随时 `Newbee.read("history://q/关键词")` 拉回。**在 newbee 里，忘记不是一个不可逆操作。**
 
-*Context is not the log — it's a materialized view of the log. Rebuild any point in time. Crash-safe, checksummed, monotonic.*
+*Context is not the log — it's a materialized view of the log. Outside tests, Jev compacts unless `compaction.mode` is set; Archive is the lossless fallback. Crash-safe, checksummed, monotonic.*
 
 ### 👥 Worker / Adapter 双模型拓扑
 前台 Worker 用 active 环境干活，后台 Adapter 用 candidate 环境进化。通过 **Agent Protocol (outbox/inbox 去重 + 幂等键)** 解耦，激励隔离，互不阻塞。
@@ -140,7 +141,7 @@
 ### 会话 Hive v2：有界、可验收的并行协作
 `Newbee.Tools.Hive` 在同一个持久 `Collaboration.Coordinator` 上提供 DAG Board、revision CAS、事件等待、定向消息、Persona 与过滤后的 context fork。worker 只能提交结果，Lead 在受信主节点执行结构化验收后才能标记成功；派生深度、累计数量、任务/载荷/上下文都有硬上限。
 
-Hive 是唯一协作协议；旧 `Newbee.Tools.Collaboration` 工具及旧任务 RPC 已移除。Web 看板同样使用 Hive 的 revision 校验、结构化验收和 Lead 验证；子任务提交后显示为待验收，不能直接宣告成功。
+Hive 是会话群的协作协议，不是蜂群；旧 `Newbee.Tools.Collaboration` 工具及旧任务 RPC 已移除。Web 看板同样使用 Hive 的 revision 校验、结构化验收和 Lead 验证；子任务提交后显示为待验收，不能直接宣告成功。
 
 这是一套协作正确性机制，不是“更多代理一定更好”的承诺，也不是代码执行沙箱。设计依据、论文数据、限制和复现命令见 [`docs/collab-v2-analysis.md`](docs/collab-v2-analysis.md)。
 
@@ -165,13 +166,20 @@ Hive 是唯一协作协议；旧 `Newbee.Tools.Collaboration` 工具及旧任务
 
 *Humans and agents share the same table — a human representative costs zero model calls, wait windows never stall a topic, @mentions wake only the named representative, and every decision lands with a version, a task and a code baseline inside a hard call budget.*
 
+### 🐝 蜂群：待办回到原来的会话里
+`Newbee.Colony` 与上面的会话 Hive 是两套协作。Bee 在群里平级（`human` / `ai`），Queen 是责任载体；临时协调只来自任务授权，权限不随父子关系继承。聊天、信号、任务和成果写同一条 Trace。
+
+原 Web 会话把蜂群收了进来：侧栏有待办时出现「需要你处理」，点进去回到该工作已有的执行会话；有管理权时，输入区上方可以接受或打回待验收成果。完整工作台仍是 `/colony.html`（本地 AI、同事邀请、带证书指纹的一次性跨环境邀请）。跨主机要求对方能够访问的 HTTPS，不做内网穿透，也不自动信任证书。设计见 [蜂群协作设计](docs/bee-colony-collaboration-design.md)。
+
+*Colony attention is folded into the original session: a sidebar inbox and an accept/reject bar. The full workbench remains `/colony.html`. Delivery is not complete until a manager accepts it.*
+
 ---
 
 ## ⚡ 快速开始 / Quick Start
 
 
 ```bash
-# 工具链 — OTP 29 + Elixir 1.20
+# bin/newbee 会优先把 ~/toolchains 里的 OTP 29 与 Elixir 1.20 放进 PATH。mix.exs 要求 Elixir ~> 1.18。
 export PATH=$HOME/toolchains/otp-29/bin:$HOME/toolchains/elixir-1.20/bin:$PATH
 
 mix deps.get
@@ -212,13 +220,14 @@ EOF
 # `vision` 仍优先。图片超预算时在请求投影里按"最老优先"卸载为文本占位，transcript 不动。
 export OPENROUTER_API_KEY=sk-or-v1-...
 
-# 启动
-./bin/newbee            # 全屏 TUI (推荐)
-./bin/newbee cli        # 单列流式 CLI
-./bin/newbee daemon     # 常驻 daemon — 后台自动进化
-./bin/newbee attach     # 接回最近会话 (记忆仍在)
-./bin/newbee bench      # 公开基准
-./bin/newbee doctor     # 环境体检
+# 启动（子命令以 bin/newbee 为准）
+./bin/newbee                 # 单列流式 CLI（默认，mix newbee）
+./bin/newbee tui             # 全屏 TUI（mix newbee.tui）
+./bin/newbee web             # WebUI，默认 127.0.0.1:4173；裸端口等价于 --port
+./bin/newbee daemon          # 常驻 daemon — 后台自动进化
+./bin/newbee attach          # 接回 ~/.newbee/sessions 里最近一份会话
+./bin/newbee bench           # 公开基准
+mix newbee.doctor            # 环境体检；没有 ./bin/newbee doctor 这个子命令
 ```
 
 ---
@@ -232,7 +241,7 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 - `Esc` 中断执行 · `Ctrl-C` 清输入/退出 · `Ctrl-L` 重绘 · `PgUp/PgDn` 翻屏
 - `Ctrl-T` 切换窗格(绑定/事件日志/工具块/输入队列) · 括号粘贴 · 状态栏(模型/工程/token/绑定/策略)
 
-**命令 / Commands:** `/model` `/bindings` `/tokens` `/rules` `/dump` `/resume` `/reset` `/approve` `/reject` `/log` `/snapshot` `/rollback` `/evolve` `/policy` `/genes` `/bench` `/goal` `/diff` `/undo` `/session` `/init` `/tools` `/permissions` `/compact` `/quit` · TUI 内 `/reasoning` 切换思考流 · `@文件` 引用 · `!shell` 执行
+**命令 / Commands:** `/model` `/bindings` `/tokens` `/rules` `/status` `/dump` `/resume` `/reset` `/approve` `/reject` `/log` `/environment` `/evolve` `/autonomy` `/bundles` `/goal` `/loop` `/diff` `/image` `/btw` `/undo` `/session` `/init` `/tools` `/permissions` `/compact` `/archive` `/attach` `/new` `/quit`。仍可用的别名：`/snapshot`（环境修订列表）、`/rollback`、`/policy`（即 `/autonomy`）、`/genes`（即 `/bundles`）、`/bench`。TUI 内 `/reasoning` 切换思考流 · `@文件` 引用 · `!shell` 执行
 
 *Single-column streaming, reasoning in grey, tool blocks, audit events — all flowing. Every keybinding you expect, plus project-aware superpowers.*
 
@@ -240,8 +249,8 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 
 ## 🌐 WebUI（浏览器控制台，支持 HTTPS + 登录）
 
-浏览器里的工作台：文件浏览、git 操作（diff/checkpoint/PR）、agent 会话管理，走 JSON-RPC over HTTP/WebSocket。
-协作群管理（建群/加群/设备凭据/看板）与项目聊天室也在浏览器里：群标题旁的「聊天室」可添加代表、发起议题、@ 点名、查看预算与用量；远程设备经钉选 HTTPS 接入权威 Hub。
+浏览器里的工作台：文件浏览、git 操作（diff/checkpoint/PR）、agent 会话管理，走 JSON-RPC over HTTP/WebSocket。默认只监听 `127.0.0.1:4173`；`./bin/newbee web 4444` 等价于 `--port 4444`。
+协作群管理（建群/加群/设备凭据/看板）与项目聊天室也在浏览器里：群标题旁的「聊天室」可添加代表、发起议题、@ 点名、查看预算与用量；远程设备经钉选 HTTPS 接入权威 Hub。蜂群不另做一套侧栏：待办出现在原会话的「需要你处理」，成果验收在输入区上方；完整工作台是 `/colony.html`。
 
 ```bash
 # 本地（零摩擦，免登录）
@@ -250,12 +259,14 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 # 远程安全访问（HTTPS + 登录 + 图形验证码防暴破）
 ./bin/newbee web --https --host 0.0.0.0 --set-password
 # 设置后每次访问：密码 + SVG 验证码登录拿 token → Bearer 认证
+# 设备支持时可以再注册 WebAuthn 通行密钥（指纹/面容）
 ```
 
 **安全模型：**
 - **本地（回环地址）免认证** —— 绑定 `127.0.0.1` 时全放行，开发零摩擦
-- **远程（非回环）强制认证** —— 除登录接口外一律要求 `Authorization: Bearer <token>`（WebSocket 用 `?token=`），未登录 `401`
-- **图形验证码防暴破** —— SVG 验证码 + 登录失败限流
+- **远程（非回环）强制认证** —— 除登录接口外一律要求 `Authorization: Bearer <token>`（WebSocket 用 `?token=`），未登录 `401`。token 12 小时滑动过期，7 天绝对上限
+- **图形验证码防暴破** —— 服务端生成 SVG 验证码，再叠加登录失败限流与锁定
+- **通行密钥** —— WebAuthn 凭据写在 `~/.newbee/web/webauthn.json`，密码仍然是远程登录的基础
 - **HTTPS 自签证书** —— RSA 2048，首启自动生成于 `~/.newbee/web/{cert,key}.pem`（私钥 `chmod 600`），零外部依赖
 - **自定义证书** —— `--certfile/--keyfile` 挂 mkcert/CA 证书；或反代（nginx/caddy）终止 TLS
 - **HTTP→HTTPS 重定向** —— `--redirect` 起一个只做 308 跳转的 HTTP server
@@ -300,19 +311,25 @@ Edit 完整协议、错误类别和示例见 [`docs/edit-design.md`](docs/edit-d
 
 ```
 lib/newbee/
-├── agent/          # Worker / Adapter / Explorer / Loop / Protocol / Progress
-├── dee/            # Evaluator (隔离 BEAM 节点) / EvalWorker / Rules / Result
-├── environment/    # Coordinator / Store / Manifest / Release / Revision
-│                  # Plugin* / Generation / EvaluatorPool / Antibodies
-│                  # Verifier / PPT / Fitness / JIT / Autonomy / Projection
-├── llm/            # Client (OpenRouter SSE) / Config
-├── plugins/        # RepoMap / Provider.OpenRouter (无凭证适配器)
-├── tools/          # Fs / Edit / Structural / Run / Git / Search / ...
-├── tui/            # Screen / Cards / History / Key / Highlight
-└── host/           # Shell (Ring 0) — 凭证/边界/审计
+├── agent/          # Loop / Protocol / Worker / Adapter
+├── dee/            # Evaluator（隔离 BEAM 节点）/ EvalWorker / Rules
+├── environment/    # Coordinator / Store / Release / Plugin* / Generation
+│                   # EvaluatorPool / Antibodies / Verifier / Fitness / JIT / Autonomy
+├── llm/            # Client / Config；Completions、Responses、Anthropic Messages
+├── colony/         # 蜂群：Engine / Bee / Task / Honey / Membership / Workflow
+├── collaboration/  # 会话 Hive、跨主机群、项目聊天室
+├── compaction/     # Jev 压缩；失败回落 archive.ex
+├── learning/       # 离线 BRS/DRS（沙箱隔离、冻结对照）
+├── web/            # Router / Auth / WebAuthn / Colony API / 终端
+├── browser/        # Playwright 会话、录制、验证码交接
+├── tools/          # Edit / Run / Fs / Git / Search / Browser / Hive / Media / Http / ...
+├── tui/            # 全屏 TUI
+├── plugins/        # 内置插件（RepoMap、Provider）
+├── host/           # Shell（Ring 0）
+└── host.ex         # 凭证 / 路径 / 资源 / RPC 边界
 
 ~/.newbee/jspace/   # J-Space 长任务台账（可用 NEWBEE_JSPACE_DIR 覆盖）
-.newbee/            # 项目权威快照 (被 gitignore，重启完整恢复)
+.newbee/            # 项目权威快照（被 gitignore，重启完整恢复）
 ```
 
 ---
@@ -340,6 +357,10 @@ mix newbee.doctor                # 工具链/配置/目录体检
 - [x] Antibodies + Verifier 五层 + PPT 锦标赛
 - [x] Autonomy 档位 + Fitness 价签 + JIT 三级晋升
 - [x] Coordinator 状态机 + Agent.Protocol + Projection + Host.Shell
+- [x] WebUI（HTTPS、密码 / 验证码 / 通行密钥）、跨主机协作群、项目聊天室
+- [x] 蜂群 Colony（原会话「需要你处理」+ `/colony.html` 工作台）
+- [x] Jev 压缩（失败回落 Archive）+ Event Store 分段轮转
+- [x] 离线学习管线 BRS/DRS（沙箱隔离、冻结对照）
 - [ ] 多后端 Provider (Ollama 本地路由)
 - [ ] 分布式 Evaluator 集群
 - [ ] 可视化 Fitness 看板
