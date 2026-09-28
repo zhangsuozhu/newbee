@@ -55,7 +55,7 @@ defmodule Newbee.Web.EvolutionUxTest do
   test "进化状态轮询不重建未变化的卡片" do
     js = File.read!(Path.join([File.cwd!(), "priv", "web", "app.js"]))
 
-    assert js =~ "const changeSignature = JSON.stringify(changes);"
+    assert js =~ "const changeSignature = JSON.stringify([changes, st.approval_groups || []]);"
     assert js =~ "if (MC.evoChangesSignature !== changeSignature)"
     refute js =~ "renderEvoChanges(st.changes || [])"
   end

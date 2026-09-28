@@ -148,8 +148,42 @@ defmodule Newbee.Session do
     |> tap(fn _ -> File.mkdir_p!(root()) end)
   end
 
-  @doc "让新会话立即出现在列表：创建空 transcript 并更新索引（幂等）。"
+  # ── 删除墓碑 ──
+  # 现场证据：批量删除「当前会话」时约 1/5 概率该会话刷新后仍在——迟到的 ensure/
+  # mark_created（残留 WebSocket 的 cast_session、切换会话前后的重连）把刚删的空会话
+  # 重建出来（transcript 被重新创建成 0 字节文件 + 写回 .index.json）。
+  # 删除后打 60s 墓碑：TTL 内任何路径都不得复活它；客户端只会生成新 id，不受影响。
+  @deleted_tombstones {__MODULE__, :deleted_tombstones}
+  @deleted_tombstone_ttl_ms 60_000
+
+  @doc "该 id 是否在删除墓碑 TTL 内（60s）。供测试与调用方判断要不要跳过重建。"
+  def recently_deleted?(id) when is_binary(id) do
+    now = System.monotonic_time(:millisecond)
+
+    case Map.fetch(:persistent_term.get(@deleted_tombstones, %{}), id) do
+      {:ok, at} -> now - at < @deleted_tombstone_ttl_ms
+      :error -> false
+    end
+  end
+
+  defp tombstone(id) when is_binary(id) do
+    now = System.monotonic_time(:millisecond)
+
+    kept =
+      @deleted_tombstones
+      |> :persistent_term.get(%{})
+      |> Enum.reject(fn {_k, at} -> now - at >= @deleted_tombstone_ttl_ms end)
+
+    :persistent_term.put(@deleted_tombstones, Map.put(Map.new(kept), id, now))
+    :ok
+  end
+
+  @doc "让新会话立即出现在列表：创建空 transcript 并更新索引（幂等）。墓碑 TTL 内的已删除 id 直接跳过，防止迟到的 ensure 复活刚删的会话。"
   def mark_created(id) when is_binary(id) do
+    if recently_deleted?(id), do: :ok, else: do_mark_created(id)
+  end
+
+  defp do_mark_created(id) do
     s = open(id)
 
     if File.regular?(s.transcript) do
@@ -437,6 +471,8 @@ defmodule Newbee.Session do
     with :ok <- remove_file(transcript),
          :ok <- remove_dir(artifacts),
          :ok <- remove_from_index(id) do
+      tombstone(id)
+
       try do
         if current_id() == id, do: set_current(nil)
       rescue
@@ -728,6 +764,19 @@ defmodule Newbee.Session do
   end
 
   defp touch_index(id) do
+    # 删除墓碑：索引写入本身也可能是迟到的复活路径（append / set_cwd 等都会 touch）
+    if recently_deleted?(id) do
+      :ok
+    else
+      do_touch_index(id)
+    end
+  rescue
+    e ->
+      Logger.error("touch_index failed: " <> Exception.message(e))
+      :ok
+  end
+
+  defp do_touch_index(id) do
     now = System.system_time(:second)
     merged = merged_index()
     idx_map = Map.new(merged, fn e -> {e["id"], e} end)
@@ -744,10 +793,6 @@ defmodule Newbee.Session do
     new_map = Map.put(idx_map, id, updated)
     new_list = new_map |> Map.values() |> Enum.sort_by(fn e -> e["mtime"] || e["created"] end, :desc)
     persist_index(new_list)
-  rescue
-    e ->
-      Logger.error("touch_index failed: " <> Exception.message(e))
-      :ok
   end
 
   # 从会话 id 前缀解析创建时间（YYYYMMDD-HHMMSS-xxxx / YYYYMMDD-HHMMSSxxxx），失败返回 nil。
