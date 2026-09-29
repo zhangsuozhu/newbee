@@ -1401,6 +1401,31 @@ defmodule Newbee.Web.Api do
     end
   end
 
+  defp dispatch_rpc("llm.catalogModels", p) do
+    name = Newbee.LLM.Catalog.route(p["provider"] || "", p["group"] || "default")
+    stored = Newbee.LLM.Config.load()["providers"][name] || %{}
+    key = p["apiKey"] || stored["apiKey"]
+    inline = %{"baseUrl" => p["baseUrl"], "apiKey" => key}
+
+    case Newbee.LLM.Config.fetch_models_inline(inline) do
+      nil -> {:error, "fetch_failed", "模型列表拉取失败，请检查此分组的 API Key 和厂家 URL"}
+      models -> {:ok, %{models: models}}
+    end
+  end
+
+  defp dispatch_rpc("llm.catalogConfig", _p), do: {:ok, Newbee.LLM.Config.catalog_config()}
+
+  defp dispatch_rpc("llm.saveCatalog", %{"config" => cfg, "revision" => revision}) do
+    case Newbee.LLM.Config.save_catalog(cfg, revision) do
+      {:ok, result} ->
+        hot_reload_provider(nil)
+        {:ok, result}
+
+      {:error, message} ->
+        {:error, "catalog_invalid", message}
+    end
+  end
+
   defp dispatch_rpc("llm.models", p) do
     opts = if p["refresh"] == true, do: [refresh: true], else: []
     cat = Newbee.LLM.Config.model_catalog(opts)
@@ -1511,6 +1536,9 @@ defmodule Newbee.Web.Api do
 
       {:error, {:unknown_provider, n}} ->
         {:error, "unknown_provider", n}
+
+      {:error, :use_catalog_editor} ->
+        {:error, "use_catalog_editor", "此配置已升级，请刷新页面使用分组配置"}
     end
   end
 

@@ -32,6 +32,7 @@ defmodule Newbee.Web.Session do
             boot_worker: nil,
             boot_ref: nil,
             shared_prompt_pending: false,
+            model_config_pending: false,
             runtime_id: nil,
             completed_deliveries: MapSet.new(),
             queue: :queue.new(),
@@ -1519,6 +1520,72 @@ defmodule Newbee.Web.Session do
   # 当前 provider/model 匹配生效）：n 为覆盖值，nil 表示恢复自动探测。
   # 只改 client.context_window；kernel 忙时 call 排队超时不算失败——
   # st.client 已更新，下次 turn / 2s 轮询的 session.state 都会用新值。
+  # Refresh credentials and model properties without interrupting an active turn.
+  # The existing turn-finished/boot paths synchronize st.client into the kernel.
+  def handle_cast(:hot_model_config_changed, st) do
+    result =
+      case client_for_session(st.sid) do
+        {:ok, client} ->
+          {:ok, client}
+
+        {:error, _} ->
+          try do
+            client = Newbee.LLM.Config.client_for()
+            :ok = Newbee.Session.set_provider(st.sid, client.provider)
+            :ok = Newbee.Session.set_model(st.sid, client.model)
+            client_for_session(st.sid)
+          rescue
+            _ -> {:error, "当前模型配置不可用，请重新选择模型"}
+          end
+      end
+
+    case result do
+      {:ok, client} ->
+        client =
+          if st.client do
+            %{
+              client
+              | interrupt_scope: st.client.interrupt_scope,
+                cache_key: st.client.cache_key,
+                session_id:
+                  if(
+                    client.provider == st.client.provider and client.model == st.client.model and
+                      client.base_url == st.client.base_url and client.api == st.client.api and
+                      client.api_key == st.client.api_key and
+                      client.responses_continuation == st.client.responses_continuation and
+                      not is_nil(st.client.session_id),
+                    do: st.client.session_id,
+                    else: client.session_id
+                  )
+            }
+          else
+            client
+          end
+
+        next = %{st | client: client, model_config_pending: true}
+        next = if st.busy or st.booting, do: next, else: sync_kernel_effort(next)
+
+        broadcast(st.sid, :model_switched, %{
+          provider: client.provider,
+          modelId: client.model,
+          model: "#{client.provider}/#{client.model}"
+        })
+
+        broadcast(st.sid, :context_window_changed, %{
+          provider: client.provider,
+          model: client.model,
+          contextWindow: client.context_window,
+          applied: not (st.busy or st.booting)
+        })
+
+        {:noreply, next}
+
+      {:error, message} ->
+        broadcast(st.sid, :error, %{message: message})
+        {:noreply, st}
+    end
+  end
+
   def handle_cast({:hot_context_window, provider, model, n}, st) do
     if st.client && provider_of(st) == provider && st.client.model == model do
       client = %{st.client | context_window: n}
@@ -1862,12 +1929,14 @@ defmodule Newbee.Web.Session do
     if Process.alive?(kernel) do
       try do
         _ = Newbee.Agent.Loop.switch_model(kernel, client)
+        if st.model_config_pending, do: GenServer.call(kernel, :reload_model_config, 10_000)
+        %{st | model_config_pending: false}
       catch
-        :exit, _ -> :ok
+        :exit, _ -> st
       end
+    else
+      st
     end
-
-    st
   end
 
   defp sync_kernel_effort(st), do: st
@@ -1917,6 +1986,7 @@ defmodule Newbee.Web.Session do
           end
         end
 
+        st = if st.model_config_pending, do: sync_kernel_effort(st), else: st
         send(self(), :pull_pending_deliveries)
 
         {:noreply, dispatch_pending(st)}
@@ -1960,6 +2030,7 @@ defmodule Newbee.Web.Session do
           end
         end
 
+        st = if st.model_config_pending, do: sync_kernel_effort(st), else: st
         send(self(), :pull_pending_deliveries)
         {:noreply, dispatch_pending(st)}
 

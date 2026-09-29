@@ -2,20 +2,15 @@ defmodule Newbee.LLM.Config do
   require Logger
 
   @moduledoc """
-  模型配置 (model.json)。schema 学习 prime-agent 的 models.json：
+  模型配置加载、角色路由和持久化。规范文件采用 schemaVersion: 2：
+  providers.<provider>.groups.<group> 保存 API Key 与模型对象，厂家保存 baseUrl。
+  模型的 id、name、api、contextWindow、capabilities 在同一对象中管理。
+  结构、迁移和凭证脱敏见 Newbee.LLM.Catalog 与 docs/model-catalog.md。
 
-      {
-        "providers": { "<name>": { "baseUrl", "api", "apiKey", "models": [...] } },
-        "roles":     { "<role>": { "provider": "<name>", "model": "<id>" } }
-      }
-
-  - apiKey 支持 `"${ENV_VAR}"` 环境变量展开、`"${prime:NAME}"` 从 ~/.prime/agent/auth.json 取 key，密钥不必落盘。
-  - roles 对应 DESIGN §3.8 的模型角色路由（default/worker/adapter/explorer...）。
-  - 解析顺序：$NEWBEE_MODEL_JSON → ./model.json → ./model.local.json → ~/.newbee/model.json。
-  - 模型能力（capabilities）声明见 `Newbee.LLM.Capabilities`：
-    `providers.<name>.capabilities` 是该 provider 的默认能力，
-    `providers.<name>.modelCapabilities.<model-id>` 按模型覆盖，
-    角色级 `roles.<role>.vision` 仍可覆盖 `vision`。
+  load/0 向已有会话/Host/CLI 提供兼容视图；默认分组沿用原 provider 名，
+  其他分组使用 provider~group 路由。catalog_config/0 返回无密钥的分层视图。
+  apiKey 支持 ${ENV_VAR} 和 ${prime:NAME}。
+  解析顺序：$NEWBEE_MODEL_JSON → ./model.json → ./model.local.json → ~/.newbee/model.json。
   """
 
   @roles ["default", "worker", "adapter", "explorer", "plan", "advisor", "verifier"]
@@ -34,8 +29,37 @@ defmodule Newbee.LLM.Config do
   def load do
     case resolve_path() do
       nil -> default()
-      path -> parse(path)
+      path -> path |> parse() |> Newbee.LLM.Catalog.runtime()
     end
+  end
+
+  @doc "Editable, secret-free hierarchical catalog with optimistic concurrency token."
+  def catalog_config do
+    cfg = load() |> Newbee.LLM.Catalog.persist() |> Newbee.LLM.Catalog.migrate()
+    %{config: Newbee.LLM.Catalog.redact(cfg), revision: Newbee.LLM.Catalog.revision(cfg), path: config_path()}
+  end
+
+  def save_catalog(input, revision) do
+    :global.trans({{__MODULE__, :catalog_write}, self()}, fn ->
+      current = load() |> Newbee.LLM.Catalog.persist() |> Newbee.LLM.Catalog.migrate()
+
+      if revision != Newbee.LLM.Catalog.revision(current) do
+        {:error, "配置已被其他页面或会话修改，请重新打开后编辑"}
+      else
+        with {:ok, cfg} <- Newbee.LLM.Catalog.prepare(input, current) do
+          target = config_target()
+
+          if File.exists?(target) and not File.exists?(target <> ".v1.bak") and
+               not Map.has_key?(parse(target), "schemaVersion") do
+            File.write!(target <> ".v1.bak", File.read!(target), [:exclusive])
+            File.chmod!(target <> ".v1.bak", 0o600)
+          end
+
+          write_config!(cfg)
+          {:ok, catalog_config()}
+        end
+      end
+    end)
   end
 
   @doc "按角色构建 Client。"
@@ -48,6 +72,9 @@ defmodule Newbee.LLM.Config do
 
     unless provider, do: raise("model.json: 未知 provider #{inspect(provider_name)}")
 
+    if cfg["schemaVersion"] == 2 and model not in (provider["models"] || []), do: raise("model.json: 当前分组未配置该模型")
+
+    unless Newbee.LLM.Catalog.chat_model?(provider, model), do: raise("Jev 是评分模型，不能用于聊天或聊天角色")
     api = api_for(provider, model)
 
     Newbee.LLM.Client.new(
@@ -134,64 +161,58 @@ defmodule Newbee.LLM.Config do
   """
   def set_context_window(provider_name, model, n)
       when is_binary(provider_name) and is_binary(model) and (is_nil(n) or (is_integer(n) and n > 0)) do
-    cfg = load()
+    :global.trans({{__MODULE__, :catalog_write}, self()}, fn ->
+      cfg = load()
 
-    case cfg["providers"][provider_name] do
-      nil ->
-        {:error, {:unknown_provider, provider_name}}
+      case cfg["providers"][provider_name] do
+        nil ->
+          {:error, {:unknown_provider, provider_name}}
 
-      provider when is_map(provider) ->
-        overrides =
-          case provider["contextWindows"] do
-            %{} = map -> map
-            _ -> %{}
-          end
+        provider when is_map(provider) ->
+          overrides =
+            case provider["contextWindows"] do
+              %{} = map -> map
+              _ -> %{}
+            end
 
-        overrides =
-          case n do
-            nil -> Map.delete(overrides, model)
-            n -> Map.put(overrides, model, n)
-          end
+          overrides =
+            case n do
+              nil -> Map.delete(overrides, model)
+              n -> Map.put(overrides, model, n)
+            end
 
-        provider =
-          if map_size(overrides) == 0 do
-            Map.delete(provider, "contextWindows")
-          else
-            Map.put(provider, "contextWindows", overrides)
-          end
+          provider =
+            if map_size(overrides) == 0 do
+              Map.delete(provider, "contextWindows")
+            else
+              Map.put(provider, "contextWindows", overrides)
+            end
 
-        cfg = put_in(cfg, ["providers", provider_name], provider)
-        write_config!(cfg)
-        :ok
-    end
+          cfg = put_in(cfg, ["providers", provider_name], provider)
+          write_config!(cfg)
+          :ok
+      end
+    end)
   end
 
   def set_context_window(_, _, n) when not is_nil(n), do: {:error, :bad_context_window}
 
   @doc "WebUI 模型目录：按厂家分组的完整列表 + 当前默认（provider/model）。"
-  def model_catalog(opts \\ []) do
-    cfg = load()
-    providers_cfg = for {name, p} <- cfg["providers"] || %{}, is_map(p), do: {name, p}
+  def model_catalog(_opts \\ []) do
+    cfg = load() |> Newbee.LLM.Catalog.persist() |> Newbee.LLM.Catalog.migrate() |> Newbee.LLM.Catalog.runtime()
 
     providers =
-      providers_cfg
-      |> Task.async_stream(
-        fn {name, p} ->
-          %{
-            name: name,
-            models: provider_models(name, p, opts),
-            # 单模型上下文窗口覆盖表（WebUI 可编辑）+ provider 级默认（若有）
-            contextWindows: context_windows_map(p),
-            contextWindow: p["contextWindow"]
-          }
-        end,
-        max_concurrency: 8,
-        timeout: 30_000,
-        on_timeout: :kill_task
-      )
-      |> Enum.map(fn
-        {:ok, result} -> result
-        {:exit, _} -> %{name: "unknown", models: []}
+      cfg["providers"]
+      |> Enum.sort_by(fn {name, _} -> name end)
+      |> Enum.map(fn {name, p} ->
+        %{
+          name: name,
+          models: static_models(p),
+          displayName: p["displayName"] || name,
+          modelNames: p["modelNames"] || %{},
+          contextWindows: context_windows_map(p),
+          contextWindow: p["contextWindow"]
+        }
       end)
 
     default = get_in(cfg, ["roles", "default"]) || %{}
@@ -208,20 +229,27 @@ defmodule Newbee.LLM.Config do
   落盘到当前生效的配置文件（找不到则创建 ~/.newbee/model.json）。
   """
   def set_default_model(model_id) do
-    id = if is_binary(model_id), do: String.trim(model_id), else: ""
-    cfg = load()
+    :global.trans({{__MODULE__, :catalog_write}, self()}, fn ->
+      id = if is_binary(model_id), do: String.trim(model_id), else: ""
+      cfg = load()
 
-    case split_model_id(id, cfg) do
-      {:error, _reason} = err ->
-        err
+      case split_model_id(id, cfg) do
+        {:error, _reason} = err ->
+          err
 
-      {provider_name, model} ->
-        default = get_in(cfg, ["roles", "default"]) || %{"provider" => provider_name}
-        default = default |> Map.put("provider", provider_name) |> Map.put("model", model)
-        cfg = put_in(cfg, ["roles", "default"], default)
-        write_config!(cfg)
-        :ok
-    end
+        {provider_name, model} ->
+          if not Newbee.LLM.Catalog.chat_model?(cfg["providers"][provider_name] || %{}, model) or
+               (cfg["schemaVersion"] == 2 and model not in (get_in(cfg, ["providers", provider_name, "models"]) || [])) do
+            {:error, {:unknown_model, model}}
+          else
+            default = get_in(cfg, ["roles", "default"]) || %{"provider" => provider_name}
+            default = default |> Map.put("provider", provider_name) |> Map.put("model", model)
+            cfg = put_in(cfg, ["roles", "default"], default)
+            write_config!(cfg)
+            :ok
+          end
+      end
+    end)
   end
 
   @doc """
@@ -248,28 +276,33 @@ defmodule Newbee.LLM.Config do
   返回 :ok | {:error, reason}。校验失败时不落盘。
   """
   def upsert_provider(name, attrs) when is_binary(name) and is_map(attrs) do
-    new_name = attrs |> Map.get("newName", name) |> to_string() |> String.trim()
-    base_url = attrs |> Map.get("baseUrl", "") |> to_string() |> String.trim()
+    :global.trans({{__MODULE__, :catalog_write}, self()}, fn ->
+      new_name = attrs |> Map.get("newName", name) |> to_string() |> String.trim()
+      base_url = attrs |> Map.get("baseUrl", "") |> to_string() |> String.trim()
 
-    # apiKey 为 nil 表示"保持原值"（前端掩码未改动）；空串视为待保留/新建必填
-    api_key = attrs["apiKey"]
-    existing = (load()["providers"] || %{})[name]
+      # apiKey 为 nil 表示"保持原值"（前端掩码未改动）；空串视为待保留/新建必填
+      api_key = attrs["apiKey"]
+      existing = (load()["providers"] || %{})[name]
 
-    cond do
-      new_name == "" ->
-        {:error, :bad_provider_name}
+      cond do
+        load()["schemaVersion"] == 2 ->
+          {:error, :use_catalog_editor}
 
-      base_url == "" ->
-        {:error, :bad_base_url}
+        new_name == "" ->
+          {:error, :bad_provider_name}
 
-      # 新建（无 existing）且未提供 key → 拒绝；更新且 apiKey=nil → 保留原值
-      is_nil(existing) and
-          (is_nil(api_key) or to_string(api_key) |> String.trim() == "" or String.contains?(to_string(api_key), "•")) ->
-        {:error, :bad_api_key}
+        base_url == "" ->
+          {:error, :bad_base_url}
 
-      true ->
-        do_upsert_provider(name, new_name, attrs)
-    end
+        # 新建（无 existing）且未提供 key → 拒绝；更新且 apiKey=nil → 保留原值
+        is_nil(existing) and
+            (is_nil(api_key) or to_string(api_key) |> String.trim() == "" or String.contains?(to_string(api_key), "•")) ->
+          {:error, :bad_api_key}
+
+        true ->
+          do_upsert_provider(name, new_name, attrs)
+      end
+    end)
   end
 
   def upsert_provider(_, _), do: {:error, :bad_request}
@@ -529,6 +562,14 @@ defmodule Newbee.LLM.Config do
   回退到剩余的第一个 provider（若还有），保证聊天不中断。
   """
   def delete_provider(name) when is_binary(name) do
+    :global.trans({{__MODULE__, :catalog_write}, self()}, fn ->
+      if load()["schemaVersion"] == 2, do: {:error, :use_catalog_editor}, else: delete_legacy_provider(name)
+    end)
+  end
+
+  def delete_provider(_), do: {:error, :bad_request}
+
+  defp delete_legacy_provider(name) do
     cfg = load()
     providers = cfg["providers"] || %{}
 
@@ -569,8 +610,6 @@ defmodule Newbee.LLM.Config do
     end
   end
 
-  def delete_provider(_), do: {:error, :bad_request}
-
   @doc "当前生效的配置文件路径（找不到时返回将要创建的 ~/.newbee/model.json 路径）。"
   def config_path, do: config_target()
 
@@ -590,7 +629,11 @@ defmodule Newbee.LLM.Config do
   defp write_config!(cfg) do
     target = config_target()
     File.mkdir_p!(Path.dirname(target))
-    File.write!(target, Jason.encode_to_iodata!(cfg, pretty: true))
+    cfg = Newbee.LLM.Catalog.persist(cfg)
+    temp = target <> ".tmp-" <> Integer.to_string(System.unique_integer([:positive]))
+    File.write!(temp, Jason.encode_to_iodata!(cfg, pretty: true), [:exclusive])
+    File.chmod!(temp, 0o600)
+    File.rename!(temp, target)
     :ok
   end
 
@@ -644,10 +687,16 @@ defmodule Newbee.LLM.Config do
     cfg = load()
 
     from_providers =
-      for {_pname, p} <- cfg["providers"] || %{}, m <- p["models"] || [], is_binary(m), do: m
+      for {pname, p} <- cfg["providers"] || %{},
+          m <- static_models(p),
+          is_binary(m),
+          do: if(cfg["schemaVersion"] == 2, do: pname <> "/" <> m, else: m)
 
     from_roles =
-      for {_role, rc} <- cfg["roles"] || %{}, is_binary(rc["model"]), do: rc["model"]
+      for {_role, rc} <- cfg["roles"] || %{},
+          is_binary(rc["model"]),
+          Newbee.LLM.Catalog.chat_model?(cfg["providers"][rc["provider"]] || %{}, rc["model"]),
+          do: if(cfg["schemaVersion"] == 2, do: rc["provider"] <> "/" <> rc["model"], else: rc["model"])
 
     (from_providers ++ from_roles)
     |> Enum.uniq()
@@ -733,7 +782,7 @@ defmodule Newbee.LLM.Config do
   end
 
   defp static_models(provider) do
-    Enum.filter(provider["models"] || [], &is_binary/1)
+    Enum.filter(provider["models"] || [], &(is_binary(&1) and Newbee.LLM.Catalog.chat_model?(provider, &1)))
   end
 
   @doc "供 Web API 对未保存/脏数据的 inline 模型列表拉取（不走缓存，直接 GET /models）"

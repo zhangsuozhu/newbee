@@ -70,8 +70,16 @@ defmodule Newbee.Compaction.Config do
     auto? = Keyword.get(opts, :auto_enable, Mix.env() != :test)
 
     case resolve(raw) do
-      {:ok, config} -> maybe_auto_enable(config, raw, auto?)
-      {:error, reason} -> Map.put(legacy(), :warning, reason)
+      {:ok, config} ->
+        config = maybe_auto_enable(config, raw, auto?)
+
+        case bind_model(config, opts) do
+          {:ok, bound} -> bound
+          {:error, reason} -> Map.put(legacy(), :warning, reason)
+        end
+
+      {:error, reason} ->
+        Map.put(legacy(), :warning, reason)
     end
   rescue
     _ -> Map.put(legacy(), :warning, :load_failed)
@@ -132,6 +140,7 @@ defmodule Newbee.Compaction.Config do
         {"apiKeyEnv", :api_key_env, &nonempty_string/1},
         {"apiKeyProvider", :api_key_provider, &nonempty_string/1},
         {"model", :model, &nonempty_string/1},
+        {"modelRef", :model_ref, &model_ref/1},
         {"keepThreshold", :keep_threshold, &ratio/1},
         {"preserveRecentMessages", :preserve_recent_messages, &int_in(&1, 2, 64)},
         {"maxCandidates", :max_candidates, &int_in(&1, 1, 128)},
@@ -192,6 +201,23 @@ defmodule Newbee.Compaction.Config do
           false
       end
   end
+
+  defp model_ref(%{"provider" => p, "group" => g, "model" => m} = ref)
+       when is_binary(p) and is_binary(g) and is_binary(m) do
+    if Enum.all?([p, g, m], &(String.trim(&1) != "")), do: {:ok, Map.take(ref, ~w(provider group model))}, else: :error
+  end
+
+  defp model_ref(_), do: :error
+
+  defp bind_model(%{model_ref: ref} = config, opts) do
+    cfg = Keyword.get_lazy(opts, :catalog_config, &Newbee.LLM.Config.load/0)
+
+    with {:ok, connection} <- Newbee.LLM.Catalog.jev_connection(cfg, ref) do
+      {:ok, config |> Map.merge(connection) |> Map.put(:api_key_env, nil)}
+    end
+  end
+
+  defp bind_model(config, _opts), do: {:ok, config}
 
   defp nonempty_string(value) when is_binary(value) do
     trimmed = String.trim(value)

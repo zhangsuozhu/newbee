@@ -49,7 +49,7 @@ defmodule Newbee.Compaction.JevClient do
 
   def build_request(state, questions, config) do
     %{
-      url: Config.endpoint(),
+      url: Map.get(config, :endpoint, Config.endpoint()),
       method: :post,
       body:
         Jason.encode!(%{
@@ -304,9 +304,8 @@ defmodule Newbee.Compaction.JevClient do
         retry: false,
         redirect: false,
         decode_body: false,
-        connect_options: [timeout: timeout],
         receive_timeout: timeout,
-        pool_timeout: timeout,
+        finch: [pool_timeout: timeout, conn_opts: [transport_opts: [timeout: timeout]]],
         into: bounded_collector(max_bytes)
       )
 
@@ -353,6 +352,17 @@ defmodule Newbee.Compaction.JevClient do
       :done, acc ->
         acc
     end
+  end
+
+  defp resolve_api_key(%{model_ref: ref} = config) do
+    with {:ok, bound} <- Newbee.LLM.Catalog.jev_connection(Newbee.LLM.Config.load(), ref),
+         true <- bound.endpoint == config[:endpoint] and bound.model == config.model do
+      Newbee.LLM.Config.provider_api_key(bound.api_key_provider)
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
   end
 
   defp resolve_api_key(config) do

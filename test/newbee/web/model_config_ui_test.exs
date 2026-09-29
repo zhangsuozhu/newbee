@@ -1,22 +1,13 @@
 defmodule Newbee.Web.ModelConfigUiTest do
   use ExUnit.Case, async: true
 
-  test "模型配置表单只生成规范 API 值并提交逐模型覆盖" do
-    # AI 对话界面（含终端/模型配置）现在是工作区表面，蜂群主页只负责导航与工具入口。
+  test "workspace loads the hierarchical catalog editor" do
     html = File.read!("priv/web/workspace.html")
-    js = File.read!("priv/web/app.js")
+    js = File.read!("priv/web/model-catalog.js")
+    assert html =~ "/model-catalog.js"
 
-    assert html =~ ~s(option value="openai-completions")
-    assert html =~ ~s(option value="openai-responses")
-    assert html =~ ~s(option value="auto")
-    assert js =~ ~s(option value="anthropic")
-
-    refute html =~ ~s(option value="responses")
-
-    assert js =~ "modelApis: modelApis"
-    assert js =~ "contextWindows: ctxw"
-    assert js =~ "modelResponsesContinuations: modelRespCont"
-    assert js =~ "mcfgCanonicalApi"
+    for value <- ~w(llm.catalogConfig llm.saveCatalog llm.catalogModels openai-completions openai-responses anthropic),
+        do: assert(js =~ value)
   end
 
   test "终端入口包含面板和 WebSocket 命令协议" do

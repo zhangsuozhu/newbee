@@ -622,6 +622,17 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
+  def handle_call(:reload_model_config, _from, state) do
+    config = Newbee.Compaction.Config.load()
+
+    breaker =
+      if config == state.compaction_config,
+        do: state.jev_breaker,
+        else: %{failures: 0, retry_at_ms: nil}
+
+    {:reply, :ok, %{state | compaction_config: config, jev_breaker: breaker}}
+  end
+
   def handle_call({:switch_model, client}, _from, state) do
     # 不丢会话/绑定/消息/中断 scope，仅替换后续 turn 所用的 client 与 client_fun。
     # 求值器节点不动，当前 turn 仍用旧 client 完成，下次 submit 即生效。
