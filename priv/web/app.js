@@ -6309,7 +6309,8 @@ try {
   }
 
   // ── 模型 ──
-  async function openModels() {
+  // keep：刷新时传入当前浏览态（厂家 / 高亮模型 / 搜索词）；不传 = 按已保存模型打开。
+  async function openModels(keep) {
     // 拉列表失败不能静默：原先没有 try/catch，llm.models 一失败就是未处理 rejection
     // （页面既不开窗也不提示，console 还刷 pageerror/console.error）——浏览器轮次 R770 实测。
     let data;
@@ -6329,16 +6330,37 @@ try {
     pbox.innerHTML = "";
     mbox.innerHTML = "";
 
-    // 待确认的选择（确定按钮点击时生效）
-    let pending = { provider: curProvider, model: curModel };
-    let currentProvider = curProvider;
+    // 刷新（keep 有值）不跳回已保存模型/第一个厂家：keep 的厂家仍在配置里就保持选中，
+    // 否则回退已保存厂家、再回退第一个；模型高亮沿用当前选择，失效才回退已保存模型。
+    const usable = (x) => !!(x && x.name && (x.models || []).length);
+    const rendered = providers.filter(usable);
+    const keepProv = keep ? rendered.find((x) => x.name === keep.provider) : null;
+    const targetProv = keepProv || rendered.find((x) => x.name === curProvider) || rendered[0];
+    const keepQuery = keep ? String(keep.query == null ? "" : keep.query) : "";
+    const modelIn = (p, m) => !!(p && m && (p.models || []).includes(m));
+    // 待选模型：刷新沿用当前高亮（keep 只在刷新时传入）；初次打开回退已保存模型；其余不预选
+    const landedModel = () => {
+      if (keep && modelIn(keepProv, keep.model)) return keep.model;
+      if (!keep && modelIn(targetProv, curModel)) return curModel;
+      return "";
+    };
+    const targetModel = landedModel();
+
+    // 待确认的选择（确定按钮点击时生效）：没有可落地的待选就保持已保存的模型不动，
+    // 与旧行为一致（只浏览厂家不选模型时，点确定不改变当前模型）。
+    let pending = targetModel
+      ? { provider: targetProv.name, model: targetModel }
+      : { provider: curProvider, model: curModel };
+    let currentProvider = targetProv ? targetProv.name : "";
     let providerData = new Map(); // name -> provider 数据
 
+    let currentPo = null; // 当前厂家条：列表重建后滚回视野
     providers.forEach((p) => {
-      if (!p || !p.name || !(p.models || []).length) return;
+      if (!usable(p)) return;
       const po = document.createElement("div");
-      po.className = "model-provider" + (p.name === curProvider ? " current" : "");
+      po.className = "model-provider" + (p.name === currentProvider ? " current" : "");
       po.textContent = p.displayName || p.name;
+      if (p.name === currentProvider) currentPo = po;
       po.onclick = () => {
         pbox.querySelectorAll(".model-provider").forEach((x) => x.classList.remove("current"));
         po.classList.add("current");
@@ -6449,7 +6471,7 @@ try {
     // ── 模型模糊搜索：本地过滤，不请求后端 ──
     const searchInput = $("model-search");
     if (searchInput) {
-      searchInput.value = "";
+      searchInput.value = keepQuery;
       // 输入即过滤当前厂商的模型列表
       searchInput.oninput = () => {
         const p = providerData.get(currentProvider)
@@ -6463,8 +6485,7 @@ try {
       };
     }
 
-    const def = providers.find((p) => p.name === curProvider) || providers[0];
-    if (def) renderModels(def);
+    if (targetProv) renderModels(targetProv, keepQuery);
 
     // 确定：应用待选
     $("model-confirm").onclick = async () => {
@@ -6480,9 +6501,19 @@ try {
     };
 
     // 选择器只显示已配置模型；在线发现由配置页显式导入。
-    $("model-refresh").onclick = () => openModels();
+    // 刷新重新拉配置，但保留当前浏览态：厂家不跳回已保存模型/第一个，搜索词与模型高亮也沿用。
+    $("model-refresh").onclick = () =>
+      openModels({
+        provider: currentProvider,
+        model: pending.provider === currentProvider ? pending.model : "",
+        query: searchInput ? searchInput.value : "",
+      });
 
     $("model-modal").classList.remove("hidden");
+    // 列表重建后滚动位置归零：把当前厂家条与高亮模型滚回视野
+    if (currentPo) currentPo.scrollIntoView({ block: "nearest" });
+    const selectedOpt = mbox.querySelector(".model-opt.current");
+    if (selectedOpt) selectedOpt.scrollIntoView({ block: "nearest" });
   }
 
 
@@ -6861,7 +6892,8 @@ try {
   $("new-session").onclick = () => newSession(); // 直接绑函数会把 MouseEvent 当 cwd 参数传入
   $("perm-yes").onclick = () => permission(true);
   $("perm-no").onclick = () => permission(false);
-  $("model-label").onclick = openModels;
+  // 显式调用：别把 click 事件当成 openModels 的 keep 参数传进去
+  $("model-label").onclick = () => openModels();
   $("model-cancel").onclick = () => $("model-modal").classList.add("hidden");
   // model-confirm 的 onclick 在 openModels 里动态绑定（每次打开重新捕获 pending）
 
