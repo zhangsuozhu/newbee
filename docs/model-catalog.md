@@ -68,7 +68,7 @@
 
 “从此分组导入模型”使用该组 Key 请求 `{baseUrl}/models`，只追加未配置 ID，不覆盖名称、协议、窗口和能力。失败明确报错，不拿旧列表冒充成功；接口未提供的能力不猜测。修改 URL/Key 后可以先导入、再保存。
 
-选择器只读已保存模型，不在打开时扫描远程接口；显示厂家/分组和模型名称/ID，搜索匹配名称和 ID。刷新重读配置，在线发现统一在配置页。
+选择器只读已保存模型，不在打开时扫描远程接口；显示厂家/分组和模型名称/ID，搜索匹配名称和 ID。点刷新重读配置并留在当前浏览的厂家：不改选厂家，高亮模型和搜索词也保留（首次打开仍按已保存模型预选）；在线发现统一在配置页。
 
 运行时保留旧会话、Host 凭证解析和 CLI：默认组路由仍是 `gateway`，其他组是 `gateway~premium`。命令 `/model gateway~premium/vendor/model-id` 区分分组与含斜杠的模型 ID。文件角色绑定明确存储 provider/group/model 三个字段。
 
@@ -141,7 +141,8 @@ mix test test/newbee/llm/catalog_test.exs \
   test/newbee/llm/configtest_test.exs \
   test/newbee/llm/config_capabilities_test.exs \
   test/newbee/web/model_config_ui_test.exs \
-  test/newbee/web/session_model_restore_test.exs
+  test/newbee/web/session_model_restore_test.exs \
+  test/newbee/web/model_picker_refresh_test.exs
 ```
 
 浏览器测试使用独立配置和本地鉴权模拟接口，不修改正式配置或产生付费模型调用。覆盖按 Key 导入、属性编辑、跨组草稿、保存重开、模型切换、非法输入、窄屏。截图和测试实例放在工作树 `.newbee/catalog-test/`，不进入版本控制。

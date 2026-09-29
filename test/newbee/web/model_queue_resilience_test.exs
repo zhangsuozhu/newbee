@@ -15,7 +15,7 @@ defmodule Newbee.Web.ModelQueueResilienceTest do
   end
 
   test "FIX#15a openModels 拉列表失败必须有反馈（不开静默）", ctx do
-    i = Enum.find_index(String.split(ctx.js, "\n"), &String.contains?(&1, "async function openModels()"))
+    i = Enum.find_index(String.split(ctx.js, "\n"), &String.contains?(&1, "async function openModels(keep)"))
     assert i != nil
 
     body =
