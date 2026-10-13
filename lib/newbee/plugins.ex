@@ -27,6 +27,7 @@ defmodule Newbee.Plugins do
     {:tool, "tool.hotreload", Newbee.Tools.HotReload, []},
     {:tool, "tool.hive", Newbee.Tools.Hive, [:shell, :fs]},
     {:tool, "tool.media", Newbee.Tools.Media, [:fs]},
+    {:tool, "tool.mcp", Newbee.Tools.Mcp, [:shell]},
     {:workflow, "workflow.jspace", Newbee.Tools.JSpace, [:fs]},
     {:projection, "projection.repomap", Newbee.Plugins.RepoMap, [:fs]},
     {:provider, "provider.openrouter", Newbee.Plugins.Provider.OpenRouter, [:net]}
@@ -115,7 +116,7 @@ defmodule Newbee.Plugins do
         ""
 
       body ->
-        "\n## Capability index (one line each; pull full text via Newbee.read(\"tool://<module>\") as needed)\n" <>
+        "\n## Capability index (one line each; full text: Newbee.read(\"tool://<module>\"))\n" <>
           body <> "\n"
     end
   end

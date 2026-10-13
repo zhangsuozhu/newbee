@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Edit do
   @moduledoc """
-  Text patches (docs/edit-design.md): snapshot tag + line range + final content.
+  Text patches (docs/edit-design.md): snapshot tag + range + final content.
 
       [path#tag]
       PUT N..M:      replace snapshot lines N..M (inclusive) with + body

@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Run do
   @moduledoc """
-  General shell commands; prefer higher-level tools (Git/Scaffold, …) when they fit.
+  General shell commands; prefer higher-level tools (Git/Scaffold) when they fit.
 
   ## Functions
   - `sh(cmd, opts \\\\ [])` — run a shell command under the project root; returns `%{exit: integer() | :timeout | :denied, exit_code: integer() | :timeout | :denied, output: String.t()}` (`exit_code` aliases `exit` for backward compat).
