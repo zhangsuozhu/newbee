@@ -35,6 +35,7 @@ defmodule Newbee.Environment.CapabilityGate do
     "Newbee.Tools.Hive" => [:shell, :fs],
     "Newbee.Tools.JSpace" => [:fs],
     "Newbee.Tools.Media" => [:fs],
+    "Newbee.Tools.Mcp" => [:shell],
     "Newbee.Plugins.RepoMap" => [:fs]
   }
 

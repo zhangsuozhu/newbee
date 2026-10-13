@@ -33,7 +33,9 @@ defmodule Newbee.Application do
         Newbee.Colony.Runtime,
         Newbee.Colony.Remote,
         Newbee.Collaboration.Capability,
-        Newbee.Browser
+        Newbee.Browser,
+        {Registry, keys: :unique, name: Newbee.Tools.Mcp.Registry},
+        {DynamicSupervisor, strategy: :one_for_one, name: Newbee.Tools.Mcp.SessionSup}
       ] ++
         if Mix.env() == :test do
           []
