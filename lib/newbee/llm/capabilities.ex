@@ -19,6 +19,7 @@ defmodule Newbee.LLM.Capabilities do
   | 配置键 | 类型 | 含义 |
   |---|---|---|
   | `vision` | boolean | 模型是否接受图片输入；false 时请求投影把图片卸载为文本 |
+  | `reasoningEcho` | boolean | 是否把 transcript 里的 `reasoning` 回传给模型（chat/completions 的非标准消息字段；默认 false=请求投影摘掉，只有确认上游接受时才打开） |
   | `systemPromptUpdate` | `"in-history"` | 声明模型把任意位置的最新 system 消息当作完整有效提示词。当前只作为路由事实声明并上报，agent loop 尚未消费（供后续"追加而非改写提示词"使用） |
   | `imageMaxBytes` | positive integer | 单张请求图片的字节上限 |
   | `maxImagesPerRequest` | positive integer | 单次请求保留的图片张数上限 |
@@ -35,6 +36,7 @@ defmodule Newbee.LLM.Capabilities do
 
   @type t :: %{
           optional(:vision) => boolean(),
+          optional(:reasoning_echo) => boolean(),
           optional(:system_prompt_update) => :in_history,
           optional(:image_max_bytes) => pos_integer(),
           optional(:max_images_per_request) => pos_integer(),
@@ -43,6 +45,7 @@ defmodule Newbee.LLM.Capabilities do
 
   @fields [
     :vision,
+    :reasoning_echo,
     :system_prompt_update,
     :image_max_bytes,
     :max_images_per_request,
@@ -116,6 +119,7 @@ defmodule Newbee.LLM.Capabilities do
   end
 
   defp field(key) when key in [:vision, "vision"], do: :vision
+  defp field(key) when key in [:reasoning_echo, "reasoningEcho"], do: :reasoning_echo
 
   defp field(key) when key in [:system_prompt_update, "systemPromptUpdate"],
     do: :system_prompt_update
@@ -131,6 +135,7 @@ defmodule Newbee.LLM.Capabilities do
   defp field(_), do: nil
 
   defp config_key(:vision), do: "vision"
+  defp config_key(:reasoning_echo), do: "reasoningEcho"
   defp config_key(:system_prompt_update), do: "systemPromptUpdate"
   defp config_key(:image_max_bytes), do: "imageMaxBytes"
   defp config_key(:max_images_per_request), do: "maxImagesPerRequest"
@@ -144,6 +149,10 @@ defmodule Newbee.LLM.Capabilities do
   defp coerce(:vision, "true"), do: {:ok, true}
   defp coerce(:vision, "false"), do: {:ok, false}
   defp coerce(:vision, _), do: :error
+  defp coerce(:reasoning_echo, value) when is_boolean(value), do: {:ok, value}
+  defp coerce(:reasoning_echo, "true"), do: {:ok, true}
+  defp coerce(:reasoning_echo, "false"), do: {:ok, false}
+  defp coerce(:reasoning_echo, _), do: :error
 
   defp coerce(:system_prompt_update, value) when value in ["in-history", :in_history],
     do: {:ok, :in_history}
