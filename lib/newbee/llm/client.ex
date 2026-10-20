@@ -448,7 +448,7 @@ defmodule Newbee.LLM.Client do
     # 请求投影：超出预算的旧图片换成文本占位（transcript 不动）。确定性是缓存前缀的前提。
     {messages, dropped} = Newbee.LLM.ImagePolicy.project_for(client, messages)
     if dropped > 0, do: Newbee.DebugLog.log(:llm, "image offload dropped=" <> Integer.to_string(dropped))
-    messages = sanitize_messages(messages)
+    messages = messages |> sanitize_messages() |> project_chat_messages(client)
     Newbee.DebugLog.log(:llm, "start model=#{client.model} messages=#{length(messages)}")
     t0 = System.monotonic_time(:millisecond)
 
@@ -513,31 +513,45 @@ defmodule Newbee.LLM.Client do
           other
       end
 
-    # 各家 provider 接受的 reasoning_effort 档位不一（如 sensenova 无 "max"）：
-    # 上游代理（Console Go 等）也可能因 reasoning_effort 报 400 invalid input。
-    # 400 时：先尝试摘掉 reasoning_effort 重试；若仍失败，再回传错误。
+    # 上游 400 的两种已知形态，各给一次窄化重试，避免"坏请求留在历史里 → 每轮都 400"：
+    # ① 点名某个 messages[i].<字段>（未知字段，如 cat-jam-free 拒绝 messages[5].reasoning）：
+    #    按协议白名单重投影，把可选字段摘掉再试一次；
+    # ② reasoning_effort 档位/代理不认（如 sensenova 无 "max"、Console Go 报 invalid input）：
+    #    摘掉 reasoning_effort 再试一次。两条都不成立就原样回传错误。
     result =
       case result do
         {:error, {:http_error, 400, msg}} = err ->
-          should_retry_reasoning? =
+          cond do
+            message_field_400?(msg) ->
+              Newbee.DebugLog.log(
+                :llm,
+                "400 on message field, retry with strict projection (msg=#{String.slice(msg, 0, 160)})"
+              )
+
+              retry_body =
+                body
+                |> Map.put(:messages, project_chat_messages(messages, client, strict: true))
+                |> Map.delete(:reasoning_effort)
+
+              do_request(build_req.(retry_body), on_text, on_reasoning, @overload_retries, client)
+
             client.reasoning_effort && is_binary(msg) &&
-              (msg =~ "reasoning" or msg =~ "Upstream" or msg =~ "invalid input")
+                (msg =~ "reasoning" or msg =~ "Upstream" or msg =~ "invalid input") ->
+              Newbee.DebugLog.log(
+                :llm,
+                "400 on reasoning_effort=#{client.reasoning_effort}, retry without it (msg=#{String.slice(msg, 0, 120)})"
+              )
 
-          if should_retry_reasoning? do
-            Newbee.DebugLog.log(
-              :llm,
-              "400 on reasoning_effort=#{client.reasoning_effort}, retry without it (msg=#{String.slice(msg, 0, 120)})"
-            )
+              do_request(
+                build_req.(Map.delete(body, :reasoning_effort)),
+                on_text,
+                on_reasoning,
+                @overload_retries,
+                client
+              )
 
-            do_request(
-              build_req.(Map.delete(body, :reasoning_effort)),
-              on_text,
-              on_reasoning,
-              @overload_retries,
-              client
-            )
-          else
-            err
+            true ->
+              err
           end
 
         other ->
@@ -631,6 +645,9 @@ defmodule Newbee.LLM.Client do
   end
 
   defp complete_chat(client, messages, opts) do
+    # 请求投影：transcript 里的 UI/统计私有字段（reasoning、done、_usage…）不是协议字段，
+    # 严格上游会 400 并让会话永久卡死（见 project_chat_messages/3）。
+    messages = project_chat_messages(messages, client)
     Newbee.DebugLog.log(:llm, "complete start model=#{client.model} messages=#{length(messages)}")
 
     effort = normalize_reasoning_effort(client.reasoning_effort)
@@ -1242,6 +1259,113 @@ defmodule Newbee.LLM.Client do
   end
 
   def sanitize_messages(other), do: other
+
+  # chat/completions 的线上投影（与 ImagePolicy 同层的"请求投影"）。
+  #
+  # transcript 是"会话事实"，同时承载 UI 回放与统计：每条消息都带 `created_at`
+  # （Session.append/1 与 Session.messages/1 补写），assistant 还带 `reasoning`
+  # （思考流回放）、`done` / `next_steps`（完成卡）、`_usage` / `_stop_reason`
+  # （用量与停止原因），Responses 路由落下的消息带 `_responses_items`（不透明项），
+  # 中断封印补写的 tool 结果带 `recovery`。这些都不是 chat/completions 的协议字段：
+  # 直接拿 transcript 当请求体，严格上游就回 400
+  # `Unrecognized request argument supplied: messages[3].created_at.`
+  # （opencode/zen：cat-jam-free 2026-10-14 报 reasoning，beam-free 2026-10-20 报
+  # created_at）。更糟的是坏消息留在历史里，之后每一轮都 400，会话永久卡死。
+  #
+  # 默认档只摘 newbee 自己的字段（不动 provider 的消息级扩展，避免误删个别网关
+  # 能用的键）；`strict: true` 才按角色白名单只留协议字段，供上游点名
+  # messages[i].<字段> 后的一次性重试用。新增会话私有字段时两处都要跟上：加进下面的
+  # 清单，并同步 test/newbee/llm/chat_wire_projection_test.exs 的"会话私有字段清单"用例。
+  @chat_private_msg_keys [
+    "created_at",
+    "reasoning",
+    "done",
+    "next_steps",
+    "recovery",
+    "_usage",
+    "_stop_reason",
+    "_responses_items"
+  ]
+
+  @chat_wire_keys %{
+    "system" => ["role", "content"],
+    "user" => ["role", "content", "name"],
+    "assistant" => ["role", "content", "name", "tool_calls"],
+    "tool" => ["role", "content", "name", "tool_call_id"]
+  }
+
+  @chat_key_atoms %{
+    "role" => :role,
+    "content" => :content,
+    "name" => :name,
+    "tool_calls" => :tool_calls,
+    "tool_call_id" => :tool_call_id
+  }
+
+  @doc "chat/completions 请求投影：默认摘掉 newbee 私有字段（reasoning/done/_usage…）；strict: true 时按 role 白名单只留协议字段；能力 reasoningEcho: true 的 route 保留 reasoning。"
+  def project_chat_messages(messages, client, opts \\ [])
+
+  def project_chat_messages(messages, client, opts) when is_list(messages) do
+    strict? = Keyword.get(opts, :strict, false)
+
+    drop_keys =
+      if strict? or not reasoning_echo?(client),
+        do: @chat_private_msg_keys,
+        else: @chat_private_msg_keys -- ["reasoning"]
+
+    Enum.map(messages, fn
+      msg when is_map(msg) -> project_chat_message(msg, drop_keys, strict?)
+      other -> other
+    end)
+  end
+
+  def project_chat_messages(other, _client, _opts), do: other
+
+  defp project_chat_message(msg, _drop_keys, true) do
+    keys = Map.get(@chat_wire_keys, role_string(msg), ["role", "content"])
+
+    Enum.reduce(keys, %{}, fn key, acc ->
+      case wire_field(msg, key) do
+        {:ok, value} -> Map.put(acc, key, value)
+        :error -> acc
+      end
+    end)
+  end
+
+  defp project_chat_message(msg, drop_keys, false) do
+    Map.reject(msg, fn {key, _value} -> private_chat_key?(key, drop_keys) end)
+  end
+
+  defp private_chat_key?(key, drop_keys) when is_atom(key) do
+    private_chat_key?(Atom.to_string(key), drop_keys)
+  end
+
+  defp private_chat_key?(key, drop_keys) when is_binary(key) do
+    key in drop_keys or String.starts_with?(key, "_")
+  end
+
+  defp private_chat_key?(_key, _drop_keys), do: false
+
+  defp wire_field(msg, key) do
+    case Map.fetch(msg, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(msg, Map.fetch!(@chat_key_atoms, key))
+    end
+  end
+
+  defp role_string(msg) when is_map(msg), do: msg |> Map.get("role") |> role_string()
+  defp role_string(role) when is_binary(role), do: role
+  defp role_string(role) when is_atom(role) and not is_nil(role), do: Atom.to_string(role)
+  defp role_string(_role), do: ""
+
+  defp reasoning_echo?(%__MODULE__{capabilities: caps}) when is_map(caps),
+    do: Map.get(caps, :reasoning_echo, false) == true
+
+  defp reasoning_echo?(_client), do: false
+
+  # 上游点名"某个消息字段不认识"（`messages[5].reasoning`）：用 strict 投影兜底。
+  defp message_field_400?(msg) when is_binary(msg), do: Regex.match?(~r/messages\[\d+\]\./, msg)
+  defp message_field_400?(_msg), do: false
 
   @doc false
   def normalize_tool_calls(calls) when is_list(calls) do

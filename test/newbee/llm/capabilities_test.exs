@@ -60,10 +60,19 @@ defmodule Newbee.LLM.CapabilitiesTest do
   test "fields/0 列出全部识别字段" do
     assert Capabilities.fields() == [
              :vision,
+             :reasoning_echo,
              :system_prompt_update,
              :image_max_bytes,
              :max_images_per_request,
              :max_request_image_bytes
            ]
+  end
+
+  test "reasoningEcho：配置键与字符串布尔归一化，非法值丢弃" do
+    assert Capabilities.normalize(%{"reasoningEcho" => true}) == %{reasoning_echo: true}
+    assert Capabilities.normalize(%{"reasoningEcho" => "false"}) == %{reasoning_echo: false}
+    assert Capabilities.normalize(%{"reasoningEcho" => "maybe"}) == %{}
+    assert Capabilities.sanitize(%{"reasoningEcho" => true}) == %{"reasoningEcho" => true}
+    assert Capabilities.to_config(%{reasoning_echo: false}) == %{"reasoningEcho" => false}
   end
 end
