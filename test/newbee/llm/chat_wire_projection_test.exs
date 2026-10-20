@@ -1,20 +1,29 @@
 defmodule Newbee.LLM.ChatWireProjectionTest do
   # chat/completions 请求投影回归：transcript 里的 UI/统计私有字段不得出网。
   #
-  # 线上事故（2026-10-14，opencode/zen `cat-jam-free`）：assistant 消息自带的 `reasoning`
-  # 被原样发进请求体，上游回 400
-  # `Unrecognized request argument supplied: messages[5].reasoning.`；
+  # 线上事故两例，形态一致：
+  # ① 2026-10-14 opencode/zen `cat-jam-free`：assistant 消息自带的 `reasoning`
+  #    被原样发进请求体 → 400 `Unrecognized request argument supplied: messages[5].reasoning.`；
+  # ② 2026-10-20 opencode/zen `beam-free`：Session 给每条消息补的 `created_at`
+  #    被原样发进请求体 → 400 `messages[3].created_at`（同一 key 下 minimax/deepseek
+  #    静默忽略，只有严格上游会拒）。
   # 坏消息留在历史里 → 之后每一轮都 400，会话永久卡死。
   use ExUnit.Case, async: true
 
   alias Newbee.LLM.Client
 
+  @t0 "2026-10-20T15:52:10+08:00"
+
+  # 一条"真实形态"的 transcript：每条消息都带 Session 补写的 `created_at`（2026-10-20
+  # 事故字段），assistant 带 `reasoning` / `done` / `next_steps`，中断封印的 tool 结果
+  # 带 `recovery`，provider 扩展 `cache_control` 则必须保留。
   @transcript [
-    %{"role" => "system", "content" => "sys", "_usage" => %{"prompt_tokens" => 1}},
-    %{"role" => "user", "content" => "hi"},
+    %{"role" => "system", "content" => "sys", "created_at" => @t0, "_usage" => %{"prompt_tokens" => 1}},
+    %{"role" => "user", "content" => "hi", "created_at" => @t0},
     %{
       "role" => "assistant",
       "content" => "先看代码",
+      "created_at" => @t0,
       "reasoning" => "读文件",
       "cache_control" => %{"type" => "ephemeral"},
       "tool_calls" => [
@@ -25,8 +34,35 @@ defmodule Newbee.LLM.ChatWireProjectionTest do
         }
       ]
     },
-    %{"role" => "tool", "tool_call_id" => "call_1", "content" => "2", "_stop_reason" => "tool_calls"},
-    %{"role" => "assistant", "content" => "讲完了", "done" => true, "next_steps" => [%{"label" => "再来"}]}
+    %{
+      "role" => "tool",
+      "tool_call_id" => "call_1",
+      "content" => "2",
+      "created_at" => @t0,
+      "_stop_reason" => "tool_calls",
+      "recovery" => true
+    },
+    %{
+      "role" => "assistant",
+      "content" => "讲完了",
+      "created_at" => @t0,
+      "done" => true,
+      "next_steps" => [%{"label" => "再来"}]
+    }
+  ]
+
+  # 会话私有字段清单：Session.append/messages 与 Agent.Loop 写进 transcript 的非协议键。
+  # 新增这类字段时，必须同时加进 Client 的 @chat_private_msg_keys，否则严格上游 400
+  # （本清单就是那条约束的可执行版本）。
+  @private_keys [
+    "created_at",
+    "reasoning",
+    "done",
+    "next_steps",
+    "recovery",
+    "_usage",
+    "_stop_reason",
+    "_responses_items"
   ]
 
   defp client(opts \\ []) do
@@ -36,7 +72,7 @@ defmodule Newbee.LLM.ChatWireProjectionTest do
   test "默认投影：摘掉 newbee 私有字段，协议字段与 provider 扩展字段保留" do
     projected = Client.project_chat_messages(@transcript, client())
 
-    for key <- ["reasoning", "done", "next_steps", "_usage", "_stop_reason"] do
+    for key <- @private_keys do
       refute Enum.any?(projected, &Map.has_key?(&1, key)), "#{key} 不应出网"
     end
 
@@ -50,6 +86,10 @@ defmodule Newbee.LLM.ChatWireProjectionTest do
     # provider 消息级扩展默认不动（避免误删个别网关能用的键）
     assert assistant["cache_control"] == %{"type" => "ephemeral"}
     assert Enum.at(projected, 4) == %{"role" => "assistant", "content" => "讲完了"}
+
+    # 投影只作用于请求体：transcript 原件（UI 回放与统计用）逐字保留
+    assert Enum.at(@transcript, 3)["created_at"] == @t0
+    refute Map.has_key?(Enum.at(projected, 3), "created_at")
   end
 
   test "strict 投影：只留协议字段" do
@@ -104,9 +144,10 @@ defmodule Newbee.LLM.ChatWireProjectionTest do
              Client.complete(client(req_options: [plug: plug, retry: false]), @transcript)
 
     assert_receive {:req_body, body}, 1_000
-    refute Enum.any?(body["messages"], &Map.has_key?(&1, "reasoning"))
-    refute Enum.any?(body["messages"], &Map.has_key?(&1, "done"))
-    refute Enum.any?(body["messages"], &Map.has_key?(&1, "_usage"))
+
+    for key <- @private_keys do
+      refute Enum.any?(body["messages"], &Map.has_key?(&1, key)), "#{key} 不应出网"
+    end
   end
 
   test "stream_chat：历史里的 reasoning/done 不出网" do
@@ -129,8 +170,53 @@ defmodule Newbee.LLM.ChatWireProjectionTest do
 
     assert message["content"] == "ok"
     assert_receive {:req_body, body}, 1_000
-    refute Enum.any?(body["messages"], &Map.has_key?(&1, "reasoning"))
-    refute Enum.any?(body["messages"], &Map.has_key?(&1, "done"))
+
+    for key <- ["created_at", "reasoning", "done", "recovery"] do
+      refute Enum.any?(body["messages"], &Map.has_key?(&1, key)), "#{key} 不应出网"
+    end
+  end
+
+  test "opencode/zen beam-free 事故：created_at 首次请求就不出网（无 400 重试）" do
+    test_pid = self()
+
+    # 复刻真上游行为：任一消息带 created_at 就按索引回 400
+    # （2026-10-20 实测：beam-free / cat-jam-free 严格校验，minimax / deepseek 静默忽略）。
+    plug = fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(body)
+      send(test_pid, {:req_body, body})
+
+      case Enum.find_index(body["messages"], &Map.has_key?(&1, "created_at")) do
+        nil ->
+          conn = Plug.Conn.send_chunked(Plug.Conn.put_resp_content_type(conn, "text/event-stream"), 200)
+          {:ok, conn} = Plug.Conn.chunk(conn, sse_data())
+          conn
+
+        idx ->
+          conn
+          |> Plug.Conn.put_status(400)
+          |> Req.Test.json(%{
+            "error" => %{
+              "param" => "messages[#{idx}].created_at",
+              "type" => "invalid_request_error",
+              "message" =>
+                "Upstream request failed: [unsupported_parameter] Unrecognized request argument supplied: messages[#{idx}].created_at."
+            }
+          })
+      end
+    end
+
+    opts = [req_options: [plug: plug, retry: false]]
+
+    assert {:ok, message, _usage} =
+             Client.stream_chat(client(opts), @transcript, fn _ -> :ok end)
+
+    assert message["content"] == "ok"
+    assert_receive {:req_body, body}, 1_000
+    refute Enum.any?(body["messages"], &Map.has_key?(&1, "created_at"))
+
+    # 投影已覆盖 → 不该有第二次请求（不会先去撞一次 400 再靠 strict 兜底）
+    refute_receive {:req_body, _}, 200
   end
 
   test "上游点名 messages[i].reasoning：strict 投影重试一次并成功" do

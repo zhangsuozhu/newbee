@@ -1262,21 +1262,26 @@ defmodule Newbee.LLM.Client do
 
   # chat/completions 的线上投影（与 ImagePolicy 同层的"请求投影"）。
   #
-  # transcript 是"会话事实"，同时承载 UI 回放与统计：assistant 消息带 `reasoning`
+  # transcript 是"会话事实"，同时承载 UI 回放与统计：每条消息都带 `created_at`
+  # （Session.append/1 与 Session.messages/1 补写），assistant 还带 `reasoning`
   # （思考流回放）、`done` / `next_steps`（完成卡）、`_usage` / `_stop_reason`
-  # （用量与停止原因），Responses 路由落下的消息还带 `_responses_items`（不透明项）。
-  # 这些都不是 chat/completions 的协议字段：直接拿 transcript 当请求体，严格上游会回
-  # 400 `Unrecognized request argument supplied: messages[5].reasoning.`
-  # （opencode/zen 的 cat-jam-free 实测，2026-10-14）。更糟的是坏消息留在历史里，
-  # 之后每一轮都 400，会话永久卡死。
+  # （用量与停止原因），Responses 路由落下的消息带 `_responses_items`（不透明项），
+  # 中断封印补写的 tool 结果带 `recovery`。这些都不是 chat/completions 的协议字段：
+  # 直接拿 transcript 当请求体，严格上游就回 400
+  # `Unrecognized request argument supplied: messages[3].created_at.`
+  # （opencode/zen：cat-jam-free 2026-10-14 报 reasoning，beam-free 2026-10-20 报
+  # created_at）。更糟的是坏消息留在历史里，之后每一轮都 400，会话永久卡死。
   #
   # 默认档只摘 newbee 自己的字段（不动 provider 的消息级扩展，避免误删个别网关
   # 能用的键）；`strict: true` 才按角色白名单只留协议字段，供上游点名
-  # messages[i].<字段> 后的一次性重试用。
+  # messages[i].<字段> 后的一次性重试用。新增会话私有字段时两处都要跟上：加进下面的
+  # 清单，并同步 test/newbee/llm/chat_wire_projection_test.exs 的"会话私有字段清单"用例。
   @chat_private_msg_keys [
+    "created_at",
     "reasoning",
     "done",
     "next_steps",
+    "recovery",
     "_usage",
     "_stop_reason",
     "_responses_items"
