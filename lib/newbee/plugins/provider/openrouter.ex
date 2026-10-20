@@ -1,6 +1,6 @@
 defmodule Newbee.Plugins.Provider.OpenRouter do
   @moduledoc """
-  OpenRouter planner: validated Host-executable request maps; no keys.
+  OpenRouter planner: validated Host-executable request maps.
 
   ## Functions
   - `plan(model, messages, opts \\\\ []) :: {:ok, map()} | {:error, reason}` — `opts` takes `base_url:`, `tools:`, `stream:`, `receive_timeout:`.

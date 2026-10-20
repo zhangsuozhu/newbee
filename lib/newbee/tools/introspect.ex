@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Introspect do
   @moduledoc """
-  Elixir module introspection: real exports, moduledoc, and BEAM info.
+  Module introspection: real exports, moduledoc, BEAM info.
   Use it to learn a loaded module's API without reading source.
 
   ## Functions
