@@ -337,6 +337,7 @@ defmodule Newbee.Browser.Jev do
 
   defp control_candidate(control, index, request) when is_map(control) do
     name = clean_text(control["name"])
+    label = if name != "", do: name, else: clean_text(control["html_name"])
     tag = clean_text(control["tag"]) |> String.downcase()
     type = clean_text(control["type"]) |> String.downcase()
     role = clean_text(control["role"]) |> String.downcase()
@@ -345,20 +346,20 @@ defmodule Newbee.Browser.Jev do
       control["disabled"] == true ->
         []
 
-      name == "" ->
+      label == "" ->
         []
 
-      not request["allow_side_effects"] and dangerous_name?(name) ->
+      not request["allow_side_effects"] and dangerous_name?(label) ->
         []
 
       type in ["checkbox", "radio"] or role in ["checkbox", "radio", "switch"] ->
-        [toggle_candidate(control, index, name)]
+        [toggle_candidate(control, index, label)]
 
       tag == "select" or role == "combobox" ->
-        select_candidate(control, index, name, request)
+        select_candidate(control, index, label, request)
 
       tag in ["input", "textarea"] or role in ["textbox", "searchbox"] or control["contenteditable"] == true ->
-        fill_candidate(control, index, name, request)
+        fill_candidate(control, index, label, request)
 
       true ->
         case locator_for(control) do
@@ -369,7 +370,7 @@ defmodule Newbee.Browser.Jev do
             [
               candidate(
                 "control_#{index}",
-                "Click the control labelled #{clip(name, 160)}.",
+                "Click the control labelled #{clip(label, 160)}.",
                 Map.merge(%{"action" => "click"}, locator)
               )
             ]
@@ -455,6 +456,7 @@ defmodule Newbee.Browser.Jev do
   defp locator_for(control) do
     id = clean_text(control["id"])
     name = clean_text(control["name"])
+    html_name = clean_text(control["html_name"])
     tag = clean_text(control["tag"]) |> String.downcase()
     role = clean_text(control["role"]) |> String.downcase()
     role = if role == "", do: implicit_role(tag, control["type"]), else: role
@@ -464,7 +466,18 @@ defmodule Newbee.Browser.Jev do
       role != "" and name != "" -> %{"by" => "role", "selector" => role, "name" => name, "exact" => true}
       tag in ["input", "textarea", "select"] and name != "" -> %{"by" => "label", "selector" => name, "exact" => true}
       name != "" -> %{"by" => "text", "selector" => name, "exact" => true}
+      html_name != "" -> css_name_locator(tag, html_name)
       true -> nil
+    end
+  end
+
+  # 无 id/可访问名时的兜底：用 HTML name 属性定位；值含换行/引号/反斜线则放弃。
+  defp css_name_locator(tag, name) do
+    if String.contains?(name, ["\n", "\r", "\"", "\\"]) do
+      nil
+    else
+      prefix = if tag in ["input", "textarea", "select", "button"], do: tag, else: ""
+      %{"by" => "css", "selector" => "#{prefix}[name=\"#{name}\"]"}
     end
   end
 
@@ -478,7 +491,14 @@ defmodule Newbee.Browser.Jev do
   defp implicit_role(_, _), do: ""
 
   defp input_value(control, input_values) when is_map(input_values) do
-    keys = [control["id"], control["name"], control["label"], control["placeholder"], control["aria_label"]]
+    keys = [
+      control["id"],
+      control["html_name"],
+      control["name"],
+      control["label"],
+      control["placeholder"],
+      control["aria_label"]
+    ]
 
     Enum.find_value(keys, fn key ->
       key = clean_text(key)

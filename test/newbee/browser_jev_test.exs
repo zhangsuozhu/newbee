@@ -277,4 +277,83 @@ defmodule Newbee.Browser.JevTest do
                http_post: http_post
              )
   end
+
+  test "HTML name drives input_values matching and the locator fallback" do
+    snapshot = %{
+      "url" => "https://example.com/form",
+      "title" => "Form",
+      "text" => "Customer name",
+      "controls" => [
+        %{"tag" => "input", "type" => "text", "html_name" => "custname", "name" => "", "disabled" => false}
+      ],
+      "links" => []
+    }
+
+    test_pid = self()
+
+    browser_run = fn request ->
+      send(test_pid, {:browser, request})
+      actions = request["actions"] || request[:actions]
+
+      cond do
+        request["session"] == "new" ->
+          {:ok, %{"session" => "sess-1", "results" => [%{"result" => snapshot}]}}
+
+        match?([%{"action" => "fill"} | _], actions) or match?([%{action: "fill"} | _], actions) ->
+          {:ok, %{"session" => "sess-1", "results" => [%{"result" => %{"filled" => true}}]}}
+
+        match?([%{"action" => "snapshot"} | _], actions) or match?([%{action: "snapshot"} | _], actions) ->
+          {:ok, %{"session" => "sess-1", "results" => [%{"result" => Map.put(snapshot, "text", "Filled")}]}}
+
+        match?([%{"action" => "close"} | _], actions) or match?([%{action: "close"} | _], actions) ->
+          {:ok, %{"session" => "sess-1", "results" => [%{"result" => %{"closed" => true}}]}}
+
+        true ->
+          flunk("unexpected browser request: " <> inspect(request))
+      end
+    end
+
+    http_post = fn _url, body, _headers ->
+      choice = if get_in(body, ["state", "page", "text"]) == "Customer name", do: "control_0", else: "done"
+
+      {:ok,
+       %{
+         status: 200,
+         body:
+           Jason.encode!(%{
+             "answers" => %{
+               "action" => %{
+                 "type" => "choice",
+                 "choice" => choice,
+                 "confidence" => 0.9,
+                 "probabilities" => %{choice => 0.9}
+               }
+             }
+           })
+       }}
+    end
+
+    assert {:ok, result} =
+             Newbee.Browser.Jev.run(
+               %{
+                 url: "https://example.com/form",
+                 goal: "Fill the customer name",
+                 input_values: %{"custname" => "newbee"},
+                 max_steps: 2,
+                 close: true
+               },
+               config: %{"apiKey" => "test-key"},
+               browser_run: browser_run,
+               http_post: http_post
+             )
+
+    assert result["status"] == "done"
+    assert_received {:browser, _open_request}
+    assert_received {:browser, fill_request}
+    [fill] = fill_request["actions"]
+    assert fill["action"] == "fill"
+    assert fill["value"] == "newbee"
+    assert fill["by"] == "css"
+    assert fill["selector"] == "input[name=\"custname\"]"
+  end
 end
