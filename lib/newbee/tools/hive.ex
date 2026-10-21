@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Hive do
   @moduledoc """
-  Persistent collaboration: revision-CAS Board, DAG, event waits, Lead acceptance.
+  Persistent collaboration: revision-CAS board, DAG, event waits, acceptance.
 
   Command acceptance runs project code, Lead-only — not a sandbox; workers never rewrite task contracts. `write_scope`
   diagnoses conflicts, not locks; personas/forks/payloads are hard-capped; capabilities bind tool-call identity, not isolation.

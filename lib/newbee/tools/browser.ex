@@ -2,7 +2,7 @@ defmodule Newbee.Tools.Browser do
   @behaviour Newbee.Environment.PluginContract
 
   @moduledoc """
-  Browser automation: isolated Playwright, resumable sessions, authorized X11 control.
+  Browser automation: isolated Playwright, resumable sessions, authorized X11.
 
   Omit `session` for a one-shot plan. For interactive work, open `session: "new"` and
   reuse the returned `result["session"]` in later calls. Sessions require the active

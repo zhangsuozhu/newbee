@@ -22,6 +22,7 @@ defmodule Newbee.Plugins do
     {:tool, "tool.json", Newbee.Tools.Json, []},
     {:tool, "tool.http", Newbee.Tools.Http, [:net]},
     {:tool, "tool.browser", Newbee.Tools.Browser, [:browser, :net, :fs, :shell]},
+    {:tool, "tool.browser.jev", Newbee.Tools.BrowserJev, [:browser, :net]},
     {:tool, "tool.scaffold", Newbee.Tools.Scaffold, [:shell, :fs]},
     {:tool, "tool.introspect", Newbee.Tools.Introspect, []},
     {:tool, "tool.hotreload", Newbee.Tools.HotReload, []},
@@ -116,7 +117,7 @@ defmodule Newbee.Plugins do
         ""
 
       body ->
-        "\n## Capability index (one line each; full text: Newbee.read(\"tool://<module>\"))\n" <>
+        "\n## Capability index (full text: Newbee.read(\"tool://<module>\"))\n" <>
           body <> "\n"
     end
   end
