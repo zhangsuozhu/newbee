@@ -8,6 +8,12 @@ defmodule Newbee.Tools.BrowserJev do
   selected click, fill, toggle, navigation, or scroll. Missing Jev configuration
   is recoverable and leaves the regular Browser tool unchanged.
 
+  ## Inputs
+
+  `input_values` maps controls to values; keys match a control's HTML `name`,
+  accessible name (label), id, placeholder, or aria-label. Clicking controls with
+  side-effect labels (submit, send, pay, ...) requires `allow_side_effects: true`.
+
   ## Runnable example
       Newbee.Tools.BrowserJev.run(%{
         url: "https://example.com",

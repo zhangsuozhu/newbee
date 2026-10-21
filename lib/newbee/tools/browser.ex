@@ -48,7 +48,7 @@ defmodule Newbee.Tools.Browser do
   one-shot run) flushes every page and reports `videos`. Videos must live outside
   `.newbee/browser/tmp`; idle expiry without `close` does not guarantee a recording.
   Locators support CSS, XPath, id, text, role, label, placeholder, alt, title, test_id and frames.
-  `snapshot` returns bounded text, links and visible controls with labels and state; use
+  `snapshot` returns bounded text, links and visible controls with labels, HTML names and state; use
   `max_chars` and `limit` to bound it. There are at most four tabs per browser session.
   `wait` supports selector, URL, load-state and function conditions; prefer these to sleeps.
 

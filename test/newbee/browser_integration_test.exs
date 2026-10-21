@@ -6,7 +6,7 @@ defmodule Newbee.Browser.IntegrationTest do
   @moduletag skip: System.get_env("NEWBEE_BROWSER_INTEGRATION") != "1"
   @moduletag timeout: 60_000
 
-  @html ~S|<title>Browser regression</title><label>Query<input id="query"></label><label>Password<input type="password" value="never-return-this"></label><label>Enabled<input id="flag" type="checkbox" checked></label><button onclick="setTimeout(() => document.getElementById('status').textContent = document.getElementById('query').value, 30)">Apply</button><div id="status"></div>|
+  @html ~S|<title>Browser regression</title><label>Query<input id="query" name="query"></label><label>Password<input type="password" value="never-return-this"></label><label>Enabled<input id="flag" type="checkbox" checked></label><button onclick="setTimeout(() => document.getElementById('status').textContent = document.getElementById('query').value, 30)">Apply</button><div id="status"></div>|
   defmodule VisionStub do
     def init(opts), do: opts
 
@@ -132,6 +132,7 @@ defmodule Newbee.Browser.IntegrationTest do
       snapshot = List.last(opened["results"])["result"]
       assert Enum.any?(snapshot["controls"], &(&1["name"] == "Query"))
       assert Enum.any?(snapshot["controls"], &(&1["checked"] === true))
+      assert Enum.any?(snapshot["controls"], &(&1["html_name"] == "query"))
       refute Jason.encode!(snapshot) =~ "never-return-this"
 
       assert {:ok, changed} =

@@ -314,6 +314,8 @@ def text_snapshot(page, timeout, action):
         const label = labelled || el.getAttribute('aria-label') || Array.from(el.labels || []).map(l => l.innerText).join(' ') || el.innerText || el.getAttribute('placeholder') || el.title;
         const item = {tag: el.tagName.toLowerCase(), role: el.getAttribute('role'), type: el.type || null, name: clip(label), disabled: el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true'};
         if (el.id) item.id = el.id;
+        const html_name = clip(el.getAttribute('name'));
+        if (html_name) item.html_name = html_name;
         if (el.type !== 'password' && el.type !== 'file' && 'value' in el) item.value = clip(el.value);
         if (el.type === 'checkbox' || el.type === 'radio') item.checked = el.checked;
         return item;
