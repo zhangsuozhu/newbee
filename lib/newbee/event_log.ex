@@ -113,11 +113,22 @@ defmodule Newbee.EventLog do
 
   # 事件常是元组（{:goal_start, "..."}、{:audit, :ok, actor, target, ring}）——
   # Jason 不能编码元组，转成可编码形态（元组 → [tag | args]，递归）
+  @doc false
+  def jsonable(event), do: encodable(event)
+
   defp encodable(v) when is_tuple(v) do
     v |> Tuple.to_list() |> Enum.map(&encodable/1)
   end
 
   defp encodable(v) when is_list(v), do: Enum.map(v, &encodable/1)
+
+  # 结构体（例如 %Req.TransportError{}）是 map 但不是 Enumerable，Map.new/2 会抛
+  # Protocol.UndefinedError 把 EventLog 打挂；摊平成普通 map，模块名保留成字符串。
+  # 只认 is_atom(mod)（真结构体），展开后不再带 __struct__: atom，不会再次递归。
+  defp encodable(%{__struct__: mod} = v) when is_atom(mod) do
+    fields = v |> Map.from_struct() |> Map.new(fn {k, val} -> {k, encodable(val)} end)
+    Map.put(fields, :__struct__, inspect(mod))
+  end
 
   defp encodable(v) when is_map(v) do
     Map.new(v, fn {k, val} -> {k, encodable(val)} end)

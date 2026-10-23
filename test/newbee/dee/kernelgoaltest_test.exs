@@ -265,4 +265,62 @@ defmodule Newbee.Agent.LoopGoalTest do
     GenServer.stop(kernel)
     GenServer.stop(ev)
   end
+
+  # after_turn/2 传的是 client 返回的**裸**错误项；锁住裸 %Req.TransportError{}
+  # 必须按瞬态错误重试（写成 {:error, %Req.TransportError{}} 会永远落到兜底分支）。
+  test "transport error（裸 struct）按瞬态重试后完成目标" do
+    Newbee.Bus.subscribe()
+    {:ok, ev} = Evaluator.start(mode: :local)
+
+    {:ok, kernel} =
+      Loop.start_link(
+        client: %{},
+        evaluator: ev,
+        session: false,
+        client_fun:
+          scripted([
+            fn _m, _o -> {:error, %Req.TransportError{reason: :timeout}} end,
+            fn _m, _o -> {:ok, done_msg("网络恢复后完成"), %{}} end
+          ])
+      )
+
+    assert :ok = Loop.set_goal(kernel, "目标", retry_delay: 0)
+    assert_receive {:newbee_event, :goal_retry, {:goal_retry, 1}}
+    assert_receive {:newbee_event, :goal_done, {:goal_done, "网络恢复后完成"}}
+    assert Loop.goal(kernel) == nil
+
+    GenServer.stop(kernel)
+    GenServer.stop(ev)
+  end
+
+  # TLS 证书/握手失败是确定性的：不消耗重试次数，直接取消目标。
+  test "TLS 证书错误不重试，直接取消目标" do
+    Newbee.Bus.subscribe()
+    {:ok, ev} = Evaluator.start(mode: :local)
+
+    tls_error = %Req.TransportError{
+      reason: {:tls_alert, {:bad_certificate, ~c"TLS client: ... selfsigned_peer"}}
+    }
+
+    {:ok, kernel} =
+      Loop.start_link(
+        client: %{},
+        evaluator: ev,
+        session: false,
+        client_fun:
+          scripted([
+            fn _m, _o -> {:error, tls_error} end,
+            fn _m, _o -> {:ok, done_msg("不该被调用"), %{}} end
+          ])
+      )
+
+    assert :ok = Loop.set_goal(kernel, "目标", max_error_retries: 3, retry_delay: 0)
+    assert_receive {:newbee_event, :goal_cancelled, {:goal_cancelled, :error}}, 1_000
+    refute_received {:newbee_event, :goal_retry, _}
+    refute_received {:newbee_event, :goal_done, _}
+    assert Loop.goal(kernel) == nil
+
+    GenServer.stop(kernel)
+    GenServer.stop(ev)
+  end
 end
