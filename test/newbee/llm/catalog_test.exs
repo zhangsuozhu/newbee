@@ -182,4 +182,82 @@ defmodule Newbee.LLM.CatalogTest do
     assert [%{name: "gateway", displayName: "gateway / 默认分组", models: ["vendor/shared"]}] = cat.providers
     refute Jason.encode!(cat) =~ "test-first-key"
   end
+
+  # 厂家级 TLS：形状/取值规范化在保存期完成，坏配置不落盘。
+  test "provider tls 规范化后随 runtime/persist 往返保留", %{path: path} do
+    cfg = legacy() |> Catalog.migrate()
+    ca = write_ca!(path)
+
+    input = put_in(cfg, ["providers", "gateway", "tls"], %{"caFile" => "  " <> ca <> "  "})
+
+    assert {:ok, prepared} = Catalog.prepare(Catalog.redact(input), cfg)
+    assert prepared["providers"]["gateway"]["tls"] == %{"caFile" => ca}
+
+    # runtime 视图把厂家字段平铺给 Client，persist 再折回目录形态
+    assert Catalog.runtime(prepared)["providers"]["gateway"]["tls"] == %{"caFile" => ca}
+    assert Catalog.persist(Catalog.runtime(prepared))["providers"]["gateway"]["tls"] == %{"caFile" => ca}
+  end
+
+  test "provider tls 指纹统一成小写十六进制，清除时删除字段" do
+    cfg = legacy() |> Catalog.migrate()
+    pin = String.duplicate("AB", 32)
+
+    input = put_in(cfg, ["providers", "gateway", "tls"], %{"pinnedSha256" => "sha256:" <> pin})
+    assert {:ok, prepared} = Catalog.prepare(Catalog.redact(input), cfg)
+
+    assert prepared["providers"]["gateway"]["tls"] == %{"pinnedSha256" => String.downcase(pin)}
+
+    cleared = put_in(prepared, ["providers", "gateway", "tls"], %{"insecureSkipVerify" => false})
+    assert {:ok, cleared} = Catalog.prepare(Catalog.redact(cleared), prepared)
+    refute Map.has_key?(cleared["providers"]["gateway"], "tls")
+  end
+
+  test "provider tls 非法配置在保存时明确报错", %{path: path} do
+    cfg = legacy() |> Catalog.migrate()
+    base = Catalog.redact(cfg)
+    ca = write_ca!(path)
+
+    cases = [
+      {%{"caFile" => "/nonexistent/newbee-ca.pem"}, "caFile"},
+      {%{"caFile" => ca, "insecureSkipVerify" => true}, "互斥"},
+      {%{"caFile" => ca, "pinnedSha256" => String.duplicate("a", 64)}, "互斥"},
+      {%{"caCert" => "x"}, "caCert"},
+      {%{"pinnedSha256" => "short"}, "pinnedSha256"},
+      {%{"insecureSkipVerify" => "yes"}, "布尔"}
+    ]
+
+    for {tls, expected} <- cases do
+      input = put_in(base, ["providers", "gateway", "tls"], tls)
+      assert {:error, message} = Catalog.prepare(input, cfg)
+      assert message =~ expected, "tls=#{inspect(tls)} 的报错信息不匹配：#{message}"
+    end
+  end
+
+  # 只用于「caFile 可读」这条路径，与真实握手无关。
+  defp write_ca!(path) do
+    ca = Path.join(Path.dirname(path), "ca.pem")
+    File.write!(ca, test_ca_pem())
+    ca
+  end
+
+  defp test_ca_pem do
+    [
+      "-----BEGIN CERTIFICATE-----",
+      "MIICDjCCAXegAwIBAgIUHMFF/odYEWSfuoqvs1UMqzbej6owDQYJKoZIhvcNAQEL",
+      "BQAwGTEXMBUGA1UEAwwObmV3YmVlLXRlc3QtY2EwHhcNMjYxMDIzMDkwNzE5WhcN",
+      "MzYxMDIwMDkwNzE5WjAZMRcwFQYDVQQDDA5uZXdiZWUtdGVzdC1jYTCBnzANBgkq",
+      "hkiG9w0BAQEFAAOBjQAwgYkCgYEApwXQH9sQyDIsefe+f693daBwcTP7HzcWBvsv",
+      "oK5/hcxeUINn9TMzrhc1xdMRGL7sec8uYoRvcr4q6hLe/7K10sI+8WFJZYZvBI7y",
+      "8qVgDyUPMfT8UYpt23lUaUK2eYp4QK84g5rJZ/z15Y1f2IFaxmE3IquFC+rRedAw",
+      "uoJCNOcCAwEAAaNTMFEwHQYDVR0OBBYEFJdO6EibDdSChVplggPwJW0ePiKUMB8G",
+      "A1UdIwQYMBaAFJdO6EibDdSChVplggPwJW0ePiKUMA8GA1UdEwEB/wQFMAMBAf8w",
+      "DQYJKoZIhvcNAQELBQADgYEAcCAnpbxu95cZ/CtnPsPbOa00CHmW2q29+uHk3b/L",
+      "/GggkMSGtJK/w3bj/iVO3bQYjz8cUnx69leHlEFZZMrREJrzXD/huywYczvgxkyu",
+      "N0ipqAZlNPqokbuOVR9z6ShJVjoXUn8iv0R84G6Ayz+jckE95HsNvkBKRdIN/RaG",
+      "5NY=",
+      "-----END CERTIFICATE-----"
+    ]
+    |> Enum.join("\n")
+    |> Kernel.<>("\n")
+  end
 end

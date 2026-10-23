@@ -92,7 +92,9 @@ defmodule Newbee.LLM.Config do
       # 会话级缓存路由键：显式 opts > 角色配置 cacheKey；nil 时由 Loop 补齐。
       cache_key: Keyword.get(opts, :cache_key) || role_cfg["cacheKey"],
       # GPT-5.6 显式缓存是 opt-in；没有 promptCacheOptions 时不改变请求体。
-      prompt_cache_options: prompt_cache_options(provider, model, role_cfg)
+      prompt_cache_options: prompt_cache_options(provider, model, role_cfg),
+      # 厂家级 TLS 信任（caFile / insecureSkipVerify / pinnedSha256）；见 docs/model-catalog.md。
+      tls: Newbee.LLM.Tls.resolve!(provider["tls"])
     )
   end
 
@@ -764,7 +766,7 @@ defmodule Newbee.LLM.Config do
     if is_binary(base) and String.trim(base) != "" do
       url = String.trim_trailing(base, "/") <> "/models"
 
-      with {:ok, %{"data" => data}} when is_list(data) <- http_get(url, key) do
+      with {:ok, %{"data" => data}} when is_list(data) <- http_get(url, key, provider["tls"]) do
         data
         |> Enum.map(fn m -> m["id"] end)
         |> Enum.filter(&is_binary/1)
@@ -819,7 +821,7 @@ defmodule Newbee.LLM.Config do
     :ok
   end
 
-  defp http_get(url, api_key) do
+  defp http_get(url, api_key, raw_tls) do
     headers =
       if is_binary(api_key) and api_key != "" do
         [{"authorization", "Bearer " <> api_key}]
@@ -827,20 +829,27 @@ defmodule Newbee.LLM.Config do
         []
       end
 
-    result =
-      if URI.parse(url).host == "openrouter.ai" do
-        openrouter_get(url, headers)
-      else
-        req_get(url, headers)
-      end
-
-    case result do
-      {:ok, body} ->
-        {:ok, body}
-
-      other ->
-        Logger.warning("model_catalog: fetch failed for " <> url <> ": " <> inspect(other))
+    case Newbee.LLM.Tls.resolve(raw_tls) do
+      {:error, message} ->
+        Logger.warning("model_catalog: " <> message)
         :error
+
+      {:ok, tls} ->
+        result =
+          if tls == nil and URI.parse(url).host == "openrouter.ai" do
+            openrouter_get(url, headers)
+          else
+            req_get(url, headers, tls)
+          end
+
+        case result do
+          {:ok, body} ->
+            {:ok, body}
+
+          other ->
+            Logger.warning("model_catalog: fetch failed for " <> url <> ": " <> inspect(other))
+            :error
+        end
     end
   end
 
@@ -863,15 +872,17 @@ defmodule Newbee.LLM.Config do
   end
 
   # Finch can hang on OpenRouter under transparent-proxy/fake-IP setups.
-  defp req_get(url, headers) do
-    case Req.get(url, headers: headers, receive_timeout: 30_000) do
+  defp req_get(url, headers, tls) do
+    opts = [headers: headers, receive_timeout: 30_000] ++ Newbee.LLM.Client.tls_finch_opt(tls)
+
+    case Req.get(url, opts) do
       {:ok, %Req.Response{status: st} = resp} when st in 200..299 -> {:ok, resp.body}
       {:ok, %Req.Response{status: st}} -> {:error, {:http_status, st}}
-      {:error, _e} -> httpc_get(url, headers)
+      {:error, _e} -> httpc_get(url, headers, tls)
     end
   end
 
-  defp httpc_get(url, headers) do
+  defp httpc_get(url, headers, tls) do
     _ = Application.ensure_all_started(:inets)
     _ = Application.ensure_all_started(:ssl)
 
@@ -879,9 +890,9 @@ defmodule Newbee.LLM.Config do
       {String.to_charlist(url), Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)}
 
     try do
-      :httpc.set_options(ssl: [verify: :verify_peer, cacerts: :public_key.cacerts_get()])
+      opts = [timeout: 30_000, connect_timeout: 10_000, ssl: httpc_ssl_opts(tls)]
 
-      case :httpc.request(:get, req, [timeout: 30_000, connect_timeout: 10_000], body_format: :binary) do
+      case :httpc.request(:get, req, opts, body_format: :binary) do
         {:ok, {{_, 200, _}, _, body}} ->
           case Jason.decode(body) do
             {:ok, decoded} -> {:ok, decoded}
@@ -900,6 +911,12 @@ defmodule Newbee.LLM.Config do
       k, r -> {:error, {:httpc_thrown, {k, r}}}
     end
   end
+
+  # :httpc 的 ssl 选项按请求传入。历史上这里用 :httpc.set_options 改默认 profile 的
+  # 全局状态，会污染同 profile 的其他调用，也和应用主路径的信任配置不一致。
+  defp httpc_ssl_opts(nil), do: [verify: :verify_peer, cacerts: :public_key.cacerts_get()]
+  defp httpc_ssl_opts(%{mode: :ca, transport_opts: opts}), do: Keyword.put_new(opts, :verify, :verify_peer)
+  defp httpc_ssl_opts(%{transport_opts: opts}), do: opts
 
   # ── internals ──
 

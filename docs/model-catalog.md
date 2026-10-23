@@ -132,12 +132,58 @@ Jev 仍归厂家和凭证分组管理，但模型类型为 `kind: "jev"`，协�
 
 Jev 集成测试见 `test/newbee/llm/jev_catalog_test.exs`，覆盖类型隔离、双分组凭证、旧配置识别、实际请求结构、引用校验和会话配置刷新。已有 Jev 的超时、熔断、无密钥回退行为保持。
 
+## 网关 TLS（自签 / 私有 CA）
+
+厂家级可选字段 `tls`，只影响该厂家发出的请求（含「从此分组导入模型」）。缺省＝Mint 默认校验（系统信任库），行为与以前完全一致。
+
+```json
+{
+  "providers": {
+    "internal": {
+      "name": "内网网关",
+      "baseUrl": "https://gw.internal/v1",
+      "tls": {"caFile": "/etc/ssl/certs/internal-ca.pem"},
+      "groups": {"default": {"name": "日常", "apiKey": "${INTERNAL_KEY}", "models": []}}
+    }
+  }
+}
+```
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `caFile` | 字符串 | PEM 证书文件路径（可含多张 CA），支持 `~`。加入信任锚点，仍做完整链校验 |
+| `insecureSkipVerify` | 布尔 | 显式跳过证书链校验 |
+| `pinnedSha256` | 字符串 | 证书 SHA-256（64 位十六进制，可带 `sha256:` 前缀）。跳过链校验，但建连时核对指纹 |
+
+`caFile` 与另两项互斥（一个做校验、一个放弃校验）。保存时校验形状与文件可读性，并把路径去空白、指纹规范成小写十六进制；未知字段直接报错。
+
+### 为什么自签单证书必须走 `pinnedSha256`
+
+OTP 的 `:ssl` 在 `ssl_certificate:trusted_cert_and_paths/4` 里，对「peer 只发送一张自签证书」的链直接返回 `{selfsigned_peer, Chain}`，不查信任库；`ssl_handshake` 把它变成 Fatal alert。此时 `cacerts` / `cacertfile` / `partial_chain` 都救不了（实测 OTP 29.0.5）。因此只有两条路：
+
+- 服务端发送由某 CA 签发的**完整链**，客户端用 `caFile` 信任该 CA；
+- 服务端只发一张自签证书时，用 `pinnedSha256`（本质是 `verify_none` + `verify_fun` 核对指纹）。只写 `insecureSkipVerify` 会接受任意证书，仅建议在完全可信的内网临时使用。
+
+指纹可这样取：
+
+```sh
+openssl s_client -connect gw.internal:443 -showcerts </dev/null 2>/dev/null |
+  openssl x509 -outform der | sha256sum
+```
+
+### 实现要点
+
+- 解析在 `Newbee.LLM.Tls`：`normalize/1`（形状＋规范化，目录保存时用）与 `resolve/1`（读取 CA、生成传输选项，客户机构建期用）。
+- 每个 TLS 配置有自己的 Finch `pool_tag`。Finch 池按 `{scheme, host, port, pool_tag}` 复用，`conn_opts` 只在建池时生效；不加 tag 会让先建的池把校验策略带给另一份配置。
+- 证书失败是确定性错误：`Newbee.LLM.Client.format_error/1` 对 `{:tls_alert, _}` 不再声称「会自动重试」，改为直接给出配置指引。
+- 已知边界：Jev 评分请求（`Newbee.Compaction.JevClient`，独立 OTP 应用）尚未接入 `tls`；模型可见的 `Newbee.Tools.Http` 也没有该开关。OpenRouter 的 curl 快路径在配置了 `tls` 时自动让位给 Req。
 ## 验证
 
 ```sh
 mix compile --warnings-as-errors
 MIX_ENV=test mix compile --warnings-as-errors
-mix test test/newbee/llm/catalog_test.exs \
+mix test test/newbee/llm/tls_test.exs \
+  test/newbee/llm/catalog_test.exs \
   test/newbee/llm/configtest_test.exs \
   test/newbee/llm/config_capabilities_test.exs \
   test/newbee/web/model_config_ui_test.exs \

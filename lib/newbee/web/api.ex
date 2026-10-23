@@ -1405,7 +1405,7 @@ defmodule Newbee.Web.Api do
     name = Newbee.LLM.Catalog.route(p["provider"] || "", p["group"] || "default")
     stored = Newbee.LLM.Config.load()["providers"][name] || %{}
     key = p["apiKey"] || stored["apiKey"]
-    inline = %{"baseUrl" => p["baseUrl"], "apiKey" => key}
+    inline = %{"baseUrl" => p["baseUrl"], "apiKey" => key, "tls" => p["tls"] || stored["tls"]}
 
     case Newbee.LLM.Config.fetch_models_inline(inline) do
       nil -> {:error, "fetch_failed", "模型列表拉取失败，请检查此分组的 API Key 和厂家 URL"}
@@ -1442,7 +1442,12 @@ defmodule Newbee.Web.Api do
     # 支持未保存/脏数据的 inline 拉取：前端提供 baseUrl/apiKey 时直接 GET /models，不依赖已落盘配置
     if is_binary(base_url) and String.trim(base_url) != "" do
       api_key = resolve_inline_api_key(api_key_param, name)
-      inline_provider = %{"baseUrl" => String.trim(base_url), "apiKey" => api_key}
+
+      inline_provider = %{
+        "baseUrl" => String.trim(base_url),
+        "apiKey" => api_key,
+        "tls" => p["tls"] || stored_tls(name)
+      }
 
       case Newbee.LLM.Config.fetch_models_inline(inline_provider) do
         nil ->
@@ -3751,6 +3756,16 @@ defmodule Newbee.Web.Api do
   end
 
   defp resolve_inline_api_key(_, _), do: nil
+
+  # 未随请求带上 tls 时（旧前端），回落到已落盘厂家的 tls。
+  defp stored_tls(name) when is_binary(name) do
+    case Newbee.LLM.Config.load()["providers"][name] do
+      %{"tls" => tls} -> tls
+      _ -> nil
+    end
+  end
+
+  defp stored_tls(_), do: nil
 
   # 保存/删除后：向所有在线会话热推送配置变更，让前端模型标签/选择器刷新
   defp hot_reload_provider(_name) do

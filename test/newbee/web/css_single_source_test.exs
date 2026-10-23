@@ -105,6 +105,7 @@ defmodule Newbee.Web.CssSingleSourceTest do
             "priv/web/app.js",
             "priv/web/theme.js",
             "priv/web/project-chat.js",
+            "priv/web/model-catalog.js",
             "priv/web/colony/chat.js",
             "priv/web/colony/app.js",
             "priv/web/colony/store.js",

@@ -176,9 +176,61 @@ window.ModelCatalog = (() => {
     }
     if (!v.groups[gid]) gid = Object.keys(v.groups)[0];
     $("catalog-editor").innerHTML =
-      `<section class="catalog-section"><div class="catalog-heading"><h3>1 · 厂家 <small>${esc(pid)}</small></h3><button id="catalog-delete-provider" class="danger">删除厂家</button></div><div class="catalog-fields"><label>厂家显示名称<input id="catalog-provider-name" value="${esc(v.name || pid)}"></label><label>默认接口<select id="catalog-api">${opts(v.api || "openai-completions")}</select></label></div><label>API 根地址<input id="catalog-url" placeholder="https://api.example.com/v1" value="${esc(v.baseUrl)}"></label><p class="muted">填写官方厂家、New API 或 Sub2API 服务的 API 根地址。</p></section><section class="catalog-section"><h3>2 · 凭证分组</h3><div class="catalog-group-tabs" id="catalog-groups"></div><div class="catalog-create"><input id="catalog-group-id" aria-label="新分组 ID" placeholder="新分组 ID，如 premium"><button id="catalog-add-group">＋ 分组</button></div><div id="catalog-group-editor"></div></section>`;
+      `<section class="catalog-section"><div class="catalog-heading"><h3>1 · 厂家 <small>${esc(pid)}</small></h3><button id="catalog-delete-provider" class="danger">删除厂家</button></div><div class="catalog-fields"><label>厂家显示名称<input id="catalog-provider-name" value="${esc(v.name || pid)}"></label><label>默认接口<select id="catalog-api">${opts(v.api || "openai-completions")}</select></label></div><label>API 根地址<input id="catalog-url" placeholder="https://api.example.com/v1" value="${esc(v.baseUrl)}"></label><p class="muted">填写官方厂家、New API 或 Sub2API 服务的 API 根地址。</p><details class="catalog-tls"${v.tls ? " open" : ""}><summary>TLS 证书校验 <small>自签 / 私有 CA 网关</small></summary><div class="catalog-fields"><label>CA 证书文件（PEM）<input id="catalog-tls-ca" placeholder="/etc/ssl/certs/gateway-ca.pem" value="${esc(v.tls?.caFile || "")}"></label><label class="catalog-check"><input id="catalog-tls-skip" type="checkbox"${v.tls?.insecureSkipVerify ? " checked" : ""}> 跳过链校验（不安全）</label><label>钉指纹 SHA-256<input id="catalog-tls-pin" placeholder="64 位十六进制，可带 sha256: 前缀" value="${esc(v.tls?.pinnedSha256 || "")}"></label></div><p class="muted">私有 CA：填 CA 文件，服务端需发送完整证书链；单张自签证书：用「跳过链校验 + 钉指纹」组合。留空＝默认校验，明文网关不需要。</p></details></section><section class="catalog-section"><h3>2 · 凭证分组</h3><div class="catalog-group-tabs" id="catalog-groups"></div><div class="catalog-create"><input id="catalog-group-id" aria-label="新分组 ID" placeholder="新分组 ID，如 premium"><button id="catalog-add-group">＋ 分组</button></div><div id="catalog-group-editor"></div></section>`;
     field("catalog-provider-name", v, "name");
     field("catalog-url", v, "baseUrl");
+    // TLS：caFile 与「跳过校验 / 钉指纹」互斥，前端就地清空对侧输入，避免保存时才报错。
+    const tlsOf = () => (v.tls ||= {});
+    const syncTls = () => {
+      const t = v.tls;
+      if (t && !t.caFile && !t.insecureSkipVerify && !t.pinnedSha256) delete v.tls;
+    };
+    bind(
+      "catalog-tls-ca",
+      (e) => {
+        const t = tlsOf(),
+          value = e.target.value.trim();
+        if (value) {
+          t.caFile = value;
+          delete t.insecureSkipVerify;
+          delete t.pinnedSha256;
+          $("catalog-tls-skip").checked = false;
+          $("catalog-tls-pin").value = "";
+        } else delete t.caFile;
+        syncTls();
+        mark();
+      },
+      "input",
+    );
+    bind(
+      "catalog-tls-skip",
+      (e) => {
+        const t = tlsOf();
+        if (e.target.checked) {
+          t.insecureSkipVerify = true;
+          delete t.caFile;
+          $("catalog-tls-ca").value = "";
+        } else delete t.insecureSkipVerify;
+        syncTls();
+        mark();
+      },
+      "change",
+    );
+    bind(
+      "catalog-tls-pin",
+      (e) => {
+        const t = tlsOf(),
+          value = e.target.value.trim();
+        if (value) {
+          t.pinnedSha256 = value;
+          delete t.caFile;
+          $("catalog-tls-ca").value = "";
+        } else delete t.pinnedSha256;
+        syncTls();
+        mark();
+      },
+      "input",
+    );
     bind(
       "catalog-provider-name",
       () => {
@@ -637,6 +689,8 @@ window.ModelCatalog = (() => {
         group: gid,
         baseUrl: v.baseUrl,
         apiKey: w.apiKey,
+        // 未保存的 TLS 草稿也要生效，否则自签网关导不出模型。
+        tls: v.tls,
       });
       let added = 0;
       for (const id of result.models)
