@@ -8,6 +8,13 @@ defmodule Newbee.Web.ModelConfigUiTest do
 
     for value <- ~w(llm.catalogConfig llm.saveCatalog llm.catalogModels openai-completions openai-responses anthropic),
         do: assert(js =~ value)
+
+    # 厂家级 TLS：自签 / 私有 CA 网关的三个字段都要能在编辑器里配置，
+    # 且「从此分组导入模型」必须带上未保存的 tls 草稿。
+    for value <- ~w(catalog-tls-ca catalog-tls-skip catalog-tls-pin caFile insecureSkipVerify pinnedSha256),
+        do: assert(js =~ value)
+
+    assert js =~ "tls: v.tls,"
   end
 
   test "终端入口包含面板和 WebSocket 命令协议" do

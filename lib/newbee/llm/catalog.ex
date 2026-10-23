@@ -243,6 +243,7 @@ defmodule Newbee.LLM.Catalog do
 
           require!(is_map(p["groups"]), "厂家必须包含分组对象")
           protocol!(p["api"])
+          tls = tls!(p["tls"])
 
           groups =
             Map.new(p["groups"], fn {gid, g} ->
@@ -296,7 +297,7 @@ defmodule Newbee.LLM.Catalog do
               {gid, g |> Map.delete("keyConfigured") |> Map.put("apiKey", key)}
             end)
 
-          {pid, Map.put(p, "groups", groups)}
+          {pid, p |> Map.put("groups", groups) |> put_tls(tls)}
         end)
 
       roles = input["roles"] || %{}
@@ -320,6 +321,27 @@ defmodule Newbee.LLM.Catalog do
       {:invalid, message} -> {:error, message}
     end
   end
+
+  # 厂家级 TLS：形状校验 + 取值规范化（caFile 去空白，指纹统一小写十六进制），
+  # 并确认 caFile 可读，避免坏路径留到请求期才炸。
+  defp tls!(raw) do
+    case Newbee.LLM.Tls.normalize(raw) do
+      {:error, message} ->
+        throw({:invalid, message})
+
+      {:ok, nil} ->
+        nil
+
+      {:ok, normalized} ->
+        case Newbee.LLM.Tls.resolve(normalized) do
+          {:ok, _} -> normalized
+          {:error, message} -> throw({:invalid, message})
+        end
+    end
+  end
+
+  defp put_tls(provider, nil), do: Map.delete(provider, "tls")
+  defp put_tls(provider, tls), do: Map.put(provider, "tls", tls)
 
   defp validate_compaction!(nil, _cfg), do: :ok
 

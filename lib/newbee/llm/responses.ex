@@ -544,15 +544,14 @@ defmodule Newbee.LLM.Responses do
 
   defp build_req(client, body, stream?) do
     options =
-      [
+      Newbee.LLM.Client.req_options(client,
         url: client.base_url <> "/responses",
         method: :post,
         headers: Newbee.LLM.Client.request_headers(client),
         json: body,
         receive_timeout: 120_000,
         retry: false
-      ]
-      |> Keyword.merge(client.req_options)
+      )
 
     options = if stream?, do: Keyword.put(options, :into, :self), else: options
     Req.new(options)

@@ -32,7 +32,8 @@ defmodule Newbee.LLM.Client do
             responses_continuation: false,
             responses_checkpoint: nil,
             prompt_cache_options: nil,
-            req_options: []
+            req_options: [],
+            tls: nil
 
   # ── cache_key 派生 ──
   # 会话进程（Agent.Loop init/switch_model）在 client 构建前把会话 id 存入
@@ -85,8 +86,10 @@ defmodule Newbee.LLM.Client do
     session_id = initial_session_id(provider, base_url, cache_key, Keyword.get(opts, :session_id))
 
     # :auto 模式只决定端点；续写仍由显式配置控制。
+    tls = normalize_tls(Keyword.get(opts, :tls))
+
     {mode, continuation_supported?} =
-      resolve_auto_mode(mode, base_url, Keyword.get(opts, :model, @default_model))
+      resolve_auto_mode(mode, base_url, Keyword.get(opts, :model, @default_model), tls)
 
     continuation = continuation_supported? and Keyword.get(opts, :responses_continuation, false)
 
@@ -110,7 +113,8 @@ defmodule Newbee.LLM.Client do
       responses_continuation: continuation,
       responses_checkpoint: Keyword.get(opts, :responses_checkpoint),
       prompt_cache_options: normalize_prompt_cache_options(Keyword.get(opts, :prompt_cache_options)),
-      req_options: Keyword.get(opts, :req_options, [])
+      req_options: Keyword.get(opts, :req_options, []),
+      tls: tls
     }
   end
 
@@ -184,10 +188,84 @@ defmodule Newbee.LLM.Client do
   defp default_responses_mode("anthropic-messages"), do: :anthropic
   defp default_responses_mode("auto"), do: :auto
   defp default_responses_mode(_), do: :chat
+  # ── 传输层（TLS / Finch 池） ──
+
+  # Finch 池按 {scheme, host, port, pool_tag} 复用，conn_opts 只在建池时生效，
+  # 所以配置了 TLS 的厂家必须用它自己的 pool_tag，避免和默认池互相串用校验策略。
+  @default_finch_opts [
+    pool_timeout: 30_000,
+    conn_max_idle_time: 300_000,
+    conn_opts: [transport_opts: [timeout: 30_000]]
+  ]
+
+  @doc false
+  def req_transport(%__MODULE__{tls: nil}), do: @default_finch_opts
+  def req_transport(%__MODULE__{tls: tls}), do: tls_finch(tls)
+
+  # 统一组装一次请求的 Req 选项：同一厂家的所有请求共用一个 Finch 池配置，
+  # 未配置 TLS 时不额外占位（沿用默认池），配置了就用该厂家自己的 pool_tag。
+  @doc false
+  def req_options(%__MODULE__{} = client, base) do
+    base
+    |> Keyword.put_new(:finch, req_transport(client))
+    |> merge_req_options(client.req_options)
+  end
+
+  # 没有 client 上下文时（context window 探测、模型导入）只补 TLS 选项；未配置返回 []。
+  @doc false
+  def tls_finch_opt(%__MODULE__{tls: tls}), do: tls_finch_opt(tls)
+  def tls_finch_opt(nil), do: []
+  def tls_finch_opt(tls), do: [finch: tls_finch(tls)]
+
+  defp tls_finch(%{pool_tag: tag, transport_opts: tls_opts}) do
+    [
+      pool_tag: tag,
+      pool_timeout: 30_000,
+      conn_max_idle_time: 300_000,
+      conn_opts: [transport_opts: [timeout: 30_000] ++ tls_opts]
+    ]
+  end
+
+  defp normalize_tls(nil), do: nil
+  defp normalize_tls(%{pool_tag: _} = resolved), do: resolved
+  defp normalize_tls(raw), do: Newbee.LLM.Tls.resolve!(raw)
+
+  # Req 0.7 不允许同时出现 :finch 与 :connect_options（会直接抛 ArgumentError）。
+  # 调用方通过 req_options: [connect_options: [...]] 定制传输层（自签证书、超时）时，
+  # 把它折进 finch 的 conn_opts，保持这条定制通道可用。
+  defp merge_req_options(base, user) do
+    case Keyword.fetch(user, :connect_options) do
+      :error ->
+        Keyword.merge(base, user)
+
+      {:ok, connect_opts} ->
+        case Keyword.fetch(base, :finch) do
+          :error ->
+            Keyword.merge(base, user)
+
+          {:ok, finch} ->
+            finch = Keyword.update(finch, :conn_opts, connect_opts, &merge_conn_opts(&1, connect_opts))
+            base |> Keyword.put(:finch, finch) |> Keyword.merge(Keyword.delete(user, :connect_options))
+        end
+    end
+  end
+
+  # transport_opts 做深合并：调用方只写 verify / cacerts 时不该丢掉连接超时。
+  defp merge_conn_opts(base, extra) do
+    case {Keyword.fetch(base, :transport_opts), Keyword.fetch(extra, :transport_opts)} do
+      {{:ok, base_tls}, {:ok, extra_tls}} ->
+        extra
+        |> Keyword.put(:transport_opts, Keyword.merge(base_tls, extra_tls))
+        |> then(&Keyword.merge(base, &1))
+
+      _ ->
+        Keyword.merge(base, extra)
+    end
+  end
 
   # :auto 模式：探测 endpoint 是否支持 Responses API。
   # 返回 {实际模式, 是否支持 Responses 续写}。
-  defp resolve_auto_mode(:auto, base_url, model) do
+  defp resolve_auto_mode(:auto, base_url, model, tls) do
     key = {base_url, model}
     cache = :persistent_term.get(@responses_capability_key, %{})
 
@@ -196,33 +274,34 @@ defmodule Newbee.LLM.Client do
         if supported?, do: {:responses, true}, else: {:chat, false}
 
       :error ->
-        supported? = probe_responses_support(base_url, model)
+        supported? = probe_responses_support(base_url, model, tls)
         :persistent_term.put(@responses_capability_key, Map.put(cache, key, supported?))
         if supported?, do: {:responses, true}, else: {:chat, false}
     end
   end
 
-  defp resolve_auto_mode(mode, _base_url, _model) do
+  defp resolve_auto_mode(mode, _base_url, _model, _tls) do
     {mode, mode == :responses}
   end
 
   # 探测 endpoint 是否支持 Responses API
   # 注意：在 Req/Finch 未启动的环境（如 DEE 测试）会返回 false
-  defp probe_responses_support(base_url, model) do
+  defp probe_responses_support(base_url, model, tls) do
     # 发送一个 minimal Responses 请求看是否 404/400
     body = %{model: model, input: [], stream: false}
 
-    req = [
-      url: base_url <> "/responses",
-      method: :post,
-      headers: [
-        {"content-type", "application/json"},
-        {"user-agent", user_agent()}
-      ],
-      json: body,
-      receive_timeout: 5_000,
-      retry: false
-    ]
+    req =
+      [
+        url: base_url <> "/responses",
+        method: :post,
+        headers: [
+          {"content-type", "application/json"},
+          {"user-agent", user_agent()}
+        ],
+        json: body,
+        receive_timeout: 5_000,
+        retry: false
+      ] ++ tls_finch_opt(tls)
 
     case Req.post(req) do
       {:ok, %{status: status}} when status in [200, 400, 401, 403, 422] ->
@@ -345,10 +424,9 @@ defmodule Newbee.LLM.Client do
 
   defp fetch_context_window(client) do
     with {:ok, %{status: 200, body: body}} <-
-           Req.get(client.base_url <> "/models",
-             headers: request_headers(client, false),
-             receive_timeout: 15_000,
-             retry: false
+           Req.get(
+             client.base_url <> "/models",
+             req_options(client, headers: request_headers(client, false), receive_timeout: 15_000, retry: false)
            ),
          models when is_list(models) <- body["data"] || body[:data],
          model when is_map(model) <- Enum.find(models, &((&1["id"] || &1[:id]) == client.model)),
@@ -487,17 +565,15 @@ defmodule Newbee.LLM.Client do
     # receive_timeout 是"相邻两块数据的间隔"。serverless 端点冷启动（唤醒实例）
     # 实测 ~38s 才出首 token，30s 必然误超时再重试（等待翻倍）；120s 覆盖冷启动。
     build_req = fn body ->
-      [
+      req_options(client,
         url: client.base_url <> "/chat/completions",
         method: :post,
         headers: request_headers(client),
         json: body,
         receive_timeout: 120_000,
-        finch: [pool_timeout: 30_000, conn_max_idle_time: 300_000, conn_opts: [transport_opts: [timeout: 30_000]]],
         retry: false,
         into: :self
-      ]
-      |> Keyword.merge(client.req_options)
+      )
       |> Req.new()
     end
 
@@ -687,15 +763,14 @@ defmodule Newbee.LLM.Client do
       })
 
     req =
-      [
+      req_options(client,
         url: client.base_url <> "/chat/completions",
         method: :post,
         headers: request_headers(client),
         json: body,
         receive_timeout: 120_000,
         retry: false
-      ]
-      |> Keyword.merge(client.req_options)
+      )
       |> Req.new()
 
     result =
@@ -880,11 +955,9 @@ defmodule Newbee.LLM.Client do
   @doc "预热连接池：建立 TLS 连接，后续请求复用。失败静默。"
   def prewarm(%__MODULE__{} = client) do
     # 假 IP 代理 TLS 握手 ~5.2s，预热必须容忍慢拨号；连接入池后请求级 5s 才有意义
-    Req.get(client.base_url <> "/models",
-      headers: request_headers(client, false),
-      receive_timeout: 30_000,
-      finch: [pool_timeout: 30_000, conn_max_idle_time: 300_000, conn_opts: [transport_opts: [timeout: 30_000]]],
-      retry: false
+    Req.get(
+      client.base_url <> "/models",
+      req_options(client, headers: request_headers(client, false), receive_timeout: 30_000, retry: false)
     )
 
     :ok
@@ -1116,8 +1189,41 @@ defmodule Newbee.LLM.Client do
   def format_error({:upstream_error, reason}), do: "LLM 上游暂时不可用：#{inspect(reason)} 系统会自动重试。"
   def format_error({:stream_error, reason}), do: "LLM 流式请求失败：#{inspect(reason)} 系统会自动重试。"
   def format_error({:stream_error, reason, _content}), do: format_error({:stream_error, reason})
+
+  # TLS 失败不是瞬态问题：证书链或指纹不匹配，重试多少次结果都一样，直接给可操作指引。
+  def format_error(%Req.TransportError{reason: {:tls_alert, {alert, message}}}) do
+    "LLM 网关证书校验失败（" <> alert_name(alert) <> "）" <> tls_alert_detail(message) <> tls_alert_hint()
+  end
+
   def format_error(%Req.TransportError{reason: reason}), do: "LLM 网络请求失败：#{inspect(reason)} 系统会自动重试。"
   def format_error(error), do: "LLM 请求失败：#{inspect(error)}"
+
+  defp alert_name(alert) when is_atom(alert), do: Atom.to_string(alert)
+  defp alert_name(alert), do: inspect(alert)
+
+  defp tls_alert_detail(message) do
+    text = alert_text(message)
+
+    case Regex.run(~r/\{pin_mismatch,<<"([0-9a-f]{64})">>\}/, text) do
+      [_, actual] -> "：证书指纹与 pinnedSha256 不一致，服务端实际 sha256:" <> actual <> "。"
+      _ -> "：" <> text <> "。"
+    end
+  end
+
+  defp tls_alert_hint do
+    "该错误不会因重试消失——请在模型配置里为该厂家设置 TLS：私有 CA 用 caFile（服务端需发送完整链），" <>
+      "单张自签证书用 pinnedSha256；确实拿不到证书时才用 insecureSkipVerify。"
+  end
+
+  defp alert_text(message) when is_binary(message), do: message |> String.replace(~r/\s+/u, " ") |> String.trim()
+
+  defp alert_text(message) when is_list(message) do
+    message |> List.to_string() |> String.replace(~r/\s+/u, " ") |> String.trim()
+  rescue
+    _ -> inspect(message)
+  end
+
+  defp alert_text(message), do: inspect(message)
 
   defp provider_error_detail(body) when is_binary(body) do
     case Jason.decode(body) do

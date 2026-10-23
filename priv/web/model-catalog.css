@@ -249,6 +249,28 @@
 #catalog-status.error {
   color: #ef9090;
 }
+/* TLS 证书校验（自签 / 私有 CA 网关） */
+.catalog-tls {
+  margin-top: 14px;
+  padding: 4px 14px 10px;
+  border: 1px solid var(--border, #334155);
+  border-radius: 10px;
+  background: var(--nb-bg-elev, #1c2533);
+}
+.catalog-tls[open] > .catalog-fields {
+  margin-top: 10px;
+}
+.catalog-box label.catalog-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+}
+.catalog-box label.catalog-check input {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  flex: none;
+}
 @media (max-width: 700px) {
   .catalog-box {
     width: 98vw;

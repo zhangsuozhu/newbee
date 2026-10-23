@@ -275,15 +275,14 @@ defmodule Newbee.LLM.Anthropic do
 
   defp build_req(client, body, stream?) do
     options =
-      [
+      Newbee.LLM.Client.req_options(client,
         url: endpoint(client),
         method: :post,
         headers: request_headers(client),
         json: body,
         receive_timeout: @response_timeout,
         retry: false
-      ]
-      |> Keyword.merge(client.req_options)
+      )
 
     options = if stream?, do: Keyword.put(options, :into, :self), else: options
     Req.new(options)

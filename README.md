@@ -218,6 +218,11 @@ EOF
 # `capabilities` 声明该 provider 模型的默认能力，`modelCapabilities` 按模型覆盖
 # （vision / imageMaxBytes / maxImagesPerRequest / maxRequestImageBytes）；角色级
 # `vision` 仍优先。图片超预算时在请求投影里按"最老优先"卸载为文本占位，transcript 不动。
+# 内网 / 自签网关：providers.<id>.tls 支持三种配置（三者互斥，缺省＝系统信任库严格校验）
+#   {"caFile": "/etc/ssl/certs/internal-ca.pem"}        私有 CA 校验（服务端需发送完整链）
+#   {"pinnedSha256": "sha256:…64 位十六进制…"}            单张自签证书：跳过链校验但核对指纹
+#   {"insecureSkipVerify": true}                         完全跳过校验（不建议）
+# 细节、限制与取指纹的命令见 docs/model-catalog.md。
 export OPENROUTER_API_KEY=sk-or-v1-...
 
 # 启动（子命令以 bin/newbee 为准）
