@@ -1027,7 +1027,13 @@ defmodule Newbee.Agent.Loop do
     do: true
 
   defp retryable_goal_error?({:http_error, _status, _body}), do: false
-  defp retryable_goal_error?({:error, %Req.TransportError{}}), do: true
+
+  # after_turn/2 收到的是 client 返回的**裸**错误项（不是 {:error, e}），
+  # 所以这里直接匹配 %Req.TransportError{}；写成 {:error, %Req.TransportError{}}
+  # 会永远落到兜底分支，让瞬态网络错误白白丢掉重试机会。
+  # TLS 握手/证书失败是确定性的：重试只会重复同一次失败，直接放弃。
+  defp retryable_goal_error?(%Req.TransportError{reason: {:tls_alert, _}}), do: false
+  defp retryable_goal_error?(%Req.TransportError{}), do: true
   defp retryable_goal_error?(_), do: false
 
   # Helpers for enhanced goal
