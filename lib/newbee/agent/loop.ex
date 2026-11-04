@@ -63,6 +63,10 @@ defmodule Newbee.Agent.Loop do
   def append_external_context(kernel, text) when is_binary(text),
     do: GenServer.cast(kernel, {:external_context, text})
 
+  @doc "Append keyed internal facts once; ordinary history hides this context projection."
+  def append_external_context(kernel, text, metadata) when is_binary(text) and is_map(metadata),
+    do: GenServer.cast(kernel, {:external_context, text, metadata})
+
   @doc "Refresh the system prompt after a session joins or leaves a collaboration scope."
   def refresh_shared_context(kernel), do: GenServer.cast(kernel, :refresh_shared_context)
 
@@ -352,6 +356,17 @@ defmodule Newbee.Agent.Loop do
   end
 
   @impl true
+  def handle_cast({:external_context, content, %{"context_key" => key} = metadata}, state)
+      when is_binary(content) and is_binary(key) do
+    if String.trim(content) == "" or Enum.any?(state.messages, &(&1["context_key"] == key)) do
+      {:noreply, state}
+    else
+      message = %{"role" => "user", "content" => content, "internal_context" => true, "context_key" => key}
+      message = Map.merge(message, Map.take(metadata, ["background_origin_session_id"]))
+      {:noreply, push_msg(state, message)}
+    end
+  end
+
   def handle_cast({:external_context, content}, state) when is_binary(content) do
     if String.trim(content) == "" do
       {:noreply, state}

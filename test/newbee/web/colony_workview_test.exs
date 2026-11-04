@@ -19,6 +19,7 @@ defmodule Newbee.Web.ColonyWorkviewTest do
     assert.equal(attentionAction({...review,status:'done',approval_required:true}, owner), null);
     assert.equal(attentionAction(blocked, member), null);
     assert.equal(attentionAction(blocked, owner).reason, '等待你答复');
+    for (const waiting_for of ['children','dependencies','capacity']) assert.equal(attentionAction({...blocked,waiting_for}, owner), null);
     assert.equal(attentionAction({...blocked,next_step:'执行器没有心跳，无法确认'}, owner).section, 'execution');
     assert.equal(attentionAction(human, member).reason, '由你负责');
     assert.equal(attentionAction({...human,assigned_bee_id:'other'}, member), null);

@@ -3433,9 +3433,10 @@ bind("delegate-session", openDelegateModal);
   }
 
   async function openWorkItem(item) {
-    const sid = item.task.session_id;
+    const sid = item.task.origin_session_id || item.task.session_id;
     if (sid) {
       if (state.sid !== sid) await resume(sid);
+      if (item.task.origin_session_id && window.NewbeeConversationWork) await window.NewbeeConversationWork.refresh();
       return;
     }
     line("notice", (item.task.title || "这项工作") + "还没有执行会话，可在输入区直接说明下一步。");
@@ -3454,6 +3455,7 @@ bind("delegate-session", openDelegateModal);
   async function reviewCurrentWork(verdict) {
     const review = workInbox.review;
     if (!review) return;
+    if (review.task && review.task.origin_session_id) { await openWorkItem(review); line('notice', '请在原工作卡查看成果、差异和采用状态。'); return; }
     try {
       await rpc("colony.honey.review", {colonyId: review.colonyId, honeyId: review.honey.id, verdict});
       line("notice", verdict === "accept" ? "已接受这次交付" : "已打回，等待补充");
@@ -6228,6 +6230,32 @@ try {
     }
 
     if ((!text && attachments.length === 0) || !state.sid) return;
+    if (!inspectionMode && forcedText == null && window.NewbeeConversationWork &&
+        (/^(?:请)?(?:分工执行|分工完成|交给后台|后台做)[：:\s]/u.test(text) || /(?:这件事)?(?:交给后台|在后台(?:做|处理|执行))[。！!]?$/u.test(text))) {
+      try {
+        if (await window.NewbeeConversationWork.start()) return {status: 'accepted', message: '已受理，正在安排分工'};
+        return {status: 'rejected', message: '后台未启动，草稿保留'};
+      } catch (e) { line('error', e.message); return {status: 'rejected', message: e.message}; }
+    }
+
+    if (!inspectionMode && !text.startsWith('/') && window.NewbeeConversationWork) {
+      const originSid = state.sid;
+      try {
+        if (await window.NewbeeConversationWork.submit(text, attachments.map(a => a.id))) {
+          if (state.sid === originSid) {
+            if (input.value.trim() === text) { input.value = ''; autoGrow(); saveDraft(''); }
+            clearAttachments();
+            scrollBottom(true);
+          }
+          return {status: 'accepted', message: '原工作已收到补充，等待执行者采用'};
+        }
+      } catch (e) {
+        line('error', e.message);
+        return {status: 'rejected', message: e.message};
+      }
+      if (state.sid !== originSid) return {status: 'rejected', message: '会话已切换，输入未转发'};
+    }
+
     const queueId = suppliedQueueId || genQueueId();
     const wasBusy = state.busy === true;
     if (!wasBusy) state.turnKind = attachments.length > 0 ? "images" : "text";
@@ -9151,6 +9179,19 @@ if (resumeSid) {
 } else await newSession();
 loadSessions();
 startWorkInbox();
+if (!inspectionMode && window.NewbeeConversationWork) window.NewbeeConversationWork.init({
+  rpc,
+  getSessionId: () => state.sid,
+  getDirectory: () => state.cwd,
+  readDraft: () => input.value,
+  writeDraft: text => { input.value = text; autoGrow(); saveDraft(text); },
+  appendUser: text => { renderUserLine(text, state.attachments.slice(), new Date().toISOString()); scrollBottom(true); },
+  getUploadIds: () => state.attachments.map(a => a.id),
+  isUploading: () => state.uploading > 0,
+  clearAttachments,
+  notify: (message, kind) => line(kind === 'err' ? 'error' : 'notice', message)
+});
+
 startStats();
 startUnreadPoll();
 }

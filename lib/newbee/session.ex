@@ -661,7 +661,7 @@ defmodule Newbee.Session do
   def stale_empty_ids(older_than_secs \\ 3600) do
     cutoff = System.system_time(:second) - older_than_secs
 
-    merged_index()
+    fs_scan_entries()
     |> Enum.filter(fn e ->
       (e["mtime"] || 0) < cutoff and
         match?({:ok, %{size: 0}}, File.stat(Path.join(root(), e["id"] <> ".jsonl")))
@@ -686,7 +686,7 @@ defmodule Newbee.Session do
 
   @doc "分页列表加总数（单次 merged_index）：缓存命中时零 transcript 读盘，未命中单次读盘回填。"
   def list_page(n \\ 20, offset \\ 0) do
-    merged = merged_index()
+    merged = merged_index() |> Newbee.Colony.ConversationWork.project_index()
     raw = read_index()
     total = length(merged)
 
@@ -727,13 +727,18 @@ defmodule Newbee.Session do
                 Map.put(acc, id, %{"size" => fsize, "count" => count, "auto_title" => auto})
               end
 
-            effective = if is_binary(custom), do: custom, else: auto
+            effective = if is_binary(custom), do: custom, else: entry["background_title"] || auto
+
+            effective_time =
+              if entry["background_count"],
+                do: :calendar.system_time_to_local_time(entry["mtime"], :second),
+                else: stat.mtime
 
             entry_out = %{
               id: id,
-              mtime: stat.mtime,
-              when_str: when_str(stat.mtime),
-              messages: count,
+              mtime: effective_time,
+              when_str: when_str(effective_time),
+              messages: count + (entry["background_count"] || 0),
               title: effective,
               cwd: cwd
             }

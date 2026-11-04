@@ -348,4 +348,17 @@ defmodule Newbee.Colony.WorkflowTest do
     assert String.contains?(text, "【本阶段输出契约 · 优先级最高】")
     assert String.contains?(text, ~s("route":"self"或"discuss"))
   end
+
+  test "authorized conversation work proceeds after internal proposals without asking a human to assign Bee", ctx do
+    root = create(ctx, %{"autonomous" => true})
+    {:ok, root} = complete(root, Jason.encode!(%{route: "discuss", reason: "比较两种实施路径", participants: ctx.bees}))
+    for proposal <- root["workflow"]["proposals"], do: complete(get(proposal["task_id"]), "依据真实代码提出有边界的方案")
+    for proposal <- root["workflow"]["proposals"], do: complete(get(proposal["task_id"]), "互评完成，负责人可综合实施")
+    current = get(root["id"])
+    assert current["workflow"]["phase"] == "executing"
+    assert current["mode"] == "execution"
+    assert current["waiting_for"] == nil
+    assert current["workflow"]["decision"]["mode"] == "owner_execution"
+    assert Enum.any?(Store.all("deliveries"), &(&1["task_id"] == current["id"] and &1["status"] == "pending"))
+  end
 end
