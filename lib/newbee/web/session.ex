@@ -155,6 +155,7 @@ defmodule Newbee.Web.Session do
   def sweep_stale_empty(older_than_secs \\ 3600) do
     Newbee.Session.stale_empty_ids(older_than_secs)
     |> Enum.reject(fn sid -> match?({:ok, _}, lookup(sid)) end)
+    |> Enum.reject(&Newbee.Colony.ConversationWork.origin?/1)
     |> Enum.reject(&in_any_group?/1)
     |> Enum.map(fn sid ->
       :ok = Newbee.Session.delete(sid)
@@ -1682,6 +1683,9 @@ defmodule Newbee.Web.Session do
       MapSet.member?(st.colony_seen, id) ->
         {:reply, :ok, st}
 
+      not Newbee.Colony.ConversationWork.delivery_current?(id) ->
+        {:reply, {:error, :stale_execution}, st}
+
       Newbee.Colony.Control.blocked_session?(st.sid) ->
         {:reply, {:error, :paused}, st}
 
@@ -1771,14 +1775,18 @@ defmodule Newbee.Web.Session do
     case :queue.out(st.queue) do
       {{:value, item}, rest} ->
         if steerable_item?(item, st) do
-          st1 = set_queue(st, rest)
-          input = public_queue_item(item)
+          if Newbee.Colony.ConversationWork.consumed(item.id) != :ok do
+            {:reply, :none, st}
+          else
+            st1 = set_queue(st, rest)
+            input = public_queue_item(item)
 
-          {st2, ev} =
-            push_queue_event(st1, "steered", %{id: item.id, kind: item.kind, preview: item.preview, input: input})
+            {st2, ev} =
+              push_queue_event(st1, "steered", %{id: item.id, kind: item.kind, preview: item.preview, input: input})
 
-          broadcast_queue(st.sid, st2, ev)
-          {:reply, {:ok, item}, st2}
+            broadcast_queue(st.sid, st2, ev)
+            {:reply, {:ok, item}, st2}
+          end
         else
           {:reply, :none, st}
         end
@@ -2111,7 +2119,7 @@ defmodule Newbee.Web.Session do
     }
 
     save_stats(st)
-    broadcast_turn_end(st.sid, result)
+    broadcast_turn_end(st.sid, result, current)
     st = st |> sync_kernel_effort() |> finish_current(current)
     st = finish_delivery(st, delivery, result)
     st = update_collab_streak(st, delivery, result)
@@ -2144,7 +2152,7 @@ defmodule Newbee.Web.Session do
     }
 
     save_stats(st)
-    broadcast_turn_end(st.sid, {:error, "turn worker exited: " <> inspect(reason)})
+    broadcast_turn_end(st.sid, {:error, "turn worker exited: " <> inspect(reason)}, current)
     st = finish_current(st, current)
     {:noreply, recover_after_turn(st)}
   end
@@ -2603,8 +2611,31 @@ defmodule Newbee.Web.Session do
 
   defp dispatch_item_unpaused(st, %{kind: "text", text: text} = item, queued?) do
     case btw_question(text) do
-      {:ok, question} -> start_btw(st, question, item.id)
-      :none -> dispatch_item_regular(st, item, queued?)
+      {:ok, question} ->
+        start_btw(st, question, item.id)
+
+      :none ->
+        routed =
+          if Map.get(item, :origin) == "user",
+            do: Newbee.Colony.ConversationWork.route(st.sid, text, item.id),
+            else: :none
+
+        case routed do
+          :none ->
+            dispatch_item_regular(st, item, queued?)
+
+          {:ok, _} ->
+            broadcast(st.sid, :done, %{summary: "原后台工作已收到这条输入；采用状态请看工作卡。"})
+            st
+
+          {:error, _, message} ->
+            broadcast(st.sid, :error, %{message: message})
+            st
+
+          {:error, reason} ->
+            broadcast(st.sid, :error, %{message: "输入未受理：" <> inspect(reason)})
+            st
+        end
     end
   end
 
@@ -3369,6 +3400,7 @@ defmodule Newbee.Web.Session do
   end
 
   defp do_submit(st, text, queue_id, delivery, role) do
+    :ok = Newbee.Colony.ConversationWork.consumed(queue_id)
     parent = self()
     kernel = st.kernel
     terminal_context = terminal_context_for_submit(st.sid)
@@ -3393,6 +3425,17 @@ defmodule Newbee.Web.Session do
       spawn_monitor(fn ->
         result =
           try do
+            case Newbee.Colony.ConversationWork.context_for_origin(st.sid) do
+              {key, context} ->
+                Newbee.Agent.Loop.append_external_context(kernel, context, %{
+                  "context_key" => key,
+                  "background_origin_session_id" => st.sid
+                })
+
+              nil ->
+                :ok
+            end
+
             if terminal_context != "", do: Newbee.Agent.Loop.append_external_context(kernel, terminal_context)
 
             case role do
@@ -3431,6 +3474,7 @@ defmodule Newbee.Web.Session do
   end
 
   defp do_submit_images(st, data_urls, text, queue_id, delivery) do
+    :ok = Newbee.Colony.ConversationWork.consumed(queue_id)
     parent = self()
     kernel = st.kernel
     qid = if is_binary(queue_id), do: normalize_queue_id(queue_id), else: new_queue_id()
@@ -3451,6 +3495,17 @@ defmodule Newbee.Web.Session do
       spawn_monitor(fn ->
         result =
           try do
+            case Newbee.Colony.ConversationWork.context_for_origin(st.sid) do
+              {key, context} ->
+                Newbee.Agent.Loop.append_external_context(kernel, context, %{
+                  "context_key" => key,
+                  "background_origin_session_id" => st.sid
+                })
+
+              nil ->
+                :ok
+            end
+
             if terminal_context != "", do: Newbee.Agent.Loop.append_external_context(kernel, terminal_context)
             Newbee.Agent.Loop.submit_images(kernel, data_urls, text)
           rescue
@@ -3534,7 +3589,7 @@ defmodule Newbee.Web.Session do
     :ok
   end
 
-  defp broadcast_turn_end(sid, result) do
+  defp broadcast_turn_end(sid, result, current) do
     {kind, payload} =
       case result do
         {:done, summary, next_steps} when is_map(next_steps) ->
@@ -3569,7 +3624,15 @@ defmodule Newbee.Web.Session do
           {:error, %{message: error_text(other)}}
       end
 
-    broadcast(sid, kind, payload)
+    delivery_id = if is_map(current), do: current[:id], else: nil
+
+    generation =
+      case Newbee.Colony.Store.get("deliveries", delivery_id) do
+        {:ok, delivery} -> delivery["execution_generation"]
+        _ -> nil
+      end
+
+    broadcast(sid, kind, Map.merge(payload, %{delivery_id: delivery_id, execution_generation: generation}))
   end
 
   # Loop 事件统一编码为 JSON 安全的 {kind, payload}，经 Bus 广播给 socket。

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>newbee · 来源设置</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/sources.css?v=2">
+  <script src="/theme.js"></script>
+</head>
+<body class="sources-screen">
+  <main class="sources-page">
+    <nav class="sources-nav" aria-label="页面导航">
+      <a id="back" class="sources-back" href="/">← 返回原对话</a>
+      <label class="sources-theme">外观
+        <select data-theme-picker aria-label="界面风格">
+          <option value="neumorphic">浅色拟物</option><option value="light">浅色</option>
+          <option value="dark">深色</option><option value="neumorphic-dark">深色拟物</option>
+        </select>
+      </label>
+    </nav>
+    <header class="sources-heading">
+      <div><p class="sources-eyebrow">项目协作 · 外部接入</p><h1>来源设置</h1>
+        <p class="sources-intro">把外部的交办带回当前项目。首次接入先观察，确认记录后再开启执行。</p>
+      </div>
+      <span id="source-state" class="sources-state">新来源 · 仅观察</span>
+    </header>
+    <div id="message" class="sources-message" role="status" aria-live="polite" hidden></div>
+    <div class="sources-toolbar">
+      <label class="source-field" for="source">选择来源
+        <select id="source"><option value="">新建来源</option></select>
+      </label>
+      <p id="project" class="sources-project">绑定当前对话选择的项目目录。</p>
+    </div>
+    <form id="config">
+      <div class="sources-columns">
+        <section class="source-card" aria-labelledby="connection-heading">
+          <div class="source-section-title"><span class="source-step" aria-hidden="true">1</span><h2 id="connection-heading">连接来源</h2></div>
+          <div class="source-row">
+            <label class="source-field">来源类型<select id="kind"><option value="github">GitHub Issue / 评论</option><option value="local">本地桥接（高级）</option></select></label>
+            <label class="source-field">显示名称<input id="label" maxlength="100" placeholder="例如：项目问题反馈" autocomplete="off"></label>
+          </div>
+          <div data-source-kind="github">
+            <label class="source-field">GitHub 仓库<input id="repository" placeholder="owner/repo" autocomplete="off" spellcheck="false" aria-describedby="repository-help"></label>
+            <p id="repository-help" class="source-help">只接收这个仓库的 Issue 和评论。</p>
+          </div>
+          <p data-source-kind="local" class="source-callout" hidden>由宿主机的本地桥接送入请求，无需配置 GitHub 仓库或凭据。</p>
+          <label class="source-field">允许交办的用户<input id="actors" placeholder="用户名，用逗号分隔" autocomplete="off" aria-describedby="actors-help"></label>
+          <p id="actors-help" class="source-help">只有这些真人用户能交办；普通讨论和机器人消息不会发起工作。</p>
+          <details id="credentials" class="source-details" data-source-kind="github">
+            <summary>连接凭据 <span>填写环境变量名称</span></summary>
+            <div class="source-details-body">
+              <p class="source-help">密钥保存在宿主机，此处只填引用名称。</p>
+              <label class="source-field">Webhook 密钥<input id="secret" placeholder="NEWBEE_GITHUB_WEBHOOK_SECRET" autocomplete="off" spellcheck="false"></label>
+              <label class="source-field">回帖访问令牌<input id="token" placeholder="NEWBEE_GITHUB_TOKEN" autocomplete="off" spellcheck="false"></label>
+              <p class="source-help">Webhook 密钥至少 16 字节；令牌需要此仓库的 Issue 评论权限。</p>
+            </div>
+          </details>
+          <div id="webhook" class="source-webhook" data-source-kind="github" hidden></div>
+        </section>
+        <section class="source-card" aria-labelledby="policy-heading">
+          <div class="source-section-title"><span class="source-step" aria-hidden="true">2</span><h2 id="policy-heading">决定何时接办</h2></div>
+          <label class="source-field">接办方式<select id="mode" aria-describedby="mode-help"><option value="observe">先观察，不执行</option><option value="explicit">明确交办时执行</option><option value="auto">符合规则时自动执行</option></select></label>
+          <p id="mode-help" class="source-callout">只记录收到的请求，不创建或执行工作。确认接入正常后，再开启执行。</p>
+          <div id="auto-fields" hidden>
+            <label class="source-field">请求正文前缀<input id="prefix" maxlength="200" placeholder="例如：[newbee-task]"></label>
+            <label class="source-field">允许的事件<input id="events" placeholder="issues.opened, issue_comment.created" spellcheck="false"></label>
+            <p class="source-help">正文前缀和事件类型都匹配时，才会创建工作。</p>
+          </div>
+          <details class="source-details" id="limits">
+            <summary>执行上限 <span id="limits-summary">每小时 2 项 · 间隔 60 秒</span></summary>
+            <div class="source-details-body source-row">
+              <label class="source-field">每小时最多新工作<input id="budget" type="number" min="1" max="100" value="2" required><span class="source-unit">项</span></label>
+              <label class="source-field">新工作至少间隔<input id="cooldown" type="number" min="0" max="3600" value="60" required><span class="source-unit">秒</span></label>
+            </div>
+          </details>
+          <label class="source-pause"><input id="paused" type="checkbox"><span><strong>暂停此来源</strong><small>暂停接办和回帖，已开始的工作仍在原对话中控制。</small></span></label>
+        </section>
+      </div>
+      <div class="sources-actions"><p id="save-hint">先保存为观察模式，确认接入后再开启执行。</p><button type="submit" id="save" class="source-button source-primary">保存配置</button></div>
+    </form>
+    <section class="source-card sources-records" aria-labelledby="records-heading">
+      <header class="sources-records-heading"><div><h2 id="records-heading">接入记录</h2><p class="source-help">收到的请求与回复状态会显示在这里。</p></div><button id="refresh" class="source-button" type="button" disabled>刷新记录</button></header>
+      <div id="records" aria-live="polite"><div class="source-empty"><span class="source-empty-icon" aria-hidden="true">↳</span><strong>还没有接入记录</strong><p>保存来源后，先发送一条测试请求来检查接入。</p></div></div>
+    </section>
+    <p class="sources-footnote">来源暂停或关闭后，已有文件改动仍会保留。工作进度和成果在原对话里查看。</p>
+  </main>
+  <script src="/sources.js?v=2"></script>
+</body>
+</html>

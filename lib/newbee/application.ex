@@ -31,6 +31,7 @@ defmodule Newbee.Application do
         Newbee.Collaboration.Chat.Runner,
         Newbee.Collaboration.CrossHost.Connections,
         Newbee.Colony.Runtime,
+        Newbee.Colony.SourceRuntime,
         Newbee.Colony.Remote,
         Newbee.Collaboration.Capability,
         Newbee.Browser,

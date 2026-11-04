@@ -171,9 +171,10 @@ defmodule Newbee.Colony.Runtime do
   defp dispatch(delivery) do
     with {:ok, task} <- Store.get_task(delivery["task_id"]),
          false <- Task.terminal?(task),
+         false <- task["conversation"] == true and delivery["execution_generation"] != task["execution_generation"],
          false <- task["approval_required"] == true,
          false <- Control.blocked?(task["colony_id"], task["assigned_bee_id"], task["id"]) do
-      if delivery["status"] == "pending" and
+      if task["conversation"] != true and delivery["status"] == "pending" and
            (delivery["context_revision"] || 0) < (task["context_revision"] || 0) do
         Store.update(
           "deliveries",
@@ -188,6 +189,7 @@ defmodule Newbee.Colony.Runtime do
       _ -> :ok
     end
   catch
+    :exit, {:timeout, _} -> receipt_query_timeout(delivery)
     :exit, _ -> mark_unknown(delivery)
   end
 
@@ -210,7 +212,7 @@ defmodule Newbee.Colony.Runtime do
   defp ensure_local_session(delivery, task) do
     with {:ok, colony} <- Store.get_colony(task["colony_id"]),
          {:ok, cwd} <- Newbee.Colony.Workspace.ensure(task, task["cwd"] || colony["cwd"]),
-         {:ok, _pid, sid} <- Newbee.Web.Session.ensure(task["session_id"], cwd) do
+         {:ok, _pid, sid} <- ensure_execution(task, cwd) do
       Store.transaction(fn data ->
         current = get_in(data, ["tasks", task["id"]])
         queued = get_in(data, ["deliveries", delivery["id"]])
@@ -244,6 +246,30 @@ defmodule Newbee.Colony.Runtime do
     end
   end
 
+  defp ensure_execution(task, cwd) do
+    if task["conversation"] == true do
+      # A deterministic id prevents a lost bootstrap receipt from allocating another writer.
+      sid = task["session_id"] || "work-" <> task["id"]
+      config = task["execution_config"] || %{}
+
+      with :ok <- copy_setting(sid, config["provider"], &Newbee.Session.set_provider/2),
+           :ok <- copy_setting(sid, config["model"], &Newbee.Session.set_model/2),
+           :ok <- copy_setting(sid, config["effort"], &Newbee.Session.set_effort/2),
+           {:ok, client} <- Newbee.Web.Session.client_for_session(sid),
+           true <- is_binary(client.api_key) and String.trim(client.api_key) != "" do
+        Newbee.Web.Session.ensure(sid, cwd)
+      else
+        false -> {:error, "model_unavailable", "模型凭据未配置；请在原会话的模型设置修复后重试"}
+        {:error, reason} -> {:error, "model_unavailable", "模型或执行环境不可用：" <> inspect(reason)}
+      end
+    else
+      Newbee.Web.Session.ensure(task["session_id"], cwd)
+    end
+  end
+
+  defp copy_setting(_sid, nil, _setter), do: :ok
+  defp copy_setting(sid, value, setter), do: setter.(sid, value)
+
   defp local_dispatch(delivery, task) do
     case Newbee.Web.Session.lookup(delivery["session_id"]) do
       {:ok, pid} ->
@@ -257,7 +283,7 @@ defmodule Newbee.Colony.Runtime do
               do: :ok,
               else: mark_unknown(delivery)
 
-          GenServer.call(pid, :peek_busy, 1_000) ->
+          GenServer.call(pid, :peek_busy, 1_000) and task["conversation"] != true ->
             :ok
 
           true ->
@@ -286,7 +312,8 @@ defmodule Newbee.Colony.Runtime do
              &{:ok,
               Map.merge(&1, %{
                 "status" => "dispatching",
-                "context_revision" => task["context_revision"] || 0
+                "context_revision" =>
+                  if(task["conversation"], do: delivery["context_revision"], else: task["context_revision"] || 0)
               })}
            ) do
       case GenServer.call(
@@ -301,6 +328,9 @@ defmodule Newbee.Colony.Runtime do
               else: {:ok, Map.put(current, "status", "running")}
           end)
 
+        {:error, :stale_execution} ->
+          :ok
+
         {:error, reason} when reason in [:paused, :queue_full] ->
           Store.update(
             "deliveries",
@@ -313,6 +343,7 @@ defmodule Newbee.Colony.Runtime do
           mark_unknown(delivery)
       end
     else
+      {:error, :conflict} -> :ok
       {:error, reason} -> block(delivery, "附件或投递失败：" <> format_failure(reason))
       _ -> :ok
     end
@@ -330,18 +361,38 @@ defmodule Newbee.Colony.Runtime do
 
   defp mark_unknown(delivery), do: block(delivery, "执行回执丢失，不能确定外部操作是否完成；请检查会话后继续，系统不会自动重放。")
 
-  defp block(delivery, reason) do
-    Store.update(
-      "deliveries",
-      delivery["id"],
-      nil,
-      &{:ok, Map.merge(&1, %{"status" => "unknown", "error" => reason})}
-    )
+  # A slow Session response cannot revoke its already durable receipt. Do not resend;
+  # a later sweep can query it again. Confirmed absence still takes the unknown path.
+  defp receipt_query_timeout(delivery) do
+    case Store.get("deliveries", delivery["id"]) do
+      {:ok, %{"status" => status}} when status in ~w(accepted completed superseded paused held cancelled) -> :ok
+      _ -> mark_unknown(delivery)
+    end
+  end
 
-    Store.update("tasks", delivery["task_id"], nil, fn task ->
-      if Task.terminal?(task),
-        do: {:ok, task},
-        else: {:ok, Map.merge(task, %{"status" => "blocked", "next_step" => reason})}
+  defp block(delivery, reason) do
+    Store.transaction(fn data ->
+      queued = data["deliveries"][delivery["id"]]
+      task = data["tasks"][delivery["task_id"]]
+
+      current =
+        task && queued && not Task.terminal?(task) && task["status"] != "pending_review" &&
+          queued["status"] in ~w(pending dispatching accepted) &&
+          (task["conversation"] != true || queued["execution_generation"] == task["execution_generation"])
+
+      if current do
+        queued =
+          queued |> Map.merge(%{"status" => "unknown", "error" => reason}) |> Map.update("revision", 1, &(&1 + 1))
+
+        task =
+          task
+          |> Map.merge(%{"status" => "blocked", "next_step" => reason, "updated_at" => now()})
+          |> Map.update("revision", 1, &(&1 + 1))
+
+        {:ok, :ok, data |> put_in(["deliveries", delivery["id"]], queued) |> put_in(["tasks", task["id"]], task)}
+      else
+        {:ok, :ok, data}
+      end
     end)
   end
 
@@ -367,8 +418,10 @@ defmodule Newbee.Colony.Runtime do
       %{"task_id" => tid} = binding when is_binary(tid) ->
         case Store.get_task(tid) do
           {:ok, task} ->
-            Newbee.Colony.Remote.report(task, kind, payload)
-            project_work(binding, task, kind, payload)
+            if Newbee.Colony.ConversationWork.current_event?(task, kind, payload) do
+              Newbee.Colony.Remote.report(task, kind, payload)
+              project_work(binding, task, kind, payload)
+            end
 
           _ ->
             :ok
@@ -415,6 +468,10 @@ defmodule Newbee.Colony.Runtime do
       Task.terminal?(task) or task["status"] == "pending_review" ->
         :ok
 
+      task["conversation"] == true and kind in [:done, :text_end] and
+          (task["consumed_context_revision"] || 0) < (task["context_revision"] || 0) ->
+        :ok
+
       kind in [:done, :text_end] and Newbee.Colony.Workflow.managed?(task) and not active_delivery?(task) ->
         :ok
 
@@ -431,7 +488,10 @@ defmodule Newbee.Colony.Runtime do
 
         work_revision =
           value(payload, :work_revision) ||
-            if(delivered, do: delivered["context_revision"], else: task["context_revision"])
+            if(task["conversation"],
+              do: task["consumed_context_revision"] || 0,
+              else: if(delivered, do: delivered["context_revision"], else: task["context_revision"])
+            )
 
         settle_deliveries(task, "completed")
         summary = value(payload, :summary) || value(payload, :body) || "执行已结束，请查看会话。"
@@ -476,7 +536,11 @@ defmodule Newbee.Colony.Runtime do
              "status" => "blocked",
              "waiting_for" => "user",
              "next_step" => question,
-             "question" => safe_payload(payload)
+             "question" =>
+               if(task["conversation"],
+                 do: Newbee.Colony.ConversationWork.question(task, payload),
+                 else: safe_payload(payload)
+               )
            })}
         )
 

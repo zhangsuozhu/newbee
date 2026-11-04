@@ -896,7 +896,13 @@ defmodule Newbee.Web.Api do
 
   defp dispatch_rpc("session.history", %{"sessionId" => sid}) do
     session = Newbee.Session.open(sid)
-    msgs = session |> Newbee.Session.messages() |> Enum.map(&history_msg/1)
+
+    msgs =
+      session
+      |> Newbee.Session.messages()
+      |> then(&Newbee.Colony.ConversationWork.merge_messages(sid, &1))
+      |> Enum.map(&history_msg/1)
+
     {:ok, %{messages: inject_archive_divider(session, msgs)}}
   end
 
@@ -928,8 +934,8 @@ defmodule Newbee.Web.Api do
   end
 
   defp dispatch_rpc("session.delete", %{"sessionId" => sid}) do
-    if Newbee.Web.Session.peek_busy(sid) do
-      {:error, "busy", "会话正在运行中，无法删除。请先点“停止”或等待完成。"}
+    if Newbee.Web.Session.peek_busy(sid) or Newbee.Colony.ConversationWork.active?(sid) do
+      {:error, "busy", "对话有正在执行或待处理的工作，请先在原工作卡暂停、处理成果或结束工作后删除。"}
     else
       case Newbee.Collaboration.Coordinator.groups_for_session(sid) do
         [] ->
@@ -2610,6 +2616,10 @@ defmodule Newbee.Web.Api do
   # this boundary an unknown method raises FunctionClauseError and Plug returns
   # an HTML 500 page, which makes client retries and diagnostics unreliable.
   # ── 蜂群协作（colony.*）：转发到独立模块，避免本文件继续膨胀 ──
+  defp dispatch_rpc("conversation.source." <> _ = method, p), do: Newbee.Web.SourceApi.dispatch(method, p)
+
+  defp dispatch_rpc("conversation.work." <> _ = method, p), do: Newbee.Web.ConversationApi.dispatch(method, p)
+
   defp dispatch_rpc("colony." <> _ = method, p), do: Newbee.Web.ColonyApi.dispatch(method, p)
 
   defp dispatch_rpc(method, _p), do: {:error, "unknown_method", "未知 RPC 方法: #{method}"}
@@ -3235,6 +3245,8 @@ defmodule Newbee.Web.Api do
 
   # transcript 消息 → 前端可渲染结构
   # transcript 消息 -> 前端可渲染结构，时间戳原样透传；旧记录由 Session.messages/1 回填。
+  defp history_msg(%{"internal_context" => true}), do: nil
+
   defp history_msg(%{"role" => "user", "content" => c} = m) when is_binary(c),
     do: %{role: "user", content: c, created_at: m["created_at"]}
 

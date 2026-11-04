@@ -179,6 +179,13 @@ defmodule Newbee.Colony.Membership do
           String.starts_with?(method, "colony.") ->
             :ok
 
+          String.starts_with?(method, "conversation.work.") ->
+            session_access(
+              payload["__token__"],
+              payload["sessionId"],
+              if(method in ["conversation.work.list", "conversation.work.review"], do: :read, else: :write)
+            )
+
           method in ~w(session.resume session.history session.state session.queue session.info) ->
             session_access(payload["__token__"], payload["sessionId"], :read)
 

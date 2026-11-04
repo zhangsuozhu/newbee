@@ -25,6 +25,7 @@ export function attentionAction(task, viewer = {}) {
   if (task.status === 'failed' || /心跳|无法确认/.test(task.next_step || '')) {
     return {reason: '执行状态待确认', label: '检查执行', section: 'execution'};
   }
+  if (['children', 'dependencies', 'capacity'].includes(task.waiting_for)) return null;
   if (task.waiting_for === 'user') return {reason: '等待你答复', label: '查看问题', section: 'overview'};
   if (task.status === 'blocked') return {reason: '工作受阻', label: '查看阻塞', section: 'overview'};
   if (mine) return {reason: '由你负责', label: '处理工作', section: 'overview'};

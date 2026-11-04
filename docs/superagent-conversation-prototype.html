@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>newbee · 在原会话里继续（交互原型）</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#243040;background:#f7f8fa;--line:#dce2eb;--muted:#637187;--blue:#275cc6}*{box-sizing:border-box}body{margin:0}button,textarea{font:inherit}button{cursor:pointer;background:#fff;border:1px solid var(--line);color:inherit;border-radius:8px;padding:9px 13px;min-height:40px}button:hover:enabled{background:#eef3ff}button:disabled{cursor:default;opacity:.5}button.primary{background:var(--blue);color:white;border-color:var(--blue)}button.quiet{background:transparent;border-color:transparent}.danger{color:#ae3544}button:focus-visible,textarea:focus-visible,a:focus-visible{outline:3px solid #88b1f9;outline-offset:2px}[hidden]{display:none!important}a{color:var(--blue)}.demo{background:#fff8e8;border-bottom:1px solid #e5d9bb;padding:10px 18px;font-size:13px;line-height:1.7}.demo-controls{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}.demo button{font-size:12px;min-height:32px;padding:5px 9px}.layout{display:grid;grid-template-columns:236px 1fr;height:calc(100dvh - 134px);min-height:540px}.side{background:#f0f3f8;border-right:1px solid var(--line);padding:20px 12px;overflow:auto}.brand{font-size:23px;font-weight:700;margin:0 8px 22px}.brand span{color:var(--blue)}.new-chat{width:100%;text-align:left;margin-bottom:20px}.small{font-size:12px;color:var(--muted)}.thread{width:100%;display:block;text-align:left;line-height:1.5;margin:6px 0;background:transparent;border-color:transparent}.thread.active{background:white;border-color:var(--line)}.thread small{display:block;color:var(--muted);font-size:12px}.side-note{font-size:12px;color:var(--muted);margin:22px 8px;line-height:1.8}.main{display:flex;flex-direction:column;min-width:0;min-height:0}.top{background:white;border-bottom:1px solid var(--line);padding:15px 25px;display:flex;justify-content:space-between;gap:12px;align-items:center}.top h1{font-size:17px;margin:0 0 4px}.scroll{flex:1;overflow:auto;padding:25px 24px 10px}.content,.compose-inner{max-width:820px;margin:auto}.welcome{padding:25px 2px;line-height:1.9;color:var(--muted)}.welcome h2{font-size:24px;color:#243040;font-weight:600;margin-top:0}.examples,.actions{display:flex;flex-wrap:wrap;gap:8px}.message{line-height:1.8;margin:0 0 22px;overflow-wrap:anywhere}.who{font-size:13px;color:var(--muted);font-weight:650;margin-bottom:5px}.user .body{background:#eaf0fb;border-radius:12px;padding:12px 15px;display:inline-block}.body{white-space:pre-wrap}.receipt{font-size:12px;color:var(--muted)}.work{background:#fff;border:1px solid var(--line);border-radius:12px;padding:17px;line-height:1.7;margin-bottom:15px}.work-head{display:flex;justify-content:space-between;gap:12px}.work h2{font-size:16px;margin:0}.status{color:var(--blue);font-size:13px;white-space:nowrap}.work p{font-size:14px}.question{background:#fffaed;border:1px solid #ead8ac;border-radius:8px;padding:12px;margin:13px 0}.question p{font-size:13px}.result{background:#f3f6fb;padding:12px;border-radius:8px;font-size:14px;margin:14px 0}.result ul{padding-left:20px;margin:6px 0}details{font-size:13px;margin-top:14px}summary{cursor:pointer;color:var(--muted)}.composer{padding:10px 24px 18px;border-top:1px solid var(--line)}.target{font-size:12px;color:var(--muted);margin:5px 0 8px}.input-box{border:1px solid #cbd3e1;background:white;border-radius:12px;padding:12px}textarea{width:100%;min-height:68px;max-height:220px;resize:vertical;border:0;background:transparent;display:block;line-height:1.8;color:inherit}.input-bottom{display:flex;justify-content:space-between;gap:10px;align-items:center}.live{min-height:19px;color:var(--blue);font-size:13px;margin-bottom:4px}.error{background:#fff0f1;color:#9a2937;border-radius:8px;padding:10px;font-size:13px}.mobile-new{display:none}dialog{border:1px solid var(--line);border-radius:14px;padding:0;width:720px;max-width:94vw;max-height:88dvh;box-shadow:0 16px 70px #23385233}dialog::backdrop{background:#16294566}.dialog-top{display:flex;justify-content:space-between;align-items:center;gap:15px;padding:14px 20px;border-bottom:1px solid var(--line);background:white;position:sticky;top:0}.dialog-top h2{margin:0;font-size:18px}.dialog-body{padding:19px 20px;line-height:1.8}.dialog-body h3{font-size:15px}.dialog-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px}.diff{white-space:pre-wrap;font:13px/1.8 ui-monospace,monospace;background:#f3f6fb;padding:13px;border-radius:8px;overflow-wrap:anywhere}.add{color:#247344}.conflict{padding:12px;border-radius:8px;background:#fff3df;color:#80520a}.progress{padding:0;list-style:none}.progress li{padding:9px 0;border-bottom:1px solid var(--line)}
+@media(max-width:750px){.layout{grid-template-columns:1fr;height:calc(100dvh - 190px);min-height:500px}.side{display:none}.top{padding:12px 14px}.scroll{padding:17px 13px 8px}.composer{padding:8px 12px 14px}.demo{padding:8px 12px}.demo button{font-size:11px}.actions button{min-height:44px}.work{padding:13px}.mobile-new{display:inline-block}.net{display:none}.input-bottom .small{font-size:11px}}
+</style>
+</head>
+<body>
+<section class="demo" aria-label="演示控制"><strong>交互原型 · 不执行真实任务</strong>　目录、文件和测试结果都是固定示例。先发送请求，再用下列按钮模拟事件。
+<div class="demo-controls"><button data-demo="advance">推进一步 / 采用补充</button><button data-demo="question">需要业务决定</button><button data-demo="result">结果就绪</button><button data-demo="conflict">目标有新改动</button><button data-demo="network">断开连接</button><button data-demo="unknown">执行失联</button><button data-demo="reset">重置演示</button></div></section>
+<div class="layout">
+<aside class="side" aria-label="会话列表"><div class="brand"><span>◈</span> newbee</div><button id="new-chat" class="new-chat">＋ 新对话</button><div class="small">最近对话</div><div id="threads"></div><p class="side-note">在同一对话里补充、回答、看结果。<br>无需创建群、选择 Bee 或填写分工。</p><a class="small" href="superagent-conversation-ux.md">操作设计说明</a></aside>
+<main class="main"><header class="top"><div><h1 id="title">导出问题</h1><div class="small">项目 newbee-demo · /projects/newbee-demo</div></div><div><span class="small net" id="net">已连接</span> <button class="mobile-new" id="mobile-new">新对话</button> <button id="history">会话与工作</button></div></header>
+<div id="scroll" class="scroll"><div class="content"><div id="messages"></div><div id="work-area"></div></div></div>
+<footer class="composer"><div class="compose-inner"><div id="announcement" class="live" role="status" aria-live="polite"></div><div id="send-error" class="error" hidden></div><div id="target" class="target">发送到当前对话</div><form id="compose" class="input-box"><label for="input" class="small">继续说你的需求</label><textarea id="input" rows="2" placeholder="直接说需求，或补充当前工作…"></textarea><div class="input-bottom"><span class="small">Enter 发送 · Shift+Enter 换行</span><button id="send" class="primary" type="submit">发送</button></div></form></div></footer>
+</main></div>
+<dialog id="detail" aria-labelledby="detail-title"><div class="dialog-top"><h2 id="detail-title">工作详情</h2><button id="close-detail">关闭详情</button></div><div id="detail-body" class="dialog-body"></div><div id="detail-foot" class="dialog-foot"></div></dialog>
+<dialog id="stop-dialog" aria-labelledby="stop-title"><div class="dialog-top"><h2 id="stop-title">结束这项工作？</h2></div><div class="dialog-body">后续不再推进，已有修改和工作记录保留。结束工作不等于撤回已经发生的文件修改。</div><div class="dialog-foot"><button id="keep-work">保持工作</button><button class="danger" id="confirm-stop">结束工作</button></div></dialog>
+<script>
+'use strict';
+const $=id=>document.getElementById(id), storageKey='newbee-conversation-demo-v04';
+const seed=()=>({active:'a',seq:1,offline:false,threads:[{id:'a',title:'导出问题',draft:'修复 CSV 导出时空日期的问题，加上测试。这件事在后台做，别改现有格式。',messages:[],work:null}]});
+let model;try{model=JSON.parse(localStorage.getItem(storageKey))||seed();if(!Array.isArray(model.threads)||!model.threads.some(t=>t.id===model.active))model=seed()}catch{model=seed()}
+const current=()=>model.threads.find(t=>t.id===model.active), work=()=>current().work;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const labels={working:'进行中',pausing:'正在暂停',paused:'已暂停',question:'需要你决定',ready:'结果可用 · 未应用',applying:'正在应用与检查',done:'已完成',unknown:'执行状态无法确认',checking:'正在检查恢复',stopped:'已结束'};
+const terminal=w=>w&&['done','stopped'].includes(w.stage);
+const save=()=>{try{localStorage.setItem(storageKey,JSON.stringify(model))}catch{}};
+function tell(text){$('announcement').textContent=text}
+function add(role,text,receipt=''){current().messages.push({id:'m'+(++model.seq),role,text,receipt})}
+function button(text,fn,kind=''){const b=document.createElement('button');b.type='button';b.textContent=text;b.className=kind;b.onclick=fn;return b}
+let previousFocus,detailKind='process';
+function renderThreads(){
+ $('threads').replaceChildren();
+ for(const t of model.threads){const b=button(t.title,()=>switchThread(t.id),'thread'+(t.id===model.active?' active':''));b.setAttribute('aria-current',t.id===model.active?'page':'false');const small=document.createElement('small');small.textContent=t.work?labels[t.work.stage]+(t.work.background?' · 后台':''):'对话';b.append(small);$('threads').append(b)}
+}
+function renderMessages(){
+ const t=current();$('messages').replaceChildren();
+ if(!t.messages.length){const intro=document.createElement('section');intro.className='welcome';intro.innerHTML='<h2>直接在这里说需求</h2><p>普通分析、项目修改和后台协作都留在原会话。以下是固定的操作演示，不连接真实模型。</p>';const ex=document.createElement('div');ex.className='examples';ex.append(button('先分析，不修改',()=>prefill('先分析 CSV 日期为空的可能原因，不改代码。')),button('在当前项目修改',()=>prefill('修复 CSV 空日期的问题，并验证。')),button('交给后台',()=>prefill('修复 CSV 空日期的问题，后台做，保留现有格式。')));intro.append(ex);$('messages').append(intro)}
+ for(const m of t.messages){const el=document.createElement('article');el.className='message '+m.role;const who=document.createElement('div');who.className='who';who.textContent=m.role==='user'?'你':'newbee';const body=document.createElement('div');body.className='body';body.textContent=m.text;el.append(who,body);if(m.receipt){const receipt=document.createElement('div');receipt.className='receipt';receipt.textContent=m.receipt;el.append(receipt)}$('messages').append(el)}
+}
+function description(w){
+ if(w.pending)return w.stage==='paused'?'补充已收到；不会解除暂停，明确继续后采用。':'补充已收到，尚待下一安全步骤采用。';
+ return ({working:'正在核对现有实现与测试。你可以离开本页面，也可以继续补充要求。',pausing:'正在等执行者确认停止写入；还不能说已经暂停。',paused:'工作已暂停。输入补充会保存，只有明确继续才会恢复。',question:'只询问有使用影响的决定；人员选择和内部分工由系统负责。',ready:w.conflict?'目标项目有新修改，需先重新比较；用户文件保持原样。':'结果在独立工作区，尚未写入目标项目。',applying:'正在核对版本、应用和检查。重复点击不会重复写入。',done:w.isolated?'演示：结果已应用到目标项目并完成检查。':'演示：当前目录已修改完成，不需要再做一次应用。',unknown:'无法确认旧执行者是否仍在写入。已有修改保留，不会直接启动第二个写入者。',checking:'正在核对旧执行者、已有文件与保存的输入。',stopped:'不再推进。已有修改和历史保留；结束不等于回滚。'})[w.stage]||'';
+}
+function renderWork(){
+ const area=$('work-area');area.replaceChildren();const w=work();if(!w)return;
+ const card=document.createElement('section');card.className='work';card.setAttribute('aria-label','当前工作');card.innerHTML='<div class="work-head"><div><h2>'+esc(w.title)+'</h2><div class="small">'+(w.isolated?'独立工作区 → /projects/newbee-demo':'使用原目录 /projects/newbee-demo')+(w.background?' · 后台':' · 当前会话')+'</div></div><span class="status">'+esc(labels[w.stage])+'</span></div><p>'+esc(description(w))+'</p>';
+ if(w.stage==='question'){const q=document.createElement('section');q.className='question';q.innerHTML='<strong>空日期应该怎样显示？</strong><p>建议保留空白，避免改变现有导出约定；只修复空值处理。</p>';const choices=document.createElement('div');choices.className='actions';choices.append(button('保留空白（推荐）',()=>answer('保留空白，不改现有格式'),'primary'),button('显示“未提供”',()=>answer('空值显示“未提供”')),button('稍后决定',()=>tell('问题保留在本对话；未回答不代表批准。')));q.append(choices);card.append(q)}
+ if(['ready','applying','done'].includes(w.stage)){const result=document.createElement('div');result.className='result';result.innerHTML='<strong>示例结果：日期空值保持空白，原格式不变</strong><ul><li>变更：export_date.ex、export_date_test.exs</li><li>演示验证：3 项定向测试通过；未做真实测试</li><li>'+(w.isolated?(w.stage==='done'?'示例已应用到目标项目':'目标项目还没有这些改动'):'改动已在当前目录，无须再次应用')+'</li></ul>';card.append(result)}
+ const actions=document.createElement('div');actions.className='actions';
+ if(w.stage==='working'){if(!w.background)actions.append(button('后台继续',()=>{w.background=true;w.log.push('保持原目录、原目标后台继续（演示）');save();render();tell('演示：仍使用原目录，没有复制或重复开工。')}));actions.append(button('暂停',()=>stage('pausing','暂停请求已收到。用“推进一步”模拟执行者确认。')))}
+ if(w.stage==='paused')actions.append(button('继续处理',()=>stage('checking','演示：先核对已保存进度，再恢复。'),'primary'));
+ if(w.stage==='unknown')actions.append(button('检查并恢复',()=>stage('checking','演示：先确认旧执行者停止，不直接重复启动。'),'primary'));
+ if(w.stage==='ready')actions.append(button('查看改动并采用',()=>openDetail('result'),'primary'),button('继续修改',revise));
+ if(w.stage==='done')actions.append(button('查看结果',()=>openDetail('result')),button('继续修改',()=>{prefill('还需要补充：');tell('发送后建立关联后续工作，保留旧成果与背景。')}));
+ if(!['applying','checking','pausing'].includes(w.stage))actions.append(button('查看过程',()=>openDetail('process'),'quiet'));
+ if(!terminal(w)&&w.stage!=='applying')actions.append(button('结束工作',()=>{previousFocus=document.activeElement;$('stop-dialog').showModal()},'quiet danger'));
+ card.append(actions);const details=document.createElement('details');details.innerHTML='<summary>执行与协作细节</summary><p>演示中由一位负责人推进，需要时才邀请协作者。无需选择 Bee、填写分工表或跳到另一个执行会话。</p>';card.append(details);area.append(card);
+}
+function render(){
+ const t=current(),w=work();$('title').textContent=t.title;$('net').textContent=model.offline?'连接中断':'已连接 · 演示';$('target').textContent=w&&!terminal(w)?(w.stage==='question'?'回答当前问题：':'补充当前工作：')+w.title:'发送到：'+t.title;
+ $('input').value=t.draft||'';$('send').disabled=!t.draft.trim();renderThreads();renderMessages();renderWork();
+ for(const k of ['question','result','unknown'])document.querySelector('[data-demo="'+k+'"]').disabled=!w||w.stage!=='working';
+ document.querySelector('[data-demo="advance"]').disabled=!w;document.querySelector('[data-demo="conflict"]').disabled=!w||w.stage!=='ready'||!w.isolated;
+ document.querySelector('[data-demo="network"]').textContent=model.offline?'恢复连接':'断开连接';
+}
+function prefill(text){current().draft=text;save();render();$('input').focus()}
+function switchThread(id){model.active=id;$('send-error').hidden=true;tell('');save();render()}
+function newThread(){const id='t'+(++model.seq);model.threads.push({id,title:'新对话 '+model.seq,draft:'',messages:[],work:null});switchThread(id);$('input').focus()}
+function stage(value,text){work().stage=value;save();render();tell(text)}
+function revise(){work().stage='working';prefill('还需要调整：');tell('继续当前工作，先前结果保留，不需要重新填表。')}
+function answer(text){if(work()?.stage!=='question')return;add('user',text,'已答复当前问题');work().stage='working';work().log.push('问题答案已记录：'+text);save();render();tell('答案已记录，继续原工作。')}
+function send(event){
+ event.preventDefault();const t=current(),text=t.draft.trim();if(!text)return;
+ if(model.offline){$('send-error').hidden=false;$('send-error').textContent='消息没有发送，草稿已保留。恢复连接后可重试，不会创建两份相同请求。';tell('发送失败，草稿保留。');return}
+ $('send-error').hidden=true;
+ if(work()?.stage==='question'){t.draft='';answer(text);return}
+ if(work()?.stage==='stopped'){tell('本工作已结束；请用新对话发起新的明确请求，不自动复活。');return}
+ if(!work()&&text.startsWith('先分析')){add('user',text);add('assistant','固定演示回答：先核对空值转换和日期格式化调用。这里只分析，没有修改项目、创建后台工作或要求验收。');t.draft='';save();render();return}
+ add('user',text);
+ if(!work()||work().stage==='done'){
+  const old=work(),background=text.includes('后台');t.work={id:'w'+(++model.seq),title:'修复 CSV 空日期',stage:'working',isolated:background,background,pending:false,conflict:false,predecessor:old?.id||null,log:['请求已持久接收（演示）','负责人核对目标与目录（演示）']};
+  if(t.title.startsWith('新对话'))t.title='CSV 导出修复';add('assistant',old?'收到后续修改，关联原工作与旧成果继续处理。':'我会修复空日期处理、保留原格式并验证，结果回到这里。');
+ }else{if(work().stage==='ready')work().stage='working';work().pending=true;work().log.push('收到补充：'+text);t.messages.at(-1).receipt=work().stage==='paused'?'已收到，恢复后采用':'已收到，尚待采用'}
+ t.draft='';save();render();tell(work().pending?'补充已收到；演示“推进一步”后才显示已采用。':'已接住请求，工作留在当前对话。');
+}
+function openDetail(kind){detailKind=kind;previousFocus=document.activeElement;renderDetail();$('detail').showModal()}
+function closeDetail(){$('detail').close();previousFocus?.focus()}
+function renderDetail(){
+ const w=work(),body=$('detail-body'),foot=$('detail-foot');$('detail-title').textContent=detailKind==='result'?'查看改动与结果':detailKind==='history'?'会话与工作':'执行过程';body.replaceChildren();foot.replaceChildren();
+ if(detailKind==='history'){for(const t of model.threads)body.append(button(t.title+' · '+(t.work?labels[t.work.stage]:'对话'),()=>{closeDetail();switchThread(t.id)}));return}
+ if(!w){body.textContent='普通对话可以直接使用，无需创建工作。';return}
+ if(detailKind==='process'){body.innerHTML='<p><strong>'+esc(w.title)+'</strong></p><p>位置：'+(w.isolated?'独立工作区，待采用':'原目录 /projects/newbee-demo')+'</p><p class="small">以下为演示记录，实际产品必须以持久回执和真实执行状态为依据。</p>';const list=document.createElement('ul');list.className='progress';for(const item of w.log){const li=document.createElement('li');li.textContent=item;list.append(li)}body.append(list);return}
+ body.innerHTML='<p><strong>固定示例：没有实际文件修改。</strong></p><p>目标项目：/projects/newbee-demo</p><p>结果位置：'+(w.isolated?'独立工作区':'原项目目录')+' · '+(w.stage==='done'?'示例已完成':'尚未应用')+'</p><h3>改动 · 2 个文件</h3><div class="diff">export_date.ex\n<span class="add">+ def format_date(nil), do: ""</span>\n  原有日期格式不变\n\nexport_date_test.exs\n<span class="add">+ 空日期导出空白；非空日期格式不变</span></div><h3>验证和限制</h3><p>演示数据：3 项定向测试通过。原型未运行项目测试，也未核对真实导出或兼容性。</p>';
+ if(w.conflict){const warning=document.createElement('div');warning.className='conflict';warning.textContent='目标已有新修改，尚未写入。请重新比较，避免覆盖用户文件。';body.append(warning);foot.append(button('重新比较（演示）',()=>{w.conflict=false;w.log.push('核对目标当前版本（演示）');save();render();renderDetail();tell('演示重新比较完成，尚未应用。')},'primary'))}
+ else if(w.stage==='ready'&&w.isolated){const note=document.createElement('p');note.className='small';note.textContent='“应用并完成”表示采用展示的版本并写入上述项目；只有版本校验、应用和检查成功后才记完成。';body.append(note);foot.append(button('继续修改',()=>{closeDetail();revise()}),button('应用并完成',()=>{w.stage='applying';w.log.push('发出唯一应用请求，等待核对（演示）');closeDetail();save();render();tell('演示：正在应用，用“推进一步”模拟最终回执。')},'primary'))}
+}
+function demo(kind){
+ if(kind==='reset'){model=seed();save();$('send-error').hidden=true;tell('演示已重置。');render();return}
+ if(kind==='network'){model.offline=!model.offline;save();render();tell(model.offline?'演示断线；浏览器连接中断不会自动取消后台工作。':'演示已重连，草稿保留。');return}
+ const w=work();if(!w){tell('先发送请求，再演示工作事件。');return}
+ if(kind==='advance'){
+  if(w.stage==='pausing'){w.stage='paused';w.log.push('已确认暂停（演示）');tell('执行者已确认暂停（演示）。')}
+  else if(w.stage==='checking'){w.stage='working';w.log.push('检查旧执行者后恢复（演示）');tell('核对完成，原工作继续（演示）。')}
+  else if(w.stage==='applying'){w.stage='done';w.log.push('示例应用、检查、最终回执成功');tell('演示：已应用并完成。')}
+  else if(w.pending&&w.stage==='working'){w.pending=false;for(const m of current().messages)if(m.receipt.includes('尚待采用')||m.receipt.includes('恢复后采用'))m.receipt='已采用';w.log.push('补充进入下一模型请求（演示）');tell('演示：补充已被采用。')}
+  else tell(w.stage==='paused'?'工作保持暂停；补充不会擅自恢复。':'保持当前状态。可演示问题、结果或失败。');
+ }else if(kind==='question'&&w.stage==='working'){w.stage='question';w.log.push('有一项业务决定需要答复（演示）')}
+ else if(kind==='result'&&w.stage==='working'){w.stage=w.isolated?'ready':'done';w.pending=false;w.log.push('交付示例改动与验证结果')}
+ else if(kind==='conflict'&&w.stage==='ready'){w.conflict=true;tell('目标变化，现有文件未写入。查看结果后重新比较。')}
+ else if(kind==='unknown'&&w.stage==='working'){w.stage='unknown';w.log.push('执行者状态未知，禁止双开（演示）')}
+ save();render();
+}
+$('input').oninput=()=>{current().draft=$('input').value;save();$('send').disabled=!current().draft.trim()};
+$('input').onkeydown=e=>{if(e.isComposing||e.keyCode===229)return;if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('compose').requestSubmit()}};
+$('compose').onsubmit=send;$('new-chat').onclick=newThread;$('mobile-new').onclick=newThread;$('history').onclick=()=>openDetail('history');$('close-detail').onclick=closeDetail;
+$('detail').addEventListener('cancel',()=>setTimeout(()=>previousFocus?.focus(),0));
+$('keep-work').onclick=()=>{$('stop-dialog').close();previousFocus?.focus()};
+$('confirm-stop').onclick=()=>{if(work()){work().stage='stopped';work().pending=false;work().log.push('用户明确结束，已有修改保留（演示）')}$('stop-dialog').close();save();render();tell('演示：工作已结束，历史和修改仍保留。');$('input').focus()};
+for(const b of document.querySelectorAll('[data-demo]'))b.onclick=()=>demo(b.dataset.demo);
+render();
+
+</script>
+</body>
+</html>

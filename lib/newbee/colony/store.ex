@@ -2,7 +2,7 @@ defmodule Newbee.Colony.Store do
   @moduledoc "Serialized durable Colony state; disk failure never acknowledges a mutation."
   use GenServer
 
-  @tables ~w(colonies bees tasks honey trace signals controls deliveries identities conversations invites remote_reports pending_messages)
+  @tables ~w(colonies bees tasks honey trace signals controls deliveries identities conversations invites remote_reports pending_messages command_receipts source_instances source_events source_outbox)
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -235,7 +235,7 @@ defmodule Newbee.Colony.Store do
     end
   end
 
-  defp empty, do: Map.new(@tables, &{&1, %{}}) |> Map.merge(%{"version" => 2, "sequence" => 0})
+  defp empty, do: Map.new(@tables, &{&1, %{}}) |> Map.merge(%{"version" => 3, "sequence" => 0})
 
   defp snapshot(data),
     do: Enum.reduce(@tables, data, fn table, acc -> Map.put(acc, table, Map.values(data[table])) end)
@@ -250,7 +250,7 @@ defmodule Newbee.Colony.Store do
 
       {:ok, binary} ->
         with {:ok, decoded} when is_map(decoded) <- Jason.decode(binary),
-             true <- decoded["version"] in [1, 2],
+             true <- decoded["version"] in [1, 2, 3],
              :ok <- backup_legacy(path, binary, decoded["version"]) do
           data =
             Enum.reduce(@tables, empty(), fn table, acc ->
@@ -284,9 +284,9 @@ defmodule Newbee.Colony.Store do
     e -> {:error, {:invalid_snapshot, Exception.message(e)}}
   end
 
-  defp backup_legacy(path, binary, 1) do
-    case File.write(path <> ".v1-backup", binary, [:exclusive]) do
-      :ok -> File.chmod(path <> ".v1-backup", 0o600)
+  defp backup_legacy(path, binary, version) when version in [1, 2] do
+    case File.write(path <> ".v#{version}-backup", binary, [:exclusive]) do
+      :ok -> File.chmod(path <> ".v#{version}-backup", 0o600)
       {:error, :eexist} -> :ok
       error -> error
     end

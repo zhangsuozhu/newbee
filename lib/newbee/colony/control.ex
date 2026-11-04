@@ -7,7 +7,7 @@ defmodule Newbee.Colony.Control do
     with true <- scope in ["colony", "bee", "work"],
          true <- action in ["pause", "resume", "interrupt"],
          {:ok, colony} <- Store.get_colony(cid),
-         :ok <- authorize(colony, Keyword.get(opts, :actor_bee_id)),
+         :ok <- authorize_scope(colony, scope, target, Keyword.get(opts, :actor_bee_id)),
          :ok <- valid_target(cid, scope, target) do
       id = key(cid, scope, target)
 
@@ -70,6 +70,25 @@ defmodule Newbee.Colony.Control do
     admins = colony["admin_bee_ids"] || [colony["queen_bee_id"]]
     if is_binary(actor) and actor in admins, do: :ok, else: {:error, "forbidden", "需要当前蜂群管理员权限"}
   end
+
+  @doc "A conversation requester controls their own work, never another member's colony."
+  def authorize_work(colony, tid, actor) do
+    cid = colony["id"]
+
+    case authorize(colony, actor) do
+      :ok ->
+        :ok
+
+      _ ->
+        case Store.get_task(tid) do
+          {:ok, %{"conversation" => true, "created_by" => ^actor, "colony_id" => ^cid}} -> :ok
+          _ -> {:error, "forbidden", "需要工作发起者或项目管理员权限"}
+        end
+    end
+  end
+
+  defp authorize_scope(colony, "work", target, actor), do: authorize_work(colony, target, actor)
+  defp authorize_scope(colony, _, _, actor), do: authorize(colony, actor)
 
   defp valid_target(_cid, "colony", _), do: :ok
 
@@ -163,6 +182,9 @@ defmodule Newbee.Colony.Control do
 
   defp stale_execution?(tid) do
     case Store.get_task(tid) do
+      {:ok, %{"conversation" => true}} ->
+        false
+
       {:ok, task} ->
         Store.all("deliveries")
         |> Enum.any?(

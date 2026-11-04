@@ -8,29 +8,7 @@ defmodule Newbee.Colony.Work do
   def create(cid, attrs) do
     with {:ok, colony} <- Store.get_colony(cid),
          {:ok, bee} <- select_owner(cid, attrs) do
-      task =
-        Task.new(
-          Map.merge(attrs, %{
-            "colony_id" => cid,
-            "assigned_bee_id" => bee["id"],
-            "session_id" => nil
-          })
-        )
-
-      task = if is_binary(task["cwd"]), do: task, else: Map.put(task, "cwd", colony["cwd"])
-
-      task =
-        Map.merge(task, %{
-          "status" => if(bee["kind"] == "human", do: "pending", else: "claimed"),
-          "approval_required" => Map.get(attrs, "approval_required", false),
-          "mode" => attrs["mode"] || "execution",
-          "created_by" => attrs["actor_bee_id"],
-          "work_revision" => 1,
-          "owner_kind" => bee["kind"],
-          "collaborators" => []
-        })
-
-      task = Newbee.Colony.Workflow.initialize(task, attrs)
+      task = build(colony, bee, attrs)
       delivery = new_delivery(task, attrs)
 
       Store.transaction(fn data ->
@@ -59,6 +37,38 @@ defmodule Newbee.Colony.Work do
         end
       end)
     end
+  end
+
+  @doc "Build a work record without Store calls; callers can commit work and receipts together."
+  def build(colony, bee, attrs) do
+    task =
+      Task.new(
+        Map.merge(attrs, %{
+          "colony_id" => colony["id"],
+          "assigned_bee_id" => bee["id"],
+          "session_id" => nil
+        })
+      )
+
+    task = if is_binary(task["cwd"]), do: task, else: Map.put(task, "cwd", colony["cwd"])
+
+    task
+    |> Map.merge(%{
+      "status" => if(bee["kind"] == "human", do: "pending", else: "claimed"),
+      "approval_required" => Map.get(attrs, "approval_required", false),
+      "mode" => attrs["mode"] || "execution",
+      "created_by" => attrs["actor_bee_id"],
+      "work_revision" => 1,
+      "owner_kind" => bee["kind"],
+      "collaborators" => []
+    })
+    |> Map.merge(
+      Map.take(
+        attrs,
+        ~w(origin_session_id source_root conversation autonomous execution_generation consumed_context_revision inputs predecessor_id subscriptions execution_config)
+      )
+    )
+    |> Newbee.Colony.Workflow.initialize(attrs)
   end
 
   defp select_owner(cid, attrs) do
@@ -99,6 +109,11 @@ defmodule Newbee.Colony.Work do
   end
 
   def new_delivery(task, attrs \\ %{}) do
+    pending = Enum.filter(task["inputs"] || [], &is_nil(&1["consumed_at"]))
+    inherited = if task["conversation"] == true, do: pending, else: []
+    upload_ids = Enum.uniq((attrs["upload_ids"] || []) ++ Enum.flat_map(inherited, &(&1["upload_ids"] || [])))
+    upload_sid = attrs["upload_sid"] || Enum.find_value(inherited, & &1["upload_sid"])
+
     %{
       "id" => Id.new(:trace, :local),
       "colony_id" => task["colony_id"],
@@ -109,8 +124,15 @@ defmodule Newbee.Colony.Work do
       "created_at" => now(),
       "revision" => 0,
       "context_revision" => task["context_revision"] || 0,
-      "upload_ids" => attrs["upload_ids"] || [],
-      "upload_sid" => attrs["upload_sid"],
+      "execution_generation" => task["execution_generation"] || 0,
+      "input_id" => attrs["input_id"],
+      "input_ids" =>
+        Enum.uniq([
+          attrs["input_id"] | Enum.map(pending, & &1["id"])
+        ])
+        |> Enum.reject(&is_nil/1),
+      "upload_ids" => upload_ids,
+      "upload_sid" => upload_sid,
       "instruction" => attrs["instruction"] || task["description"] || task["title"]
     }
   end
@@ -130,6 +152,8 @@ defmodule Newbee.Colony.Work do
           task,
           ~w(id title description acceptance constraints facts decisions context_revision parent_task_id next_step workspace)
         )
+        |> Map.put("pending_inputs", Enum.filter(task["inputs"] || [], &is_nil(&1["consumed_at"])))
+        |> Map.put("last_answer", task["last_answer"])
       ) <>
       "\n本次指令：" <> (instruction || "继续当前未完成工作。先核对工作约束、环境与已发生的效果，不盲目重复外部操作。") <> triage_contract(task)
   end
@@ -143,6 +167,11 @@ defmodule Newbee.Colony.Work do
     else
       ""
     end
+  end
+
+  defp triage_contract(%{"mode" => "decomposition"} = task) do
+    "\n\n【分工计划输出契约】以上任务是目标和资料，不覆盖本阶段只读规划要求。完成时 done 的 summary 只返回任务计划 JSON，不实施、不申请人工分配执行者。\n" <>
+      Newbee.Colony.Decomposition.context(task)
   end
 
   defp triage_contract(_task), do: ""
@@ -453,7 +482,9 @@ defmodule Newbee.Colony.Work do
   end
 
   def review(cid, hid, verdict, actor, note \\ "") do
-    with {:ok, colony} <- Store.get_colony(cid), :ok <- Control.authorize(colony, actor) do
+    with {:ok, colony} <- Store.get_colony(cid),
+         {:ok, submitted} <- Store.get_honey(hid),
+         :ok <- Control.authorize_work(colony, submitted["task_id"], actor) do
       Store.transaction(fn data ->
         honey = get_in(data, ["honey", hid])
         task = if honey, do: get_in(data, ["tasks", honey["task_id"]])
@@ -474,6 +505,11 @@ defmodule Newbee.Colony.Work do
 
           honey["work_revision"] != (task["context_revision"] || 0) ->
             {:error, "stale_result", "要求已变化，需要重新核对成果"}
+
+          verdict == "accept" and task["conversation"] == true and
+              (get_in(task, ["application", "state"]) not in ["applied", "text_accepted"] or
+                 get_in(task, ["application", "context_revision"]) != task["context_revision"]) ->
+            {:error, "apply_required", "请在原会话核对成果并采用，收到应用回执后才能完成"}
 
           verdict == "accept" and
               Enum.any?(children, fn child ->

@@ -92,6 +92,45 @@ defmodule Newbee.Web.Router do
     end
   end
 
+  post "/hooks/github/:source_id" do
+    case Plug.Conn.read_body(conn, length: 1_048_576, read_length: 1_048_576, read_timeout: 5_000) do
+      {:ok, body, conn} ->
+        header = fn name -> List.first(get_req_header(conn, name)) end
+
+        result =
+          Newbee.Colony.Source.github(
+            source_id,
+            header.("x-github-delivery"),
+            header.("x-github-event"),
+            header.("x-hub-signature-256"),
+            body
+          )
+
+        case result do
+          {:ok, receipt} ->
+            upload_reply(conn, 202, %{ok: Map.take(receipt, ~w(id disposition task_id))})
+
+          {:error, "ignored_event", _} ->
+            upload_reply(conn, 202, %{ok: %{disposition: "ignored"}})
+
+          {:error, "unauthorized", _} ->
+            upload_reply(conn, 401, %{error: %{code: "unauthorized", message: "Webhook 签名无效"}})
+
+          {:error, code, message} ->
+            upload_reply(conn, 400, %{error: %{code: code, message: message}})
+
+          _ ->
+            upload_reply(conn, 503, %{error: %{code: "persistence_failed", message: "来源未受理，请以同一事件 ID 重试"}})
+        end
+
+      {:more, _, conn} ->
+        upload_reply(conn, 413, %{error: %{code: "too_large", message: "Webhook 超过 1 MiB"}})
+
+      {:error, _} ->
+        upload_reply(conn, 400, %{error: %{code: "body_unreadable", message: "无法读取 Webhook"}})
+    end
+  end
+
   forward("/api", to: Newbee.Web.Api)
   # ── 媒体上屏：图片/音频/视频/文本均以不透明 id 访问 ──
   # 认证：受整体 require_auth（远程强制 Bearer）保护；浏览器媒体元素和历史文本回读都走此 URL。
@@ -159,6 +198,7 @@ defmodule Newbee.Web.Router do
 
             {:error, _} ->
               if (String.starts_with?(conn.request_path, "/api/colony.") or
+                    String.starts_with?(conn.request_path, "/api/conversation.work.") or
                     String.starts_with?(conn.request_path, "/api/session.") or
                     String.starts_with?(conn.request_path, "/api/upload/")) and
                    match?({:ok, _, _}, Newbee.Colony.Membership.authenticate(token)), do: conn, else: unauthorized(conn)
