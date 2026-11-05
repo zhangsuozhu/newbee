@@ -478,30 +478,63 @@ defmodule Newbee.Collaboration.Workspace do
 
   defp remove_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
 
+  # `git worktree list` only reports a registration as long as the directory
+  # exists, so a workspace already deleted by someone else looks "unregistered"
+  # here while its entry stays in .git/worktrees. Always prune after a removal —
+  # that is what actually reclaims the registration — and only report failure if
+  # the entry survives the prune.
   defp remove_git_worktree(root, path) do
+    expanded_root = Path.expand(root)
     expanded_path = Path.expand(path)
 
-    case System.cmd("git", ["worktree", "list", "--porcelain"],
-           cd: Path.expand(root),
-           stderr_to_stdout: true
-         ) do
+    case registered_worktree?(expanded_root, expanded_path) do
+      {:ok, true} ->
+        with :ok <- remove_registered_git_worktree(expanded_root, expanded_path) do
+          prune_git_worktrees(expanded_root, expanded_path)
+        end
+
+      {:ok, false} ->
+        with :ok <- remove_unregistered_workspace(expanded_path) do
+          prune_git_worktrees(expanded_root, expanded_path)
+        end
+
+      {:error, _reason, _message} = error ->
+        error
+    end
+  rescue
+    error in ErlangError -> {:error, "workspace_cleanup_failed", Exception.message(error)}
+  end
+
+  defp registered_worktree?(root, path) do
+    case System.cmd("git", ["worktree", "list", "--porcelain"], cd: root, stderr_to_stdout: true) do
       {output, 0} ->
         registered? =
           output
           |> String.split("\n")
-          |> Enum.any?(fn line -> String.trim(line) == "worktree " <> expanded_path end)
+          |> Enum.any?(fn line -> String.trim(line) == "worktree " <> path end)
 
-        if registered? do
-          remove_registered_git_worktree(root, expanded_path)
-        else
-          remove_unregistered_workspace(expanded_path)
+        {:ok, registered?}
+
+      {output, _status} ->
+        {:error, "workspace_cleanup_failed", String.trim(output)}
+    end
+  end
+
+  # Prune is repository-wide by design (Git has no per-path variant). It only
+  # drops entries whose directory is already gone, so live worktrees — including
+  # other sessions' — are untouched.
+  defp prune_git_worktrees(root, path) do
+    case System.cmd("git", ["worktree", "prune"], cd: root, stderr_to_stdout: true) do
+      {_output, 0} ->
+        case registered_worktree?(root, path) do
+          {:ok, false} -> :ok
+          {:ok, true} -> {:error, "workspace_cleanup_failed", "worktree registration survived prune: " <> path}
+          {:error, _reason, _message} = error -> error
         end
 
       {output, _status} ->
         {:error, "workspace_cleanup_failed", String.trim(output)}
     end
-  rescue
-    error in ErlangError -> {:error, "workspace_cleanup_failed", Exception.message(error)}
   end
 
   defp remove_registered_git_worktree(root, path) do

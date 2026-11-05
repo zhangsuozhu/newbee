@@ -36,4 +36,17 @@ defmodule Newbee.Tools.DocumentationContractTest do
     assert readme =~ "~/.newbee/jspace/"
     refute design =~ "edit/v2.ex"
   end
+
+  test "README 与 DESIGN 写清 cd 作用域、mix_format 与工作树 prune" do
+    readme = File.read!(Path.expand("../../../README.md", __DIR__))
+    design = File.read!(Path.expand("../../../DESIGN.md", __DIR__))
+
+    # Documented behaviour that used to be absent or silently wrong.
+    assert readme =~ "Run.mix_format/2"
+    assert readme =~ "只作用于本次调用"
+    assert readme =~ "Newbee.Terminal.Output"
+    assert design =~ "worktree_prune/1"
+    assert design =~ ":bad_dir"
+    assert design =~ ":no_such_dir"
+  end
 end

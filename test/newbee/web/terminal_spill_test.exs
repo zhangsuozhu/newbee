@@ -5,8 +5,7 @@ defmodule Newbee.Web.TerminalSpillTest do
   alias Newbee.{Spill, Web}
 
   @timeout 60_000
-  # head 32KB + tail 32KB；PTY 会把每行变成 \r\n 并回显命令，
-  # 所以同样的行数在 PTY 里比裸 stdout 更占字节。
+  # head 32KB + tail 32KB（清洗后的文本，LF 行尾）。
   @keep_bytes 64_000
 
   defp start_terminal do
@@ -73,8 +72,8 @@ defmodule Newbee.Web.TerminalSpillTest do
     recovered = read_all(id)
     assert byte_size(recovered) == meta.bytes
 
-    # 保留下来的头尾确实来自这份原文
-    assert recovered =~ "1\r\n"
+    # 保留下来的头尾确实来自这份原文（行尾已被清洗成 LF）
+    assert recovered =~ "1\n"
     assert recovered =~ "20000"
   end
 

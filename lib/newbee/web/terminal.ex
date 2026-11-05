@@ -1,5 +1,20 @@
 defmodule Newbee.Web.Terminal do
-  @moduledoc "One real PTY per Web session, shared by WebSocket clients and AI tools."
+  @moduledoc """
+  One real PTY per Web session, shared by WebSocket clients and AI tools.
+
+  `exec/4` returns only what the command itself wrote. The command echo, the
+  `newbee-done` sentinel and shell prompts are structural noise for a model, so the
+  command runs inside a `{ ... }` compound command that prints its start marker only
+  after bash has read (and echoed) the whole block, and just the slice between the two
+  markers is kept. While the command runs `PS1`/`PS2` are blanked and echo is off; the
+  compound command restores both from saved values, and `:terminal_exec_reap` repeats the
+  restore when Ctrl-C kills the block before its cleanup line can run.
+
+  That slice then goes through `Newbee.Terminal.Output` (ANSI/OSC, carriage-return
+  overwrite, backspace) and the shared head/tail window (32KB + 32KB), so an over-budget
+  result keeps a tail preview plus an executable `spill://` handle.
+  """
+
   use GenServer
 
   @registry Newbee.Web.TerminalRegistry
@@ -10,6 +25,9 @@ defmodule Newbee.Web.Terminal do
   # 谎报成"省略 12KB"。
   @max_exec_head_bytes 32_000
   @max_exec_tail_bytes 32_000
+  # 超时后终端仍要收尾（Ctrl-C 会打断前台命令，shell 会继续跑剩下的收尾行）；
+  # 这是等待收尾的上限，超过就按已捕获的部分输出返回。
+  @exec_reap_ms 2_000
   @terminal_pid_attempts 20
   # 手动终端上下文预算（进 transcript，比命令输出更小气）。
   @max_manual_context_head_bytes 8_000
@@ -122,12 +140,19 @@ defmodule Newbee.Web.Terminal do
     end
   end
 
-  def exec(sid, cwd, command, timeout \\ 300_000)
+  @doc """
+  Run a command on this session's PTY.
+
+  `dir` scopes the working directory to this call: the shell cds there for the
+  command and cds back afterwards, so a per-call `cd` never leaks into the next
+  call or into the user's manual terminal.
+  """
+  def exec(sid, cwd, command, timeout \\ 300_000, dir \\ nil)
       when is_binary(sid) and is_binary(cwd) and is_binary(command) do
     with {:ok, pid} <- ensure(sid, cwd) do
       timeout = normalize_timeout(timeout)
       call_timeout = if timeout == :infinity, do: :infinity, else: timeout + 5_000
-      GenServer.call(pid, {:exec, command, timeout}, call_timeout)
+      GenServer.call(pid, {:exec, command, timeout, dir}, call_timeout)
     end
   end
 
@@ -177,20 +202,21 @@ defmodule Newbee.Web.Terminal do
     {:reply, result, st}
   end
 
-  def handle_call({:exec, _command, _timeout}, _from, %{pending_exec: pending} = st) when not is_nil(pending) do
+  def handle_call({:exec, _command, _timeout, _dir}, _from, %{pending_exec: pending} = st) when not is_nil(pending) do
     {:reply, %{exit: :busy, exit_code: :busy, output: "终端已有 AI 命令在运行"}, st}
   end
 
-  def handle_call({:exec, command, timeout}, from, st) do
+  def handle_call({:exec, command, timeout, dir}, from, st) do
     command = String.trim_trailing(command, "\n")
     st = flush_manual_context(st)
 
     if String.trim(command) == "" do
       {:reply, %{exit: 0, exit_code: 0, output: ""}, st}
     else
-      token = "nbee" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
-      marker = <<27>> <> "]777;newbee-done;" <> token <> ";"
-      payload = command <> "\n" <> "printf '\\033]777;newbee-done;" <> token <> ";%s\\007' \"$?\"\n"
+      token = "nbee" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
+      start_marker = <<27>> <> "]777;newbee-start;" <> token <> <<7>>
+      done_prefix = <<27>> <> "]777;newbee-done;" <> token <> ";"
+      payload = exec_payload(command, token, dir)
 
       try do
         if Port.command(st.port, payload) do
@@ -201,9 +227,15 @@ defmodule Newbee.Web.Terminal do
 
           pending = %{
             from: from,
-            marker: marker,
             ref: ref,
             timer: timer,
+            token: token,
+            start_marker: start_marker,
+            done_prefix: done_prefix,
+            stage: :awaiting_start,
+            status: nil,
+            carry: "",
+            cleaner: Newbee.Terminal.Output.new(),
             buffer: Newbee.Truncate.Window.new(@max_exec_head_bytes, @max_exec_tail_bytes),
             spill: spill_open("web_terminal")
           }
@@ -257,13 +289,30 @@ defmodule Newbee.Web.Terminal do
 
   def handle_info({:manual_context_flush, _token}, st), do: {:noreply, st}
 
+  # 超时：Ctrl-C 打断前台命令，再排一个回收定时器。
+  #
+  # Ctrl-C 会中止整个复合命令，payload 末尾的收尾行因此跑不到——tty 模式与
+  # PS1/PS2 会停在「已关闭」的状态。收尾所需的值都还在 shell 变量里，所以这里
+  # 等 @exec_reap_ms 让命令的输出落完，再补发一次还原并返回。
+  # 中断期间到达的输出照常进缓冲，模型拿到的是「已经跑出来的那部分」。
   def handle_info({:terminal_exec_timeout, ref}, %{pending_exec: %{ref: ref} = pending} = st) do
-    if is_port(st.port) and Port.info(st.port), do: Port.command(st.port, <<3>>)
+    send_port(st.port, <<3>>)
+    reap_timer = Process.send_after(self(), {:terminal_exec_reap, ref}, @exec_reap_ms)
+    {:noreply, %{st | pending_exec: %{pending | timer: reap_timer}}}
+  rescue
+    _ -> {:noreply, %{st | pending_exec: pending}}
+  end
+
+  def handle_info({:terminal_exec_reap, ref}, %{pending_exec: %{ref: ref} = pending} = st) do
+    # 补发还原：PS1/PS2、git 环境、tty 模式都还留在 shell 变量里。
+    # 不发的话用户的手动终端会永久失去提示符与回显。
+    send_port(st.port, restore_line())
     reply_pending(pending, %{exit: :timeout, exit_code: :timeout, output: render_exec_output(pending)})
     {:noreply, %{st | pending_exec: nil}}
   rescue
     _ ->
-      reply_pending(pending, %{exit: :timeout, exit_code: :timeout, output: render_exec_output(pending)})
+      send_port(st.port, "stty echo 2>/dev/null; PS1=$__nbee_ps1; PS2=$__nbee_ps2\n")
+      reply_pending(pending, %{exit: :timeout, exit_code: :timeout, output: ""})
       {:noreply, %{st | pending_exec: nil}}
   end
 
@@ -513,74 +562,122 @@ defmodule Newbee.Web.Terminal do
   defp complete_pending_exec(%{pending_exec: nil} = st, _data), do: st
 
   defp complete_pending_exec(%{pending_exec: pending} = st, data) do
-    pending = %{
-      pending
-      | buffer: Newbee.Truncate.Window.push(pending.buffer, data),
-        spill: spill_push(pending.spill, data)
-    }
-
-    case exec_status(pending) do
-      {:ok, status} ->
+    case pending |> Map.update!(:carry, &(&1 <> data)) |> consume_pending() do
+      %{stage: :done} = pending ->
         cancel_timer(pending.timer)
         output = render_exec_output(pending)
-        reply_pending(pending, %{exit: status, exit_code: status, output: output})
+        reply_pending(pending, %{exit: pending.status, exit_code: pending.status, output: output})
         %{st | pending_exec: nil}
 
-      :incomplete ->
+      pending ->
         %{st | pending_exec: pending}
     end
   end
 
-  # 结束标记 = ESC]777;newbee-done;<token>;<status> BEL，由 shell 在命令结束后打印。
+  # 分两段消费字节流：
   #
-  # 先看 tail（正常情形：标记出现在最后一段），再回退看 head——若命令结束后
-  # 仍有超过 32KB 字节涌入（提示符刷屏、后台任务仍在写），标记会被挤出 tail 窗口，
-  # 此时它连同紧随其后的状态码一定落在 head 里。两处都不在才算未完成。
+  #   1. `:awaiting_start` —— 丢掉开始标记之前的一切。这段里混着命令回显、shell
+  #      提示符、以及上一轮遗留的收尾字节，全部与本次命令无关。
+  #   2. `:body` —— 只把标记之间的字节交给清洗器，并在遇到结束标记时立刻收尾。
   #
-  # BEL 必须到齐才算完整状态码，否则 "1" 可能是 "127" 的前缀，会提前结束命令。
-  defp exec_status(pending) do
-    [pending.buffer.tail, pending.buffer.head]
-    |> Enum.find_value(:incomplete, &status_in(&1, pending.marker))
-  end
+  # 标记本身可能被切在两个 chunk 之间，所以先按「已收到的最长前缀」判断是否还可能
+  # 匹配；不匹配才把首字节当成普通数据推给清洗器。这样既不会漏判，也不会把
+  # 半截标记当成输出吐出去。
+  defp consume_pending(%{stage: :awaiting_start} = pending) do
+    case :binary.match(pending.carry, pending.start_marker) do
+      {at, len} ->
+        rest = binary_part(pending.carry, at + len, byte_size(pending.carry) - at - len)
+        consume_pending(%{pending | stage: :body, carry: rest})
 
-  defp status_in(region, marker) do
-    with {at, _len} <- match_or_missing(region, marker),
-         after_marker = at + byte_size(marker),
-         {bel, _} <- match_or_missing(region, <<7>>, after_marker) do
-      case Integer.parse(String.trim(binary_part(region, after_marker, bel - after_marker))) do
-        {value, ""} -> {:ok, value}
-        _ -> {:ok, 1}
-      end
-    else
-      _ -> nil
+      :nomatch ->
+        if marker_prefix?(pending.carry, pending.start_marker),
+          do: pending,
+          else: %{pending | carry: keep_marker_tail(pending.carry, pending.start_marker)}
     end
   end
 
-  defp match_or_missing(binary, pattern, from \\ 0) do
-    case :binary.match(binary, pattern, scope: {from, byte_size(binary) - from}) do
-      :nomatch -> :missing
-      found -> found
+  defp consume_pending(%{stage: :body} = pending) do
+    case :binary.match(pending.carry, pending.done_prefix) do
+      {at, len} ->
+        body = binary_part(pending.carry, 0, at)
+        rest = binary_part(pending.carry, at + len, byte_size(pending.carry) - at - len)
+        {pending, text} = clean(pending, body)
+        consume_pending(%{pending | stage: :awaiting_status, carry: rest} |> absorb(text))
+
+      :nomatch ->
+        {ready, carry} = split_marker_tail(pending.carry, pending.done_prefix)
+        {pending, text} = clean(pending, ready)
+        %{pending | carry: carry} |> absorb(text)
     end
   end
 
-  # 结束标记之前的输出才是命令输出：标记之后（含状态码与 BEL）的部分要丢掉。
+  # 结束标记之后只剩状态码与 BEL。BEL 未到说明状态码还没写全——必须等，
+  # 否则 "1" 会被当成 "127" 的前缀，提前把命令判成失败。
+  defp consume_pending(%{stage: :awaiting_status} = pending) do
+    case :binary.match(pending.carry, <<7>>) do
+      {bel, _} -> %{pending | stage: :done, status: parse_status(binary_part(pending.carry, 0, bel)), carry: ""}
+      :nomatch -> pending
+    end
+  end
+
+  defp consume_pending(%{stage: :done} = pending), do: pending
+
+  defp parse_status(text) do
+    case Integer.parse(String.trim(text)) do
+      {value, ""} -> value
+      _ -> 1
+    end
+  end
+
+  defp clean(pending, ""), do: {pending, ""}
+
+  defp clean(pending, data) do
+    {cleaner, text} = Newbee.Terminal.Output.push(pending.cleaner, data)
+    {%{pending | cleaner: cleaner}, text}
+  end
+
+  # 清洗后的文本同时进「头尾窗口」（给模型看的预览）和 spill（完整原文）。
+  # 两者必须喂同一份字节，否则标记里声明的原文量与实际对象内容对不上。
+  defp absorb(pending, ""), do: pending
+
+  defp absorb(pending, text) do
+    %{
+      pending
+      | buffer: Newbee.Truncate.Window.push(pending.buffer, text),
+        spill: spill_push(pending.spill, text)
+    }
+  end
+
+  # carry 里还没出现完整标记：把「可能是标记开头」的尾巴留在 carry 里等下一块。
+  defp split_marker_tail(carry, marker) do
+    keep = marker_tail_len(carry, marker)
+    ready_len = byte_size(carry) - keep
+    {binary_part(carry, 0, ready_len), binary_part(carry, ready_len, keep)}
+  end
+
+  defp marker_tail_len(carry, marker) do
+    size = byte_size(carry)
+    max = min(size, byte_size(marker) - 1)
+
+    Enum.find(max..0//-1, 0, fn len ->
+      binary_part(carry, size - len, len) == binary_part(marker, 0, len)
+    end)
+  end
+
+  defp marker_prefix?(carry, marker), do: carry != "" and marker_tail_len(carry, marker) == byte_size(carry)
+
+  # 等待开始标记时同样要留住可能是标记开头的尾巴，其余字节直接丢弃。
+  defp keep_marker_tail(carry, marker) do
+    keep = marker_tail_len(carry, marker)
+    binary_part(carry, byte_size(carry) - keep, keep)
+  end
+
+  # 结束标记之前的输出才是命令输出；清洗器已经把 ANSI、回车覆盖与退格处理掉了。
   # 其余按同一套「头尾预览 + 内容寻址落盘」渲染，标记里带回读句柄。
   defp render_exec_output(pending) do
-    window =
-      pending.buffer
-      |> drop_after(pending.buffer.tail, pending.marker)
-      |> drop_after(pending.buffer.head, pending.marker)
-
+    {_cleaner, tail} = Newbee.Terminal.Output.finish(pending.cleaner)
+    window = absorb(pending, tail).buffer
     Newbee.Truncate.Window.render(window, handle: exec_spill_handle(pending, window)).text
-  end
-
-  # 若该 region 里出现标记，就把这一 region 截到标记之前（其余 region 不动）。
-  defp drop_after(window, region, marker) do
-    case match_or_missing(region, marker) do
-      {at, _len} when region == window.tail -> %{window | tail: binary_part(region, 0, at)}
-      {at, _len} when region == window.head -> %{window | head: binary_part(region, 0, at)}
-      _ -> window
-    end
   end
 
   # 未丢字节就不必留对象（否则每条短命令都会产生一个 spill 文件）。
@@ -898,4 +995,89 @@ defmodule Newbee.Web.Terminal do
   rescue
     _ -> :ok
   end
+
+  # 往 PTY 写字节；终端已停止时安静失败（超时清理路径不该因此崩溃）。
+  defp send_port(port, data) do
+    if is_port(port) and Port.info(port), do: Port.command(port, data)
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  # 一段命令被包进 `{ ... }` 复合命令里，一次性写进 PTY：
+  #
+  #   * bash 先把整段读进内存（PS2 续行），全部读完后才执行；命令回显因此全部
+  #     落在开始标记之前，被 `:awaiting_start` 整段丢弃。实测扁平写法（命令与
+  #     标记各占一行、分多次写）在 63KB payload 下回显会漏进输出。
+  #   * 命令体用 `eval '<single-quoted>'` 承载。这样即使命令本身有语法错误，
+  #     也只会让 eval 在**运行期**返回非零，外层复合命令仍然会打印结束标记；
+  #     若直接内联，语法错误会让 bash 丢掉整段，标记永远不会出现（已实测）。
+  #   * `__nbee_st=$?` 紧跟 eval，状态码不会被收尾语句覆盖。
+  #   * git 的分页与着色在这里压制：`GIT_PAGER=cat` 避免 less 抢走 PTY，
+  #     `color.ui=false` 避免 CSI 序列。收尾时按「原本有没有设置」精确还原，
+  #     不给用户的手动终端留下永久改动。
+  defp exec_payload(command, token, dir) do
+    # `stty -echo` 与 `PS1=` 必须独立成行：要等命令**解析完**再执行，否则 bash 在
+    # 开始执行命令前会把 tty 模式与提示符重置回去（实测）。
+    # 提示符清空是为了 Ctrl-C：中断后 bash 会立刻打印提示符，而那时收尾行已经
+    # 跑不到了，只有提前清空才能保证它不会混进「部分输出」。中断路径由
+    # `:terminal_exec_reap` 负责把 PS1/PS2 与回显补回来（变量仍留在 shell 里）。
+    # A failed cd must skip the command: running it in the previous directory is
+    # exactly the silent-wrong-place behaviour this option exists to remove.
+    "{ __nbee_tty=$(stty -g 2>/dev/null); " <>
+      "__nbee_ps1=${PS1+x}${PS1-}; __nbee_ps2=${PS2+x}${PS2-}; " <>
+      "__nbee_gp=${GIT_PAGER+x}${GIT_PAGER-}; __nbee_gc=${GIT_CONFIG_PARAMETERS+x}${GIT_CONFIG_PARAMETERS-}; " <>
+      "GIT_PAGER=cat; export GIT_PAGER; " <>
+      "GIT_CONFIG_PARAMETERS=\"'color.ui=false'\"; export GIT_CONFIG_PARAMETERS; " <>
+      "PS1=; PS2=\n" <>
+      "stty -echo 2>/dev/null\n" <>
+      "printf '\\033]777;newbee-start;" <>
+      token <>
+      "\\007'\n" <>
+      "__nbee_st=0\n" <>
+      cd_enter(dir) <>
+      "if [ \"$__nbee_st\" = 0 ]; then eval " <>
+      shell_single_quote(command) <>
+      "; __nbee_st=$?; fi\n" <>
+      cd_leave(dir) <>
+      restore_line() <>
+      "printf '\\033]777;newbee-done;" <>
+      token <>
+      ";%s\\007' \"$__nbee_st\"\n" <>
+      "}\n"
+  end
+
+  # `cd:` scopes the directory to this call: enter before the command, leave after.
+  # Without it one `cd /tmp` left every later call — and the user's manual terminal —
+  # in /tmp (measured drift).
+  defp cd_enter(nil), do: ""
+
+  defp cd_enter(dir) do
+    "__nbee_pwd=$PWD\n" <>
+      "cd " <>
+      shell_single_quote(dir) <>
+      " 2>/dev/null || { __nbee_st=$?; printf 'newbee: cannot enter %s\\n' " <>
+      shell_single_quote(dir) <>
+      "; }\n"
+  end
+
+  defp cd_leave(nil), do: ""
+
+  defp cd_leave(_dir), do: "cd \"$__nbee_pwd\"; unset __nbee_pwd\n"
+
+  # 收尾：把 PS1/PS2、git 环境与 tty 模式都还原成执行前的样子。
+  # 正常情况下由复合命令自己跑；被 Ctrl-C 打断时由 `:terminal_exec_reap` 再发一次。
+  defp restore_line do
+    "case $__nbee_ps1 in +*) PS1=${__nbee_ps1#+};; *) unset PS1;; esac; " <>
+      "case $__nbee_ps2 in +*) PS2=${__nbee_ps2#+};; *) unset PS2;; esac; " <>
+      "case $__nbee_gp in +*) GIT_PAGER=${__nbee_gp#+}; export GIT_PAGER;; *) unset GIT_PAGER;; esac; " <>
+      "case $__nbee_gc in +*) GIT_CONFIG_PARAMETERS=${__nbee_gc#+}; export GIT_CONFIG_PARAMETERS;; *) unset GIT_CONFIG_PARAMETERS;; esac; " <>
+      "unset __nbee_ps1 __nbee_ps2 __nbee_gp __nbee_gc; " <>
+      "stty \"$__nbee_tty\" 2>/dev/null; unset __nbee_tty\n"
+  end
+
+  # POSIX 单引号转义：' → '\''，整段包进单引号后没有任何字节会被 bash 再解释。
+  defp shell_single_quote(text), do: "'" <> String.replace(text, "'", "'\\''") <> "'"
 end

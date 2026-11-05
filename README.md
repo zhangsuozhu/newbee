@@ -305,8 +305,8 @@ mix newbee.dev                                                     # 之后：�
 - **浏览器自动化**：需要真实渲染、点击/输入、DOM 查询、下载、PDF 或截图时用 `Newbee.Tools.Browser.run/1`；默认使用隔离 Playwright，只有明确授权才使用 `backend: "screen"` 操作现有 Chrome。交互式操作可用 `session: "new"` 复用同一页面（最多 4 会话/4 标签页，闲置两分钟回收）；快照默认截断，超时或异常绝不静默重放写入。
 - **媒体上屏**：用 `Newbee.Tools.Media.show(path, caption: "...")` 在 WebUI 会话流内联展示图片、音频、视频、文本和 Markdown；文本/代码有 256 KiB 上限，超限或非 UTF-8 自动退化为下载。
 
-- **避免重复入口**：Scaffold 只做工程创建/依赖；编译测试用 Run。长命令使用 `Run.sh(..., timeout: ms)`，没有 `sh_long` 或项目专用 Django helper。
-- **按需说明不重复**：`Newbee.read("tool://模块名")` 展示用途/示例和编译器真实签名。
+ - **避免重复入口**：Scaffold 只做工程创建/依赖；编译/测试/格式检查用 Run，三者共享同一组选项（`Run.mix_compile/1`、`Run.mix_test/2`、`Run.mix_format/2`），不做一键大工具。长命令使用 `Run.sh(..., timeout: ms)`，没有 `sh_long` 或项目专用 Django helper。`cd:` 只作用于本次调用：命令执行前进入、结束后返回，目录不存在直接失败而不是在旧目录里静默跑完。
+ - **命令输出是给模型看的**：AI 会话里的命令跑在共享 PTY 上，结果只保留命令自己写出的字节——命令回显、`newbee-done` 哨兵、shell 提示符、ANSI/光标控制、回车重绘与退格残渣都已剥离（`Newbee.Terminal.Output`）。超预算仍按头尾窗口截断并给出 `spill://` 全文句柄。
 
 Edit 完整协议、错误类别和示例见 [`docs/edit-design.md`](docs/edit-design.md)。
 

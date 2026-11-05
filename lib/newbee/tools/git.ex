@@ -12,6 +12,7 @@ defmodule Newbee.Tools.Git do
   - `rollback(dir \\\\ ".")` — roll the workspace back to `HEAD` (`checkout -- .` + `clean -fd lib/ test/`); the undo key of the lenient sandbox.
   - `worktree_add(path, ref \\\\ "HEAD")` — open an isolated worktree for a subagent.
   - `worktree_remove(path)` — remove a worktree (`--force`).
+  - `worktree_prune(root \\\\ ".")` — drop registrations whose directory is gone.
 
   `run/2` funnels everything through `System.cmd("git", ["-C", dir | args])`, failing as `{:error, {code, output}}`.
 
@@ -25,6 +26,8 @@ defmodule Newbee.Tools.Git do
       {:ok, _} = Newbee.Tools.Git.commit("/tmp/repo", "fix: update")
       {:ok, _} = Newbee.Tools.Git.worktree_add("/tmp/repo-wt", "HEAD")
       {:ok, _} = Newbee.Tools.Git.worktree_remove("/tmp/repo-wt")
+      {:ok, _} = Newbee.Tools.Git.worktree_prune("/tmp/repo")
+
       {:ok, _} = Newbee.Tools.Git.rollback("/tmp/disposable-repo")
 
   `commit`, `rollback`, and the worktree examples mutate repos — use only on explicitly chosen temp/isolated repos; read-only fns are safe on the current project.
@@ -64,6 +67,45 @@ defmodule Newbee.Tools.Git do
 
   @doc "worktree_remove/2: force-remove a worktree under the root repo. Returns `{:ok, output} | {:error, {code, output}}`."
   def worktree_remove(root, path), do: run(root, ["worktree", "remove", "--force", path])
+
+  @doc """
+  Drop registrations whose worktree directory is gone.
+
+  Deleting a worktree directory with `File.rm_rf/1` leaves its entry in
+  `.git/worktrees/` forever; `git worktree list` keeps reporting a path that no
+  longer exists and the admin directory keeps growing. Git's own prune removes
+  exactly those entries and leaves live worktrees untouched.
+  Returns `{:ok, removed_count} | {:error, {code, output}}`.
+  """
+  def worktree_prune(root \\ ".") do
+    with {:ok, before} <- registered_worktree_paths(root),
+         {:ok, _} <- run(root, ["worktree", "prune"]),
+         {:ok, after_paths} <- registered_worktree_paths(root) do
+      {:ok, length(before -- after_paths)}
+    end
+  end
+
+  # Counting the difference instead of parsing `prune -v` keeps this language
+  # independent: git localizes that output, so line matching is not reliable.
+  defp registered_worktree_paths(root) do
+    case run(root, ["worktree", "list", "--porcelain"]) do
+      {:ok, output} ->
+        paths =
+          output
+          |> String.split("\n", trim: true)
+          |> Enum.flat_map(fn line ->
+            case String.split(line, " ", parts: 2) do
+              ["worktree", path] -> [path]
+              _ -> []
+            end
+          end)
+
+        {:ok, paths}
+
+      {:error, _} = error ->
+        error
+    end
+  end
 
   defp run(dir, args) do
     case System.cmd("git", ["-C", dir | args], stderr_to_stdout: true) do

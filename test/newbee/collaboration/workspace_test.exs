@@ -176,6 +176,51 @@ defmodule Newbee.Collaboration.WorkspaceTest do
     {worktrees, 0} = System.cmd("git", ["worktree", "list", "--porcelain"], cd: git_root, stderr_to_stdout: true)
     refute worktrees =~ workspace["path"]
     assert :ok = Workspace.discard_orphan(workspace)
+
+    # A registration must be gone, not just the directory: .git/worktrees is
+    # shared by every worktree, so a leftover entry keeps reporting a dead path.
+    assert worktree_registered?(git_root, workspace["path"]) == false
+  end
+
+  test "cleanup drops a registration whose directory was already deleted", %{root: root} do
+    git_root = Path.join(root, "repo")
+    File.mkdir_p!(git_root)
+    File.write!(Path.join(git_root, "a.txt"), "a\n")
+    git!(git_root, ["init", "-q"])
+    git!(git_root, ["config", "user.email", "test@example.invalid"])
+    git!(git_root, ["config", "user.name", "Workspace Test"])
+    git!(git_root, ["add", "."])
+    git!(git_root, ["commit", "-qm", "base"])
+
+    task = %{
+      "id" => "task-orphan-#{System.unique_integer([:positive])}",
+      "workflow" => %{},
+      "workspace_source" => git_root
+    }
+
+    :ok = Newbee.Colony.Store.put_task(task)
+    assert {:ok, _path} = Newbee.Colony.Workspace.ensure(task, git_root)
+    {:ok, stored} = Newbee.Colony.Store.get_task(task["id"])
+    workspace = stored["workspace"]
+    assert workspace["kind"] == "git_worktree"
+    assert worktree_registered?(git_root, workspace["path"])
+
+    # Simulate an interrupted cleanup / external delete: directory gone, entry left.
+    File.rm_rf!(workspace["path"])
+    assert worktree_registered?(git_root, workspace["path"])
+
+    assert {:ok, _} = Workspace.cleanup(terminal_task(workspace, "rejected"))
+    refute worktree_registered?(git_root, workspace["path"])
+  end
+
+  defp worktree_registered?(root, path) do
+    {output, 0} = System.cmd("git", ["worktree", "list", "--porcelain"], cd: root, stderr_to_stdout: true)
+    String.contains?(output, "worktree " <> Path.expand(path) <> "\n")
+  end
+
+  defp git!(dir, args) do
+    {_output, 0} = System.cmd("git", args, cd: dir, stderr_to_stdout: true)
+    :ok
   end
 
   test "旧快照缺少 mode 仍可读取，非法 mode 被拒绝", %{root: root} do
