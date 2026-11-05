@@ -158,12 +158,52 @@ defmodule Newbee.Tools.JSpace do
     end
   end
 
-  # When header is non-nil, first collapse the placeholder line (e.g. "Verified:  (none)") to a bare header
+  # When header is non-nil, keep the entries under that header instead of at EOF.
+  # `lines ++ [line]` used to strand every ✓NN after later [CP NN] blocks, so the
+  # "what is verified" section read as empty while the file tail held the entries.
   defp append_numbered(lines, v, counters, key, tag, header) do
-    lines = if header, do: replace_line(lines, header, header), else: lines
     n = Map.fetch!(counters, key) + 1
     num = String.pad_leading(Integer.to_string(n), 2, "0")
     line = tag <> num <> if(tag == "✓", do: " ", else: "] ") <> v
-    {lines ++ [line], Map.put(counters, key, n)}
+
+    lines =
+      case header && Enum.find_index(lines, &String.starts_with?(&1, header)) do
+        nil -> lines ++ [line]
+        idx -> insert_under_header(lines, idx, line)
+      end
+
+    {lines, Map.put(counters, key, n)}
+  end
+
+  # Collapse the "(none)" placeholder to the bare header, then place the entry after
+  # the entries already under it so repeated calls keep one contiguous section.
+  defp insert_under_header(lines, idx, line) do
+    header = header_only(String.trim_trailing(Enum.at(lines, idx)))
+    rest = List.replace_at(lines, idx, header)
+    List.insert_at(rest, section_end(rest, idx), line)
+  end
+
+  # Index just past the last entry belonging to the header at `idx`.
+  defp section_end(lines, idx) do
+    lines
+    |> Enum.drop(idx + 1)
+    |> Enum.take_while(&entry_line?/1)
+    |> length()
+    |> Kernel.+(idx + 1)
+  end
+
+  defp entry_line?("✓" <> _), do: true
+  defp entry_line?("? " <> _), do: true
+  defp entry_line?("- [" <> _), do: true
+  defp entry_line?("    - [ ] " <> _), do: true
+  defp entry_line?(""), do: true
+  defp entry_line?(_), do: false
+
+  # "Verified:  (none)" -> "Verified:"; a bare header stays as is.
+  defp header_only(text) do
+    case String.split(text, "  ", parts: 2) do
+      [head, _placeholder] -> head
+      [head] -> head
+    end
   end
 end
