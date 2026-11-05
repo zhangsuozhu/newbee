@@ -144,7 +144,7 @@ defmodule Newbee.Tools.JSpace do
         :core -> {replace_line(lines, "Core:", "Core:      " <> v), counters}
         :next -> {replace_line(lines, "Next:", "Next:      " <> v), counters}
         :verified -> append_numbered(lines, v, counters, :verified, "✓", "Verified:")
-        :open -> {lines ++ ["? " <> v], counters}
+        :open -> {insert_under_header(lines, v), counters}
         :checkpoint -> append_numbered(lines, v, counters, :cp, "[CP ", nil)
       end
 
@@ -158,29 +158,34 @@ defmodule Newbee.Tools.JSpace do
     end
   end
 
-  # When header is non-nil, keep the entries under that header instead of at EOF.
-  # `lines ++ [line]` used to strand every ✓NN after later [CP NN] blocks, so the
-  # "what is verified" section read as empty while the file tail held the entries.
+  # When header is non-nil, keep the entry under that header instead of at EOF.
+  # `lines ++ [line]` used to strand every ✓NN after later [CP NN] blocks and leave
+  # `Open:` stuck on "(none)", so both sections read as empty while the entries sat
+  # at the bottom of the file.
   defp append_numbered(lines, v, counters, key, tag, header) do
     n = Map.fetch!(counters, key) + 1
     num = String.pad_leading(Integer.to_string(n), 2, "0")
     line = tag <> num <> if(tag == "✓", do: " ", else: "] ") <> v
 
-    lines =
-      case header && Enum.find_index(lines, &String.starts_with?(&1, header)) do
-        nil -> lines ++ [line]
-        idx -> insert_under_header(lines, idx, line)
-      end
-
-    {lines, Map.put(counters, key, n)}
+    {insert_entry(lines, header, line), Map.put(counters, key, n)}
   end
+
+  defp insert_under_header(lines, v), do: insert_entry(lines, "Open:", "? " <> v)
 
   # Collapse the "(none)" placeholder to the bare header, then place the entry after
   # the entries already under it so repeated calls keep one contiguous section.
-  defp insert_under_header(lines, idx, line) do
-    header = header_only(String.trim_trailing(Enum.at(lines, idx)))
-    rest = List.replace_at(lines, idx, header)
-    List.insert_at(rest, section_end(rest, idx), line)
+  defp insert_entry(lines, nil, line), do: lines ++ [line]
+
+  defp insert_entry(lines, header, line) do
+    case Enum.find_index(lines, &String.starts_with?(&1, header)) do
+      nil ->
+        lines ++ [line]
+
+      idx ->
+        header = header_only(String.trim_trailing(Enum.at(lines, idx)))
+        rest = List.replace_at(lines, idx, header)
+        List.insert_at(rest, section_end(rest, idx), line)
+    end
   end
 
   # Index just past the last entry belonging to the header at `idx`.
@@ -192,10 +197,9 @@ defmodule Newbee.Tools.JSpace do
     |> Kernel.+(idx + 1)
   end
 
+  # A section holds its own entry kinds plus blank separators; anything else ends it.
   defp entry_line?("✓" <> _), do: true
   defp entry_line?("? " <> _), do: true
-  defp entry_line?("- [" <> _), do: true
-  defp entry_line?("    - [ ] " <> _), do: true
   defp entry_line?(""), do: true
   defp entry_line?(_), do: false
 

@@ -68,6 +68,30 @@ defmodule Newbee.Tools.JSpaceTest do
     assert text =~ "Verified:\n✓01 第一条"
   end
 
+  test "open 条目留在 Open 段内，占位符被清掉", %{sid: sid} do
+    JSpace.note([goal: "g"], sid)
+    assert JSpace.read(sid) =~ "Open:      (none)"
+
+    JSpace.note([open: "问题一"], sid)
+    JSpace.note([open: "问题二"], sid)
+
+    text = JSpace.read(sid)
+    refute text =~ "Open:      (none)"
+
+    lines = String.split(text, "\n")
+    open_at = Enum.find_index(lines, &String.starts_with?(&1, "Open:"))
+    next_at = Enum.find_index(lines, &String.starts_with?(&1, "Next:"))
+    first_at = Enum.find_index(lines, &String.starts_with?(&1, "? 问题一"))
+    second_at = Enum.find_index(lines, &String.starts_with?(&1, "? 问题二"))
+
+    assert open_at, "missing Open header"
+    assert next_at, "missing Next header"
+    assert Enum.at(lines, open_at) == "Open:"
+    assert first_at == open_at + 1
+    assert second_at == first_at + 1
+    assert second_at < next_at
+  end
+
   test "checkpoint 编号追加", %{sid: sid} do
     JSpace.note([checkpoint: "core 定稿"], sid)
     assert JSpace.read(sid) =~ "[CP 01] core 定稿"
