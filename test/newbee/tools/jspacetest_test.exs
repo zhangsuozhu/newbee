@@ -37,6 +37,37 @@ defmodule Newbee.Tools.JSpaceTest do
     assert text =~ "✓02 测试全绿"
   end
 
+  test "verified 条目留在 Verified 段内，不散落到文件末尾", %{sid: sid} do
+    JSpace.note([goal: "g", next: "n"], sid)
+    JSpace.note([verified: "第一条"], sid)
+    JSpace.note([checkpoint: "CP 之后"], sid)
+    JSpace.note([verified: "第二条"], sid)
+
+    lines = JSpace.read(sid) |> String.split("\n")
+    verified_at = Enum.find_index(lines, &String.starts_with?(&1, "Verified:"))
+    open_at = Enum.find_index(lines, &String.starts_with?(&1, "Open:"))
+    first_at = Enum.find_index(lines, &String.starts_with?(&1, "✓01"))
+    second_at = Enum.find_index(lines, &String.starts_with?(&1, "✓02"))
+
+    assert verified_at, "missing Verified header"
+    assert open_at, "missing Open header"
+
+    # Both entries sit between the header and the next section, not after [CP ...].
+    assert first_at == verified_at + 1
+    assert second_at == first_at + 1
+    assert second_at < open_at
+  end
+
+  test "占位符在首条 verified 时被清掉", %{sid: sid} do
+    JSpace.note([goal: "g"], sid)
+    assert JSpace.read(sid) =~ "Verified:  (none)"
+
+    JSpace.note([verified: "第一条"], sid)
+    text = JSpace.read(sid)
+    refute text =~ "Verified:  (none)"
+    assert text =~ "Verified:\n✓01 第一条"
+  end
+
   test "checkpoint 编号追加", %{sid: sid} do
     JSpace.note([checkpoint: "core 定稿"], sid)
     assert JSpace.read(sid) =~ "[CP 01] core 定稿"
