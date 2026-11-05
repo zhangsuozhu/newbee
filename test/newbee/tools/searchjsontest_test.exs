@@ -18,6 +18,11 @@ defmodule Newbee.Tools.SearchJsonTest do
     assert Enum.any?(Search.find("search.ex"), &String.ends_with?(&1, "lib/newbee/tools/search.ex"))
   end
 
+  test "grep/find 对不存在的目录返回错误，而不是空结果" do
+    assert {:error, %{reason: :no_such_dir}} = Search.grep("defmodule", "lib/does_not_exist")
+    assert {:error, %{reason: :no_such_dir}} = Search.find("x.ex", "lib/does_not_exist")
+  end
+
   test "Json 路径提取" do
     data = %{"data" => %{"items" => [%{"name" => "a"}, %{"name" => "b"}]}}
     assert Json.get!(data, "data.items[1].name") == "b"

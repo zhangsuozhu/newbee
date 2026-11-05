@@ -19,27 +19,46 @@ defmodule Newbee.Tools.Search do
 
   @skip ~r{/(_build|deps|\.git|node_modules|cover)/}
 
-  @doc "Recursive content search. Returns hits on success; {:error, %{reason: :invalid_regex, hint: _}} on a bad regex."
-  def grep(pattern, dir \\ ".", opts \\ []) when is_binary(pattern) do
+  @doc """
+  Recursive content search.
+
+  Returns `[{path, line_no, line}]`, `[]` when nothing matches, and
+  `{:error, %{reason: ..., hint: ...}}` when the call cannot be honoured:
+  a bad regex, a directory that does not exist, or options passed as the
+  directory (e.g. `grep(pattern, path: "lib")` — that is a keyword list, not a path).
+  """
+  def grep(pattern, dir \\ ".", opts \\ [])
+
+  def grep(pattern, opts, []) when is_binary(pattern) and is_list(opts) do
+    {:error,
+     %{
+       reason: :bad_arguments,
+       hint: "second argument is the directory (a string); options come third: Search.grep(pattern, \"lib\", opt: 1)"
+     }}
+  end
+
+  def grep(pattern, dir, opts) when is_binary(pattern) and is_list(opts) do
     max = Keyword.get(opts, :max, 100)
 
+    with {:ok, re} <- compile_regex(pattern),
+         {:ok, files} <- list_files(dir) do
+      files
+      |> Enum.reduce_while([], fn f, acc ->
+        if length(acc) >= max do
+          {:halt, acc}
+        else
+          hits = grep_file(f, re, max - length(acc))
+          {:cont, acc ++ hits}
+        end
+      end)
+      |> Enum.take(max)
+    end
+  end
+
+  defp compile_regex(pattern) do
     case Regex.compile(pattern) do
-      {:ok, re} ->
-        files = list_files(dir)
-
-        files
-        |> Enum.reduce_while([], fn f, acc ->
-          if length(acc) >= max do
-            {:halt, acc}
-          else
-            hits = grep_file(f, re, max - length(acc))
-            {:cont, acc ++ hits}
-          end
-        end)
-        |> Enum.take(max)
-
-      {:error, reason} ->
-        {:error, %{reason: :invalid_regex, hint: "regex compile failed: " <> inspect(reason)}}
+      {:ok, re} -> {:ok, re}
+      {:error, reason} -> {:error, %{reason: :invalid_regex, hint: "regex compile failed: " <> inspect(reason)}}
     end
   end
 
@@ -75,26 +94,45 @@ defmodule Newbee.Tools.Search do
     _, _ -> []
   end
 
-  @doc "Find by filename fragment. Returns a path list."
-  def find(name, dir \\ ".") do
-    list_files(dir) |> Enum.filter(&String.contains?(Path.basename(&1), name))
+  @doc """
+  Find by filename fragment.
+
+  Returns a path list (empty when nothing matches) or
+  `{:error, %{reason: :no_such_dir, hint: ...}}` for a missing directory.
+  """
+  def find(name, dir \\ ".") when is_binary(name) do
+    with {:ok, files} <- list_files(dir) do
+      Enum.filter(files, &String.contains?(Path.basename(&1), name))
+    end
   end
 
+  # A missing directory must be reported: an empty hit list from a typo is
+  # indistinguishable from "no matches" and silently answers the wrong question.
   defp list_files(dir) do
     dir = Path.expand(dir)
 
+    if File.dir?(dir) do
+      git_files(dir)
+    else
+      {:error, %{reason: :no_such_dir, hint: "not a directory: " <> dir}}
+    end
+  end
+
+  defp git_files(dir) do
     # 优先用 git ls-files（秒级，白名单），失败回退到 wildcard + 过滤
     case System.cmd("git", ["ls-files", "-co", "--exclude-standard", dir], stderr_to_stdout: true) do
       {out, 0} ->
-        out
-        |> String.split("\n", trim: true)
-        |> Enum.reject(&Regex.match?(@skip, "/" <> &1 <> "/"))
+        {:ok,
+         out
+         |> String.split("\n", trim: true)
+         |> Enum.reject(&Regex.match?(@skip, "/" <> &1 <> "/"))}
 
       _ ->
         # 有界漫步：git 不可用时的回退原来是裸 "**"（根目录下内存爆炸，2026-09-08 事故）。
-        Newbee.FsWalk.files(dir, prune_dir: &skip_search_segment?/1)
-        |> Enum.filter(&File.regular?/1)
-        |> Enum.reject(&Regex.match?(@skip, &1))
+        {:ok,
+         Newbee.FsWalk.files(dir, prune_dir: &skip_search_segment?/1)
+         |> Enum.filter(&File.regular?/1)
+         |> Enum.reject(&Regex.match?(@skip, &1))}
     end
   end
 

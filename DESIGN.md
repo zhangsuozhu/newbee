@@ -269,8 +269,10 @@ Change/Release/Revision 状态机的唯一驾驶者：收消息、排评测、�
 - **RepoMap**（`projection` 插件）：紧凑工程结构图（模块/`@moduledoc` 摘要/公开签名/struct 字段），mtime 指纹增量缓存。模型凭图定位 → 只对目标区域取细节。
 - **记忆/状态**：全局与项目级持久状态读写（自动脱敏剥离密钥）。
 - **大对象逐出**（`ArtifactRef`）：大 binding 自动逐出为 artifact 引用（`%ArtifactRef{ref: ...}`），模型持引用可按需拉回——长期会话不因大对象撑爆绑定。
-- **数据工具**：`Json`/`Http`/`Search`/`Git`/`Diff`。
-- **工具错误契约**：可恢复错误统一返回 `{:error, %{reason: atom(), hint: String.t(), ...}}`；bang 函数保留 Elixir 抛异常语义。`Run.sh` 返回 `%{exit, exit_code, output}`，`exit_code` 是 `exit` 的直觉别名。简单 URL GET 优先 `Newbee.read/1`，需 POST/headers/status 时使用 `Http`。
+ - **数据工具**：`Json`/`Http`/`Search`/`Git`/`Diff`。
+ - **工具错误契约**：可恢复错误统一返回 `{:error, %{reason: atom(), hint: String.t(), ...}}`；bang 函数保留 Elixir 抛异常语义。`Run.sh` 返回 `%{exit, exit_code, output}`，`exit_code` 是 `exit` 的直觉别名。`Search`/`Git` 对"看不到结果"与"空结果"必须可区分：目录不存在返回 `{:error, %{reason: :no_such_dir, ...}}`，而不是空列表。简单 URL GET 优先 `Newbee.read/1`，需 POST/headers/status 时使用 `Http`。
+ - **工作目录**：`Run.sh(cmd, cd: dir)` 只作用于**单次调用**——命令前进入、命令后返回；目录不存在返回 `%{exit: :bad_dir, ...}` 且不执行命令。共享 PTY 与 Ring0 都以调用时 cwd 启动，跨调用不留残留状态。
+ - **Git 工作树**：`worktree_add/remove` 之外提供 `worktree_prune/1`。删除工作树**目录**不会自动清除 `.git/worktrees/` 登记；清理路径必须 prune，否则 `git worktree list` 会长期报告已死路径。prune 只清目录已不存在的条目。
 - **工作协议**：`JSpace`（§6.4）、`BestTool`（显式不确定性聚合）。
 - **宿主桥**：`Newbee.Host.*` 类型化请求——调模型、代理消息、审计、调度。模型能改造环境的一切，物理上碰不到宿主的心脏：**宽松策略管"行为"，宿主契约管"能力"，后者不依赖模型自觉。**
 
