@@ -118,6 +118,7 @@ defmodule Newbee.Colony.Workflow do
 
           case current["mode"] do
             "decomposition" -> Decomposition.complete(data, current, summary)
+            "team_plan" -> Newbee.Colony.Team.plan_complete(current, summary)
             "triage" -> finish_triage(data, current, summary)
             _ -> finish_proposal(data, current, summary)
           end

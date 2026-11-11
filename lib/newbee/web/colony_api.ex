@@ -11,7 +11,7 @@ defmodule Newbee.Web.ColonyApi do
   alias Newbee.Colony.Engine
   alias Newbee.Colony.Work
 
-  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.cwd colony.dissolve colony.view colony.drill colony.workspace.cleanup colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.cwd colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow colony.work.dismiss colony.work.restore colony.work.abandon)
+  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.cwd colony.dissolve colony.view colony.drill colony.workspace.cleanup colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.cwd colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow colony.work.dismiss colony.work.restore colony.work.abandon colony.team.templates colony.team.template.save colony.team.template.seed colony.team.proposals colony.team.proposal.start colony.team.proposal.decide colony.team.proposal.retry colony.team.runs colony.team.run.start colony.team.run.view colony.team.run.review colony.team.run.finish colony.team.run.extend)
 
   @doc "dispatch/2 返回 {:ok, value} | {:error, code, message}。"
   def dispatch("colony.invite.redeem", p),
@@ -271,14 +271,19 @@ defmodule Newbee.Web.ColonyApi do
           end
 
         _ ->
-          do_dispatch(method, p)
+          if method in team_methods() do
+            with :ok <- team_scope_check(method, p), do: team_dispatch(method, p)
+          else
+            do_dispatch(method, p)
+          end
       end
     end
   end
 
   defp authorize_request(method, p, actor, role) do
     owner_only =
-      ~w(colony.create colony.bootstrap colony.dissolve colony.rename colony.cwd colony.work.cwd colony.bee.add colony.bee.remove colony.control colony.invite.create colony.remote.join colony.honey.review colony.task.claim colony.task.decompose colony.honey.add colony.workspace.cleanup colony.signal.emit colony.work.abandon)
+      ~w(colony.create colony.bootstrap colony.dissolve colony.rename colony.cwd colony.work.cwd colony.bee.add colony.bee.remove colony.control colony.invite.create colony.remote.join colony.honey.review colony.task.claim colony.task.decompose colony.honey.add colony.workspace.cleanup colony.signal.emit colony.work.abandon) ++
+        team_owner_methods()
 
     cond do
       method not in @methods ->
@@ -295,7 +300,7 @@ defmodule Newbee.Web.ColonyApi do
         {:error, "forbidden", "该操作需要蜂群管理权限"}
 
       actor == nil and
-          method not in ~w(colony.list colony.bootstrap colony.create colony.capabilities colony.remote.join) ->
+          method not in ~w(colony.list colony.bootstrap colony.create colony.capabilities colony.remote.join colony.team.templates colony.team.template.seed colony.team.runs colony.team.proposals colony.team.run.start) ->
         {:error, "not_found", "蜂群不存在"}
 
       true ->
@@ -320,6 +325,104 @@ defmodule Newbee.Web.ColonyApi do
             end
           end
         )
+    end
+  end
+
+  # ── 团队模板（colony.team.*）：模板是全局资产；提案/运行绑定蜂群 ──
+  defp team_methods,
+    do:
+      ~w(colony.team.templates colony.team.template.save colony.team.template.seed colony.team.proposals colony.team.proposal.start colony.team.proposal.decide colony.team.proposal.retry colony.team.runs colony.team.run.start colony.team.run.view colony.team.run.review colony.team.run.finish colony.team.run.extend)
+
+  defp team_owner_methods,
+    do:
+      ~w(colony.team.template.save colony.team.template.seed colony.team.proposal.start colony.team.proposal.decide colony.team.proposal.retry colony.team.run.start colony.team.run.review colony.team.run.finish colony.team.run.extend)
+
+  # 提案/运行对象归属校验：wire 参数 proposalId/runId 必须属于当前蜂群（模板全局，不校验归属）。
+  defp team_scope_check(method, p) do
+    cid = p["colonyId"]
+
+    cond do
+      method in ~w(colony.team.proposal.decide colony.team.proposal.retry) and is_binary(p["proposalId"]) ->
+        case Newbee.Colony.Team.get_proposal(p["proposalId"]) do
+          {:ok, %{"colony_id" => ^cid}} -> :ok
+          {:ok, _} -> {:error, "forbidden", "提案不属于当前蜂群"}
+          _ -> {:error, "not_found", "提案不存在"}
+        end
+
+      method in ~w(colony.team.run.view colony.team.run.review colony.team.run.finish colony.team.run.extend) and
+          is_binary(p["runId"]) ->
+        case Newbee.Colony.Team.get_run(p["runId"]) do
+          {:ok, %{"colony_id" => ^cid}} -> :ok
+          {:ok, _} -> {:error, "forbidden", "项目不属于当前蜂群"}
+          _ -> {:error, "not_found", "项目不存在"}
+        end
+
+      true ->
+        :ok
+    end
+  end
+
+  defp team_dispatch(method, p) do
+    alias Newbee.Colony.Team
+    actor = p["actorBeeId"]
+    cid = p["colonyId"]
+
+    case method do
+      "colony.team.templates" ->
+        {:ok, %{"templates" => Team.list_templates()}}
+
+      "colony.team.template.save" ->
+        with {:ok, template} <- Team.save_template(p["template"] || %{}, actor, "manual"),
+             do: {:ok, %{"template" => template}}
+
+      "colony.team.template.seed" ->
+        with {:ok, template} <- Team.seed_builtin(actor), do: {:ok, %{"template" => template}}
+
+      "colony.team.proposals" ->
+        {:ok, %{"proposals" => Team.list_proposals(colony_id: cid)}}
+
+      "colony.team.proposal.start" ->
+        with {:ok, proposal} <-
+               Team.start_proposal(%{"goal" => p["goal"], "colony_id" => p["colonyId"] || nil}, actor),
+             do: {:ok, %{"proposal" => proposal}}
+
+      "colony.team.proposal.decide" ->
+        Team.decide_proposal(p["proposalId"], p["decision"], actor, p["note"], p["overrides"])
+
+      "colony.team.proposal.retry" ->
+        with {:ok, proposal} <- Team.retry_proposal(p["proposalId"], actor, p["note"]),
+             do: {:ok, %{"proposal" => proposal}}
+
+      "colony.team.runs" ->
+        {:ok, %{"runs" => Team.list_runs(colony_id: cid)}}
+
+      "colony.team.run.start" ->
+        with {:ok, run} <-
+               Team.start_run(
+                 %{
+                   "template_id" => p["templateId"],
+                   "name" => p["name"],
+                   "goal" => p["goal"],
+                   "cwd" => p["cwd"]
+                 },
+                 actor
+               ),
+             do: {:ok, %{"run" => run}}
+
+      "colony.team.run.view" ->
+        Team.run_view(p["runId"])
+
+      "colony.team.run.review" ->
+        with {:ok, run} <- Team.review_stage(p["runId"], p["honeyId"], p["verdict"], actor, p["note"] || ""),
+             do: {:ok, %{"run" => run}}
+
+      "colony.team.run.finish" ->
+        with {:ok, run} <- Team.finish(p["runId"], p["decision"], actor, p["note"]),
+             do: {:ok, %{"run" => run}}
+
+      "colony.team.run.extend" ->
+        with {:ok, run} <- Team.extend(p["runId"], p["extraRounds"], actor),
+             do: {:ok, %{"run" => run}}
     end
   end
 

@@ -3,6 +3,7 @@ import { esc, fmtBytes, kindLabel } from "./util.js";
 import { rpc, toast, authToken } from "./api.js";
 import { state, currentBeeId, currentTaskId, memberById, resetToChat } from "./store.js";
 import { manage, help, joinEnvironment } from './manage.js';
+import { openTeams } from './teams.js';
 import { refresh } from './store.js';
 import { selectedWorkspaceCwd } from './shell.js';
 
@@ -66,7 +67,8 @@ export function renderComposer(ctx) {
     ['＋', '新工作', 'primary', () => { ctx.openHome('work'); prefill('请帮我完成：'); }],
     ['◔', '工作台', '', () => ctx.openHome('work')],
     ['？', '能做什么', '', help],
-    ['⚙', '群设置', '', manage],
+    ['⚙', '群设置', '', () => manage(ctx)],
+    ['🧩', '团队', '', () => openTeams(ctx)],
     ['⇢', '加入蜂群', 'secondary', joinEnvironment],
   ];
   for (const [icon, label, kind, fn] of chips) {

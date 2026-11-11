@@ -8,6 +8,7 @@ let authRetryUsed = false;
 
 export const state = {
   colonies: [],
+  teamRuns: [],
   filter: "",
   collapsed: {},
   mode: "colony",        // colony | bee（点了某只 Bee，左侧换成它的对话列表）
@@ -187,6 +188,11 @@ export async function refresh() {
     // An unchanged overview does not imply unchanged member or task detail.
     if (view.changed !== false) state.data = mergeTraceSnapshot(state.data, view);
     state.lastError = null;
+    // 团队项目条：轻量列表，失败不影响主视图（团队功能对旧数据/无权限成员静默降级）。
+    try {
+      const { runs } = await rpc('colony.team.runs', { colonyId });
+      if (current()) state.teamRuns = runs || [];
+    } catch (_) { if (current()) state.teamRuns = []; }
 
     // 一对一视图与「Bee 模式」都需要 trail（Bee 模式靠它出对话列表）
     const trailBeeId = state.view === "dm" ? currentBeeId() : state.mode === "bee" ? state.beeModeId : null;

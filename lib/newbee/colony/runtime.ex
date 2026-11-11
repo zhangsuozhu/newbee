@@ -518,6 +518,7 @@ defmodule Newbee.Colony.Runtime do
           {:ok, honey} ->
             unless task["integration_required"], do: trace(task, "honey", summary, %{"honey_id" => honey["id"]})
             Newbee.Colony.Workflow.advance()
+            if task["source"] == "team_run", do: Newbee.Colony.Team.stage_complete(task)
 
           _ ->
             :ok
