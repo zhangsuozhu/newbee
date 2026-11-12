@@ -9192,6 +9192,16 @@ if (!inspectionMode && window.NewbeeConversationWork) window.NewbeeConversationW
   notify: (message, kind) => line(kind === 'err' ? 'error' : 'notice', message)
 });
 
+// ── 团队工作室（主界面内嵌面板）──
+if (!inspectionMode && window.NewbeeTeamPanel) {
+  window.NewbeeTeamPanel.init({
+    rpc,
+    notify: (message, kind) => line(kind === 'err' ? 'error' : 'notice', message),
+    openSession: (sid) => { if (sid) { try { resume(sid); } catch (e) {} } }
+  });
+  const teamBtn = $("team-panel-toggle");
+  if (teamBtn) teamBtn.addEventListener("click", () => window.NewbeeTeamPanel.open());
+}
 startStats();
 startUnreadPoll();
 }

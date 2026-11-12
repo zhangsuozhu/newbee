@@ -389,6 +389,29 @@ defmodule Newbee.Colony.Team do
     Store.all("team_runs")
     |> then(fn all -> if cid, do: Enum.filter(all, &(&1["colony_id"] == cid)), else: all end)
     |> Enum.sort_by(& &1["created_at"], :desc)
+    |> Enum.map(&run_summary/1)
+  end
+
+  # 列表摘要：附带 needs_action（待验收/待确认/已停下/受阻），主界面徽标用。
+  defp run_summary(run) do
+    task =
+      run["current_task_id"] &&
+        case Store.get_task(run["current_task_id"]) do
+          {:ok, t} -> t
+          _ -> nil
+        end
+
+    needs =
+      cond do
+        run["status"] in ["completed", "halted"] -> true
+        task && task["status"] == "pending_review" -> true
+        task && task["status"] == "blocked" -> true
+        true -> false
+      end
+
+    run
+    |> Map.put("needs_action", needs)
+    |> Map.put("current_status", task && task["status"])
   end
 
   @doc "取单个运行。"
@@ -587,8 +610,12 @@ defmodule Newbee.Colony.Team do
 
       current =
         case run["current_task_id"] && Store.get_task(run["current_task_id"]) do
-          {:ok, task} -> Map.take(task, ~w(id title status next_step result revision context_revision))
-          _ -> nil
+          {:ok, task} ->
+            Map.take(task, ~w(id title status next_step result revision context_revision session_id))
+            |> Map.put("result_content", result_content(task))
+
+          _ ->
+            nil
         end
 
       {:ok,
@@ -600,6 +627,15 @@ defmodule Newbee.Colony.Team do
        }}
     end
   end
+
+  defp result_content(%{"result" => hid}) when is_binary(hid) do
+    case Store.get_honey(hid) do
+      {:ok, honey} -> String.slice(to_string(honey["content"]), 0, 12_000)
+      _ -> nil
+    end
+  end
+
+  defp result_content(_), do: nil
 
   # ── 上下文（沟通机制的资料面） ──
 
