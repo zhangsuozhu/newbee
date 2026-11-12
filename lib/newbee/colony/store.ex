@@ -2,7 +2,7 @@ defmodule Newbee.Colony.Store do
   @moduledoc "Serialized durable Colony state; disk failure never acknowledges a mutation."
   use GenServer
 
-  @tables ~w(colonies bees tasks honey trace signals controls deliveries identities conversations invites remote_reports pending_messages command_receipts source_instances source_events source_outbox)
+  @tables ~w(colonies bees tasks honey trace signals controls deliveries identities conversations invites remote_reports pending_messages command_receipts source_instances source_events source_outbox team_templates team_proposals team_runs)
 
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 

@@ -174,6 +174,10 @@ defmodule Newbee.Colony.Work do
       Newbee.Colony.Decomposition.context(task)
   end
 
+  defp triage_contract(%{"mode" => "team_plan"} = task), do: "\n\n" <> Newbee.Colony.Team.plan_context(task)
+
+  defp triage_contract(%{"source" => "team_run"} = task), do: Newbee.Colony.Team.stage_context(task)
+
   defp triage_contract(_task), do: ""
 
   def revise(cid, tid, attrs, actor) do

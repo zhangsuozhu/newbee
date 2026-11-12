@@ -1,6 +1,7 @@
 import {rpc, toast, markMemberSession, forgetAuthToken} from './api.js';
 import {state, refresh, loadColonies, selectColony, emit} from './store.js';
 import {form} from './forms.js';
+import {openTeams} from './teams.js';
 
 export async function renameColony() {
   const colony = state.data?.colony;
@@ -30,12 +31,13 @@ export async function dissolveColony() {
 }
 
 
-export async function manage() {
+export async function manage(ctx) {
   const owner = state.data?.can_manage;
-  const options = owner ? [{value:'rename',label:'改名蜂群'}, {value:'invite',label:'邀请同事'}, {value:'environment',label:'邀请另一台 AI 环境'}, {value:'add',label:'添加本地 AI'}, {value:'remove',label:'移出成员'}, {value:'leave',label:'退出蜂群'}, {value:'dissolve',label:'解散蜂群'}] : [{value:'leave',label:'退出蜂群'}];
+  const options = owner ? [{value:'teams',label:'团队模板与项目'}, {value:'rename',label:'改名蜂群'}, {value:'invite',label:'邀请同事'}, {value:'environment',label:'邀请另一台 AI 环境'}, {value:'add',label:'添加本地 AI'}, {value:'remove',label:'移出成员'}, {value:'leave',label:'退出蜂群'}, {value:'dissolve',label:'解散蜂群'}] : [{value:'teams',label:'团队模板与项目'}, {value:'leave',label:'退出蜂群'}];
   const choice = await form('蜂群设置', [{name:'action',label:'要做什么',options}], '继续');
   if (!choice) return;
   try {
+    if (choice.action === 'teams') return openTeams(ctx || {openTask: () => {}});
     if (choice.action === 'rename') return renameColony();
 
     if (choice.action === 'invite' || choice.action === 'environment') {
