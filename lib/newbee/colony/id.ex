@@ -22,6 +22,9 @@ defmodule Newbee.Colony.Id do
           | :delivery
           | :goal
           | :message
+          | :team_template
+          | :team_proposal
+          | :team_run
   @type scope :: :local | :xhost
 
   @kind_prefix %{
@@ -34,7 +37,10 @@ defmodule Newbee.Colony.Id do
     trace: "tr",
     delivery: "dlv",
     goal: "goal",
-    message: "msg"
+    message: "msg",
+    team_template: "tpl",
+    team_proposal: "tprop",
+    team_run: "trun"
   }
 
   @prefix_kind Map.new(@kind_prefix, fn {k, v} -> {v, k} end)

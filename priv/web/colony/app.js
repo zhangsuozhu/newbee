@@ -176,7 +176,7 @@ function signature() {
   const convs = (state.trail && state.trail.conversations || []).map((c) => `${c.id}:${c.title}:${c.messages || 0}`).join("|");
   const colonyName = d?.colony?.name || "";
   const colonyNames = (state.colonies || []).map((c) => c.colony?.name || "").join("|");
-  return JSON.stringify([state.colonyId, state.drillTab, state.inspector?.sessionId, colonyName, colonyNames, state.groupTab, state.workFilter, state.conversationId, state.mode, state.view, state.stack.map((s) => s.beeId || s.taskId).join('>'), state.filter, members, tasks, trace, traceFirst, tracePage, trail, drill, drillTrace.length, drillFirst, drillPage, state.colonies.length, state.lastError, d?.control_state, d?.can_manage, (d?.honey?.recent || []).map(h=>`${h.id}:${h.review_state}`).join(','), (d?.members || []).map(m=>m.control_state).join(','), convs]);
+  return JSON.stringify([state.colonyId, state.drillTab, state.inspector?.sessionId, colonyName, colonyNames, state.groupTab, state.workFilter, state.conversationId, state.mode, state.view, state.stack.map((s) => s.beeId || s.taskId).join('>'), state.filter, members, tasks, trace, traceFirst, tracePage, trail, drill, drillTrace.length, drillFirst, drillPage, state.colonies.length, state.lastError, d?.control_state, d?.can_manage, (d?.honey?.recent || []).map(h=>`${h.id}:${h.review_state}`).join(','), (d?.members || []).map(m=>m.control_state).join(','), convs, (state.teamRuns || []).map(r=>`${r.id}:${r.status}:${r.round}:${r.stage_index}:${r.revision}`).join(',')]);
 }
 
 function render(force = false) {

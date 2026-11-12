@@ -3,7 +3,7 @@ defmodule Newbee.Colony.TaskTest do
 
   alias Newbee.Colony.{Bee, Task}
 
-  defp bee(attrs \\ %{}) do
+  defp bee(attrs) do
     Bee.new(Map.merge(%{"colony_id" => "col_l_x", "kind" => "ai", "display" => "bot"}, attrs))
   end
 

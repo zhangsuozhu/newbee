@@ -29,6 +29,7 @@ defmodule Newbee.Plugins do
     {:tool, "tool.hive", Newbee.Tools.Hive, [:shell, :fs]},
     {:tool, "tool.media", Newbee.Tools.Media, [:fs]},
     {:tool, "tool.mcp", Newbee.Tools.Mcp, [:shell]},
+    {:tool, "tool.team", Newbee.Tools.Team, [:fs]},
     {:workflow, "workflow.jspace", Newbee.Tools.JSpace, [:fs]},
     {:projection, "projection.repomap", Newbee.Plugins.RepoMap, [:fs]},
     {:provider, "provider.openrouter", Newbee.Plugins.Provider.OpenRouter, [:net]}

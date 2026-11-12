@@ -9,6 +9,7 @@ import { refresh } from "./store.js";
 import { form } from './forms.js';
 import { renderMarkdown } from "./md.js";
 import { reviewModel } from './workview.js';
+import { renderTeamBanner } from './teams.js';
 
 // 卡片标题去掉指令前缀，避免用户原话在标题和正文之间重复占屏。
 function shortTitle(text, max = 34) {
@@ -40,6 +41,7 @@ export function renderGroupView(flow, ctx) {
     topTabs.append(tab);
   }
   flow.append(topTabs);
+  if (state.groupTab !== 'messages') renderTeamBanner(flow, ctx);
   if (state.groupTab === 'messages') {
     const hiddenTasks = new Set(tasks.filter(t => t.workflow || t.workflow_root).map(t => t.id));
     const internalResults = new Set(tasks.filter(t => t.integration_required).map(t => t.result));

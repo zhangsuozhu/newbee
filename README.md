@@ -173,6 +173,8 @@ Hive 是会话群的协作协议，不是蜂群；旧 `Newbee.Tools.Collaboratio
 
 *Colony attention is folded into the original session: a sidebar inbox and an accept/reject bar. The full workbench remains `/colony.html`. Delivery is not complete until a manager accepts it.*
 
+**团队模板**：群设置或「🧩 团队」入口里，可以让 main 角色（团队主理人）提出组建计划，人审批后自动建立角色与运营机制并入库为可复用模板；内置「产研团队」（产品经理→UI交互设计→架构师→研发→测试）。引用模板即可开项目：阶段成果自动交接给下游，验收打回回到对应环节重做，轮次预算用尽停下等人决策，走完闭环后可继续迭代。设计与验证见 [团队模板](docs/colony-team-templates.md)。
+
 ---
 
 ## ⚡ 快速开始 / Quick Start
