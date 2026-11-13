@@ -694,3 +694,23 @@
   .cw-team-caret { height: 44px; }
   .cw-team-menu { width: 240px; }
 }
+
+/* ── 分体按钮状态逻辑（与主按钮互斥规则同步）── */
+/* 主按钮禁用（无会话/安排中/已有活跃工作）：整体降饱和，箭头仍可点（导航不互斥） */
+.cw-team-split.cw-team-off .cw-team-main { filter: saturate(.25) brightness(.92); box-shadow: none; }
+.cw-team-split.cw-team-off .cw-team-caret { filter: saturate(.35) brightness(.95); }
+.cw-team-split.cw-team-off .cw-team-caret:hover { filter: saturate(.8) brightness(1.05); }
+/* 安排中：主按钮呼吸提示 */
+.cw-team-split[data-state="starting"] .cw-team-main { animation: cw-team-starting 1.1s ease-in-out infinite; }
+@keyframes cw-team-starting { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.25); } }
+/* 执行中：小绿点标记（与 send 的 queuing 区分：这是团队在干活） */
+.cw-team-split[data-state="working"] .cw-team-caret::after {
+  content: ""; position: absolute; top: 5px; right: 3px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--nb-green, #2da44e);
+  box-shadow: 0 0 0 2px var(--nb-bg-panel, #fff);
+}
+.cw-team-caret { position: relative; }
+/* 菜单里被互斥禁用的项 */
+.cw-team-menu-item.cw-team-item-off { opacity: .55; cursor: not-allowed; }
+.cw-team-menu-item.cw-team-item-off:hover { background: transparent; }
+.cw-team-menu-item:disabled { opacity: .55; cursor: not-allowed; }

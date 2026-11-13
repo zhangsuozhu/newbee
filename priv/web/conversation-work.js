@@ -86,6 +86,7 @@
     host: null,
     card: null,
     composerStart: null,
+    teamSplit: null,
     noticeBox: null,
     works: [],
     sessionId: "",
@@ -838,11 +839,20 @@
       : "自动拆分任务、独立执行并汇总结果；普通发送仍按原路径进行";
     node.dataset.state = busy ? 'starting' : hasWork ? 'working' : 'idle';
     node.setAttribute('aria-busy', String(busy));
-    node.title = (busy ? '正在安排分工' : hasWork ? '分工执行中' : '分工执行') + '：' + hint;
+    node.title = (busy ? '正在安排分工' : hasWork ? '分工执行中' : '交给团队 · 快速分工') + '：' + hint;
     node.setAttribute('aria-label', hasWork ? '分工正在执行，请在当前输入框发送补充要求' : '将当前输入框的任务交给多个执行者分工完成');
     node.disabled = busy || !sid || hasWork;
     if (!sid) node.title = "先选择一个会话";
     node.dataset.cwKey = "start";
+    // 分体按钮整体状态：主按钮禁用时箭头仍可开菜单（模板/工作室是导航，不受互斥限制），
+    // 但视觉上跟随置灰，避免"半亮半灰"的割裂感。
+    const wrap = state.teamSplit;
+    if (wrap) {
+      wrap.dataset.state = node.dataset.state;
+      wrap.classList.toggle("cw-team-off", node.disabled);
+      const caret = wrap.querySelector(".cw-team-caret");
+      if (caret) caret.title = hasWork ? "分工执行中 · 仍可浏览团队模板/工作室" : "选择团队模板 · 按阶段闭环交付";
+    }
   }
 
   function coordinationStatus(child) {
@@ -1793,7 +1803,14 @@
     const quick = el("button", "cw-team-menu-item cw-team-quick", "");
     quick.type = "button";
     quick.innerHTML = '<span class="cw-team-menu-ico">⚡</span><span class="cw-team-menu-txt"><b>快速分工</b><i>自动拆分分派，后台做完汇总</i></span>';
-    quick.addEventListener("click", () => { menu.remove(); api.start(); });
+    // 与主按钮同一互斥规则：无会话/正在安排/已有活跃工作时不可再发起。
+    const mainOff = state.composerStart && state.composerStart.disabled;
+    if (mainOff) {
+      quick.disabled = true;
+      quick.classList.add("cw-team-item-off");
+      quick.querySelector("i").textContent = state.works.some(isActive) ? "本对话已有工作在执行，先发送补充或开新对话" : (!sessionId() ? "先选择一个会话" : "正在安排分工…");
+    }
+    quick.addEventListener("click", () => { if (quick.disabled) return; menu.remove(); api.start(); });
     menu.append(quick);
     const list = el("div", "cw-team-menu-list");
     list.append(el("div", "cw-team-menu-loading", "加载团队模板…"));
@@ -1882,8 +1899,10 @@
     state.requestIds.clear();
     if (state.card && state.card.parentNode) state.card.parentNode.removeChild(state.card);
     state.card = null;
-    if (state.composerStart && state.composerStart.parentNode) state.composerStart.parentNode.removeChild(state.composerStart);
+    if (state.teamSplit && state.teamSplit.parentNode) state.teamSplit.parentNode.removeChild(state.teamSplit);
+    else if (state.composerStart && state.composerStart.parentNode) state.composerStart.parentNode.removeChild(state.composerStart);
     state.composerStart = null;
+    state.teamSplit = null;
     state.noticeBox = null;
     state.windowButtons = {};
     state.resizer = null;
