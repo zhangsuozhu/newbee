@@ -536,6 +536,25 @@
     } catch (e) { toast(e.message || "操作失败", "err"); }
   }
 
+  // 统一入口：从会话输入框把草稿目标直接交给某团队模板开项目。
+  // 打开工作室→定位模板→预填目标→用户确认启动（保留人工把关）。
+  function startWithGoal(template, goal, sessionId) {
+    state.tab = "templates";
+    state.pendingGoal = { templateId: template.id, goal: goal, sessionId: sessionId || null };
+    open();
+    setTimeout(() => {
+      const cards = els.body.querySelectorAll(".tp-card");
+      for (const c of cards) {
+        if (c.querySelector(".tp-card-title")?.textContent?.includes(template.name)) {
+          startProjectForm(template, c);
+          const ta = c.querySelector(".tp-inline-form .tp-textarea");
+          if (ta) { ta.value = goal; ta.focus(); }
+          c.scrollIntoView({ block: "center", behavior: "smooth" });
+          break;
+        }
+      }
+    }, 700);
+  }
   // ── 组建页 ──
   function renderProposals(body) {
     const head = h("div", "tp-section-head");
@@ -793,7 +812,7 @@
       setInterval(() => loadSessionMap().then(() => { if (opts.onMapUpdate) opts.onMapUpdate(); }), 12000);
     },
     open, close, refreshBadge,
-    renderSidebarGroups, teamSessionIds, loadSessionMap,
+    renderSidebarGroups, teamSessionIds, loadSessionMap, startWithGoal,
     isOpen: () => state.opened
   };
 })();
