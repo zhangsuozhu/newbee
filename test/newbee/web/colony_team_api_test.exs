@@ -64,6 +64,16 @@ defmodule Newbee.Web.ColonyTeamApiTest do
     assert advanced["stage_index"] == 1
   end
 
+  test "主界面无 colonyId 发起提案：自动建临时组建群（回归：曾报蜂群不存在）", %{cid: _cid} do
+    assert %{"ok" => %{"proposal" => proposal}} =
+             rpc("colony.team.proposal.start", %{"goal" => "组建一支运维团队"})
+
+    assert proposal["status"] == "planning"
+    assert is_binary(proposal["colony_id"])
+    {:ok, colony} = Store.get_colony(proposal["colony_id"])
+    assert colony["name"] =~ "团队组建"
+  end
+
   test "提案→草案→批准（RPC）", %{cid: cid} do
     assert %{"ok" => %{"proposal" => proposal}} =
              rpc("colony.team.proposal.start", %{"colonyId" => cid, "goal" => "组建产研团队"})
