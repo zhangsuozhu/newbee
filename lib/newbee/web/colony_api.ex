@@ -300,7 +300,7 @@ defmodule Newbee.Web.ColonyApi do
         {:error, "forbidden", "该操作需要蜂群管理权限"}
 
       actor == nil and
-          method not in ~w(colony.list colony.bootstrap colony.create colony.capabilities colony.remote.join colony.team.templates colony.team.template.seed colony.team.runs colony.team.proposals colony.team.run.start) ->
+          method not in ~w(colony.list colony.bootstrap colony.create colony.capabilities colony.remote.join colony.team.templates colony.team.template.seed colony.team.runs colony.team.proposals colony.team.run.start colony.team.proposal.start) ->
         {:error, "not_found", "蜂群不存在"}
 
       true ->
