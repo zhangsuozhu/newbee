@@ -243,7 +243,7 @@ defmodule Newbee.Colony.Work do
           task == nil or task["colony_id"] != cid ->
             {:error, "not_found", "工作不在当前群"}
 
-          Newbee.Colony.Workflow.planning?(task) or
+          (Newbee.Colony.Workflow.planning?(task) and task["mode"] != "team_plan") or
               (is_map(task["workflow"]) and
                  (task["workflow"]["phase"] in ["proposing", "discussing", "choosing"] or
                     task["waiting_for"] == "children")) ->

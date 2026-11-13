@@ -82,6 +82,23 @@ defmodule Newbee.Colony.TeamTest do
 
   # ── main 提案 → 审批 ──
 
+  test "真实执行器路由：Workflow.complete 把 main 草案推进到 draft_ready（回归：曾卡 planning）", ctx do
+    {:ok, proposal} = Team.start_proposal(%{"goal" => "持续优化产品的团队", "colony_id" => ctx.cid}, ctx.actor)
+    {:ok, task} = Store.get_task(proposal["task_id"])
+    # 模拟 Runtime 收到 done 事件后的真实调用路径
+    assert Newbee.Colony.Workflow.planning?(task)
+    {:ok, updated} = Newbee.Colony.Workflow.complete(task, draft_json(), task["context_revision"])
+    assert updated["status"] == "draft_ready"
+    {:ok, p2} = Team.get_proposal(proposal["id"])
+    assert p2["status"] == "draft_ready"
+    assert p2["draft"]["name"] == "产研团队"
+    # 任务不再被当成普通执行成果（不会误入 pending_review）
+    {:ok, t2} = Store.get_task(task["id"])
+    assert t2["status"] == "blocked"
+    assert t2["waiting_for"] == "user"
+    assert t2["result"] == nil
+  end
+
   test "提案创建 main 角色与规划任务，上下文带输出契约", ctx do
     {:ok, proposal} = Team.start_proposal(%{"goal" => "做一个记账小程序", "colony_id" => ctx.cid}, ctx.actor)
     assert proposal["status"] == "planning"

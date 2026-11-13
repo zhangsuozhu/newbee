@@ -128,81 +128,84 @@ defmodule Newbee.Colony.Team do
   解析模板草案 JSON；无效草案把提案置为 draft_invalid，任务保持可重试，不入库。
   """
   def plan_complete(task, summary) do
-    Store.transaction(fn data ->
-      proposal =
-        Enum.find(Map.values(data["team_proposals"]), &(&1["task_id"] == task["id"]))
+    Store.transaction(fn data -> apply_plan_complete(data, task, summary) end)
+  end
 
-      cond do
-        proposal == nil ->
-          {:ok, :ignored, data}
+  @doc "纯函数版：在已有 Store 事务内应用 main 的草案（Workflow.complete 路由用，避免嵌套事务）。"
+  def apply_plan_complete(data, task, summary) do
+    proposal =
+      Enum.find(Map.values(data["team_proposals"]), &(&1["task_id"] == task["id"]))
 
-        proposal["status"] not in ["planning", "draft_invalid"] ->
-          {:ok, :ignored, data}
+    cond do
+      proposal == nil ->
+        {:ok, :ignored, data}
 
-        true ->
-          case parse_draft(summary) do
-            {:ok, definition} ->
-              proposal =
-                Map.merge(proposal, %{
-                  "status" => "draft_ready",
-                  "draft" => definition,
-                  "revision" => proposal["revision"] + 1,
-                  "updated_at" => now()
+      proposal["status"] not in ["planning", "draft_invalid"] ->
+        {:ok, :ignored, data}
+
+      true ->
+        case parse_draft(summary) do
+          {:ok, definition} ->
+            proposal =
+              Map.merge(proposal, %{
+                "status" => "draft_ready",
+                "draft" => definition,
+                "revision" => proposal["revision"] + 1,
+                "updated_at" => now()
+              })
+
+            task =
+              Map.merge(task, %{
+                "status" => "blocked",
+                "waiting_for" => "user",
+                "next_step" => "团队草案已生成，等待审批：批准后自动建立角色与运营机制并入库为模板。",
+                "revision" => task["revision"] + 1,
+                "updated_at" => now()
+              })
+
+            {data, _} =
+              data
+              |> put_entry(
+                Trace.entry(%{
+                  "colony_id" => task["colony_id"],
+                  "task_id" => task["id"],
+                  "bee_id" => task["assigned_bee_id"],
+                  "type" => "message",
+                  "text" =>
+                    "main 已产出团队草案「#{definition["name"]}」（#{length(definition["roles"])}个角色 / #{length(definition["stages"])}个阶段），等待审批。",
+                  "data" => %{"team_proposal_id" => proposal["id"]}
                 })
+              )
 
-              task =
-                Map.merge(task, %{
-                  "status" => "blocked",
-                  "waiting_for" => "user",
-                  "next_step" => "团队草案已生成，等待审批：批准后自动建立角色与运营机制并入库为模板。",
-                  "revision" => task["revision"] + 1,
-                  "updated_at" => now()
-                })
+            {:ok, {:ok, proposal},
+             data
+             |> put_in(["team_proposals", proposal["id"]], proposal)
+             |> put_in(["tasks", task["id"]], task)}
 
-              {data, _} =
-                data
-                |> put_entry(
-                  Trace.entry(%{
-                    "colony_id" => task["colony_id"],
-                    "task_id" => task["id"],
-                    "bee_id" => task["assigned_bee_id"],
-                    "type" => "message",
-                    "text" =>
-                      "main 已产出团队草案「#{definition["name"]}」（#{length(definition["roles"])}个角色 / #{length(definition["stages"])}个阶段），等待审批。",
-                    "data" => %{"team_proposal_id" => proposal["id"]}
-                  })
-                )
+          {:error, reason} ->
+            proposal =
+              Map.merge(proposal, %{
+                "status" => "draft_invalid",
+                "note" => reason,
+                "revision" => proposal["revision"] + 1,
+                "updated_at" => now()
+              })
 
-              {:ok, {:ok, proposal},
-               data
-               |> put_in(["team_proposals", proposal["id"]], proposal)
-               |> put_in(["tasks", task["id"]], task)}
+            task =
+              Map.merge(task, %{
+                "status" => "blocked",
+                "waiting_for" => "user",
+                "next_step" => "草案不合格：#{reason}。可让 main 重新规划（不会入库）。",
+                "revision" => task["revision"] + 1,
+                "updated_at" => now()
+              })
 
-            {:error, reason} ->
-              proposal =
-                Map.merge(proposal, %{
-                  "status" => "draft_invalid",
-                  "note" => reason,
-                  "revision" => proposal["revision"] + 1,
-                  "updated_at" => now()
-                })
-
-              task =
-                Map.merge(task, %{
-                  "status" => "blocked",
-                  "waiting_for" => "user",
-                  "next_step" => "草案不合格：#{reason}。可让 main 重新规划（不会入库）。",
-                  "revision" => task["revision"] + 1,
-                  "updated_at" => now()
-                })
-
-              {:ok, {:ok, proposal},
-               data
-               |> put_in(["team_proposals", proposal["id"]], proposal)
-               |> put_in(["tasks", task["id"]], task)}
-          end
-      end
-    end)
+            {:ok, {:ok, proposal},
+             data
+             |> put_in(["team_proposals", proposal["id"]], proposal)
+             |> put_in(["tasks", task["id"]], task)}
+        end
+    end
   end
 
   @doc "让 main 重新规划（planning/draft_invalid/draft_ready 未审批时可用；有界：≤5次）。"
