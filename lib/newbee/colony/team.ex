@@ -395,6 +395,57 @@ defmodule Newbee.Colony.Team do
     |> Enum.map(&run_summary/1)
   end
 
+  @doc """
+  团队会话索引：把散落的执行会话按项目聚合，供主界面侧栏分组。
+  返回 [%{run_id, run_name, run_status, round, colony_id, sessions: [%{session_id, role, role_name, stage, stage_name, status, task_id}]}]。
+  """
+  def session_map do
+    runs = Store.all("team_runs")
+    convs = Store.all("conversations")
+    bees = Map.new(Store.all("bees"), &{&1["id"], &1})
+    tasks = Map.new(Store.all("tasks"), &{&1["id"], &1})
+
+    Enum.map(runs, fn run ->
+      stages = Map.new(run["template"]["stages"], &{&1["key"], &1})
+      roles = Map.new(run["template"]["roles"], &{&1["key"], &1})
+
+      sessions =
+        convs
+        |> Enum.filter(&(&1["colony_id"] == run["colony_id"]))
+        |> Enum.map(fn c ->
+          task = tasks[c["task_id"]]
+          bee = bees[c["bee_id"]]
+          stage = task && stages[task["team_stage"]]
+          role_key = (bee && bee["role"]) || (stage && stage["role"])
+          role = roles[role_key]
+
+          %{
+            "session_id" => c["id"],
+            "task_id" => c["task_id"],
+            "role" => role_key,
+            "role_name" => (role && role["name"]) || (bee && bee["display"]) || "成员",
+            "stage" => task && task["team_stage"],
+            "stage_name" => (stage && stage["name"]) || (task && task["team_stage"]),
+            "round" => task && task["team_round"],
+            "status" => task && task["status"]
+          }
+        end)
+        |> Enum.sort_by(& &1["session_id"])
+
+      %{
+        "run_id" => run["id"],
+        "run_name" => run["name"],
+        "run_status" => run["status"],
+        "round" => run["round"],
+        "colony_id" => run["colony_id"],
+        "needs_action" => run["needs_action"] || false,
+        "sessions" => sessions
+      }
+    end)
+    |> Enum.filter(&(&1["sessions"] != []))
+    |> Enum.sort_by(& &1["run_name"])
+  end
+
   # 列表摘要：附带 needs_action（待验收/待确认/已停下/受阻），主界面徽标用。
   defp run_summary(run) do
     task =
@@ -440,7 +491,7 @@ defmodule Newbee.Colony.Team do
           run["status"] != "active" or run["current_task_id"] != task["id"] ->
             {:ok, :ignored}
 
-          task["status"] != "pending_review" or not is_binary(task["result"]) ->
+          task["status"] not in ["pending_review", "done"] or not is_binary(task["result"]) ->
             {:ok, :ignored}
 
           true ->
@@ -891,7 +942,7 @@ defmodule Newbee.Colony.Team do
       task["id"] != run["current_task_id"] or task["result"] != honey_id ->
         {:error, "invalid_phase", "这不是当前阶段的待验收成果"}
 
-      task["status"] != "pending_review" ->
+      task["status"] not in ["pending_review", "done"] ->
         {:error, "invalid_phase", "当前阶段成果不在待验收状态"}
 
       true ->

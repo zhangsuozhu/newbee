@@ -720,6 +720,68 @@
     stopPoll();
   }
 
+  // ── 侧栏团队会话分组 ──
+  // 把散落在「其他会话」里的团队执行会话按项目聚合，方便管理与查看。
+  let sessionMap = [];
+  const collapsedRuns = new Set(JSON.parse(localStorage.getItem("newbee.teamCollapsed") || "[]"));
+  function saveCollapsed() { try { localStorage.setItem("newbee.teamCollapsed", JSON.stringify([...collapsedRuns])); } catch (e) {} }
+
+  async function loadSessionMap() {
+    if (!rpc) return;
+    try {
+      const r = await rpc("colony.team.sessions", {});
+      sessionMap = r.groups || [];
+    } catch (e) { sessionMap = []; }
+  }
+  function teamSessionIds() {
+    const ids = new Set();
+    sessionMap.forEach(g => g.sessions.forEach(s => ids.add(s.session_id)));
+    return ids;
+  }
+  const ROLE_ICON_MAP = { pm: "📋", ui: "🎨", arch: "🏗️", dev: "💻", qa: "🧪", main: "👑" };
+  const ST_LABEL = { running: "运行中", pending_review: "待验收", blocked: "受阻", done: "已完成", claimed: "进行中" };
+
+  function renderSidebarGroups(box, ctx) {
+    if (!sessionMap.length) return;
+    const { addItem, findSession, visible } = ctx;
+    sessionMap.forEach(g => {
+      const members = g.sessions.filter(s => visible(findSession(s.session_id)));
+      if (!members.length) return;
+      const collapsed = collapsedRuns.has(g.run_id);
+      const wrap = document.createElement("div");
+      wrap.className = "session-group tp-sgroup" + (collapsed ? " collapsed" : "");
+      wrap.dataset.runId = g.run_id;
+      const busy = g.sessions.filter(s => s.status === "running" || s.status === "claimed").length;
+      const head = document.createElement("div");
+      head.className = "session-group-header tp-sgroup-head";
+      const stateTxt = g.run_status === "completed" ? "待确认" : g.run_status === "halted" ? "已停下" : g.run_status === "closed" ? "已结束" : ("第" + g.round + "轮");
+      head.innerHTML = '<button class="session-group-toggle" title="' + (collapsed ? "展开" : "收起") + '">' + (collapsed ? "▸" : "▾") + '</button><span class="tp-sgroup-hex">🐝</span><span class="session-group-title" title="' + escapeAttr(g.run_name) + '">' + escapeAttr(g.run_name) + '</span><span class="session-group-count">' + g.sessions.length + ' 会话</span>' + (busy ? '<span class="session-group-busy">● ' + busy + ' 运行中</span>' : "") + (g.needs_action ? '<span class="tp-sgroup-need">待处理</span>' : "") + '<span class="session-group-spacer"></span><span class="tp-sgroup-round">' + escapeAttr(stateTxt) + '</span><button class="tp-sgroup-manage" title="打开团队工作室管理该项目">管理</button>';
+      head.onclick = (e) => {
+        if (e.target.closest(".tp-sgroup-manage")) return;
+        if (collapsedRuns.has(g.run_id)) collapsedRuns.delete(g.run_id); else collapsedRuns.add(g.run_id);
+        saveCollapsed();
+        if (ctx.rerender) ctx.rerender();
+      };
+      head.querySelector(".tp-sgroup-manage").onclick = (e) => { e.stopPropagation(); state.tab = "runs"; open(); setTimeout(() => { state.detail = g.run_id; state.detailData = null; loadDetail(g.run_id); }, 900); };
+      wrap.appendChild(head);
+      if (!collapsed) {
+        const body = document.createElement("div");
+        body.className = "session-group-body";
+        members.forEach(s => {
+          const it = addItem(findSession(s.session_id), true, { role: (ROLE_ICON_MAP[s.role] || "🐝") + " " + s.role_name + " · " + (s.stage_name || "") });
+          if (it) {
+            it.classList.add("tp-sgroup-item");
+            const st = it.querySelector(".session-role");
+            if (st && s.status) { st.title = ST_LABEL[s.status] || s.status; st.classList.add("tp-st-" + s.status); }
+            body.appendChild(it);
+          }
+        });
+        wrap.appendChild(body);
+      }
+      box.appendChild(wrap);
+    });
+  }
+  function escapeAttr(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
   window.NewbeeTeamPanel = {
     init(opts) {
       rpc = opts.rpc; notify = opts.notify; openSession = opts.openSession;
@@ -727,8 +789,11 @@
       build();
       refreshBadge();
       setInterval(refreshBadge, 15000);
+      loadSessionMap().then(() => { if (opts.onMapUpdate) opts.onMapUpdate(); });
+      setInterval(() => loadSessionMap().then(() => { if (opts.onMapUpdate) opts.onMapUpdate(); }), 12000);
     },
     open, close, refreshBadge,
+    renderSidebarGroups, teamSessionIds, loadSessionMap,
     isOpen: () => state.opened
   };
 })();
