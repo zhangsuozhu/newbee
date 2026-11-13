@@ -266,3 +266,17 @@
 .tp-toast.tp-show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .tp-toast.tp-err { border-color: color-mix(in srgb, var(--tp-err) 50%, transparent); color: var(--tp-err); }
 .tp-toast.tp-ok { border-color: color-mix(in srgb, var(--tp-ok) 50%, transparent); }
+
+/* ── 侧栏团队会话分组 ── */
+.tp-sgroup { border-left: 3px solid var(--tp-honey, #f5b83d); }
+.tp-sgroup-head { cursor: pointer; }
+.tp-sgroup-hex { font-size: 13px; margin-right: 2px; }
+.tp-sgroup-round { font-size: 10px; color: var(--nb-label-3); background: var(--nb-bg-elev); padding: 1px 7px; border-radius: 8px; white-space: nowrap; }
+.tp-sgroup-need { font-size: 10px; font-weight: 700; color: #1c1400; background: linear-gradient(135deg, var(--tp-honey,#f5b83d), var(--tp-amber,#e8930c)); padding: 1px 7px; border-radius: 8px; }
+.tp-sgroup-manage { border: 1px solid var(--nb-border); background: var(--nb-bg-panel); color: var(--nb-label-2); font-size: 11px; padding: 2px 9px; border-radius: 7px; cursor: pointer; }
+.tp-sgroup-manage:hover { border-color: var(--tp-honey,#f5b83d); color: var(--tp-amber,#e8930c); }
+.tp-sgroup-item .session-role { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tp-sgroup-item .session-role.tp-st-running, .tp-sgroup-item .session-role.tp-st-claimed { color: var(--nb-accent); }
+.tp-sgroup-item .session-role.tp-st-pending_review { color: var(--tp-amber,#e8930c); font-weight: 600; }
+.tp-sgroup-item .session-role.tp-st-blocked { color: var(--nb-warn); }
+.tp-sgroup-item .session-role.tp-st-done { color: var(--nb-green); }
