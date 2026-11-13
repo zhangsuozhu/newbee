@@ -1,7 +1,7 @@
 defmodule Newbee.Colony.Workflow do
   @moduledoc "Durable, bounded proposal and execution workflow belonging to one work item."
   alias Newbee.Colony.{Store, Work, Task, Control, Bee, Decomposition}
-  @planning ~w(triage proposal discussion decomposition)
+  @planning ~w(triage proposal discussion decomposition team_plan)
 
   def initialize(task, attrs) do
     if attrs["workflow"] == true and task["owner_kind"] == "ai" do
@@ -26,7 +26,11 @@ defmodule Newbee.Colony.Workflow do
     end
   end
 
-  def planning?(task), do: task["mode"] in @planning and (is_map(task["workflow"]) or is_binary(task["workflow_root"]))
+  def planning?(task),
+    do:
+      task["mode"] == "team_plan" or
+        (task["mode"] in @planning and (is_map(task["workflow"]) or is_binary(task["workflow_root"])))
+
   def managed?(task), do: is_map(task["workflow"]) or is_binary(task["workflow_root"])
 
   def context(task) do
@@ -118,7 +122,7 @@ defmodule Newbee.Colony.Workflow do
 
           case current["mode"] do
             "decomposition" -> Decomposition.complete(data, current, summary)
-            "team_plan" -> Newbee.Colony.Team.plan_complete(current, summary)
+            "team_plan" -> Newbee.Colony.Team.apply_plan_complete(data, current, summary)
             "triage" -> finish_triage(data, current, summary)
             _ -> finish_proposal(data, current, summary)
           end
