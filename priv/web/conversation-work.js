@@ -73,7 +73,15 @@
   const ANSWER_LIMIT = 8000;
   const ADOPTED_WORDS = new Set(["adopted", "applied", "consumed", "used"]);
   const RECEIVED_WORDS = new Set(["received", "accepted", "queued", "stored"]);
+  // 分项“已经不用再推进”的状态：交付、失败、取消都算收尾。
+  const SETTLED_STATUS = new Set(["pending_review", "done", "failed", "cancelled"]);
 
+  // 窗口模式：normal（跟会话流）· maximized（铺满）· minimized（只留标题栏）。
+  // 高度用 CSS 变量承载，拖动改高度时只写变量，不触发整卡重排。
+  const WINDOW_MODES = new Set(["normal", "maximized", "minimized"]);
+  const HEIGHT_MIN = 96;
+  const HEIGHT_MAX_RATIO = 0.82;
+  const STORAGE_KEY = "newbee.workcard.window";
   const state = {
     host: null,
     card: null,
@@ -101,7 +109,11 @@
     notice: null,
     noticeTimer: 0,
     sig: "",
-    onVisibility: null
+    onVisibility: null,
+    // 窗口状态：模式 + 用户拖出来的高度（像素）。最小化时保留高度，还原即恢复。
+    mode: "normal",
+    height: 0,
+    drag: null
   };
 
   function el(tag, cls, text) {
@@ -356,12 +368,20 @@
         question: normalizeQuestion(child.question)
       };
     }).filter((child) => child && child.id);
+    // 服务端会直接给 settled/failed/cancelled；老后端没有这些字段时按子项自己算，
+    // 这样“进展到哪了”不会因为后端版本不同而停在 0/N。
+    const settledLocal = children.filter((child) => SETTLED_STATUS.has(child.status)).length;
+    const failedLocal = children.filter((child) => child.status === "failed").length;
+    const cancelledLocal = children.filter((child) => child.status === "cancelled").length;
     return {
       phase: asText(value.phase) || "planning",
       summary: textOf(value.summary, 800),
       concurrency: Number(value.concurrency) || 3,
       total: Number(value.total) || children.length,
       completed: Number(value.completed) || 0,
+      settled: value.settled == null ? settledLocal : Number(value.settled) || 0,
+      failed: value.failed == null ? failedLocal : Number(value.failed) || 0,
+      cancelled: value.cancelled == null ? cancelledLocal : Number(value.cancelled) || 0,
       children: children
     };
   }
@@ -493,6 +513,205 @@
     }
   }
 
+  // ── 窗口：放大 / 缩放 / 最小化 ─────────────────────────────────────────
+  // 目标：窗口控件永远可见（不随内容滚走），内容区自己滚动；
+  // 放大＝铺满可视区，缩放＝拖上边缘或键盘改高度，最小化＝只留标题栏。
+  const WINDOW_ICONS = {
+    minimize: [["path", {d: "M5 12h14"}]],
+    maximize: [["path", {d: "M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"}]],
+    restore: [["rect", {x: 8, y: 8, width: 13, height: 13, rx: 2}], ["path", {d: "M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"}]]
+  };
+
+  function svgIcon(name) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    for (const [key, value] of Object.entries({viewBox: "0 0 24 24", width: "14", height: "14", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false"})) {
+      svg.setAttribute(key, value);
+    }
+    for (const [tag, attrs] of WINDOW_ICONS[name] || []) {
+      const part = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      for (const [key, value] of Object.entries(attrs)) part.setAttribute(key, String(value));
+      svg.appendChild(part);
+    }
+    return svg;
+  }
+
+  function viewportHeight() {
+    return (typeof window !== "undefined" && window.innerHeight) || 900;
+  }
+
+  function maxWindowHeight() {
+    return Math.max(HEIGHT_MIN + 40, Math.round(viewportHeight() * HEIGHT_MAX_RATIO));
+  }
+
+  function clampHeight(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+    return Math.round(Math.min(maxWindowHeight(), Math.max(HEIGHT_MIN, numeric)));
+  }
+
+  function restoreWindowState() {
+    state.mode = "normal";
+    state.height = 0;
+    let raw = null;
+    try {
+      raw = globalThis.localStorage ? globalThis.localStorage.getItem(STORAGE_KEY) : null;
+    } catch (err) {
+      raw = null;
+    }
+    if (!raw) return;
+    try {
+      const saved = JSON.parse(raw);
+      if (saved && typeof saved === "object") {
+        state.mode = WINDOW_MODES.has(saved.mode) ? saved.mode : "normal";
+        state.height = clampHeight(saved.height);
+      }
+    } catch (err) {
+      /* 旧版本或损坏的值：保持默认窗口，不影响使用 */
+    }
+  }
+
+  function saveWindowState() {
+    try {
+      if (globalThis.localStorage) {
+        globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify({mode: state.mode, height: state.height}));
+      }
+    } catch (err) {
+      /* 隐私模式：不持久化也能正常用 */
+    }
+  }
+
+  // 只改属性和 CSS 变量，不重建卡片：缩放时内容不闪、滚动位置不丢。
+  function applyWindowState() {
+    const host = state.card;
+    if (!host) return;
+    host.dataset.mode = state.mode;
+    host.dataset.sized = state.height > 0 ? "1" : "0";
+    if (state.height > 0) {
+      if (host.style && typeof host.style.setProperty === "function") host.style.setProperty("--cw-h", state.height + "px");
+    } else if (host.style && typeof host.style.removeProperty === "function") {
+      host.style.removeProperty("--cw-h");
+    }
+    const buttons = state.windowButtons || {};
+    if (buttons.minimize) {
+      const minimized = state.mode === "minimized";
+      const label = minimized ? "还原窗口" : "最小化窗口";
+      buttons.minimize.setAttribute("aria-pressed", minimized ? "true" : "false");
+      buttons.minimize.setAttribute("aria-label", label);
+      buttons.minimize.title = label;
+      buttons.minimize.classList.toggle("is-active", minimized);
+      buttons.minimize.replaceChildren(svgIcon(minimized ? "restore" : "minimize"));
+    }
+    if (buttons.maximize) {
+      const maximized = state.mode === "maximized";
+      const label = maximized ? "还原窗口大小" : "放大窗口";
+      buttons.maximize.setAttribute("aria-pressed", maximized ? "true" : "false");
+      buttons.maximize.setAttribute("aria-label", label);
+      buttons.maximize.title = label;
+      buttons.maximize.classList.toggle("is-active", maximized);
+      buttons.maximize.replaceChildren(svgIcon(maximized ? "restore" : "maximize"));
+    }
+    const resize = state.resizer;
+    if (resize) {
+      resize.hidden = state.mode !== "normal";
+      resize.setAttribute("aria-valuenow", String(state.height || 0));
+      resize.setAttribute("aria-valuetext", state.height ? "高度 " + state.height + " 像素" : "默认高度");
+    }
+  }
+
+  function setWindowMode(mode) {
+    const next = WINDOW_MODES.has(mode) ? mode : "normal";
+    if (next === state.mode) return;
+    // 第一次离开默认高度时记住当前实际高度，还原后回到同样大小。
+    if (state.mode === "normal" && next !== "normal" && state.height === 0 && state.card && state.card.getBoundingClientRect) {
+      state.height = clampHeight(state.card.getBoundingClientRect().height);
+    }
+    state.mode = next;
+    saveWindowState();
+    applyWindowState();
+  }
+
+  function toggleWindowMode(mode) {
+    setWindowMode(state.mode === mode ? "normal" : mode);
+  }
+
+  function setWindowHeight(value) {
+    state.height = clampHeight(value);
+    saveWindowState();
+    applyWindowState();
+  }
+
+  function currentWindowHeight() {
+    if (state.height > 0) return state.height;
+    const rect = state.card && state.card.getBoundingClientRect ? state.card.getBoundingClientRect() : null;
+    return rect && rect.height > 0 ? rect.height : 240;
+  }
+
+  function windowButton(action, mode) {
+    const node = el("button", "cw-win-btn");
+    node.type = "button";
+    node.dataset.cwKey = "window:" + action;
+    node.addEventListener("click", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      toggleWindowMode(mode);
+    });
+    return node;
+  }
+
+  function resizer() {
+    const node = el("div", "cw-resize");
+    node.setAttribute("role", "separator");
+    node.setAttribute("aria-orientation", "horizontal");
+    node.setAttribute("aria-label", "拖动调整窗口高度（键盘：↑↓ 调整，Home 最小，End 最大）");
+    node.setAttribute("tabindex", "0");
+    node.appendChild(el("span", "cw-resize-grip"));
+    const stop = () => {
+      state.drag = null;
+      detachResize();
+    };
+    const move = (event) => {
+      if (!state.drag) return;
+      const current = Number(event && event.clientY);
+      if (!Number.isFinite(current)) return;
+      setWindowHeight(state.drag.height + (state.drag.y - current));
+    };
+    node.addEventListener("pointerdown", (event) => {
+      if (state.mode !== "normal") return;
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      state.drag = {y: Number(event && event.clientY) || 0, height: currentWindowHeight()};
+      if (typeof document !== "undefined" && document.addEventListener) {
+        detachResize();
+        resizeListeners = {move: move, stop: stop};
+        document.addEventListener("pointermove", move);
+        document.addEventListener("pointerup", stop);
+        document.addEventListener("pointercancel", stop);
+      }
+    });
+    node.addEventListener("keydown", (event) => {
+      const step = event.shiftKey ? 64 : 24;
+      if (event.key === "ArrowUp") { event.preventDefault(); setWindowHeight(currentWindowHeight() + step); }
+      else if (event.key === "ArrowDown") { event.preventDefault(); setWindowHeight(currentWindowHeight() - step); }
+      else if (event.key === "Home") { event.preventDefault(); setWindowHeight(HEIGHT_MIN); }
+      else if (event.key === "End") { event.preventDefault(); setWindowHeight(maxWindowHeight()); }
+    });
+    node.addEventListener("dblclick", (event) => {
+      if (event && typeof event.preventDefault === "function") event.preventDefault();
+      setWindowMode("normal");
+      setWindowHeight(0);
+    });
+    return node;
+  }
+
+  let resizeListeners = null;
+
+  function detachResize() {
+    if (!resizeListeners || typeof document === "undefined" || !document.removeEventListener) return;
+    const {move, stop} = resizeListeners;
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", stop);
+    document.removeEventListener("pointercancel", stop);
+    resizeListeners = null;
+  }
+
   function render(force) {
     if (!state.card) return;
     if (state.composing && !force) {
@@ -515,6 +734,8 @@
     host.dataset.session = sid;
     host.hidden = !primary && !state.notice;
     if (!primary) {
+      state.windowButtons = {};
+      state.resizer = null;
       state.noticeBox = el("div", "cw-notice");
       state.noticeBox.hidden = true;
       state.noticeBox.setAttribute("aria-live", "polite");
@@ -547,33 +768,50 @@
       if (stageLabel !== status.label) right.appendChild(el("span", "cw-stage", stageLabel));
     }
 
+    // 窗口控件固定在标题栏：内容再长也不会把「放大/最小化」滚出视野。
+    const windowTools = el("div", "cw-window");
+    const minimizeBtn = windowButton("minimize", "minimized");
+    const maximizeBtn = windowButton("maximize", "maximized");
+    windowTools.append(minimizeBtn, maximizeBtn);
+    right.appendChild(windowTools);
+    state.windowButtons = {minimize: minimizeBtn, maximize: maximizeBtn};
+
     head.append(heading, right);
+    state.resizer = resizer();
+    host.appendChild(state.resizer);
     host.appendChild(head);
+
+    // 内容区自己滚动，标题栏与窗口控件保持可见。
+    const scroll = el("div", "cw-scroll");
+    host.appendChild(scroll);
 
     state.noticeBox = el("div", "cw-notice");
     state.noticeBox.hidden = true;
     state.noticeBox.setAttribute("aria-live", "polite");
-    host.appendChild(state.noticeBox);
+    scroll.appendChild(state.noticeBox);
     renderNotice();
 
     if (!sid) {
-      host.appendChild(el("p", "cw-empty", "还没有选中会话。选一个会话后，这里才显示当前工作和「分工执行」。"));
+      scroll.appendChild(el("p", "cw-empty", "还没有选中会话。选一个会话后，这里才显示当前工作和「分工执行」。"));
+      applyWindowState();
       restoreFocus(focus);
       return;
     }
     if (!primary) {
-      host.appendChild(el("p", "cw-empty", "输入一个任务目标，点「分工执行」，系统会安排分工并汇总交付。普通聊天仍直接发送。"));
+      scroll.appendChild(el("p", "cw-empty", "输入一个任务目标，点「分工执行」，系统会安排分工并汇总交付。普通聊天仍直接发送。"));
+      applyWindowState();
       restoreFocus(focus);
       return;
     }
     if (foreignWork(primary)) {
       const note = el("p", "cw-muted", "这条工作属于另一个会话（" + primary.originSessionId + "），这里只显示，不会接收本会话的补充。");
-      host.appendChild(note);
+      scroll.appendChild(note);
     }
     const coordination = coordinationBlock(primary);
-    if (coordination) host.appendChild(coordination);
-    host.appendChild(workBody(primary));
-    if (state.works.length > 1) host.appendChild(otherWorks(primary, state.works));
+    if (coordination) scroll.appendChild(coordination);
+    scroll.appendChild(workBody(primary));
+    if (state.works.length > 1) scroll.appendChild(otherWorks(primary, state.works));
+    applyWindowState();
     restoreFocus(focus);
   }
 
@@ -614,6 +852,51 @@
     return labels[child.status] || "状态未知";
   }
 
+  // “这一项是否还会继续推进”决定进度条能否真正走完：
+  // 只数已交付会让被取消/失败的分项永远停在 0/N，看起来永远没结束。
+  function childSettled(child) {
+    return SETTLED_STATUS.has(child.status);
+  }
+
+  function progressLabel(coordination, work) {
+    const total = coordination.total;
+    if (!total) return "正在规划分工";
+    const ended = coordination.phase === "ended" || coordination.phase === "completed";
+    const settled = Math.min(total, Math.max(coordination.settled, coordination.completed));
+    const parts = [settled + "/" + total + " 项"];
+    if (coordination.cancelled) parts.push("取消 " + coordination.cancelled);
+    if (coordination.failed) parts.push("未完成 " + coordination.failed);
+    if (coordination.completed && coordination.completed !== settled) parts.push("已交付 " + coordination.completed);
+    parts.push(coordinationPhaseLabel(coordination.phase));
+    return parts.join(" · ");
+  }
+
+  function progressBar(coordination, work) {
+    const total = coordination.total;
+    if (!total) return null;
+    const settled = Math.min(total, Math.max(coordination.settled, coordination.completed));
+    const ratio = total ? settled / total : 0;
+    const ended = coordination.phase === "ended" || coordination.phase === "completed" || work.stage === "ended";
+    // 只有“全部分项都交付了成果”才算完成。取消/失败也会让进度走满，
+    // 但那是收尾，不是成功——颜色和文案必须区分开。
+    const allDelivered = coordination.completed >= total;
+    const tone = coordination.failed ? "err" : allDelivered ? "done" : ended ? "stop" : "run";
+    const bar = el("div", "cw-progress");
+    bar.dataset.tone = tone;
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", String(total));
+    bar.setAttribute("aria-valuenow", String(settled));
+    bar.setAttribute("aria-valuetext", progressLabel(coordination, work));
+    const track = el("div", "cw-progress-track");
+    const fill = el("div", "cw-progress-fill");
+    fill.style.setProperty("width", Math.round(ratio * 100) + "%");
+    track.appendChild(fill);
+    bar.appendChild(track);
+    bar.appendChild(el("span", "cw-progress-label", progressLabel(coordination, work)));
+    return bar;
+  }
+
   function coordinationBlock(work) {
     const coordination = work.coordination;
     if (!coordination) return null;
@@ -621,8 +904,11 @@
     box.open = state.coordinationOpen.has(work.id) ? state.coordinationOpen.get(work.id) : work.stage !== "needs_answer" && work.stage !== "needs_review";
     box.addEventListener("toggle", () => state.coordinationOpen.set(work.id, box.open));
     const heading = el("summary", "cw-coordination-summary");
-    heading.appendChild(el("strong", null, "任务分工"));
-    heading.appendChild(el("span", "cw-coordination-count", coordination.total ? coordination.completed + "/" + coordination.total + " 项 · " + coordinationPhaseLabel(coordination.phase) : "正在规划分工"));
+    heading.appendChild(el("span", "cw-coordination-caret"));
+    heading.appendChild(el("strong", "cw-coordination-name", "任务分工"));
+    const bar = progressBar(coordination, work);
+    if (bar) heading.appendChild(bar);
+    else heading.appendChild(el("span", "cw-coordination-count", "正在规划分工"));
     box.appendChild(heading);
     if (coordination.summary) box.appendChild(el("p", "cw-coordination-summary-text", coordination.summary));
     if (!coordination.children.length) box.appendChild(el("p", "cw-coordination-meta", "正在核对项目和任务边界，随后在这里显示分工。"));
@@ -630,6 +916,9 @@
     const byId = new Map(coordination.children.map((child) => [child.id, child]));
     coordination.children.forEach((child) => {
       const item = el("li", "cw-coordination-item");
+      item.dataset.status = childSettled(child) ? "settled" : "active";
+      if (child.status === "failed") item.dataset.tone = "err";
+      if (child.status === "cancelled") item.dataset.tone = "stop";
       const line = el("div", "cw-coordination-item-head");
       const title = el("span", "cw-coordination-title", child.title);
       title.title = child.scope || child.title;
@@ -665,6 +954,8 @@
     }
     if (work.stage === "needs_answer") box.appendChild(questionBlock(work));
     if (showsResult(work)) box.appendChild(resultBlock(work));
+    // 独立工作但还没有可核对的结果：说清为什么暂时没有「比较改动」，而不是留一个死按钮。
+    else if (work.isolated) box.appendChild(reviewUnavailableLine(work));
     box.appendChild(actionRow(work));
     return box;
   }
@@ -767,7 +1058,8 @@
     box.appendChild(toggle);
     if (showsApply) box.appendChild(applyStateLine(work));
     // 独立工作区的主要动作（比较改动 / 应用并完成）不要求先展开过程。
-    if (work.isolated && work.applyState !== "applied") box.appendChild(reviewBlock(work));
+    if (reviewable(work)) box.appendChild(reviewBlock(work));
+    else if (work.isolated) box.appendChild(reviewUnavailableLine(work));
     if (!expanded) return box;
 
     const details = el("div", "cw-details");
@@ -830,6 +1122,24 @@
     return text ? text.slice(0, 12) : "（未提供）";
   }
 
+  // 服务端只在 pending_review 时接受比较/应用（WorkspaceReview.reviewable/1）。
+  // 已结束或仍在推进的工作必须不给按钮，否则点了必然 4xx——这正是“功能不可用”的由来。
+  function reviewable(work) {
+    if (!work || !work.isolated) return false;
+    if (work.applyState === "applied") return false;
+    return work.status === "pending_review" && work.stage === "needs_review";
+  }
+
+  function reviewUnavailableLine(work) {
+    if (work.applyState === "applied") {
+      return el("p", "cw-muted", "成果已应用到这个项目，不需要再比较。");
+    }
+    const ended = work.stage === "ended" || work.stage === "completed" || work.stage === "stopping";
+    if (ended) {
+      return el("p", "cw-apply cw-current", "结果保留在独立工作区、尚未写入项目：这条工作已结束，服务端不再接受比较或应用。需要继续推进时，在输入框提出新的要求。");
+    }
+    return el("p", "cw-muted", "工作仍在推进。等结果准备好（状态变成「等待查看」）才开放比较与应用，避免对照半成品核对。");
+  }
   function reviewBlock(work) {
     const box = el("div", "cw-review");
     const cache = state.reviewCache.get(work.id);
@@ -935,6 +1245,16 @@
         row.appendChild(node);
       }
     }
+  function actionHint(work, stage) {
+    if (stage === "ended" || stage === "completed") {
+      return "这条工作已结束；已有修改与历史保留。要接着做，就在输入框写新的要求。";
+    }
+    if (stage === "working" || stage === "queued" || stage === "pausing") {
+      return "正在推进，暂时不需要你操作；可以直接在下方补充要求。";
+    }
+    if (stage === "stopped" || stage === "cancelled") return "已停止。";
+    return "这个阶段没有需要你操作的动作。";
+  }
     if (showsComplete(work)) {
       const busy = state.busy.has("complete:" + work.id);
       const node = button(busy ? "正在确认…" : "确认完成", () => complete(work), "cw-primary", "为纯文本成果关闭这条工作记录");
@@ -943,7 +1263,7 @@
       row.appendChild(node);
     }
     if (!row.childNodes.length) {
-      row.appendChild(el("span", "cw-muted", stage === "ended" ? "这条工作已结束；需要新任务时直接说新的要求。" : "这个阶段没有需要你操作的动作。"));
+      row.appendChild(el("span", "cw-muted", actionHint(work, stage)));
     }
     return row;
   }
@@ -1426,16 +1746,19 @@
     state.card = host;
     const actions = document.getElementById("composer-actions");
     if (actions) {
-      const start = button("", () => api.start(), "cw-composer-start", "分工执行：自动拆分、分派并汇总交付");
-      start.className = 'btn-icon-round btn-send cw-composer-start';
+      // 统一「交给团队」入口：主按钮=快速分工（后台做），侧箭头=选择团队模板。
+      // 与顶栏 🐝 团队工作室、侧栏团队会话分组共用同一套团队功能，不再分散。
+      const wrap = el("div", "cw-team-split");
+      const start = button("", () => api.start(), "cw-composer-start", "交给团队 · 快速分工：自动拆分、分派并汇总交付");
+      start.className = 'btn-icon-round btn-send cw-composer-start cw-team-main';
       const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-      for (const [key, value] of Object.entries({viewBox: "0 0 24 24", width: "18", height: "18", fill: "none", stroke: "currentColor", "stroke-width": "2", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false"})) svg.setAttribute(key, value);
-      // A task branches into two tasks; use the same outline style as adjacent controls.
+      for (const [key, value] of Object.entries({viewBox: "0 0 24 24", width: "19", height: "19", fill: "none", stroke: "currentColor", "stroke-width": "1.9", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false"})) svg.setAttribute(key, value);
+      // 精炼的团队节点图标：一个协调节点分派给两个执行节点，圆角更柔和、连线更清晰。
       for (const [tag, attrs] of [
-        ["rect", {x: 9, y: 3, width: 6, height: 6, rx: 1.5}],
-        ["path", {d: "M12 9v3M6 15v-3h12v3"}],
-        ["rect", {x: 3, y: 15, width: 6, height: 6, rx: 1.5}],
-        ["rect", {x: 15, y: 15, width: 6, height: 6, rx: 1.5}]
+        ["rect", {x: 9.1, y: 2.6, width: 5.8, height: 5.8, rx: 2}],
+        ["path", {d: "M12 8.4v2.9M6.1 14.6v-3.3h11.8v3.3"}],
+        ["rect", {x: 3.2, y: 14.6, width: 5.8, height: 5.8, rx: 2}],
+        ["rect", {x: 15, y: 14.6, width: 5.8, height: 5.8, rx: 2}]
       ]) {
         const part = document.createElementNS("http://www.w3.org/2000/svg", tag);
         for (const [key, value] of Object.entries(attrs)) part.setAttribute(key, String(value));
@@ -1443,10 +1766,78 @@
       }
       start.appendChild(svg);
       start.id = "work-start";
+      const caret = el("button", "cw-team-caret", "");
+      caret.type = "button";
+      caret.title = "选择团队模板 · 按阶段闭环交付";
+      caret.setAttribute("aria-label", "选择团队模板");
+      caret.setAttribute("aria-haspopup", "menu");
+      caret.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+      caret.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); toggleTeamMenu(wrap); });
+      wrap.append(start, caret);
       const send = document.getElementById("send");
-      if (send && send.parentNode === actions) actions.insertBefore(start, send);
-      else actions.appendChild(start);
+      if (send && send.parentNode === actions) actions.insertBefore(wrap, send);
+      else actions.appendChild(wrap);
       state.composerStart = start;
+      state.teamSplit = wrap;
+    }
+  }
+
+  // ── 团队模板选择菜单（统一入口）──
+  function toggleTeamMenu(wrap) {
+    const existing = wrap.querySelector(".cw-team-menu");
+    if (existing) { existing.remove(); return; }
+    closeTeamMenus();
+    const menu = el("div", "cw-team-menu");
+    menu.setAttribute("role", "menu");
+    menu.append(el("div", "cw-team-menu-head", "交给哪种团队？"));
+    const quick = el("button", "cw-team-menu-item cw-team-quick", "");
+    quick.type = "button";
+    quick.innerHTML = '<span class="cw-team-menu-ico">⚡</span><span class="cw-team-menu-txt"><b>快速分工</b><i>自动拆分分派，后台做完汇总</i></span>';
+    quick.addEventListener("click", () => { menu.remove(); api.start(); });
+    menu.append(quick);
+    const list = el("div", "cw-team-menu-list");
+    list.append(el("div", "cw-team-menu-loading", "加载团队模板…"));
+    menu.append(list);
+    const studio = el("button", "cw-team-menu-item cw-team-studio", "");
+    studio.type = "button";
+    studio.innerHTML = '<span class="cw-team-menu-ico">🐝</span><span class="cw-team-menu-txt"><b>团队工作室</b><i>管理项目 · 验收交付 · 组建团队</i></span>';
+    studio.addEventListener("click", () => { menu.remove(); if (window.NewbeeTeamPanel) window.NewbeeTeamPanel.open(); });
+    menu.append(studio);
+    wrap.append(menu);
+    loadTeamTemplates(list);
+    setTimeout(() => {
+      const off = (e) => { if (!wrap.contains(e.target)) { menu.remove(); document.removeEventListener("click", off); } };
+      document.addEventListener("click", off);
+    }, 0);
+  }
+  function closeTeamMenus() { document.querySelectorAll(".cw-team-menu").forEach(n => n.remove()); }
+  async function loadTeamTemplates(list) {
+    try {
+      const r = await state.host.rpc("colony.team.templates", {});
+      const templates = (r && r.templates) || [];
+      list.innerHTML = "";
+      if (!templates.length) { list.append(el("div", "cw-team-menu-loading", "暂无模板，去工作室组建")); return; }
+      templates.forEach(t => {
+        const item = el("button", "cw-team-menu-item", "");
+        item.type = "button";
+        const stages = (t.stages || []).length;
+        item.innerHTML = '<span class="cw-team-menu-ico">🧩</span><span class="cw-team-menu-txt"><b></b><i></i></span>';
+        item.querySelector("b").textContent = t.name;
+        item.querySelector("i").textContent = stages + " 阶段闭环 · " + ((t.roles || []).length) + " 角色";
+        item.addEventListener("click", () => { closeTeamMenus(); startTeamProject(t); });
+        list.append(item);
+      });
+    } catch (e) { list.innerHTML = ""; list.append(el("div", "cw-team-menu-loading", "模板加载失败")); }
+  }
+  function startTeamProject(t) {
+    const sid = sessionId();
+    if (!sid) { say("先选择一个会话，才能开团队项目。", "warn"); return; }
+    const draft = String(readDraft() || "").trim();
+    if (!draft) { say("先在输入框写下项目目标，再选团队模板。", "warn"); return; }
+    if (window.NewbeeTeamPanel && window.NewbeeTeamPanel.startWithGoal) {
+      window.NewbeeTeamPanel.startWithGoal(t, draft, sid);
+    } else if (window.NewbeeTeamPanel) {
+      window.NewbeeTeamPanel.open("templates");
     }
   }
 
@@ -1459,6 +1850,7 @@
     state.works = [];
     state.delay = POLL_FAST;
     state.failed = 0;
+    restoreWindowState();
     mount();
     if (typeof document !== "undefined" && document.addEventListener) {
       state.onVisibility = onVisibility;
@@ -1478,6 +1870,8 @@
       document.removeEventListener("visibilitychange", state.onVisibility);
     }
     state.onVisibility = null;
+    detachResize();
+    state.drag = null;
     state.generation += 1;
     state.host = null;
     state.sig = "";
@@ -1491,8 +1885,9 @@
     if (state.composerStart && state.composerStart.parentNode) state.composerStart.parentNode.removeChild(state.composerStart);
     state.composerStart = null;
     state.noticeBox = null;
+    state.windowButtons = {};
+    state.resizer = null;
   }
-
   const api = {
     init: init,
     refresh: refresh,

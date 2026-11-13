@@ -11,7 +11,7 @@ defmodule Newbee.Web.ColonyApi do
   alias Newbee.Colony.Engine
   alias Newbee.Colony.Work
 
-  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.cwd colony.dissolve colony.view colony.drill colony.workspace.cleanup colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.cwd colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow colony.work.dismiss colony.work.restore colony.work.abandon colony.team.templates colony.team.template.save colony.team.template.seed colony.team.proposals colony.team.proposal.start colony.team.proposal.decide colony.team.proposal.retry colony.team.runs colony.team.run.start colony.team.run.view colony.team.run.review colony.team.run.finish colony.team.run.extend)
+  @methods ~w(colony.list colony.bootstrap colony.create colony.rename colony.cwd colony.dissolve colony.view colony.drill colony.workspace.cleanup colony.bee.trail colony.bee.add colony.bee.conversation.new colony.bee.conversation.select colony.bee.conversation.rename colony.bee.conversation.delete colony.bee.remove colony.bee.leave colony.task.create colony.task.claim colony.task.transition colony.task.decompose colony.honey.add colony.honey.review colony.signal.emit colony.say colony.trace.list colony.capabilities colony.control colony.invite.create colony.remote.join colony.upload.session colony.work.revise colony.work.cwd colony.work.continue colony.work.submit colony.work.collaborate colony.work.flow colony.work.dismiss colony.work.restore colony.work.abandon colony.team.templates colony.team.template.save colony.team.template.seed colony.team.proposals colony.team.proposal.start colony.team.proposal.decide colony.team.proposal.retry colony.team.sessions colony.team.runs colony.team.run.start colony.team.run.view colony.team.run.review colony.team.run.finish colony.team.run.extend)
 
   @doc "dispatch/2 返回 {:ok, value} | {:error, code, message}。"
   def dispatch("colony.invite.redeem", p),
@@ -300,7 +300,7 @@ defmodule Newbee.Web.ColonyApi do
         {:error, "forbidden", "该操作需要蜂群管理权限"}
 
       actor == nil and
-          method not in ~w(colony.list colony.bootstrap colony.create colony.capabilities colony.remote.join colony.team.templates colony.team.template.seed colony.team.runs colony.team.proposals colony.team.run.start colony.team.proposal.start) ->
+          method not in ~w(colony.list colony.bootstrap colony.create colony.capabilities colony.remote.join colony.team.templates colony.team.template.seed colony.team.runs colony.team.proposals colony.team.run.start colony.team.proposal.start colony.team.sessions) ->
         {:error, "not_found", "蜂群不存在"}
 
       true ->
@@ -331,7 +331,7 @@ defmodule Newbee.Web.ColonyApi do
   # ── 团队模板（colony.team.*）：模板是全局资产；提案/运行绑定蜂群 ──
   defp team_methods,
     do:
-      ~w(colony.team.templates colony.team.template.save colony.team.template.seed colony.team.proposals colony.team.proposal.start colony.team.proposal.decide colony.team.proposal.retry colony.team.runs colony.team.run.start colony.team.run.view colony.team.run.review colony.team.run.finish colony.team.run.extend)
+      ~w(colony.team.templates colony.team.template.save colony.team.template.seed colony.team.proposals colony.team.proposal.start colony.team.proposal.decide colony.team.proposal.retry colony.team.sessions colony.team.runs colony.team.run.start colony.team.run.view colony.team.run.review colony.team.run.finish colony.team.run.extend)
 
   defp team_owner_methods,
     do:
@@ -392,6 +392,9 @@ defmodule Newbee.Web.ColonyApi do
       "colony.team.proposal.retry" ->
         with {:ok, proposal} <- Team.retry_proposal(p["proposalId"], actor, p["note"]),
              do: {:ok, %{"proposal" => proposal}}
+
+      "colony.team.sessions" ->
+        {:ok, %{"groups" => Newbee.Colony.Team.session_map()}}
 
       "colony.team.runs" ->
         {:ok, %{"runs" => Team.list_runs(colony_id: cid)}}

@@ -4666,6 +4666,7 @@ box.appendChild(label);
       return wrap;
     };
     const findSession = (id) => all.find((s) => s.id === id) || { id, title: id, messages: 0, running: false, busy: false };
+  try { if (window.NewbeeTeamPanel) window.NewbeeTeamPanel.renderSidebarGroups(box, { addItem, findSession, visible, rerender: renderSessionList }); } catch (e) {}
   try { renderXGroups(box, kw, { addItem, findSession }); } catch (e) {}
   (state.groups || []).forEach((group) => {
       const members = group.members || [];
@@ -4718,7 +4719,8 @@ box.appendChild(label);
     });
     // 以实际已渲染为准：分组索引可能包含陈旧 id，直接过滤会导致会话两边都不显示。
     // rendered 才是本次真正已上屏的集合，未上屏且可见的全部归入其他会话。
-    const others = all.filter((s) => !rendered.has(s.id) && visible(s));
+    const teamIds = window.NewbeeTeamPanel ? window.NewbeeTeamPanel.teamSessionIds() : new Set();
+    const others = all.filter((s) => !rendered.has(s.id) && !teamIds.has(s.id) && visible(s));
     if (others.length) { const label = document.createElement("div"); label.className = "session-group-label other"; label.textContent = "其他会话（" + others.length + "）"; box.appendChild(label); others.forEach((s) => { const it = addItem(s, false, null); if (it) box.appendChild(it); }); }
     if (!box.children.length) { const empty = document.createElement("div"); empty.className = "session-empty"; empty.textContent = kw ? "没有匹配「" + kw + "」的会话" : "暂无会话"; box.appendChild(empty); }
     const cur = all.find((s) => s.id === state.sid); if (cur && typeof updateCwdLabel === "function") updateCwdLabel(cur.cwd || null);
@@ -9197,7 +9199,8 @@ if (!inspectionMode && window.NewbeeTeamPanel) {
   window.NewbeeTeamPanel.init({
     rpc,
     notify: (message, kind) => line(kind === 'err' ? 'error' : 'notice', message),
-    openSession: (sid) => { if (sid) { try { resume(sid); } catch (e) {} } }
+    openSession: (sid) => { if (sid) { try { resume(sid); } catch (e) {} } },
+    onMapUpdate: () => { try { renderSessionList(); } catch (e) {} }
   });
   const teamBtn = $("team-panel-toggle");
   if (teamBtn) teamBtn.addEventListener("click", () => window.NewbeeTeamPanel.open());
