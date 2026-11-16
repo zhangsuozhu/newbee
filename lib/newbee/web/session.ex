@@ -55,6 +55,11 @@ defmodule Newbee.Web.Session do
             client: nil,
             usage_snap: %{},
             steps_snap: 0,
+            # 自主目标（/goal）只读快照：由该会话 kernel 的事件流即时刷新。
+            # 读侧（session.state 轮询、事件编码）只读内存字段，绝不 GenServer.call
+            # 到可能正忙于一轮模型的 kernel —— 否则每 2s 一次的轮询会排在
+            # 长 turn 后面，把首屏 state 拖过 5s 超时。
+            goal_snap: nil,
             # 协作调度（docs/collab-scheduling-proposal.md §5）：head 通道连续服务计数（防饿死）
             # 与协作投递统计。只加计数，不改状态机；旧状态无此字段时按 0/空统计处理。
             head_streak: 0,
@@ -1501,6 +1506,21 @@ defmodule Newbee.Web.Session do
     {:noreply, st}
   end
 
+  # 目标事件（/goal）：会话是快照的唯一读写方。归约快照 → 补齐执行上下文 → 广播。
+  # 用 cast 从 kernel 的事件线程推来，所以绝不会与正在跑的模型调用互相阻塞。
+  def handle_cast({:goal_event, kind, event}, st) do
+    goal = reduce_goal(Map.get(st, :goal_snap), event)
+
+    payload =
+      encode_event(event)
+      |> maybe_add_event_context(kind, st.sid)
+      |> maybe_add_goal_context(kind, goal)
+
+    broadcast(st.sid, kind, payload)
+
+    {:noreply, %{st | goal_snap: goal}}
+  end
+
   # usage 快照（render 回调经 cast 推来，绝不 call 忙碌 kernel）
   def handle_cast({:usage_snap, usage}, st) when is_map(usage) do
     merged = Map.merge(st.usage_snap, usage, fn _k, a, b -> (num(a) || 0) + (num(b) || 0) end)
@@ -1737,7 +1757,8 @@ defmodule Newbee.Web.Session do
   def handle_call(:state, _from, st) do
     usage = st.usage_snap
     steps = st.steps_snap
-    goal = nil
+    # 目标快照只读本进程内存：不 call kernel（它可能正卡在一轮模型里，call 会排队）。
+    goal = public_goal(Map.get(st, :goal_snap))
     bindings = bindings_count(st)
 
     {:reply,
@@ -3244,7 +3265,7 @@ defmodule Newbee.Web.Session do
 
   defp dispatch_input(st, text, queue_id, delivery) do
     say = fn line -> broadcast(st.sid, :notice, %{text: line}) end
-    ctx = %{kernel: st.kernel, say: say}
+    ctx = %{kernel: st.kernel, say: say, goal: public_goal(Map.get(st, :goal_snap)), async_loop: true}
 
     case Newbee.Commands.handle(text, ctx) do
       {:submit, t} ->
@@ -3252,6 +3273,9 @@ defmodule Newbee.Web.Session do
 
       {:btw, question} ->
         start_btw(st, question, queue_id)
+
+      {:loop, task, opts} ->
+        start_loop_turn(st, task, opts, queue_id, delivery)
 
       :new ->
         restart_kernel(st)
@@ -3269,6 +3293,53 @@ defmodule Newbee.Web.Session do
         say.("该命令在 WebUI 暂不支持: " <> inspect(other))
         st
     end
+  end
+
+  # /loop：多轮模型调用跑在独立 turn task 里，会话进程只等终态回投。
+  # 与 do_submit 共用同一套 busy/turn_task/turn_ref/watchdog 生命周期，
+  # 所以 handle_cast({:prompt, ...}) 立即返回，session.state 不被阻塞。
+  defp start_loop_turn(%{kernel: nil} = st, _task, _opts, _queue_id, _delivery) do
+    broadcast(st.sid, :error, %{message: no_kernel_hint()})
+    st
+  end
+
+  defp start_loop_turn(st, task, opts, queue_id, delivery) do
+    :ok = Newbee.Colony.ConversationWork.consumed(queue_id)
+    parent = self()
+    kernel = st.kernel
+
+    qid = if is_binary(queue_id), do: normalize_queue_id(queue_id), else: new_queue_id()
+
+    cur = %{
+      id: qid,
+      kind: "text",
+      preview: preview_text(task),
+      text: task,
+      started_at: now_iso(),
+      origin: "user",
+      loop: true
+    }
+
+    cur = Map.merge(cur, current_delivery_fields(delivery))
+    turn_id = make_ref()
+
+    {worker, ref} =
+      spawn_monitor(fn ->
+        result =
+          try do
+            Newbee.Agent.Loop.loop(kernel, task, opts)
+          rescue
+            e -> {:error, Exception.message(e)}
+          catch
+            :exit, r -> {:error, "exit: " <> inspect(r)}
+          end
+
+        send(parent, {:turn_finished, turn_id, result})
+      end)
+
+    timer = Process.send_after(self(), {:turn_watchdog, turn_id}, st.watchdog_minutes * 60_000)
+
+    %{st | busy: true, current: cur, turn_task: worker, turn_ref: ref, turn_id: turn_id, turn_timer: timer}
   end
 
   defp append_terminal_context_to_kernel(st, content) do
@@ -3575,14 +3646,21 @@ defmodule Newbee.Web.Session do
   def render_event(sid, event) when is_binary(sid) and is_tuple(event) do
     kind = elem(event, 0)
 
-    payload =
-      encode_event(event)
-      |> maybe_add_event_context(kind, sid)
+    if goal_event?(kind) do
+      # 目标事件交给会话进程：它持有唯一的目标快照，补齐执行上下文（轮次/预算上限/
+      # 阻塞计数）后再广播，保证状态条与事件流读的是同一份计数。cast 不阻塞 kernel
+      # 的事件线程，也不与正在跑的模型调用抢 mailbox。
+      dispatch_goal_event(sid, kind, event)
+    else
+      payload =
+        encode_event(event)
+        |> maybe_add_event_context(kind, sid)
 
-    broadcast(sid, kind, payload)
+      broadcast(sid, kind, payload)
 
-    if kind == :permission_ask do
-      Newbee.Collaboration.Coordinator.permission_request(sid, payload[:preview] || "")
+      if kind == :permission_ask do
+        Newbee.Collaboration.Coordinator.permission_request(sid, payload[:preview] || "")
+      end
     end
 
     if kind == :usage, do: GenServer.cast(reg_name(sid), {:usage_snap, elem(event, 1)})
@@ -3613,6 +3691,14 @@ defmodule Newbee.Web.Session do
 
         {:text, body} ->
           {:text_end, %{body: body}}
+
+        # /loop 的终态（异步路径也回投到这里）：给前端一条可读的收尾事件，
+        # 而不是掉进兜底的 {:error, inspect(...)}。
+        {:loop_done, n} ->
+          {:text_end, %{body: "Loop 完成 #{n} 轮（模型未调用 done）"}}
+
+        {:loop_budget, n} ->
+          {:text_end, %{body: "Loop 预算触顶（#{n} tokens）"}}
 
         {:error, e} ->
           {:error, %{message: error_text(e)}}
@@ -3695,8 +3781,17 @@ defmodule Newbee.Web.Session do
   defp encode_event({:goal_ask, q}), do: %{question: q, options: [], kind: "text"}
   defp encode_event({:goal_round, n}), do: %{round: n}
   defp encode_event({:goal_retry, n}), do: %{retry: n}
-  defp encode_event({:goal_cancelled, why}), do: %{reason: inspect(why)}
+  defp encode_event({:goal_cancelled, why}), do: %{reason: goal_text(why)}
   defp encode_event({:goal_limit, n}), do: %{max: n}
+  # ── 六个曾落到兜底 `%{raw: inspect(...)}` 的目标事件 ──
+  # 兜底只给前端一坨 Elixir 元组文本，既不能渲染也不能断言。这里逐个给出
+  # 结构化字段；轮次/预算等上下文由 maybe_add_goal_context/3 从快照补齐。
+  defp encode_event({:goal_budget_limited, used}), do: %{tokens_used: used}
+  defp encode_event({:goal_blocked, reason}), do: %{reason: goal_text(reason)}
+  defp encode_event({:goal_verification_block, summary}), do: %{summary: summary}
+  defp encode_event({:goal_status, status}), do: %{status: goal_text(status)}
+  defp encode_event({:goal_updated, text}), do: %{text: text}
+  defp encode_event({:goal_budget, budget}), do: %{token_budget: budget}
   defp encode_event({:advisor_note, {:advisor_note, text}}), do: %{text: text}
   defp encode_event(other) when is_tuple(other), do: %{raw: inspect(other)}
 
@@ -3713,4 +3808,123 @@ defmodule Newbee.Web.Session do
 
   defp maybe_add_event_context(payload, :file_diff, sid), do: Map.put(payload, :session_id, sid)
   defp maybe_add_event_context(payload, _kind, _sid), do: payload
+
+  # ── 自主目标（/goal）状态快照 ──
+  #
+  # 事件是唯一真相来源：kernel 每发一个 goal 事件，就就地刷新该会话的 `goal_snap`。
+  # `session.state` 只读这份内存快照，**永不**为拿目标状态去 GenServer.call 那个可能
+  # 正卡在一轮模型里的 kernel（5s 超时 + 每 2s 轮询会把首屏状态栏一直拖到超时）。
+  #
+  # 快照存在进程内（Session 自己的 goal_snap 字段）；事件线程只 cast，不 call。
+
+  @goal_event_kinds ~w(goal_start goal_updated goal_status goal_budget goal_budget_limited
+                       goal_blocked goal_verification_block goal_round goal_retry goal_done
+                       goal_cancelled goal_limit goal_ask)a
+
+  defp goal_event?(kind), do: kind in @goal_event_kinds
+
+  # 对外：只读快照 → JSON 安全的公开视图（atom 键，Socket 侧 Jason 编码时转字符串）。
+  defp public_goal(nil), do: nil
+
+  defp public_goal(%{} = goal) do
+    %{
+      id: Map.get(goal, :id),
+      text: Map.get(goal, :text),
+      status: goal_text(Map.get(goal, :status)),
+      tokens_used: Map.get(goal, :tokens_used) || 0,
+      token_budget: Map.get(goal, :token_budget),
+      rounds: Map.get(goal, :rounds) || 0,
+      max_rounds: Map.get(goal, :max_rounds),
+      idle: Map.get(goal, :idle) || 0,
+      blocked_streak: Map.get(goal, :blocked_streak) || 0
+    }
+  end
+
+  defp public_goal(_), do: nil
+
+  # 事件里的 reason/status 可能是 atom、字符串、元组或 nil：一律压成可直接上屏的文本。
+  defp goal_text(nil), do: nil
+  defp goal_text(r) when is_binary(r), do: r
+  defp goal_text(r) when is_atom(r), do: Atom.to_string(r)
+  defp goal_text(r) when is_integer(r), do: Integer.to_string(r)
+  defp goal_text(r) when is_tuple(r), do: inspect(r, limit: 20, printable_limit: 500)
+  defp goal_text(%{} = r), do: inspect(r, limit: 20, printable_limit: 500)
+  defp goal_text(r), do: inspect(r)
+
+  defp goal_status_atom(s) when s in [:active, :paused, :blocked, :budget_limited, :complete], do: s
+  defp goal_status_atom("active"), do: :active
+  defp goal_status_atom("paused"), do: :paused
+  defp goal_status_atom("blocked"), do: :blocked
+  defp goal_status_atom("budget_limited"), do: :budget_limited
+  defp goal_status_atom("complete"), do: :complete
+  defp goal_status_atom(_), do: :active
+
+  # 快照里「这条事件发生时」的执行上下文：补齐事件本身没带、但前端状态条需要的字段。
+  defp goal_context(%{} = goal) do
+    %{
+      rounds: Map.get(goal, :rounds) || 0,
+      max_rounds: Map.get(goal, :max_rounds),
+      token_budget: Map.get(goal, :token_budget),
+      tokens_used: Map.get(goal, :tokens_used) || 0,
+      idle: Map.get(goal, :idle) || 0,
+      blocked_streak: Map.get(goal, :blocked_streak) || 0,
+      status: goal_text(Map.get(goal, :status))
+    }
+  end
+
+  # 目标事件的快照归约：纯函数，单测可直接打表。
+  # 返回 nil 表示「该事件意味着目标已经结束」。
+  defp reduce_goal(nil, {:goal_start, text}) do
+    %{
+      id: nil,
+      text: goal_text(text),
+      status: :active,
+      tokens_used: 0,
+      token_budget: nil,
+      rounds: 0,
+      max_rounds: nil,
+      idle: 0,
+      blocked_streak: 0
+    }
+  end
+
+  defp reduce_goal(%{} = goal, {:goal_start, text}), do: %{goal | text: goal_text(text), status: :active}
+  defp reduce_goal(%{} = goal, {:goal_updated, text}), do: %{goal | text: goal_text(text)}
+  defp reduce_goal(%{} = goal, {:goal_status, status}), do: %{goal | status: goal_status_atom(status)}
+  defp reduce_goal(%{} = goal, {:goal_budget, budget}), do: %{goal | token_budget: budget}
+  defp reduce_goal(%{} = goal, {:goal_round, n}), do: %{goal | rounds: n, idle: 0}
+
+  defp reduce_goal(%{} = goal, {:goal_budget_limited, used}),
+    do: %{goal | status: :budget_limited, tokens_used: used}
+
+  defp reduce_goal(%{} = goal, {:goal_blocked, _reason}), do: %{goal | status: :blocked, idle: 0}
+  defp reduce_goal(%{} = goal, {:goal_limit, _max}), do: %{goal | status: :complete}
+  defp reduce_goal(_goal, {:goal_done, _summary}), do: nil
+  defp reduce_goal(_goal, {:goal_cancelled, _why}), do: nil
+  defp reduce_goal(goal, _event), do: goal
+
+  # 事件到达时给 payload 补执行上下文：只补事件没自带的键，不覆盖事件自身语义。
+  defp maybe_add_goal_context(payload, kind, goal) when is_map(payload) and is_map(goal) do
+    if goal_event?(kind) do
+      goal_context(goal)
+      |> Map.filter(fn {k, _} -> not Map.has_key?(payload, k) end)
+      |> then(&Map.merge(payload, &1))
+    else
+      payload
+    end
+  end
+
+  defp maybe_add_goal_context(payload, _kind, _goal), do: payload
+
+  # 目标事件投递给会话进程：cast 而非 call，事件线程不被会话忙闲阻塞。
+  # 会话已退出时 cast 静默丢弃（:via 名字不存在 → 消息被忽略）。
+  defp dispatch_goal_event(sid, kind, event) do
+    try do
+      GenServer.cast(reg_name(sid), {:goal_event, kind, event})
+    catch
+      _, _ -> :ok
+    end
+
+    :ok
+  end
 end

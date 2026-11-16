@@ -1373,9 +1373,42 @@ const flow = $("flow");
         break;
       // 上下文窗口覆盖热更新（当前会话模型匹配时服务端推送）：顶栏用量标签立即反映新值
       case "context_window_changed": refreshStats(); break;
-      case "goal_start": line("notice", `目标开始: ${p.text}`); break;
-      case "goal_done": line("notice", `目标达成: ${p.summary || ""}`); break;
-      case "goal_cancelled": line("notice", `目标取消 (${p.reason || ""})`); break;
+      // ── 目标事件：状态条即时刷新 + 一条 notice（否则要等下一次 2s 轮询）──
+      case "goal_start":
+        renderGoal({status: "active", text: p.text, rounds: 0, tokens_used: 0,
+          token_budget: p.token_budget, max_rounds: p.max_rounds});
+        line("notice", `目标开始: ${p.text}`);
+        break;
+      case "goal_done":
+        renderGoal(null);
+        line("notice", `目标达成: ${p.summary || ""}`);
+        break;
+      case "goal_cancelled":
+        renderGoal(null);
+        line("notice", `目标取消 (${p.reason || ""})`);
+        break;
+      // 以下六个原来落到兜底、只显示原始元组文本；服务端现在给结构化字段。
+      case "goal_updated":
+        renderGoal(Object.assign({}, state.goal || {status: "active"}, {text: p.text}));
+        line("notice", `目标已更新: ${p.text}`);
+        break;
+      case "goal_status":
+        renderGoal(Object.assign({}, state.goal || {text: "（目标）"}, {status: p.status}));
+        break;
+      case "goal_budget":
+        renderGoal(Object.assign({}, state.goal || {status: "active", text: "（目标）"}, {token_budget: p.token_budget}));
+        break;
+      case "goal_budget_limited":
+        renderGoal(Object.assign({}, state.goal || {text: "（目标）"}, {status: "budget_limited", tokens_used: p.tokens_used}));
+        line("notice", `目标 token 预算触顶（已用 ${fmtTok(p.tokens_used || 0)}）`);
+        break;
+      case "goal_blocked":
+        renderGoal(Object.assign({}, state.goal || {text: "（目标）"}, {status: "blocked"}));
+        line("notice", `目标受阻: ${p.reason || ""}`);
+        break;
+      case "goal_verification_block":
+        line("notice", "目标收尾被验证闸门拦下：JSpace 仍有未落账 gap，已回到模型继续修复");
+        break;
       case "rule_hit":
         (p.hits || []).forEach(h => line("notice", `⚑ 沉睡规则命中 [${h.id}] ${h.injection}`));
         break;
@@ -1460,9 +1493,15 @@ case "final_check": line("notice", `最终检查: ${p.score ?? ""}`); break;
 case "final_check_low": line("notice", `质量分偏低: ${p.score ?? ""}`); break;
 case "progress": break;
 case "progress_stall": line("notice", "进度停滞，模型在重试"); break;
-case "goal_retry": line("notice", `目标重试 (${p.retries || 0})`); break;
-case "goal_limit": line("notice", `目标达轮数上限 (${p.max || ""})`); break;
-case "goal_round": break;
+case "goal_retry": line("notice", `目标重试 (${p.retry || p.retries || 0})`); break;
+case "goal_limit":
+  renderGoal(Object.assign({}, state.goal || {text: "（目标）"}, {status: "complete", rounds: p.max}));
+  line("notice", `目标达轮数上限 (${p.max || ""})`);
+  break;
+case "goal_round":
+  // 轮次推进：只更新进度，不刷 notice（否则每轮都刷屏）
+  if (state.goal) renderGoal(Object.assign({}, state.goal, {rounds: p.round || p.rounds || 0}));
+  break;
       case "turn_end": finishTurn(); break;
       default: break;
     }
@@ -7011,6 +7050,83 @@ try {
       renderStats(st);
     } catch (e) { /* 忽略轮询错误 */ }
   }
+
+  // ── 自主目标（/goal）状态条 ──
+  //
+  // 数据来源是 session.state 的 goal 快照（服务端内存态，不 call 忙碌 kernel），
+  // 所以每 2s 轮询就能自愈；goal_* 事件到达时再补一次即时刷新，不必等下一轮。
+  const GOAL_STATUS_TEXT = {
+    active: "进行中",
+    paused: "已暂停",
+    blocked: "受阻",
+    budget_limited: "预算触顶",
+    complete: "已完成"
+  };
+
+  function renderGoal(goal) {
+    state.goal = goal || null;
+    const bar = $("goal-bar");
+    if (!bar) return;
+
+    if (!goal) { bar.classList.add("hidden"); return; }
+    bar.classList.remove("hidden");
+
+    const status = goal.status || "active";
+    bar.dataset.status = status;
+    bar.classList.toggle("goal-bar-terminal", status === "complete" || status === "budget_limited");
+
+    const dot = $("goal-dot");
+    if (dot) dot.title = GOAL_STATUS_TEXT[status] || status;
+
+    const textEl = $("goal-text");
+    if (textEl) {
+      const t = goal.text || "（未命名目标）";
+      textEl.textContent = t;
+      textEl.title = t;
+    }
+
+    // 元信息：轮次 + token 预算
+    const meta = [];
+    if (goal.max_rounds) meta.push(`第 ${goal.rounds || 0}/${goal.max_rounds} 轮`);
+    else if (goal.rounds) meta.push(`第 ${goal.rounds} 轮`);
+    if (goal.token_budget) meta.push(`${fmtTok(goal.tokens_used || 0)}/${fmtTok(goal.token_budget)} tok`);
+    else if (goal.tokens_used) meta.push(`${fmtTok(goal.tokens_used)} tok`);
+    if (status !== "active") meta.push(GOAL_STATUS_TEXT[status] || status);
+    const metaEl = $("goal-meta");
+    if (metaEl) metaEl.textContent = meta.join(" · ");
+
+    // 进度：优先按轮次，其次按 token 预算；都没有就隐藏
+    let pct = null;
+    if (goal.max_rounds > 0) pct = Math.min(100, (goal.rounds || 0) * 100 / goal.max_rounds);
+    else if (goal.token_budget > 0) pct = Math.min(100, (goal.tokens_used || 0) * 100 / goal.token_budget);
+    const prog = $("goal-progress");
+    const fill = $("goal-progress-fill");
+    if (prog && fill) {
+      if (pct === null) { prog.classList.add("hidden"); }
+      else { prog.classList.remove("hidden"); fill.style.width = pct.toFixed(1) + "%"; }
+    }
+
+    // 按钮动作走 send()：与会话输入同一条链路（排队/中断/事件回显都一致）。
+    // 每次渲染重绑，闭包里的 status 才是当前值。
+    const pauseBtn = $("goal-pause");
+    if (pauseBtn) {
+      pauseBtn.hidden = false;
+      pauseBtn.textContent = status === "paused" ? "继续" : "暂停";
+      pauseBtn.onclick = () => { send(status === "paused" ? "/goal resume" : "/goal pause"); };
+    }
+
+    const stopBtn = $("goal-stop");
+    if (stopBtn) {
+      stopBtn.hidden = status === "complete" || status === "budget_limited";
+      stopBtn.onclick = () => { send("/goal clear"); };
+    }
+  }
+
+  function refreshGoalFromState(st) {
+    if (!st) return;
+    renderGoal(st.goal || null);
+  }
+
   function fmtTok(n) {
     if (n == null || isNaN(n)) return "0";
     const sc = (v) => v >= 100 ? String(Math.round(v)) : (Math.round(v * 10) / 10).toString();
@@ -7019,6 +7135,8 @@ try {
     return sc(n / 1e6) + "M";
   }
   function renderStats(st) {
+    // 轮询每 2s 刷新一次目标状态条：与事件推送互补，断线重连后也能自愈
+    refreshGoalFromState(st);
     // 同步左侧模型名（provider/model）；轮询每 2s 自愈一次
     if (st && st.model) {
       const m = (st.provider && st.provider !== "default") ? st.provider + "/" + st.model : st.model;

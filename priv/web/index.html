@@ -172,6 +172,14 @@
         </div>
       </div>
       <div id="attach-preview" class="attach-preview hidden"></div>
+      <div id="goal-bar" class="goal-bar hidden" role="status" aria-live="polite">
+        <span class="goal-dot" id="goal-dot" aria-hidden="true"></span>
+        <span class="goal-text" id="goal-text"></span>
+        <span class="goal-meta" id="goal-meta"></span>
+        <span class="goal-progress" id="goal-progress"><span class="goal-progress-fill" id="goal-progress-fill"></span></span>
+        <button id="goal-pause" class="goal-btn" type="button" title="暂停/继续目标" hidden>暂停</button>
+        <button id="goal-stop" class="goal-btn" type="button" title="取消当前目标" hidden>取消</button>
+      </div>
       <div id="mobile-details" class="mobile-details">
         <button id="mobile-details-handle" class="mobile-details-handle" type="button" aria-expanded="false" aria-controls="statsbar" title="上滑查看详细信息（token 用量等）">
           <span class="mobile-details-grab" aria-hidden="true"></span>

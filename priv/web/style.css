@@ -806,6 +806,63 @@ h4.md-h, h5.md-h, h6.md-h { font-size: 15px; }
 .stats-right { flex: none; color: var(--nb-label-caption); }
 .stats-right .st-ok { color: var(--nb-green); }
 .stats-right .st-busy { color: var(--nb-accent); }
+/* ── 自主目标（/goal）状态条 ──
+   位于输入框与统计栏之间；只在有目标时显示。用 data-status 表达五种状态，
+   颜色复用现有语义色，不新增调色板变量。 */
+.goal-bar {
+  max-width: var(--nb-content-w); margin: 6px auto 0;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 10px; border-radius: 8px;
+  background: var(--nb-bg-elev);
+  border: 1px solid var(--nb-border);
+  font-size: 12px; line-height: 18px; color: var(--nb-label-1);
+  min-width: 0;
+}
+.goal-bar.hidden { display: none; }
+.goal-dot {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--nb-accent);
+}
+.goal-bar[data-status="active"] .goal-dot { animation: goal-pulse 1.6s ease-in-out infinite; }
+.goal-bar[data-status="paused"] .goal-dot { background: var(--nb-label-caption); }
+.goal-bar[data-status="blocked"] .goal-dot { background: var(--nb-red); }
+.goal-bar[data-status="budget_limited"] .goal-dot { background: var(--nb-warn); }
+.goal-bar[data-status="complete"] .goal-dot { background: var(--nb-green); }
+@keyframes goal-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.goal-text {
+  min-width: 0; flex: 1 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.goal-meta {
+  flex: none; color: var(--nb-label-caption);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.goal-progress {
+  flex: none; width: 72px; height: 4px; border-radius: 2px;
+  background: var(--nb-border); overflow: hidden;
+}
+.goal-progress.hidden { display: none; }
+.goal-progress-fill {
+  display: block; height: 100%; width: 0%;
+  background: var(--nb-accent);
+  transition: width 240ms ease-out;
+}
+.goal-bar-terminal .goal-progress-fill { background: var(--nb-label-caption); }
+.goal-btn {
+  flex: none; padding: 1px 8px; border-radius: 6px;
+  border: 1px solid var(--nb-border); background: transparent;
+  color: var(--nb-label-caption); font-size: 11px; cursor: pointer;
+}
+.goal-btn:hover { color: var(--nb-label-1); border-color: var(--nb-accent); }
+.goal-btn[hidden] { display: none; }
+@media (max-width: 720px) {
+  .goal-bar { gap: 6px; padding: 4px 8px; font-size: 11px; }
+  .goal-progress { display: none; }
+}
 /* 手机端底部详情抽屉的把手：桌面隐藏，窄屏媒体查询里再显示。 */
 .mobile-details-handle { display: none; }
 

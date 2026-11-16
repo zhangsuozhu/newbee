@@ -22,8 +22,8 @@ defmodule Newbee.Commands do
           | {:resume, String.t()}
           | {:resume_picker, list(map())}
           | {:shell, String.t()}
+          | {:loop, String.t(), keyword()}
   def handle(input, ctx) do
-
     case String.trim(input) do
       "" -> :ok
       "/quit" -> :quit
@@ -139,7 +139,6 @@ defmodule Newbee.Commands do
   end
 
   defp run("btw", arg, _ctx), do: {:btw, String.trim(arg)}
-
 
   defp run("image", arg, ctx) do
     case String.split(String.trim(arg), " ", parts: 2) do
@@ -565,17 +564,42 @@ defmodule Newbee.Commands do
   defp run("goal", arg, ctx) do
     if ctx.kernel do
       arg = String.trim(arg)
+
       cond do
         arg == "" or arg == "status" ->
-          case Newbee.Agent.Loop.goal(ctx.kernel) do
-            nil ->
-              ctx.say.("（无自主目标）用法: /goal <目标> [--budget N] [--max-rounds N] | /goal pause|resume|clear|edit <新目标>|budget <N>")
+          # WebUI 传了 goal 键就只读快照：会话进程里 /goal 不该为查状态去 call
+          # 可能正跑着模型的 kernel（那会把整个会话的事件循环钉住 —— 实测 5s 超时）。
+          # 只有 CLI/TUI（不传 goal 键）才回落到 kernel。
+          g =
+            case Map.fetch(ctx, :goal) do
+              {:ok, goal} -> goal
+              :error -> Newbee.Agent.Loop.goal(ctx.kernel)
+            end
 
-            g ->
-              budget = if g.token_budget, do: "#{g.tokens_used}/#{g.token_budget}", else: "#{g.tokens_used}/∞"
-              ctx.say.("自主目标 [#{g.status}]: #{g.text}（#{g.rounds}/#{g.max_rounds} 轮 · budget #{budget} · idle #{g.idle}）")
-              if g.status == :budget_limited, do: ctx.say.("  ⚠ 已达预算上限，已注入收尾提示；/goal budget <N> 可提升预算")
-              if g.status == :blocked, do: ctx.say.("  ⛔ 三击阻塞，需 /goal resume 或 /goal edit")
+          case g do
+            nil ->
+              ctx.say.(
+                "（无自主目标）用法: /goal <目标> [--budget N] [--max-rounds N] | /goal pause|resume|clear|edit <新目标>|budget <N>"
+              )
+
+            %{status: status, text: text} = goal ->
+              budget =
+                case Map.get(goal, :token_budget) do
+                  nil -> "#{Map.get(goal, :tokens_used) || 0}/∞"
+                  b -> "#{Map.get(goal, :tokens_used) || 0}/#{b}"
+                end
+
+              rounds = Map.get(goal, :rounds) || 0
+              max_rounds = Map.get(goal, :max_rounds)
+              idle = Map.get(goal, :idle) || 0
+              ctx.say.("自主目标 [#{status}]: #{text}（#{rounds}/#{max_rounds} 轮 · budget #{budget} · idle #{idle}）")
+              if to_string(status) == "budget_limited", do: ctx.say.("  ⚠ 已达预算上限，已注入收尾提示；/goal budget <N> 可提升预算")
+              if to_string(status) == "blocked", do: ctx.say.("  ⛔ 三击阻塞，需 /goal resume 或 /goal edit")
+
+            _ ->
+              ctx.say.(
+                "（无自主目标）用法: /goal <目标> [--budget N] [--max-rounds N] | /goal pause|resume|clear|edit <新目标>|budget <N>"
+              )
           end
 
         arg == "clear" ->
@@ -596,6 +620,7 @@ defmodule Newbee.Commands do
 
         String.starts_with?(arg, "edit ") ->
           text = String.trim_leading(arg, "edit ") |> String.trim()
+
           case Newbee.Agent.Loop.update_goal(ctx.kernel, text) do
             :ok -> ctx.say.("已更新目标: #{text}")
             {:error, e} -> ctx.say.("更新失败: #{inspect(e)}")
@@ -603,6 +628,7 @@ defmodule Newbee.Commands do
 
         String.starts_with?(arg, "budget ") ->
           b = String.trim_leading(arg, "budget ") |> String.trim()
+
           case Newbee.Agent.Loop.set_goal_budget(ctx.kernel, b) do
             :ok -> ctx.say.("已调整预算: #{b}")
             {:error, e} -> ctx.say.("调整失败: #{inspect(e)}")
@@ -610,6 +636,7 @@ defmodule Newbee.Commands do
 
         true ->
           {text, opts} = parse_goal_args(arg)
+
           case Newbee.Agent.Loop.set_goal(ctx.kernel, text, opts) do
             :ok ->
               budget_hint = if opts[:token_budget], do: " budget=#{opts[:token_budget]}", else: ""
@@ -626,19 +653,31 @@ defmodule Newbee.Commands do
     :handled
   end
 
-
   defp run("loop", arg, ctx) do
-    if ctx.kernel do
-      arg = String.trim(arg)
-      if arg == "" do
+    arg = String.trim(arg)
+
+    cond do
+      ctx.kernel == nil ->
+        ctx.say.("（无 kernel 上下文，/loop 不可用）")
+        :handled
+
+      arg == "" ->
         ctx.say.("用法: /loop <任务描述> [--iterations N] [--budget TOKENS]  (N≤20)")
-      else
+        :handled
+
+      Map.get(ctx, :async_loop, false) ->
+        # WebUI：/loop 是多轮模型调用，同步跑会把会话进程钉住整轮，
+        # session.state 轮询（2s 一次、5s 超时）全部排在后面。
+        # 这里只做参数解析，执行交给调用方的独立 turn task。
         {task, opts} = parse_loop_args(arg)
-        # If goal active, hint
-        case Newbee.Agent.Loop.goal(ctx.kernel) do
-          %{status: :active} -> ctx.say.("⚠ 已有 active goal，loop 将与之并行；建议先 /goal pause")
-          _ -> :ok
-        end
+        if goal_active?(ctx), do: ctx.say.("⚠ 已有 active goal，loop 将与之并行；建议先 /goal pause")
+        {:loop, task, opts}
+
+      true ->
+        # CLI/TUI：单线程前端，同步执行才能打印进度。
+        {task, opts} = parse_loop_args(arg)
+        if goal_active?(ctx), do: ctx.say.("⚠ 已有 active goal，loop 将与之并行；建议先 /goal pause")
+
         case Newbee.Agent.Loop.loop(ctx.kernel, task, opts) do
           {:done, summary} -> ctx.say.("Loop 完成: #{summary}")
           {:ask, q} -> ctx.say.("Loop 需要提问: #{q}")
@@ -647,14 +686,10 @@ defmodule Newbee.Commands do
           {:error, e} -> ctx.say.("Loop 失败: #{inspect(e)}")
           other -> ctx.say.("Loop 结果: #{inspect(other)}")
         end
-      end
-    else
-      ctx.say.("（无 kernel 上下文，/loop 不可用）")
+
+        :handled
     end
-    :handled
   end
-
-
 
   # ── /undo：回退到上一 revision（§10：环境版本回退只恢复环境自身）──
 
@@ -817,6 +852,29 @@ defmodule Newbee.Commands do
     :handled
   end
 
+  # 目标是否在跑：WebUI 直接读会话的目标快照（ctx.goal），
+  # Web 上下文一定带 goal 键（可能为 nil）：快照就是唯一真相，绝不 call kernel。
+  # 早期版本在 goal 为 nil 时回落到 Loop.goal/1，把整个会话钉在 5s 超时上——这是
+  # 本任务要消除的阻塞路径，所以这里用 fetch 而不是 || 兜底。
+  defp goal_active?(ctx) when is_map(ctx) do
+    case Map.fetch(ctx, :goal) do
+      {:ok, %{status: status}} -> status in ["active", :active]
+      {:ok, _} -> false
+      :error -> cli_goal_active?(ctx)
+    end
+  end
+
+  # 仅 CLI/TUI 走到这里：它们没有会话快照，只能问 kernel。
+  defp cli_goal_active?(%{kernel: kernel}) when is_pid(kernel) do
+    match?(%{status: :active}, Newbee.Agent.Loop.goal(kernel))
+  rescue
+    _ -> false
+  catch
+    _, _ -> false
+  end
+
+  defp cli_goal_active?(_ctx), do: false
+
   defp approve_staging(arg, ctx) do
     id = if arg == "", do: :all, else: String.to_integer(arg)
 
@@ -849,14 +907,18 @@ defmodule Newbee.Commands do
 
   defp parse_goal_args(arg) do
     # 支持尾缀 --budget N 和 --max-rounds N
-    {text, budget} = case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, arg) do
-      [_, t, b] -> {String.trim(t), String.to_integer(b)}
-      _ -> {arg, nil}
-    end
-    {text, max_rounds} = case Regex.run(~r/^(.*)\s+--max-rounds\s+(\d+)\s*$/, text) do
-      [_, t, n] -> {String.trim(t), String.to_integer(n)}
-      _ -> {text, nil}
-    end
+    {text, budget} =
+      case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, arg) do
+        [_, t, b] -> {String.trim(t), String.to_integer(b)}
+        _ -> {arg, nil}
+      end
+
+    {text, max_rounds} =
+      case Regex.run(~r/^(.*)\s+--max-rounds\s+(\d+)\s*$/, text) do
+        [_, t, n] -> {String.trim(t), String.to_integer(n)}
+        _ -> {text, nil}
+      end
+
     opts = []
     opts = if budget, do: Keyword.put(opts, :token_budget, budget), else: opts
     opts = if max_rounds, do: Keyword.put(opts, :max_rounds, max_rounds), else: opts
@@ -864,14 +926,18 @@ defmodule Newbee.Commands do
   end
 
   defp parse_loop_args(arg) do
-    {task, it} = case Regex.run(~r/^(.*)\s+--iterations\s+(\d+)\s*$/, arg) do
-      [_, t, n] -> {String.trim(t), String.to_integer(n)}
-      _ -> {arg, nil}
-    end
-    {task, budget} = case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, task) do
-      [_, t, b] -> {String.trim(t), String.to_integer(b)}
-      _ -> {task, nil}
-    end
+    {task, it} =
+      case Regex.run(~r/^(.*)\s+--iterations\s+(\d+)\s*$/, arg) do
+        [_, t, n] -> {String.trim(t), String.to_integer(n)}
+        _ -> {arg, nil}
+      end
+
+    {task, budget} =
+      case Regex.run(~r/^(.*)\s+--budget\s+(\d+)\s*$/, task) do
+        [_, t, b] -> {String.trim(t), String.to_integer(b)}
+        _ -> {task, nil}
+      end
+
     opts = []
     opts = if it, do: Keyword.put(opts, :iterations, it), else: opts
     opts = if budget, do: Keyword.put(opts, :token_budget, budget), else: opts

@@ -41,7 +41,12 @@ defmodule Newbee.Agent.Loop do
             # 沉睡规则正文重试熔断：同一组规则连续命中计数，达上限放行防无限重试。
             rule_streak: %{ids: [], count: 0},
             # 伪收尾续跑计数：正常前进（工具调用/正常收尾）时清零。
-            incomplete_streak: 0
+            incomplete_streak: 0,
+            # 本轮已发生的真实 usage 合计：每次 LLM 调用按 provider 上报值累加，
+            # 回合/轮起点清零。goal 记账只用它——不用正文字节估算，也不按轮均摊。
+            turn_tokens: 0,
+            # 最近一次目标完成时真正写进过磁盘的终态快照（读回校验通过才会返回）。
+            last_goal_result: nil
 
   # ── API ──
 
@@ -91,6 +96,9 @@ defmodule Newbee.Agent.Loop do
   def loop(kernel, task, opts \\ []), do: GenServer.call(kernel, {:loop, task, opts}, :infinity)
 
   def usage(kernel), do: GenServer.call(kernel, :usage)
+
+  @doc "最近一次 goal 完成时真正写进磁盘并通过读回校验的终态快照（tokens_used/status 等）。"
+  def last_goal_result(kernel), do: GenServer.call(kernel, :last_goal_result)
   @doc "切换会话的唯一工作根，并同步 evaluator、持久化元数据和 system prompt。"
   def set_root(kernel, root), do: GenServer.call(kernel, {:set_root, root}, 120_000)
 
@@ -160,6 +168,8 @@ defmodule Newbee.Agent.Loop do
         do: Newbee.Session.open(Keyword.get(opts, :session_id))
 
     session_id = if session_seed, do: session_seed.id
+    # 崩溃/被杀留下的 active 快照不代表“现在在跑的目标”：启动时清掉过期残影。
+    if session_id, do: Newbee.Goal.discard_stale(session_id)
     root = initial_root(requested_root, session_seed)
     if session_seed, do: Newbee.Session.set_cwd(session_seed.id, root)
     _ = set_evaluator_cwd(evaluator, root)
@@ -421,6 +431,7 @@ defmodule Newbee.Agent.Loop do
   end
 
   def handle_call(:usage, _from, state), do: {:reply, state.usage, state}
+  def handle_call(:last_goal_result, _from, state), do: {:reply, state.last_goal_result, state}
 
   def handle_call(:compact, _from, state) do
     {state, count} = compact_state(state, 8)
@@ -477,21 +488,7 @@ defmodule Newbee.Agent.Loop do
           "content" => "(Autonomous goal mode started) Goal: #{text}\nWork on your own until it is done."
         })
 
-      try do
-        Newbee.Goal.persist(%Newbee.Goal.State{
-          id: goal.id,
-          text: text,
-          status: :active,
-          token_budget: token_budget,
-          tokens_used: 0,
-          rounds: 0,
-          max_rounds: max_rounds,
-          updated_at: goal.created_at,
-          session_id: session_id
-        })
-      rescue
-        _ -> :ok
-      end
+      persist_running_goal(%{state | goal: goal})
 
       emit(state, {:goal_start, text})
       send(self(), :goal_next)
@@ -518,21 +515,7 @@ defmodule Newbee.Agent.Loop do
             timing: "next_request"
           })
 
-        try do
-          Newbee.Goal.persist(%Newbee.Goal.State{
-            id: g.id,
-            text: text,
-            status: :active,
-            token_budget: g.token_budget,
-            tokens_used: g.tokens_used,
-            rounds: g.rounds,
-            max_rounds: g.max_rounds,
-            updated_at: System.system_time(:millisecond),
-            session_id: g.session_id
-          })
-        rescue
-          _ -> :ok
-        end
+        persist_running_goal(%{state | goal: updated})
 
         emit(state, {:goal_updated, text})
         {:reply, :ok, %{state | goal: updated}}
@@ -551,6 +534,7 @@ defmodule Newbee.Agent.Loop do
       else
         g = %{state.goal | status: status}
         g = if status == :active, do: %{g | wall_start: System.monotonic_time(:millisecond)}, else: g
+        persist_running_goal(%{state | goal: g})
         emit(state, {:goal_status, status})
 
         if status == :active do
@@ -568,6 +552,7 @@ defmodule Newbee.Agent.Loop do
     else
       b = parse_token_budget(budget)
       g = %{state.goal | token_budget: b}
+      persist_running_goal(%{state | goal: g})
       emit(state, {:goal_budget, b})
       {:reply, :ok, %{state | goal: g}}
     end
@@ -700,6 +685,7 @@ defmodule Newbee.Agent.Loop do
     Newbee.LLM.Client.clear_interrupt(state.client)
     {reply, state} = run_turn(state, 1)
     {reply, state} = after_turn(reply, state)
+    persist_running_goal(state)
     persist_bindings(state)
     ms = :erlang.monotonic_time(:millisecond) - t0
     Newbee.DebugLog.log(:submit, "done in #{ms}ms reply=#{elem(reply, 0)}")
@@ -726,8 +712,10 @@ defmodule Newbee.Agent.Loop do
   def handle_info(:goal_next, state) do
     if state.goal && state.goal.status == :active do
       Newbee.LLM.Client.clear_interrupt(state.client)
+      state = mark_goal_usage(state)
       {reply, state} = run_turn(state, 1)
       {_reply, state} = after_turn(reply, state)
+      persist_running_goal(state)
       {:noreply, state}
     else
       if state.goal && state.goal.status in [:paused, :blocked, :budget_limited] do
@@ -770,8 +758,9 @@ defmodule Newbee.Agent.Loop do
     if g.status == :paused do
       {{:text, content}, state}
     else
-      # Accounting: tokens_used from usage, time_used
-      tokens_delta = estimate_tokens(content, g.msg_len, state)
+      # Accounting: 只认本轮 provider 上报的 usage 增量；没有 usage 就记 0，
+      # 不用正文字节/4 估算，也不把累计 total_tokens 按轮均摊。
+      tokens_delta = turn_token_delta(state)
       time_delta = if g.wall_start, do: System.monotonic_time(:millisecond) - g.wall_start, else: 0
 
       g = %{
@@ -978,23 +967,15 @@ defmodule Newbee.Agent.Loop do
       send(self(), :goal_next)
       {{:text, summary}, state}
     else
-      # Token accounting for final turn
-      tokens_delta = estimate_tokens(summary, g.msg_len, state)
-      _g = %{g | tokens_used: (g.tokens_used || 0) + tokens_delta, status: :complete}
+      {state, _final} = complete_goal(state, g)
       emit(state, {:goal_done, summary})
       maybe_extract_lesson(state, summary)
-
-      try do
-        Newbee.Goal.clear_persist(g.session_id)
-      rescue
-        _ -> :ok
-      end
-
       {{:done, summary}, %{state | goal: nil}}
     end
   end
 
   defp after_turn({:done, summary, next_steps}, state) when is_map(next_steps) or is_list(next_steps) do
+    {state, _g} = complete_goal(state, state.goal)
     emit(state, {:goal_done, summary})
     maybe_extract_lesson(state, summary)
     {{:done, summary, next_steps}, %{state | goal: nil}}
@@ -1052,17 +1033,30 @@ defmodule Newbee.Agent.Loop do
   defp retryable_goal_error?(_), do: false
 
   # Helpers for enhanced goal
-  defp estimate_tokens(content, _msg_len, state) do
-    # Simple heuristic: content bytes / 4 plus tool outputs in last turn
-    base = div(byte_size(content || ""), 4)
-    # Add usage from last turn if available
-    extra =
-      case Map.get(state, :usage) do
-        %{"total_tokens" => n} when is_integer(n) -> div(n, max(state.goal.rounds + 1, 1))
-        _ -> 0
-      end
 
-    max(base + extra, 50)
+  # 目标记账只认 provider 上报的 usage：每次 LLM 调用把该次真实用量累加到
+  # `turn_tokens`，回合/轮起点清零。不再用正文字节/4 估算，也不把累计
+  # total_tokens 按轮均摊（后者会让每轮数字随历史轮数漂移）。
+  defp turn_token_delta(state), do: Map.get(state, :turn_tokens) || 0
+
+  defp mark_goal_usage(state), do: %{state | turn_tokens: 0}
+
+  # provider 的 usage 结构在不同厂家之间不完全一致：优先 total_tokens，
+  # 缺失时退回 prompt+completion。非 map（客户端没给 usage）按 0 计。
+  defp usage_tokens(usage) do
+    usage = if is_map(usage), do: usage, else: %{}
+    total = Map.get(usage, "total_tokens") || Map.get(usage, :total_tokens)
+
+    if is_integer(total),
+      do: total,
+      else: usage_int(usage, "prompt_tokens") + usage_int(usage, "completion_tokens")
+  end
+
+  defp usage_int(usage, key) do
+    case Map.get(usage, key) || Map.get(usage, String.to_atom(key)) do
+      n when is_integer(n) -> n
+      _ -> 0
+    end
   end
 
   defp extract_tool_sig(added) do
@@ -1075,34 +1069,111 @@ defmodule Newbee.Agent.Loop do
     end
   end
 
+  # “我卡住了”判定：只有真正表示阻塞的句子才累计。否定句（not blocked /
+  # 没有 blocked / 未阻塞 / not stuck / 不需要用户）是常态汇报，不能算阻塞，
+  # 否则健康的长任务会被三击审计误杀。
+  @blocked_phrases ["blocked", "stuck", "阻塞", "卡住", "等待用户", "需要用户", "无法继续", "cannot continue"]
+
+  @blocked_negations [
+    ~r/(?:not|never|no\s+longer|n't)\s+(?:\w+\s+){0,2}(?:blocked|stuck)/,
+    ~r/(?:没有|未|并未|并没有|不再|无需|无须|不需要)\s*(?:被|再)?\s*(?:blocked|阻塞|卡住)/,
+    ~r/(?:不|无需|无须|不需要)\s*(?:再)?\s*(?:需要用户|等待用户)/,
+    ~r/(?:没有|未|并未|不再)\s*(?:无法继续)/
+  ]
+
   defp blocked_text?(content) when is_binary(content) do
-    String.contains?(String.downcase(content), "blocked") or
-      String.contains?(content, "等待用户") or
-      String.contains?(content, "需要用户") or
-      String.contains?(content, "无法继续")
+    content
+    |> String.downcase()
+    |> String.split(~r/[.。;；!！?\n]+/)
+    |> Enum.any?(&blocked_sentence?/1)
   end
 
   defp blocked_text?(_), do: false
 
+  defp blocked_sentence?(sentence) do
+    Enum.any?(@blocked_phrases, fn phrase ->
+      String.contains?(sentence, phrase) and
+        not Enum.any?(@blocked_negations, &Regex.match?(&1, sentence))
+    end)
+  end
+
+  # 验证门：只有“确有 `? ` 开放项、且账本里没有任何 ✓”时才拦 done。
+  # 空账本（Verified/Open 都是 (none)）不拦；已记 ✓ 说明有可交付的验证证据，也不拦。
   defp verification_gate_blocks?(state, _summary) do
     session_id = state.goal && state.goal.session_id
 
     if session_id && Newbee.Tools.JSpace.exists?(session_id) do
       body = Newbee.Tools.JSpace.read(session_id) || ""
-      has_open = String.contains?(body, "? ") or String.contains?(body, "Open:")
-
-      verified_empty =
-        String.contains?(body, "Verified:  (none)") or
-          String.contains?(body, "Verified:  (\u65e0)") or
-          (String.contains?(body, "Verified:  (") and not String.contains?(body, "✓"))
-
-      # Block if there are open items and no verified progress
-      has_open and verified_empty
+      has_open = Regex.match?(~r/^\?\s/m, body)
+      has_verified = String.contains?(body, "✓")
+      has_open and not has_verified
     else
       false
     end
   rescue
     _ -> false
+  end
+
+  # done 出口：把本轮真实 usage 增量并入终态，先落盘终态快照（读回校验）再删文件。
+  defp complete_goal(state, g) do
+    tokens_delta = turn_token_delta(state)
+    time_delta = if g.wall_start, do: System.monotonic_time(:millisecond) - g.wall_start, else: 0
+
+    final = %{
+      g
+      | tokens_used: (g.tokens_used || 0) + tokens_delta,
+        time_used_ms: (g.time_used_ms || 0) + time_delta,
+        status: :complete
+    }
+
+    persisted = persist_final_goal(final)
+    state = %{state | goal: final, last_goal_result: persisted}
+    {state, final}
+  end
+
+  defp persist_final_goal(g) do
+    case Newbee.Goal.finish(goal_snapshot(g, :complete)) do
+      {:ok, persisted} ->
+        persisted
+
+      {:error, reason} ->
+        Newbee.DebugLog.log(:goal, "final goal persist failed: #{inspect(reason)}")
+        nil
+    end
+  rescue
+    e ->
+      Newbee.DebugLog.log(:goal, "final goal persist crashed: #{inspect(e)}")
+      nil
+  end
+
+  # 运行中的 goal 快照随轮更新：updated_at 保持新鲜，读侧才不会被当成过期残影。
+  defp persist_running_goal(state) do
+    case state.goal do
+      %{session_id: sid} = g when is_binary(sid) -> Newbee.Goal.persist(goal_snapshot(g, g.status))
+      _ -> :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  # 内存 goal（Loop 私有 map）→ Goal.State（落盘结构）。
+  defp goal_snapshot(g, status) do
+    %Newbee.Goal.State{
+      id: g.id,
+      text: g.text,
+      objective: g.objective || g.text,
+      status: status,
+      token_budget: g.token_budget,
+      tokens_used: g.tokens_used || 0,
+      time_used_ms: g.time_used_ms || 0,
+      rounds: g.rounds || 0,
+      max_rounds: g.max_rounds || 50,
+      idle: g.idle || 0,
+      blocked_streak: g.blocked_streak || 0,
+      created_at: g.created_at,
+      updated_at: System.system_time(:millisecond),
+      session_id: g.session_id
+    }
   end
 
   defp goal_system_prompt(text) do
@@ -1152,8 +1223,10 @@ defmodule Newbee.Agent.Loop do
   end
 
   defp loop_iterations(state, loop) do
+    # /loop 与 /goal 同一口径：每轮先清基线，再取本轮 provider 上报的真实 usage 增量。
+    state = mark_goal_usage(state)
     {reply, state} = run_turn(state, 1)
-    tokens = div(byte_size(inspect(reply)), 4) + 50
+    tokens = turn_token_delta(state)
     loop = %{loop | rounds: loop.rounds + 1, tokens_used: loop.tokens_used + tokens}
 
     state =
@@ -1301,7 +1374,13 @@ defmodule Newbee.Agent.Loop do
             {:ok, msg, usage} ->
               Newbee.DebugLog.log(:turn, "step #{step} llm ok calls=#{length(msg["tool_calls"] || [])}")
               emit(state, {:usage, Map.put(usage, "model", client_model(state.client))})
-              state = %{state | usage: merge_usage(state.usage, usage)}
+
+              state = %{
+                state
+                | usage: merge_usage(state.usage, usage),
+                  turn_tokens: (state.turn_tokens || 0) + usage_tokens(usage)
+              }
+
               # 用量持久化（UI 历史回放）：附加到 assistant 消息私有字段，
               # 仅前端 history 消费；发模型的 messages 不含 _usage（见 request_messages）
               msg = Map.put(msg, "_usage", usage)
