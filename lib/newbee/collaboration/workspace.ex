@@ -2,14 +2,29 @@ defmodule Newbee.Collaboration.Workspace do
   @moduledoc """
   通用子会话工作区：默认文件系统副本，不依赖 Git。
   `isolate: false` 才使用共享目录，旧的 Git worktree 元数据仍可兼容读取。
-  """
 
+  隔离目录只复制源码：`deps`、`_build` 等构建产物按原快照规则排除在快照之外，
+  物化完成后用**绝对符号链接**把源项目的 `deps` 接进工作区（`link_build: true`
+  时连 `_build` 一起），让工作区里的 `mix` 不必手工 `ln -s` 也能量到依赖。
+  链接指向解析后的真实目录，源项目本身用相对链接时也不会指错位置；源项目没有
+  该目录时不建悬空链接，改为在 `build_artifacts` 与 `warning` 里给出可读提示。
+
+  清理只按链接本身删除（`File.rm` 对符号链接不进入目标，`File.rm_rf` 同样把
+  链接当文件删），删完再核对链接目标仍然存在，因此源项目的 `deps`/`_build`
+  不会被递归删除，也不随工作区一起消失。
+
+  边界：链接不改变写权限，在工作区里执行 `mix deps.get`/`mix compile` 仍会写到
+  源项目目录；链接是绝对路径，工作区搬迁或换机器后会失效。详见
+  `docs/isolated-workspace.md`。
+  """
   @display_patch_limit 600_000
   @session_id_re ~r/\A[0-9A-Za-z._-]{1,96}\z/
   @terminal_review_states ~w(applied rejected)
   @default_snapshot_max_files 16_384
   @default_snapshot_max_bytes 128 * 1_024 * 1_024
   @default_snapshot_max_file_bytes 32 * 1_024 * 1_024
+  @build_artifacts ["deps", "_build"]
+  @max_symlink_depth 8
 
   @excluded_entries MapSet.new([
                       ".appimage-cache",
@@ -30,26 +45,32 @@ defmodule Newbee.Collaboration.Workspace do
                       "pal"
                     ])
 
-  def prepare(root, child_session_id, mode \\ :auto)
+  @doc """
+  物化隔离工作区。`mode: false` 用共享目录，`true`/`:auto` 用文件系统副本。
 
-  def prepare(root, child_session_id, mode)
-      when is_binary(root) and is_binary(child_session_id) and mode in [true, false, :auto] do
-    with :ok <- valid_session_id(child_session_id),
+  副本物化完成后，把源项目的构建产物以**绝对符号链接**接入隔离目录：`deps`
+  默认接入，`_build` 需要显式 `link_build: true`。源项目缺少对应目录时不建
+  悬空链接，改为返回 `build_artifacts` 状态与可读的 `warning`（不是错误）。
+  """
+  def prepare(root, child_session_id, mode \\ :auto, opts \\ [])
+
+  def prepare(root, child_session_id, mode, opts)
+      when is_binary(root) and is_binary(child_session_id) and mode in [true, false, :auto] and
+             is_list(opts) do
+    with :ok <- valid_prepare_options(opts),
+         :ok <- valid_session_id(child_session_id),
          {:ok, expanded_root} <- existing_directory(root) do
       case mode do
         false ->
           {:ok, shared_workspace(expanded_root)}
 
-        true ->
-          prepare_filesystem_workspace(expanded_root, child_session_id)
-
-        :auto ->
-          prepare_filesystem_workspace(expanded_root, child_session_id)
+        _isolated ->
+          prepare_filesystem_workspace(expanded_root, child_session_id, opts)
       end
     end
   end
 
-  def prepare(_, _, _), do: {:error, "bad_request", "invalid workspace args"}
+  def prepare(_, _, _, _), do: {:error, "bad_request", "invalid workspace args"}
 
   def review(task) when is_map(task) do
     with :ok <- reviewable_task(task),
@@ -103,25 +124,158 @@ defmodule Newbee.Collaboration.Workspace do
 
   def discard_orphan(_), do: :ok
 
-  defp prepare_filesystem_workspace(root, child_session_id) do
+  defp prepare_filesystem_workspace(root, child_session_id, opts) do
     with {:ok, base_snapshot} <- snapshot(root),
          path <- Path.join([root, ".newbee", "workspaces", child_session_id]),
          :ok <- ensure_workspace_path(root, path),
-         :ok <- ensure_absent(path),
-         :ok <- File.mkdir_p(path),
-         :ok <- materialize_snapshot(base_snapshot, path),
-         :ok <- write_base_snapshot(path, base_snapshot) do
-      {:ok,
-       %{
-         "kind" => "filesystem_copy",
-         "root" => root,
-         "path" => path,
-         "base_ref" => snapshot_ref(base_snapshot),
-         "review_status" => "waiting",
-         "reviewed_at" => nil,
-         "reviewed_by_session_id" => nil
-       }}
+         :ok <- ensure_absent(path) do
+      # 目录一旦建出来，后续任何一步失败都必须回滚；此前的失败（例如工作区已存在）
+      # 绝不能走到回滚分支，否则会删掉别的会话正在用的工作区。
+      case materialize_workspace(root, path, base_snapshot, opts) do
+        {:ok, workspace} -> {:ok, workspace}
+        {:error, _code, _message} = error -> discard_half_prepared(root, child_session_id, error)
+      end
     end
+  end
+
+  defp materialize_workspace(root, path, base_snapshot, opts) do
+    with :ok <- create_workspace(base_snapshot, path),
+         {:ok, artifacts} <- link_build_artifacts(root, path, opts) do
+      workspace = %{
+        "kind" => "filesystem_copy",
+        "root" => root,
+        "path" => path,
+        "base_ref" => snapshot_ref(base_snapshot),
+        "review_status" => "waiting",
+        "reviewed_at" => nil,
+        "reviewed_by_session_id" => nil,
+        "build_artifacts" => artifacts.entries
+      }
+
+      {:ok, maybe_put_warning(workspace, artifacts.warning)}
+    end
+  end
+
+  ## ── 构建产物接入（deps / _build）──────────────────────────────────────────
+
+  # 快照按名字排除 deps/_build，隔离目录里因此没有依赖也没有编译缓存。这里把源
+  # 项目对应的真实目录用绝对符号链接接进去，工作区里的 mix 才能直接编译。
+  # 源项目没有该目录（或链接目标已失效）时不建悬空链接，只记一条可读提示。
+  defp link_build_artifacts(root, path, opts) do
+    enabled = [{"deps", true}, {"_build", Keyword.get(opts, :link_build, false)}]
+
+    enabled
+    |> Enum.filter(fn {_name, link?} -> link? end)
+    |> Enum.reduce_while({:ok, %{entries: [], warning: nil}}, fn {name, _link?}, {:ok, acc} ->
+      case link_build_artifact(root, path, name) do
+        {:ok, entry} ->
+          warning =
+            case {entry["status"], entry["message"]} do
+              {"linked", _} -> acc.warning
+              {_status, message} when is_binary(message) -> join_warning(acc.warning, message)
+              _ -> acc.warning
+            end
+
+          {:cont, {:ok, %{acc | entries: acc.entries ++ [entry], warning: warning}}}
+
+        {:error, _code, _message} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp link_build_artifact(root, path, name) do
+    link = Path.join(path, name)
+
+    case build_artifact_target(Path.join(root, name)) do
+      {:ok, target} ->
+        case File.ln_s(target, link) do
+          :ok ->
+            {:ok, %{"name" => name, "status" => "linked", "target" => target, "message" => nil}}
+
+          {:error, reason} ->
+            {:error, "workspace_link_failed", "无法把源项目 #{name} 接入隔离目录：#{inspect(reason)}"}
+        end
+
+      {:error, :enoent} ->
+        {:ok, %{"name" => name, "status" => "missing", "target" => nil, "message" => missing_artifact_message(name)}}
+
+      {:error, reason} ->
+        {:error, "workspace_link_failed", "无法解析源项目 #{name}：#{inspect(reason)}"}
+    end
+  end
+
+  @doc """
+  把源项目的构建产物（`deps`/`_build`）解析成可安全链接的真实目录。
+
+  源项目自身可能用相对链接指向别处（worktree 常见的 `ln -s ../../../deps deps`），
+  这里一路跟到最终目录并返回绝对路径，避免工作区里的链接相对新位置解析而失效。
+  返回 `{:ok, absolute_dir}`，或 `{:error, :enoent | :enotdir | :eloop | reason}`。
+  """
+  def build_artifact_target(source) when is_binary(source), do: resolve_build_artifact(source, 0)
+
+  def build_artifact_target(_source), do: {:error, :enotdir}
+
+  # 工作区里的链接必须是绝对路径并指向最终真实目录。
+  defp resolve_build_artifact(source, depth)
+
+  defp resolve_build_artifact(_source, depth) when depth > @max_symlink_depth,
+    do: {:error, :eloop}
+
+  defp resolve_build_artifact(source, depth) do
+    case File.lstat(source) do
+      {:ok, %File.Stat{type: :directory}} ->
+        {:ok, Path.expand(source)}
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        case File.read_link(source) do
+          {:ok, target} -> resolve_build_artifact(Path.expand(target, Path.dirname(source)), depth + 1)
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, _other} ->
+        {:error, :enotdir}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp missing_artifact_message("deps"),
+    do: "源项目没有 deps，未建立依赖链接；请先在源项目 mix deps.get 后再派生工作区"
+
+  defp missing_artifact_message("_build"),
+    do: "源项目没有 _build，未建立编译缓存链接；工作区内首次 mix compile 需自行编译"
+
+  defp missing_artifact_message(name), do: "源项目没有 #{name}，未建立链接"
+
+  defp join_warning(nil, message), do: message
+  defp join_warning(existing, message), do: existing <> "；" <> message
+
+  defp maybe_put_warning(workspace, nil), do: workspace
+  defp maybe_put_warning(workspace, warning), do: Map.put(workspace, "warning", warning)
+
+  # 依赖解析 / 链接失败时不能留下半成品：只按链接语义删除（不进入链接目标），
+  # 再返回原始错误，避免调用方看到「工作区存在但不可用」。
+  defp discard_half_prepared(root, child_session_id, error) do
+    path = Path.join([root, ".newbee", "workspaces", child_session_id])
+    _ = File.rm(base_snapshot_path(path))
+    _ = File.rm_rf(path)
+    error
+  end
+
+  defp create_workspace(base_snapshot, path) do
+    with :ok <- File.mkdir_p(path),
+         :ok <- materialize_snapshot(base_snapshot, path) do
+      write_base_snapshot(path, base_snapshot)
+    end
+  end
+
+  defp valid_prepare_options(opts) do
+    if Keyword.keyword?(opts) and Enum.all?(Keyword.keys(opts), &(&1 in [:link_build])) and
+         is_boolean(Keyword.get(opts, :link_build, false)),
+       do: :ok,
+       else: {:error, "bad_request", "invalid workspace options"}
   end
 
   defp shared_workspace(root) do
@@ -454,29 +608,111 @@ defmodule Newbee.Collaboration.Workspace do
     end
   end
 
-  defp remove_workspace(%{"kind" => "git_worktree", "root" => root, "path" => path}) do
+  defp remove_workspace(%{"kind" => "git_worktree", "root" => root, "path" => path} = workspace) do
     with :ok <- ensure_workspace_path(root, path),
-         :ok <- File.rm(base_snapshot_path(path)),
+         :ok <- remove_base_snapshot(path),
+         {:ok, probes} <- detach_build_artifacts(workspace),
          :ok <- remove_git_worktree(root, path) do
-      :ok
-    else
-      {:error, :enoent} -> remove_git_worktree(root, path)
-      error -> error
+      verify_artifact_targets(probes)
     end
   end
 
-  defp remove_workspace(%{"root" => root, "path" => path}) do
-    with :ok <- ensure_workspace_path(root, path) do
-      File.rm(base_snapshot_path(path))
-
+  defp remove_workspace(%{"root" => root, "path" => path} = workspace) do
+    with :ok <- ensure_workspace_path(root, path),
+         :ok <- remove_base_snapshot(path),
+         {:ok, probes} <- detach_build_artifacts(workspace) do
       case File.rm_rf(path) do
-        {:ok, _} -> :ok
+        {:ok, _} -> verify_artifact_targets(probes)
         {:error, reason, _} -> {:error, "workspace_cleanup_failed", inspect(reason)}
       end
     end
   end
 
   defp remove_workspace(_), do: {:error, "workspace_invalid", "隔离工作区元数据无效"}
+
+  # 快照文件缺失是正常的（旧工作区、已被清理过）；只容忍 :enoent，其余错误照常上报。
+  defp remove_base_snapshot(path) do
+    case File.rm(base_snapshot_path(path)) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, "workspace_cleanup_failed", inspect(reason)}
+    end
+  end
+
+  # 拆除构建产物链接：只删链接本身（File.rm 对符号链接按链接删除，绝不进入目标），
+  # 记下每个链接的绝对目标，等工作区真正删除后再核对一次——目标消失就说明有东西
+  # 递归进入了链接，必须报错而不是静默放过。
+  defp detach_build_artifacts(%{"path" => path} = workspace) when is_binary(path) do
+    workspace
+    |> artifact_names()
+    |> Enum.reduce_while({:ok, []}, fn name, {:ok, probes} ->
+      case unlink_artifact(Path.join(path, name)) do
+        {:ok, nil} -> {:cont, {:ok, probes}}
+        {:ok, probe} -> {:cont, {:ok, probes ++ [probe]}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp detach_build_artifacts(_workspace), do: {:ok, []}
+
+  # 新工作区记录实际接入过哪些产物（含缺失提示项）；旧工作区没有该字段时按默认名字
+  # 逐个探测，这样历史上手工 ln -s 进来的链接也会被安全拆除。
+  defp artifact_names(%{"build_artifacts" => entries}) when is_list(entries) do
+    names =
+      entries
+      |> Enum.map(fn
+        %{"name" => name} when is_binary(name) -> name
+        _ -> nil
+      end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    if names == [], do: @build_artifacts, else: names
+  end
+
+  defp artifact_names(_workspace), do: @build_artifacts
+
+  defp unlink_artifact(link) do
+    case File.lstat(link) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        with {:ok, raw} <- File.read_link(link),
+             target = Path.expand(raw, Path.dirname(link)),
+             existed? = directory?(target),
+             :ok <- File.rm(link) do
+          {:ok, if(existed?, do: %{link: link, target: target}, else: nil)}
+        else
+          {:error, reason} -> unlink_error(link, reason)
+        end
+
+      # 实体目录/文件由随后的 rm_rf 处理；缺失即已完成。
+      {:ok, _other} ->
+        {:ok, nil}
+
+      {:error, :enoent} ->
+        {:ok, nil}
+
+      {:error, reason} ->
+        unlink_error(link, reason)
+    end
+  end
+
+  defp verify_artifact_targets(probes) do
+    case Enum.find(probes, fn probe -> not directory?(probe.target) end) do
+      nil ->
+        :ok
+
+      probe ->
+        {:error, "workspace_cleanup_failed", "构建产物链接目标在工作区清理后消失：#{probe.target}（原链接 #{probe.link}）"}
+    end
+  end
+
+  defp unlink_error(link, reason),
+    do: {:error, "workspace_cleanup_failed", "无法拆除构建产物链接 #{link}：#{inspect(reason)}"}
+
+  defp directory?(path) do
+    match?({:ok, %File.Stat{type: :directory}}, File.lstat(path))
+  end
 
   # `git worktree list` only reports a registration as long as the directory
   # exists, so a workspace already deleted by someone else looks "unregistered"

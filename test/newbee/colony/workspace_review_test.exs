@@ -101,6 +101,74 @@ defmodule Newbee.Colony.WorkspaceReviewTest do
     assert out =~ "local-dirty.txt"
   end
 
+  test "git worktree 自动接入源项目 deps，清理后源目录不变", ctx do
+    repo = tmp_dir("newbee-review-git-deps")
+    File.write!(Path.join(repo, "app.txt"), "v1\n")
+    File.mkdir_p!(Path.join(repo, "deps/jason/lib"))
+    File.write!(Path.join(repo, "deps/jason/lib/jason.ex"), "dep\n")
+    File.write!(Path.join(repo, ".gitignore"), "/deps/\n/_build/\n")
+    git!(repo, ["init", "-q"])
+    git!(repo, ["add", "."])
+    git!(repo, ["-c", "user.email=t@e.invalid", "-c", "user.name=T", "commit", "-qm", "base"])
+    on_exit(fn -> File.rm_rf!(repo) end)
+
+    task = git_task(repo, ctx.colony["id"], ctx.bee["id"])
+    workspace = task["workspace"]
+    assert workspace["kind"] == "git_worktree"
+
+    # 工作树路径整体 rename 过，链接必须指向源项目真实 deps 而不是旧快照位置
+    deps_link = Path.join(workspace["path"], "deps")
+    assert {:ok, target} = File.read_link(deps_link)
+    assert Path.type(target) == :absolute
+    assert Path.expand(target) == Path.expand(Path.join(repo, "deps"))
+    assert File.read!(Path.join(deps_link, "jason/lib/jason.ex")) == "dep\n"
+    entry = Enum.find(workspace["build_artifacts"], &(&1["name"] == "deps"))
+    assert entry["status"] == "linked"
+
+    File.write!(Path.join(workspace["path"], "app.txt"), "v2\n")
+    pending!(ctx, task)
+    assert {:ok, review} = WorkspaceReview.review(task)
+    assert [%{"path" => "app.txt", "kind" => "modified"}] = review["files"]
+    assert {:ok, _} = WorkspaceReview.apply(task, review["patch_sha256"], "req-git-deps")
+
+    # 清理后工作区消失，源 deps 逐项完整
+    assert {:ok, _} =
+             Workspace.cleanup(%{"status" => "succeeded", "workspace" => %{workspace | "review_status" => "applied"}})
+
+    refute File.exists?(workspace["path"])
+    assert File.read!(Path.join(repo, "deps/jason/lib/jason.ex")) == "dep\n"
+    assert File.dir?(Path.join(repo, "deps"))
+    refute link?(Path.join(repo, "deps"))
+    {worktrees, 0} = System.cmd("git", ["worktree", "list", "--porcelain"], cd: repo, stderr_to_stdout: true)
+    refute worktrees =~ workspace["path"]
+  end
+
+  test "git 源没有 deps 时不建悬空链接并给出提示", ctx do
+    repo = tmp_dir("newbee-review-git-nodeps")
+    File.write!(Path.join(repo, "app.txt"), "v1\n")
+    git!(repo, ["init", "-q"])
+    git!(repo, ["add", "."])
+    git!(repo, ["-c", "user.email=t@e.invalid", "-c", "user.name=T", "commit", "-qm", "base"])
+    on_exit(fn -> File.rm_rf!(repo) end)
+    refute File.exists?(Path.join(repo, "deps"))
+
+    task = git_task(repo, ctx.colony["id"], ctx.bee["id"])
+    workspace = task["workspace"]
+
+    refute File.exists?(Path.join(workspace["path"], "deps"))
+    assert {:error, :enoent} = File.lstat(Path.join(workspace["path"], "deps"))
+    entry = Enum.find(workspace["build_artifacts"], &(&1["name"] == "deps"))
+    assert entry["status"] == "missing"
+    assert is_binary(workspace["warning"])
+    assert workspace["warning"] =~ "deps"
+
+    # 提示不影响审阅
+    File.write!(Path.join(workspace["path"], "app.txt"), "v2\n")
+    pending!(ctx, task)
+    assert {:ok, review} = WorkspaceReview.review(task)
+    assert review["files"] |> Enum.map(& &1["path"]) == ["app.txt"]
+  end
+
   test "target modified after review is not overwritten", ctx do
     task = isolated_task(ctx.root, ctx.colony["id"], ctx.bee["id"])
     File.write!(Path.join(task["workspace"]["path"], "base.txt"), "base\nchild\n")
@@ -590,4 +658,6 @@ defmodule Newbee.Colony.WorkspaceReviewTest do
     {out, 0} = System.cmd("git", args, cd: dir, stderr_to_stdout: true)
     out
   end
+
+  defp link?(path), do: match?({:ok, %File.Stat{type: :symlink}}, File.lstat(path))
 end
