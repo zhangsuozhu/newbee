@@ -68,5 +68,4 @@ defmodule Newbee.Environment.HumanBriefCoordinatorTest do
     [upgraded] = Enum.filter(Coordinator.changes(coordinator), &(&1.change_id == change.change_id))
     assert upgraded.human_brief["title"] == "记住检查凭证这条提醒"
   end
-
 end

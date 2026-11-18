@@ -33,7 +33,10 @@ defmodule Newbee.Codec do
             summary: %{type: "string"},
             next_question: %{type: "string"},
             next_kind: %{type: "string", enum: ["single", "multi", "buttons"]},
-            next_options: %{type: "array", items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}}
+            next_options: %{
+              type: "array",
+              items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}
+            }
           },
           required: ["summary"]
         }
@@ -43,13 +46,22 @@ defmodule Newbee.Codec do
       type: "function",
       function: %{
         name: "ask",
-        description: "Pause for a user decision or clarification. kind: text, single, multi, buttons; put choices in options.",
+        description:
+          "Pause for a user decision or clarification. kind: text, single, multi, buttons; put choices in options.",
         parameters: %{
           type: "object",
           properties: %{
             question: %{type: "string", description: "Question for the user"},
-            kind: %{type: "string", enum: ["text", "single", "multi", "buttons"], description: "Interaction shape; default text"},
-            options: %{type: "array", description: "Choices [{label, value}]", items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}}
+            kind: %{
+              type: "string",
+              enum: ["text", "single", "multi", "buttons"],
+              description: "Interaction shape; default text"
+            },
+            options: %{
+              type: "array",
+              description: "Choices [{label, value}]",
+              items: %{type: "object", properties: %{label: %{type: "string"}, value: %{type: "string"}}}
+            }
           },
           required: ["question"]
         }
@@ -72,8 +84,10 @@ defmodule Newbee.Codec do
     fun = c["function"] || c[:function] || %{}
     fun = if is_map(fun), do: fun, else: %{}
     name = fun["name"] || fun[:name]
+
     if is_binary(name) and String.trim(name) != "" do
       raw_args = fun["arguments"] || fun[:arguments]
+
       args =
         cond do
           is_binary(raw_args) ->
@@ -81,14 +95,22 @@ defmodule Newbee.Codec do
               {:ok, m} when is_map(m) -> m
               _ -> %{"code" => raw_args}
             end
-          is_map(raw_args) -> raw_args
-          is_nil(raw_args) -> %{}
-          true -> %{"code" => inspect(raw_args)}
+
+          is_map(raw_args) ->
+            raw_args
+
+          is_nil(raw_args) ->
+            %{}
+
+          true ->
+            %{"code" => inspect(raw_args)}
         end
+
       %{id: c["id"] || c[:id], name: name, args: args}
     else
       nil
     end
   end
+
   defp extract_single(_), do: nil
 end

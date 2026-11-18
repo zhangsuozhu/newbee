@@ -28,7 +28,7 @@ defmodule Newbee.Collaboration.CoordinatorTest do
     {:ok, pid} = Coordinator.start_link(name: name, path: path, durability: :event)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      Newbee.TestSupport.Lifecycle.stop_if_alive(pid)
       File.rm_rf!(root)
     end)
 

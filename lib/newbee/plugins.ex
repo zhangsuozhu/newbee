@@ -11,6 +11,9 @@ defmodule Newbee.Plugins do
 
   alias Newbee.Environment.Release
 
+  # 单条摘要的字节预算：20 条 × 约 66 B + 名称与头部 ≈ 1750 B，留 50 B 余量给契约上限 1800。
+  @summary_bytes 66
+
   @builtin_modules [
     # kind, plugin_id, module, capabilities
     {:tool, "tool.fs", Newbee.Tools.Fs, [:fs]},
@@ -138,13 +141,36 @@ defmodule Newbee.Plugins do
   defp summary(mod) do
     case Code.fetch_docs(mod) do
       {:docs_v1, _, _, _, %{"en" => doc}, _, _} when is_binary(doc) ->
-        doc |> String.split("\n") |> hd() |> String.trim() |> String.slice(0, 120)
+        doc |> String.split("\n") |> hd() |> String.trim() |> truncate_summary(@summary_bytes)
 
       _ ->
         ""
     end
   rescue
     _ -> ""
+  end
+
+  # 字节预算内按词边界截断：先裁到合法 UTF-8 边界，再回退到最后一个空格，
+  # 避免常驻提示里出现半个英文单词或半个多字节字符。
+  defp truncate_summary(text, max_bytes) when byte_size(text) <= max_bytes, do: text
+
+  defp truncate_summary(text, max_bytes) do
+    head = utf8_prefix(text, max_bytes)
+
+    case String.split(head, " ") do
+      [_only] -> String.trim_trailing(head)
+      words -> words |> Enum.drop(-1) |> Enum.join(" ")
+    end
+  end
+
+  defp utf8_prefix(text, max_bytes) do
+    {acc, _used} =
+      Enum.reduce_while(String.graphemes(text), {[], 0}, fn g, {acc, used} ->
+        size = byte_size(g)
+        if used + size <= max_bytes, do: {:cont, {[g | acc], used + size}}, else: {:halt, {acc, used}}
+      end)
+
+    acc |> Enum.reverse() |> Enum.join()
   end
 
   defp app_built_at do

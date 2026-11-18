@@ -126,4 +126,3 @@ defmodule Newbee.Collaboration.Chat do
 
   defp current_revision(_), do: nil
 end
-

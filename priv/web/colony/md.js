@@ -7,6 +7,48 @@ import { toast } from "./api.js";
 export function escapeHtml(s) {
   return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
+// 属性位转义：escapeHtml 只转 & < >，直接用在 src=/href=/alt= 里会被一个引号闭合属性。
+// 文本位继续用 escapeHtml（避免纯文本里出现可见的 &quot;），属性位一律用本函数。
+export function escapeAttr(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// 只补引号：文本已过 escapeHtml，再全转会把 &amp; 二次转义成 &amp;amp;。
+function escapeQuote(s) {
+  return String(s == null ? "" : s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+const SAFE_LINK_SCHEME = /^(?:https?:|mailto:)/i;
+
+// 链接 scheme 白名单（R2P-03）：浏览器解析 scheme 时忽略控制字符与空白，
+// 判断前先压紧 \u0000-\u0020，否则 java<tab>script: 能绕过。
+// 无 scheme（相对路径 / #锚点 / //host）放行；不合法返回 null，由调用方降级为纯文本。
+export function safeUrl(raw) {
+  const s = String(raw == null ? "" : raw).trim();
+  if (s === "") return "";
+  const compact = s.replace(/[\u0000-\u0020]+/g, "");
+  const m = compact.match(/^([a-zA-Z][a-zA-Z0-9+.\-]*):/);
+  if (m && !SAFE_LINK_SCHEME.test(compact)) return null;
+  return s;
+}
+
+function imgTag(raw, alt, url) {
+  const src = safeUrl(url);
+  if (src == null) return `<span class="md-blocked" title="已拦截不安全的图片地址">${raw}</span>`;
+  return `<img class="md-img" src="${escapeQuote(src)}" alt="${escapeQuote(alt)}" loading="lazy" />`;
+}
+
+function linkTag(_raw, label, url) {
+  const href = safeUrl(url);
+  if (href == null) return `<span class="md-blocked" title="已拦截不安全的链接">${label}</span>`;
+  return `<a class="md-link" href="${escapeQuote(href)}" target="_blank" rel="noopener">${label}</a>`;
+}
+
 
 function inline(text) {
   let t = escapeHtml(text);
@@ -14,11 +56,12 @@ function inline(text) {
   t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   t = t.replace(/\*([^*\s][^*]*)\*/g, "<em>$1</em>");
   t = t.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
-  t = t.replace(/!\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<img class="md-img" src="$2" alt="$1" loading="lazy" />');
-  t = t.replace(/\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noopener">$1</a>');
+  // 图片/链接：属性位转义引号 + scheme 白名单（R2P-03）
+  t = t.replace(/!\[([^\]\n]*)\]\(([^)\n]*)\)/g, (m, alt, url) => imgTag(m, alt, url));
+  t = t.replace(/\[([^\]\n]*)\]\(([^)\n]*)\)/g, (m, label, url) => linkTag(m, label, url));
   t = t.replace(/<(a|code)\b[^>]*>.*?<\/\1>|<img\b[^>]*\/>|\b((?:lib|test|config|docs|priv|bench)\/[\w\.\/-]+\.(?:ex|exs|js|css|html|md|json|toml|yml|yaml))\b/g, (match, _tag, path) => {
     if (!path) return match;
-    return `<span class="file-ref" data-path="${path}" title="${path}">${path}</span>`;
+    return `<span class="file-ref" data-path="${escapeAttr(path)}" title="${escapeAttr(path)}">${path}</span>`;
   });
   return t;
 }
@@ -58,7 +101,7 @@ export function renderMarkdown(text) {
       i++;
       out.push(
         `<pre class="md-code"><div class="md-code-head"><span>${escapeHtml(lang || "code")}</span>` +
-        `<button class="md-copy" type="button" data-code="${escapeHtml(body.join("\n")).replace(/"/g, "&quot;")}">复制</button></div>` +
+        `<button class="md-copy" type="button" data-code="${escapeAttr(body.join("\n"))}">复制</button></div>` +
         `<code>${escapeHtml(body.join("\n"))}</code></pre>`
       );
       continue;

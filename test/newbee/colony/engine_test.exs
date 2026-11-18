@@ -1,7 +1,8 @@
 defmodule Newbee.Colony.EngineTest do
   use ExUnit.Case, async: false
 
-  alias Newbee.Colony.{Engine, Store, Task}
+  # Task 未被本文件使用（仅有编译警告）→ 去掉，保持 --warnings-as-errors 下门禁为绿。
+  alias Newbee.Colony.{Engine, Store}
 
   setup do
     Store.clear_all()

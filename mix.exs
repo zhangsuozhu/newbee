@@ -40,7 +40,8 @@ defmodule Newbee.MixProject do
     [
       "deps.patch": ["cmd bash bin/patch-deps.sh"],
       "test.fast": ["newbee.test_fast"],
-      "test.all": ["newbee.test_fast", "test test/newbee/acceptance_test.exs --warnings-as-errors --seed 1"],
+      # 历史别名：完整门禁的唯一权威定义在 Mix.Tasks.Newbee.Gate（漏跑/漏查的教训见 README）。
+      "test.all": ["newbee.gate"],
       "test.acceptance": ["test test/newbee/acceptance_test.exs --warnings-as-errors --seed 1"],
       setup: ["deps.get", "deps.patch", "compile"]
     ]

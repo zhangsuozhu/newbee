@@ -27,7 +27,7 @@ defmodule Newbee.Collaboration.HiveV2CoordinatorTest do
     {:ok, _} = Coordinator.add_member(group["group_id"], %{"session_id" => "worker"}, name)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      Newbee.TestSupport.Lifecycle.stop_if_alive(pid)
       File.rm_rf!(root)
     end)
 

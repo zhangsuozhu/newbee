@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.JSpace do
   @moduledoc """
-  Persistent task ledger: goal/core/verified/next survive compaction.
+  Task ledger: goal/core/verified/next survive compaction.
   Use for loop-level tasks; skip for simple one-shots.
 
   ## Functions

@@ -194,7 +194,11 @@ defmodule Newbee.Tools.HotReload do
           :code.purge(mod)
           Map.merge(acc, %{old_code?: false, new_md5: module_md5(mod), force_purged?: true})
         else
-          %{ok: false, error: {:old_code_in_use, mod}, hint: "processes still run the old version; add force: true to hard-swap after confirming"}
+          %{
+            ok: false,
+            error: {:old_code_in_use, mod},
+            hint: "processes still run the old version; add force: true to hard-swap after confirming"
+          }
         end
     end
   end
@@ -221,7 +225,11 @@ defmodule Newbee.Tools.HotReload do
               %{ok: false, error: {:load_binary_failed, other}}
           end
         else
-          %{ok: false, error: {:old_code_in_use, mod}, hint: "processes still run the old version; add force: true to hard-swap after confirming"}
+          %{
+            ok: false,
+            error: {:old_code_in_use, mod},
+            hint: "processes still run the old version; add force: true to hard-swap after confirming"
+          }
         end
     end
   end

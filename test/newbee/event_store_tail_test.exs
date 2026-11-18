@@ -12,7 +12,7 @@ defmodule Newbee.EventStoreTailTest do
   # 用真实 store 追加事件，保证帧格式/crc 与生产一致。
   defp store_with(path, count, payload_bytes) do
     {:ok, pid} = EventStore.start_link(path: path, durability: :event)
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    on_exit(fn -> Newbee.TestSupport.Lifecycle.stop_if_alive(pid) end)
 
     for i <- 1..count do
       payload = %{"i" => i, "body" => String.duplicate("x", payload_bytes)}

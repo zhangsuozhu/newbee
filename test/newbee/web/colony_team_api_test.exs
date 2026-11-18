@@ -22,7 +22,7 @@ defmodule Newbee.Web.ColonyTeamApiTest do
     Jason.decode!(conn.resp_body)["result"]
   end
 
-  test "模板种子→列表→开项目→阶段验收全链路（RPC）", %{cid: cid} do
+  test "模板种子→列表→开项目→阶段验收全链路（RPC）", %{} do
     assert %{"ok" => %{"template" => template}} = rpc("colony.team.template.seed", %{})
     assert template["name"] == "产研团队"
     assert %{"ok" => %{"templates" => [^template]}} = rpc("colony.team.templates", %{})

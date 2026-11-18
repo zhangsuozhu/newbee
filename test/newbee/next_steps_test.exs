@@ -63,6 +63,7 @@ defmodule Newbee.NextStepsFeatureTest do
       )
 
     result = Newbee.Agent.Loop.submit(pid, "请完成")
+
     case result do
       {:done, summary, next_steps} when is_map(next_steps) ->
         assert summary == "完成测试"
@@ -139,7 +140,14 @@ defmodule Newbee.NextStepsFeatureTest do
   end
 
   test "Session history 透传 next_steps" do
-    msg = %{"role" => "assistant", "done" => true, "content" => "完成", "next_steps" => %{"question" => "下一步？", "kind" => "single", "options" => [%{"label" => "X", "value" => "x"}]}, "created_at" => "2026-01-01T00:00:00Z"}
+    msg = %{
+      "role" => "assistant",
+      "done" => true,
+      "content" => "完成",
+      "next_steps" => %{"question" => "下一步？", "kind" => "single", "options" => [%{"label" => "X", "value" => "x"}]},
+      "created_at" => "2026-01-01T00:00:00Z"
+    }
+
     assert msg["next_steps"]["question"] == "下一步？"
   end
 end

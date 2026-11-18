@@ -127,6 +127,4 @@ defmodule Newbee.CommandsTest do
     assert {:btw, "为什么这样改？"} = Commands.handle("/btw 为什么这样改？", %{say: fn _ -> :ok end})
     assert "/btw" in Commands.commands()
   end
-
-
 end

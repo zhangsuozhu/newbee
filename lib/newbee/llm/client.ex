@@ -1005,9 +1005,11 @@ defmodule Newbee.LLM.Client do
   # scope = 每个会话（Loop 进程）一个 id，存进 client struct；stream_chat
   # 的请求 worker / 重试 / SSE 消费都拿着同一份 client，天然同 scope。
   # 每个会话一个 scope，中断互不影响。client 无 scope（旧调用方/测试）
-  # 时回退"当前调用树"：本进程 pdict，再沿 $callers 向上找。
+  # 时回退"当前调用树"：本进程 pdict，再沿 $callers 向上找。整条链都没有
+  # scope 时只置本进程树内的位——绝不写 VM 级共享键，否则任意进程的一次
+  # 中断会波及同一 VM 里所有 nil-scope 会话（R2P-02 的误中断）。
   @interrupt_scope_key {__MODULE__, :interrupt_scope}
-  @interrupt_legacy_key {__MODULE__, :interrupt_legacy}
+  @interrupt_tree_key {__MODULE__, :interrupt_tree}
 
   @doc "生成一个新的中断 scope id（Loop 每个回合持有一个）。"
   def new_interrupt_scope, do: make_ref()
@@ -1027,9 +1029,14 @@ defmodule Newbee.LLM.Client do
   end
 
   def interrupt(_) do
+    # 有注册 scope 就照旧置该 scope（与 interrupt(client) 语义一致）；
+    # 没有 scope 时只置本进程树内的位，绝不写 VM 级共享键。
     case find_interrupt_scope() do
-      {:ok, scope} -> :persistent_term.put(scope_key(scope), true)
-      :error -> :persistent_term.put(@interrupt_legacy_key, true)
+      {:ok, scope} ->
+        :persistent_term.put(scope_key(scope), true)
+
+      :error ->
+        Process.put(@interrupt_tree_key, true)
     end
   end
 
@@ -1041,9 +1048,11 @@ defmodule Newbee.LLM.Client do
   end
 
   def clear_interrupt(_) do
+    Process.delete(@interrupt_tree_key)
+
     case find_interrupt_scope() do
       {:ok, scope} -> :persistent_term.erase(scope_key(scope))
-      :error -> :persistent_term.erase(@interrupt_legacy_key)
+      :error -> :ok
     end
   end
 
@@ -1055,13 +1064,38 @@ defmodule Newbee.LLM.Client do
   end
 
   def interrupted?(_) do
-    case find_interrupt_scope() do
-      {:ok, scope} -> :persistent_term.get(scope_key(scope), false)
-      :error -> :persistent_term.get(@interrupt_legacy_key, false)
-    end
+    tree_interrupted?() or
+      case find_interrupt_scope() do
+        {:ok, scope} -> :persistent_term.get(scope_key(scope), false)
+        :error -> false
+      end
   end
 
   defp scope_key(scope), do: {__MODULE__, {:interrupt, scope}}
+
+  # 进程树内的中断位：本进程 pdict 直接读；否则沿 $callers 链向上找
+  # （Task/spawn_monitor 会记录调用树）。整条链都没有就是"未中断"，
+  # 绝不回退到任何 VM 级共享位。
+  defp tree_interrupted? do
+    Process.get(@interrupt_tree_key, false) or
+      Enum.any?(callers(), fn pid ->
+        Process.alive?(pid) and match?({:dictionary, _}, Process.info(pid, :dictionary)) and
+          proplist_true?(pid, @interrupt_tree_key)
+      end)
+  end
+
+  defp proplist_true?(pid, key) do
+    case Process.info(pid, :dictionary) do
+      {:dictionary, dict} when is_list(dict) ->
+        case :proplists.lookup(key, dict) do
+          {_key, value} -> value == true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
 
   # 先查本进程 pdict；否则沿 $callers 链向上（spawn_monitor/Task 的调用树
   # 会记录 $callers），找到最近的 scope 注册者。整条链找不到视为无 scope。
@@ -1079,20 +1113,26 @@ defmodule Newbee.LLM.Client do
     end
   end
 
+  # 必须用 lookup/2 区分"键不存在"(:none) 与"值是 nil"：
+  # get_value/2 缺键时返回 :undefined，旧代码把 :undefined 当成找到的 scope，
+  # 于是 depth≥2 的 Task 一律读到伪 scope {:interrupt, :undefined}
+  # （R2P-02：Esc 停不住子树 + 跨会话误中断 + 该键永远清不掉）。
   defp find_scope_in_callers([pid | rest]) when is_pid(pid) do
-    if Process.alive?(pid) do
-      case Process.info(pid, :dictionary) do
-        {:dictionary, dict} when is_list(dict) ->
-          case :proplists.get_value(@interrupt_scope_key, dict) do
-            nil -> find_scope_in_callers(rest)
-            scope -> {:ok, scope}
-          end
+    cond do
+      not Process.alive?(pid) ->
+        find_scope_in_callers(rest)
 
-        _ ->
-          find_scope_in_callers(rest)
-      end
-    else
-      find_scope_in_callers(rest)
+      true ->
+        case Process.info(pid, :dictionary) do
+          {:dictionary, dict} when is_list(dict) ->
+            case :proplists.lookup(@interrupt_scope_key, dict) do
+              {_key, scope} when not is_nil(scope) -> {:ok, scope}
+              _ -> find_scope_in_callers(rest)
+            end
+
+          _ ->
+            find_scope_in_callers(rest)
+        end
     end
   end
 

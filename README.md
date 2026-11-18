@@ -344,15 +344,19 @@ lib/newbee/
 ## 🧪 测试与基准 / Testing & Benchmarks
 
 ```bash
-mix test.fast                    # 隔离分区快速回归：排除长时间 acceptance
+mix newbee.gate                  # 唯一门禁入口：编译零警告 + 格式 + 全分区 + 架构验收 + 前端套件
+mix test.fast                    # 只跑隔离分区回归（门禁的一步，可单独用于快反馈）
 mix test.acceptance              # §15 架构验收，固定 seed，单独运行
-mix test.all                     # 快速分区回归 + acceptance 的完整入口
 mix test                         # 原生单进程入口（适合传入自定义文件/参数）
 mix newbee.bench                 # 真实 LLM 公开基准
 mix newbee.doctor                # 工具链/配置/目录体检
 ```
 
-快速回归与架构验收分开运行，避免长评测任务阻塞普通反馈；完整套件的总时长取决于评测 deadline。
+`mix newbee.gate` 是唯一权威门禁：它按顺序跑 6 步（dev/test 编译零警告、`mix format --check-formatted`、
+覆盖 `test/` 下每个测试文件的 `mix newbee.test_fast`、`mix test.acceptance`、`node --test test/web/*.test.js`），
+任一步非 0 就整体非 0，并打印失败项清单。`--fail-fast` 首个失败即停，`--list` 只看步骤表。
+**合入前必须 gate 全绿**；`test.all` 只是历史别名，不再声称自己是完整入口。
+
 
 ---
 

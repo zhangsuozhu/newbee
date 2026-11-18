@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Mcp do
   @moduledoc """
-  MCP client: call tools on configured stdio MCP servers (e.g., rea).
+  MCP client: call tools on configured stdio MCP servers.
 
   Declare servers in `~/.newbee/mcp.json` (override the path with the `NEWBEE_MCP_CONFIG`
   environment variable):

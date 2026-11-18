@@ -20,6 +20,7 @@ defmodule Newbee.Plugins.RepoMapBudgetTest do
     assert map =~ "Foo.Kept"
     refute map =~ "BuildIgnoredXYZ"
   end
+
   test "non-elixir dir degrades to bounded tree" do
     dir = Path.join(System.tmp_dir!(), "repomap-tree-" <> Integer.to_string(System.unique_integer([:positive])))
     File.mkdir_p!(Path.join(dir, "docs"))

@@ -31,10 +31,21 @@ class Element {
     this.parentNode = null;
     this.ownerDocument = null;
     this._text = "";
+    this._props = new Map();
+    this.style = {
+      getPropertyValue: (name) => this._props.get(name) || "",
+      setProperty: (name, value) => { this._props.set(name, String(value)); },
+      removeProperty: (name) => { this._props.delete(name); }
+    };
     this.classList = {
       add: (...names) => { names.forEach((n) => { if (!this._classes().includes(n)) this.className = [this.className, n].join(" ").trim(); }); },
       remove: (...names) => { this.className = this._classes().filter((c) => !names.includes(c)).join(" "); },
-      contains: (name) => this._classes().includes(name)
+      contains: (name) => this._classes().includes(name),
+      toggle: (name, force) => {
+        const on = force == null ? !this._classes().includes(name) : Boolean(force);
+        if (on) this.classList.add(name); else this.classList.remove(name);
+        return on;
+      }
     };
   }
   _classes() { return this.className.split(/\s+/).filter(Boolean); }
@@ -94,7 +105,7 @@ class Element {
   }
   dispatch(type, event) {
     const list = (this.listeners.get(type) || []).slice();
-    const payload = Object.assign({type: type, target: this, preventDefault() { this.defaultPrevented = true; }}, event || {});
+    const payload = Object.assign({type: type, target: this, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.propagationStopped = true; }}, event || {});
     list.forEach((fn) => fn(payload));
     return payload;
   }
@@ -107,11 +118,17 @@ class Element {
     return this.children.some((child) => child.nodeType === 1 && child.contains(node));
   }
   querySelectorAll(selector) {
+    const match = (node) => {
+      if (selector.startsWith(".")) return node.classList.contains(selector.slice(1));
+      if (selector.startsWith("#")) return node.id === selector.slice(1);
+      if (selector === "[data-cw-key]") return !!(node.dataset && node.dataset.cwKey);
+      return node.tagName === String(selector).toUpperCase();
+    };
     const out = [];
     const walk = (node) => {
       node.children.forEach((child) => {
         if (child.nodeType !== 1) return;
-        if (selector === "[data-cw-key]" && child.dataset && child.dataset.cwKey) out.push(child);
+        if (match(child)) out.push(child);
         walk(child);
       });
     };
@@ -128,6 +145,7 @@ class Element {
     walk(this);
     return out;
   }
+  remove() { if (this.parentNode) this.parentNode.removeChild(this); }
 }
 
 class Document {
@@ -147,6 +165,8 @@ class Document {
   getElementById(id) {
     return this.body.allElements().find((node) => node.id === id) || null;
   }
+  querySelectorAll(selector) { return this.body.querySelectorAll(selector); }
+  querySelector(selector) { return this.body.querySelector(selector); }
   addEventListener(type, fn) {
     const list = this.listeners.get(type) || [];
     list.push(fn);

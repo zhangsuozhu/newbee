@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Media do
   @moduledoc """
-  媒体文件上屏：图片、音频、视频、文本和 Markdown。
+  媒体上屏：图片、音频、视频、文本、Markdown。
 
   ## Runnable example
       Newbee.Tools.Media.show(Path.expand("docs/design.md"), caption: "设计文档")

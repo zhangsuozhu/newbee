@@ -29,6 +29,7 @@ defmodule Newbee.Environment.HumanBrief do
     reason = readable_reason(gv(attrs, "reason"))
     purpose = short_purpose(usage) || short_purpose(reason)
     deopt = deopt_info(evidence, gv(attrs, "reason"))
+
     %{
       "title" => deopt_title(deopt, kind_cn, purpose),
       "found" => deopt_found(deopt, evidence) || found_sentence(evidence),
@@ -61,6 +62,7 @@ defmodule Newbee.Environment.HumanBrief do
   defp run_client(attrs, opts) do
     client_fun = Keyword.get(opts, :client_fun, &default_client_fun/1)
     model = Keyword.get(opts, :model, "adapter")
+
     try do
       case client_fun.(prompt_for(attrs)) do
         {:ok, text} when is_binary(text) ->
@@ -70,9 +72,13 @@ defmodule Newbee.Environment.HumanBrief do
               |> Map.put("fallback", false)
               |> Map.put("model", model)
               |> Map.put("generated_at", DateTime.utc_now() |> DateTime.to_iso8601())
-            :error -> template_brief(attrs)
+
+            :error ->
+              template_brief(attrs)
           end
-        _ -> template_brief(attrs)
+
+        _ ->
+          template_brief(attrs)
       end
     rescue
       e ->
@@ -101,16 +107,19 @@ defmodule Newbee.Environment.HumanBrief do
 
   defp validate(m) do
     vals = Map.new(@sections, fn k -> {k, m[k] || m[String.to_atom(k)]} end)
+
     ok? =
       Enum.all?(vals, fn {_k, v} ->
         is_binary(v) and String.length(String.trim(v)) >= 2 and String.length(v) <= 800 and
           not String.contains?(v, "chg_") and Regex.match?(~r/\p{Han}/u, v)
       end)
+
     if ok?, do: Map.new(vals), else: nil
   end
 
   defp default_client_fun(messages) do
     client = Newbee.LLM.Config.client_for("adapter")
+
     case Newbee.LLM.Client.stream_chat(client, messages, fn _ -> :ok end) do
       {:ok, msg, _usage} -> {:ok, msg["content"] || ""}
       {:error, e} -> {:error, e}
@@ -127,9 +136,12 @@ defmodule Newbee.Environment.HumanBrief do
       "evidence" => cut(inspect(gv(attrs, "evidence") || [], limit: 6, printable_limit: 800), 800),
       "ring" => to_string(gv(attrs, "ring") || "")
     }
-    content = "你是 newbee 的进化说明员。把下面的环境改进提案翻译成普通用户能看懂的批准说明，只输出 JSON 对象（无围栏外文字），键为 title/found/change_to/why/risk_undo/ask，每值 1-3 句中文。" <>
-      "title 要求 10 字内一句话且必须含中文，不许出现英文ID或哈希；found 写怎么发现的；change_to 写要变成什么样；why 写为什么有效；risk_undo 写风险与能否反悔；ask 写要用户做什么。" <>
-      "纪律：只用给定材料，没有的数据不要编具体数字，不许输出 change_id 或 plugin_id，只讲人话。材料：" <> Jason.encode!(material)
+
+    content =
+      "你是 newbee 的进化说明员。把下面的环境改进提案翻译成普通用户能看懂的批准说明，只输出 JSON 对象（无围栏外文字），键为 title/found/change_to/why/risk_undo/ask，每值 1-3 句中文。" <>
+        "title 要求 10 字内一句话且必须含中文，不许出现英文ID或哈希；found 写怎么发现的；change_to 写要变成什么样；why 写为什么有效；risk_undo 写风险与能否反悔；ask 写要用户做什么。" <>
+        "纪律：只用给定材料，没有的数据不要编具体数字，不许输出 change_id 或 plugin_id，只讲人话。材料：" <> Jason.encode!(material)
+
     [%{"role" => "user", "content" => content}]
   end
 
@@ -143,10 +155,12 @@ defmodule Newbee.Environment.HumanBrief do
 
   defp short_purpose(nil), do: nil
   defp short_purpose(""), do: nil
+
   defp short_purpose(s) when is_binary(s) do
     t = String.trim(s)
     if Regex.match?(~r/\p{Han}/u, t), do: String.slice(t, 0, 24), else: nil
   end
+
   defp short_purpose(_), do: nil
 
   defp purpose_suffix(nil), do: ""
@@ -154,14 +168,17 @@ defmodule Newbee.Environment.HumanBrief do
 
   # 原因原文：去 adapter 前缀；裸 ID 则视为无内容（防复读）。
   defp readable_reason(nil), do: nil
+
   defp readable_reason(s) when is_binary(s) do
     t = s |> String.replace(~r/^adapter:\s*/i, "") |> String.trim()
+
     cond do
       t == "" -> nil
       raw_id?(t) -> nil
       true -> t
     end
   end
+
   defp readable_reason(_), do: nil
 
   # 降级证据：evidence 里的 deopt 条目优先，否则从原因文本解析。
@@ -171,7 +188,9 @@ defmodule Newbee.Environment.HumanBrief do
         e when is_map(e) ->
           rid = Map.get(e, :deopt) || Map.get(e, "deopt") || Map.get(e, :quality_deopt) || Map.get(e, "quality_deopt")
           if rid, do: {to_string(rid), e}, else: nil
-        _ -> nil
+
+        _ ->
+          nil
       end)
 
     case from_ev do
@@ -179,6 +198,7 @@ defmodule Newbee.Environment.HumanBrief do
         target = Map.get(e, :target_form) || Map.get(e, "target_form") || Map.get(e, :target) || Map.get(e, "target")
         rsn = Map.get(e, :reason) || Map.get(e, "reason")
         {rid, target && to_string(target), rsn && to_string(rsn)}
+
       nil ->
         case raw_reason do
           s when is_binary(s) ->
@@ -186,10 +206,13 @@ defmodule Newbee.Environment.HumanBrief do
               [_, rid, target, rsn] -> {rid, target, String.trim(rsn)}
               _ -> nil
             end
-          _ -> nil
+
+          _ ->
+            nil
         end
     end
   end
+
   defp deopt_info(_, _), do: nil
 
   defp short_rid(rid) when is_binary(rid), do: rid |> String.split("@") |> List.first() |> String.slice(0, 32)
@@ -199,27 +222,30 @@ defmodule Newbee.Environment.HumanBrief do
   defp deopt_title({rid, _t, _r}, _kind_cn, _purpose), do: "把退化的 " <> short_rid(rid) <> " 降回稳定形态"
 
   defp deopt_found(nil, _evidence), do: nil
+
   defp deopt_found({rid, target, rsn}, _evidence) do
     base = "AI 在质量巡检中发现【" <> short_rid(rid) <> "】退化"
     base = if is_binary(rsn) and rsn != "", do: base <> "：" <> String.slice(rsn, 0, 100), else: base
     if is_binary(target) and target != "", do: base <> "，准备降级到" <> target <> "形态。", else: base <> "。"
   end
 
-
   defp found_sentence(evidence) when is_list(evidence) and length(evidence) > 0 do
     first = List.first(evidence)
     cap = (is_map(first) && (Map.get(first, :capability) || Map.get(first, "capability"))) || nil
     n = length(evidence)
+
     if is_binary(cap) and cap != "" and not raw_id?(cap) do
       "AI 在【" <> cap <> "】上多次遇到问题（目前收集到 " <> to_string(n) <> " 条相关信息），总结出这个改进。"
     else
       "AI 在日常任务中注意到一个反复出现的模式（收集到 " <> to_string(n) <> " 条证据），总结出这个改进。"
     end
   end
+
   defp found_sentence(_), do: "AI 在日常任务中注意到一个可以固化的做法。"
 
   defp change_sentence(kind_cn, usage, reason) do
     han = fn s -> is_binary(s) and s != "" and Regex.match?(~r/\p{Han}/u, s) end
+
     cond do
       han.(usage) -> String.slice(String.trim(usage), 0, 120)
       han.(reason) -> String.slice(String.trim(reason), 0, 120)
@@ -257,10 +283,12 @@ defmodule Newbee.Environment.HumanBrief do
   rescue
     _ -> nil
   end
+
   # 合并人话卡：新结果只在更富时覆盖，瘦回退永不覆盖已有卡。
   # 当前无卡收下任何结果；新结果是 LLM 成功版则覆盖；
   # 当前已是 LLM 版则保留；双方都是模板保留当前。
   def prefer(nil, incoming), do: incoming
+
   def prefer(current, incoming) when is_map(current) and is_map(incoming) do
     cond do
       incoming["fallback"] == false -> incoming
@@ -268,5 +296,6 @@ defmodule Newbee.Environment.HumanBrief do
       true -> current
     end
   end
+
   def prefer(current, _incoming), do: current
 end

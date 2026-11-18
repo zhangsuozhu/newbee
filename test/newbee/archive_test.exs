@@ -381,7 +381,49 @@ defmodule Newbee.ArchiveTest do
 
     {:ok, _} = Archive.compact(s, retain: 4, client: digest_client2, envelope: env2)
     assert_received {:digest_request, second}
-    assert Enum.drop(second, -1) == Newbee.LLM.Client.sanitize_messages(env2_msgs)
+
+    # #215 起线上投影会摘掉会话私有字段（created_at 等）；断言对象是真正发出的 wire 投影。
+    routed_wire =
+      env2_msgs
+      |> then(fn msgs -> Newbee.LLM.ImagePolicy.project_for(digest_client2, msgs) |> elem(0) end)
+      |> Newbee.LLM.Client.sanitize_messages()
+      |> Newbee.LLM.Client.project_chat_messages(digest_client2)
+
+    assert Enum.drop(second, -1) == routed_wire
+  end
+
+  test "前缀缓存不变量：摘要回放前缀 == 路由请求真正发出的 wire 投影（逐字节）", %{session: s} do
+    # 这条是 prefix-cache 的正确性根基：Archive 只回放快照，Client.complete 与
+    # stream_chat 走同一套投影（ImagePolicy → sanitize → project_chat_messages）。
+    # 断言对象必须是"真正发出去的那份"，不是仅 sanitize 的中间态（#215 已废弃）。
+    feed(s, conv(6))
+    client = capture_client(self())
+    # 用真正落进 transcript 的消息（带 created_at 等会话私有字段）作为路由请求：
+    # 这样仅 sanitize 的中间态与线上投影必然不同，反向哨兵才有意义。
+    routed_msgs = [%{"role" => "system", "content" => "BASE"}] ++ Session.messages(s)
+    :ok = Newbee.RequestEnvelope.record(s, client, routed_msgs)
+    env = Newbee.RequestEnvelope.load(s)
+
+    {:ok, _} = Archive.compact(s, retain: 4, client: client, envelope: env)
+    assert_received {:digest_request, digest_msgs}
+    digest_prefix = Enum.drop(digest_msgs, -1)
+
+    # 路由侧：同一个 client、同一份消息，走 stream_chat 的线上投影
+    {projected, _dropped} = Newbee.LLM.ImagePolicy.project_for(client, env["messages"])
+
+    routed_wire =
+      projected
+      |> Newbee.LLM.Client.sanitize_messages()
+      |> Newbee.LLM.Client.project_chat_messages(client)
+
+    assert digest_prefix == routed_wire
+    assert length(digest_prefix) == length(routed_wire)
+
+    # 反向哨兵：仅 sanitize 的中间态必须与线上投影不同（否则本用例退化成恒真）
+    sanitize_only = Newbee.LLM.Client.sanitize_messages(env["messages"])
+    refute digest_prefix == sanitize_only
+    assert Enum.any?(env["messages"], &Map.has_key?(&1, "created_at"))
+    refute Enum.any?(digest_prefix, &Map.has_key?(&1, "created_at"))
   end
 
   test "无 base 时退回确定性抽取路径（兼容旧行为）", %{session: s} do

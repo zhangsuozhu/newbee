@@ -14,17 +14,20 @@ defmodule Newbee.Collaboration.Persona do
   @builtin %{
     "worker" => %{
       "role" => "worker",
-      "instructions" => "Own one sharply scoped subtask; read the task contract and dependencies first, report facts as you go, finish with checkable evidence."
+      "instructions" =>
+        "Own one sharply scoped subtask; read the task contract and dependencies first, report facts as you go, finish with checkable evidence."
     },
     "tester" => %{
       "role" => "tester",
       "reasoning_effort" => "medium",
-      "instructions" => "Work as an independent verifier; favor reproduction, edge cases, and regression tests — never take the implementer's word as evidence."
+      "instructions" =>
+        "Work as an independent verifier; favor reproduction, edge cases, and regression tests — never take the implementer's word as evidence."
     },
     "reviewer" => %{
       "role" => "reviewer",
       "reasoning_effort" => "high",
-      "instructions" => "Review behavioral regressions, security risks, and missing tests; every conclusion must cite files, command output, or reproducible steps."
+      "instructions" =>
+        "Review behavioral regressions, security risks, and missing tests; every conclusion must cite files, command output, or reproducible steps."
     },
     "observer" => %{
       "role" => "observer",
@@ -61,7 +64,8 @@ defmodule Newbee.Collaboration.Persona do
         true -> {:error, "unknown_persona", "unknown persona #{inspect(name)}; available: #{Enum.join(list(), ", ")}"}
       end
     else
-        {:error, "bad_persona", "persona names take only lowercase letters, digits, underscores, and hyphens (64 chars max)"}
+      {:error, "bad_persona",
+       "persona names take only lowercase letters, digits, underscores, and hyphens (64 chars max)"}
     end
   end
 

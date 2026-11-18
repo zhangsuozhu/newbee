@@ -90,4 +90,3 @@ defmodule Newbee.MediaSessionInjectTest do
     refute result.value =~ stale_sid
   end
 end
-

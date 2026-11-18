@@ -1,6 +1,6 @@
 defmodule Newbee.Tools.Git do
   @moduledoc """
-  Structured Git operations; prefer over hand-written `Run.sh("git ...")`.
+  Structured Git ops; prefer over hand-written Run.sh calls.
 
   ## Functions
   - `status(dir \\\\ ".")` — `git status --short`; `{:ok, output} | {:error, {code, output}}`.

@@ -21,7 +21,7 @@ defmodule Newbee.Tools.Fs do
   defp normalize_content(c), do: to_string(c)
 
   @moduledoc """
-  Filesystem writes/deletes/listing; prefer `Newbee.read/1` for reads.
+  Writes/deletes/listing; prefer `Newbee.read/1` for reads.
 
   Tolerant path args: `binary` | `atom` | `%{path: p}` | `%{"path" => p}` | `[p]` all normalize to a path value;
   `write` content also takes `binary` | `%{content: c}`.
