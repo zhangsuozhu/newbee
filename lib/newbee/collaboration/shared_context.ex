@@ -1039,4 +1039,3 @@ defmodule Newbee.Collaboration.SharedContext do
     if String.length(value) > max_length, do: String.slice(value, 0, max_length) <> "…", else: value
   end
 end
-

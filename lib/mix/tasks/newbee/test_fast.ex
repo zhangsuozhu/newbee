@@ -5,12 +5,17 @@ defmodule Mix.Tasks.Newbee.TestFast do
   @partition_specs [
     {"agent-dee", ["test/newbee/agent", "test/newbee/dee"]},
     {"environment", ["test/newbee/environment"]},
-    {"llm", ["test/newbee/llm"]},
-    {"tools-tui", ["test/newbee/tools", "test/newbee/tui"]},
+    {"llm", ["test/newbee/llm", "test/newbee/codec"]},
+    {"tools-tui", ["test/newbee/tools", "test/newbee/tui", "test/newbee/terminal", "test/newbee/truncate"]},
     {"web", ["test/newbee/web"]},
     {"collaboration", ["test/newbee/collaboration"]},
+    {"colony", ["test/newbee/colony"]},
+    {"plugins-learning", ["test/newbee/plugins", "test/newbee/learning", "test/newbee/evals", "test/newbee/host"]},
     {"root", :root}
   ]
+
+  @doc "分区表（元测试用）：`[{name, paths_or_:root}]`。"
+  def partition_specs, do: @partition_specs
 
   @impl true
   def run(args) do
@@ -41,11 +46,21 @@ defmodule Mix.Tasks.Newbee.TestFast do
     end
   end
 
-  defp partitions(root) do
+  @doc "展开后的分区（元测试用）：每个分区给出相对仓库根的测试文件列表。"
+  def partitions(root) do
     Enum.map(@partition_specs, fn
       {"root", :root} -> %{name: "root", files: root_files(root)}
-      {name, paths} -> %{name: name, files: paths}
+      {name, paths} -> %{name: name, files: dir_files(root, paths)}
     end)
+  end
+
+  defp dir_files(root, paths) do
+    paths
+    |> Enum.flat_map(&Path.wildcard(Path.join([root, &1, "**", "*_test.exs"])))
+    |> Enum.filter(&File.regular?/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.map(&Path.relative_to(&1, root))
   end
 
   defp root_files(root) do
@@ -62,21 +77,18 @@ defmodule Mix.Tasks.Newbee.TestFast do
     Mix.shell().info("[test.fast] start #{name} (#{length(files)} files)")
     args = ["test", "--no-compile", "--warnings-as-errors", "--seed", "1" | files]
 
-    {output, exit} =
-      System.cmd("mix", args,
-        cd: root,
-        env: [{"MIX_ENV", "test"}],
-        stderr_to_stdout: true
-      )
+    # 实时转发：分区动辄数百秒，缓冲到结束会让人误以为门禁卡死（R1 D8）。
+    result =
+      ["mix" | args]
+      |> Newbee.GateStream.run(cd: root, env: [{"MIX_ENV", "test"}], io: :stdio)
 
-    Mix.shell().info("[test.fast] done #{name} exit=#{exit}")
+    exit = result.exit
+    Mix.shell().info("[test.fast] done #{name} exit=#{exit} in #{result.seconds}s")
 
-    if exit != 0, do: Mix.shell().error(output)
-
-    %{name: name, exit: exit, output: output}
+    %{name: name, exit: exit, output: result.output, seconds: result.seconds}
   end
 
-  defp print_result(%{name: name, exit: exit, output: output}) do
+  defp print_result(%{name: name, exit: exit, output: output} = result) do
     summary =
       output
       |> String.split("\n")
@@ -85,10 +97,16 @@ defmodule Mix.Tasks.Newbee.TestFast do
       )
       |> Enum.join(" | ")
 
-    Mix.shell().info("[test.fast] #{name}: exit=#{exit} #{summary}")
+    seconds = Map.get(result, :seconds, 0)
+    Mix.shell().info("[test.fast] #{name}: exit=#{exit} #{seconds}s #{summary}")
 
+    # 失败分区的完整输出已经实时转发过，这里只重复失败摘要，避免日志翻倍。
     if exit != 0 do
-      Mix.shell().error(output)
+      output
+      |> String.split("\n")
+      |> Enum.filter(&(String.starts_with?(&1, "  ") or String.contains?(&1, "** (")))
+      |> Enum.take(80)
+      |> Enum.each(fn line -> Mix.shell().error(line) end)
     end
   end
 end

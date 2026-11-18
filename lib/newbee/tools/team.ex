@@ -1,6 +1,7 @@
 defmodule Newbee.Tools.Team do
   @moduledoc """
-  Colony team templates: main proposes a team, a human approves, roles + operating loop become a reusable template; start projects from it.
+  Team templates: propose, human approves, reuse roles + loop.
+  Main proposes; a human approves; roles and the operating loop become a reusable template.
 
   Stages hand accepted artifacts downstream; review gates wait for a human; rejects rework to `rework_to` within `max_rounds`.
   Approval/review are human-only via WebUI; this tool never approves. Runs under an Agent.Loop capability context.

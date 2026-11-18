@@ -18,6 +18,7 @@ defmodule Newbee.Collaboration.CrossHost.Auth do
       true -> {:error, "fake_server", "服务器身份不匹配，拒绝发送口令"}
     end
   end
+
   def verify_server(_, _), do: {:error, "bad_server_identity", "缺少服务器身份指纹"}
 
   @doc "加群限流检查。"
@@ -25,10 +26,14 @@ defmodule Newbee.Collaboration.CrossHost.Auth do
   def check_rate(gid) when is_binary(gid) do
     ensure_table()
     now = System.system_time(:millisecond)
+
     case :ets.lookup(@table, gid) do
-      [] -> :ok
+      [] ->
+        :ok
+
       [{_, st}] ->
         st = prune(st, now)
+
         cond do
           Map.get(st, :locked_until, 0) > now -> {:error, "rate_limited", "尝试过于频繁，请稍后重试"}
           length(Map.get(st, :attempts, [])) >= @rate_max -> {:error, "rate_limited", "尝试过于频繁，请稍后重试"}
@@ -42,23 +47,31 @@ defmodule Newbee.Collaboration.CrossHost.Auth do
   def note_result(gid, ok?) when is_binary(gid) and is_boolean(ok?) do
     ensure_table()
     now = System.system_time(:millisecond)
-    st = case :ets.lookup(@table, gid) do
-      [] -> %{attempts: [], fails: 0, locked_until: 0}
-      [{_, s}] -> prune(s, now)
-    end
-    ns = if ok? do
-      %{st | attempts: [], fails: 0, locked_until: 0}
-    else
-      fails = Map.get(st, :fails, 0) + 1
-      attempts = [now | Map.get(st, :attempts, [])]
-      locked = if fails >= @lock_threshold do
-        backoff = min(@lock_base_ms * trunc(:math.pow(2, fails - @lock_threshold)), @lock_max_ms)
-        now + backoff
-      else
-        Map.get(st, :locked_until, 0)
+
+    st =
+      case :ets.lookup(@table, gid) do
+        [] -> %{attempts: [], fails: 0, locked_until: 0}
+        [{_, s}] -> prune(s, now)
       end
-      %{st | attempts: attempts, fails: fails, locked_until: locked}
-    end
+
+    ns =
+      if ok? do
+        %{st | attempts: [], fails: 0, locked_until: 0}
+      else
+        fails = Map.get(st, :fails, 0) + 1
+        attempts = [now | Map.get(st, :attempts, [])]
+
+        locked =
+          if fails >= @lock_threshold do
+            backoff = min(@lock_base_ms * trunc(:math.pow(2, fails - @lock_threshold)), @lock_max_ms)
+            now + backoff
+          else
+            Map.get(st, :locked_until, 0)
+          end
+
+        %{st | attempts: attempts, fails: fails, locked_until: locked}
+      end
+
     :ets.insert(@table, {gid, ns})
     :ok
   end
@@ -69,7 +82,16 @@ defmodule Newbee.Collaboration.CrossHost.Auth do
     did = "d_" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
     plain = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
     hash = :crypto.hash(:sha256, plain)
-    dev = %{"id" => did, "member_id" => member_id, "display" => display, "token_hash" => Base.encode64(hash), "paused" => false, "created_at" => System.system_time(:millisecond)}
+
+    dev = %{
+      "id" => did,
+      "member_id" => member_id,
+      "display" => display,
+      "token_hash" => Base.encode64(hash),
+      "paused" => false,
+      "created_at" => System.system_time(:millisecond)
+    }
+
     devs = Map.get(group, "devices", %{})
     {:ok, Map.put(group, "devices", Map.put(devs, did, Map.delete(dev, "plain"))), Map.put(dev, "plain", plain)}
   end
@@ -84,9 +106,12 @@ defmodule Newbee.Collaboration.CrossHost.Auth do
         else
           _ -> false
         end
-      _ -> false
+
+      _ ->
+        false
     end
   end
+
   def verify_device(_, _, _), do: false
 
   @doc "暂停接新任务，已运行继续。"

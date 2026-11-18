@@ -14,7 +14,7 @@ defmodule Newbee.Environment.ContextQuality.E2ETest do
     end
 
     {:ok, pid} = Collector.start_link(subscribe: true, name: nil)
-    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    on_exit(fn -> Newbee.TestSupport.Lifecycle.stop_if_alive(pid) end)
     %{collector: pid}
   end
 

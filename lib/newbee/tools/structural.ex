@@ -280,8 +280,11 @@ defmodule Newbee.Tools.Structural do
 
   defp validate_syntax(code) do
     case Code.string_to_quoted(code) do
-      {:ok, _} -> :ok
-      {:error, {_line, error, _token}} -> {:error, %{reason: :syntax_error, hint: "def_code syntax error: " <> inspect(error)}}
+      {:ok, _} ->
+        :ok
+
+      {:error, {_line, error, _token}} ->
+        {:error, %{reason: :syntax_error, hint: "def_code syntax error: " <> inspect(error)}}
     end
   end
 

@@ -726,7 +726,8 @@ test("自动分工卡展示阶段、完成数、依赖标题，并隐藏内部�
   assert.doesNotMatch(text, /来源设置/);
   assert.doesNotMatch(text, /api|workId/);
   assert.equal(buttons(card()).some((node) => node.textContent === "分工执行"), false);
-  assert.equal(document.getElementById('work-start').parentNode.id, 'composer-actions');
+  assert.ok(document.getElementById('work-start').parentNode.classList.contains('cw-team-split'));
+  assert.equal(document.getElementById('work-start').parentNode.parentNode.id, 'composer-actions');
   assert.equal(document.getElementById('work-start').disabled, true);
   instance.destroy();
 });
@@ -786,11 +787,12 @@ test("原输入框操作区只有一个分工按钮，无任务时不显示空�
   await instance.refresh();
   assert.equal(card().hidden, true);
   const entry = document.getElementById("work-start");
-  assert.equal(entry.parentNode.id, "composer-actions");
+  assert.ok(entry.parentNode.classList.contains("cw-team-split"));
+  assert.equal(entry.parentNode.parentNode.id, "composer-actions");
   assert.equal(entry.textContent, "");
-  assert.equal(entry.children[1].tagName, "SVG");
+  assert.equal(entry.children.find((node) => node.nodeType === 1).tagName, "SVG");
   assert.match(entry.getAttribute('aria-label'), /分工/);
-  assert.match(entry.title, /分工执行/);
+  assert.match(entry.title, /快速分工/);
   assert.equal(entry.disabled, false);
   await instance.refresh();
   assert.equal(document.body.allElements().filter(e => e.id === "work-start").length, 1);
@@ -815,3 +817,54 @@ test("输入框内分工按钮使用原草稿和附件；重复初始化不复�
   assert.equal(document.body.allElements().filter(e => e.id === "work-start").length, 1);
   instance.destroy();
 });
+
+// ── 团队入口的 DOM 构建契约（不得回到 innerHTML）─────────────────────────
+test("classList.toggle 与真实 DOM 同语义：无 force 取反，有 force 强制，返回最终态", () => {
+  const {Element} = require("./conversation_work_dom.js");
+  const node = new Element("div");
+  assert.equal(node.classList.contains("cw-team-off"), false);
+  assert.equal(node.classList.toggle("cw-team-off"), true);
+  assert.equal(node.classList.contains("cw-team-off"), true);
+  assert.equal(node.classList.toggle("cw-team-off"), false);
+  assert.equal(node.classList.toggle("cw-team-off", true), true);
+  assert.equal(node.classList.toggle("cw-team-off", false), false);
+  assert.equal(node.classList.contains("cw-team-off"), false);
+});
+
+test("分体按钮置灰态跟随主按钮：有活跃工作时 cw-team-off 上身，清空后摘掉", async () => {
+  const running = work({status: "running", stage: "working"});
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [running]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const wrap = document.getElementById("work-start").parentNode;
+  assert.equal(wrap.classList.contains("cw-team-off"), true);
+  const empty = fakeRpc({"conversation.work.list": () => ({works: []})});
+  instance.init(hostFor({sessionId: "s1", rpc: empty.rpc}));
+  await instance.refresh();
+  assert.equal(document.getElementById("work-start").parentNode.classList.contains("cw-team-off"), false);
+  instance.destroy();
+});
+
+test("团队菜单项用 DOM 构建：图标/标题/副标题都在，模板名走 textContent 不当标记", async () => {
+  const tpl = {id: "t1", name: "<img src=x onerror=1>", stages: [{}, {}], roles: [{}, {}, {}]};
+  const fake = fakeRpc({
+    "conversation.work.list": () => ({works: []}),
+    "colony.team.templates": () => ({templates: [tpl]})
+  });
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const caret = document.getElementById("work-start").parentNode.children.find((n) => n.className === "cw-team-caret");
+  caret.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const menu = document.body.allElements().find((n) => n.className === "cw-team-menu");
+  assert.ok(menu, "菜单要真的挂出来");
+  const items = menu.allElements().filter((n) => n.className.includes("cw-team-menu-item"));
+  assert.ok(items.length >= 3, "快速分工 + 工作室 + 模板项");
+  const names = items.map((n) => n.allElements().filter((c) => c.tagName === "B").map((b) => b.textContent).join(""));
+  assert.ok(names.includes("<img src=x onerror=1>"), "模板名必须原样作为文本");
+  assert.equal(document.body.allElements().filter((n) => n.tagName === "IMG").length, 0, "不能被当成标记插进 DOM");
+  const subs = items.map((n) => n.allElements().filter((c) => c.tagName === "I").map((i) => i.textContent).join(""));
+  assert.ok(subs.some((s) => s.includes("2 阶段闭环") && s.includes("3 角色")));
+  instance.destroy();
+});
+

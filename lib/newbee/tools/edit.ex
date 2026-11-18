@@ -1,6 +1,8 @@
 defmodule Newbee.Tools.Edit do
   @moduledoc """
-  Text patches (docs/edit-design.md): snapshot tag + range + final content.
+  Text patches: snapshot tag + range + final content.
+
+  Protocol design: docs/edit-design.md.
 
       [path#tag]
       PUT N..M:      replace snapshot lines N..M (inclusive) with + body
@@ -449,7 +451,8 @@ defmodule Newbee.Tools.Edit do
 
   defp normalize_show_range(other) do
     raise ParseError,
-      message: "unrecognized range: #{inspect(other)} (takes :all | {a,b} | [a,b] | a..b | %{from: a, to: b} | \"a..b\" | integer)",
+      message:
+        "unrecognized range: #{inspect(other)} (takes :all | {a,b} | [a,b] | a..b | %{from: a, to: b} | \"a..b\" | integer)",
       code: :invalid_range
   end
 
@@ -561,7 +564,8 @@ defmodule Newbee.Tools.Edit do
 
     if current != snap.text do
       raise RejectError,
-        message: "file changed under you (stale): #{path} no longer matches snapshot #{tag}; nothing written. Re-show and resubmit on the new tag",
+        message:
+          "file changed under you (stale): #{path} no longer matches snapshot #{tag}; nothing written. Re-show and resubmit on the new tag",
         category: :stale_conflict
     end
 
@@ -599,7 +603,9 @@ defmodule Newbee.Tools.Edit do
         end
 
       if lo < 1 or lo > hi or hi > total do
-        raise RejectError, message: "line out of bounds: #{lo}..#{hi} (snapshot has #{total} lines)", category: :out_of_bounds
+        raise RejectError,
+          message: "line out of bounds: #{lo}..#{hi} (snapshot has #{total} lines)",
+          category: :out_of_bounds
       end
     end)
   end

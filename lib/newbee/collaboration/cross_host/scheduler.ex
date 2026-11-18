@@ -5,6 +5,7 @@ defmodule Newbee.Collaboration.CrossHost.Scheduler do
     {fam, name} = :os.type()
     arch = :erlang.system_info(:system_architecture) |> inspect()
     nv = tool_ver("node", "--version")
+
     %{
       "os" => inspect(fam) <> "/" <> inspect(name),
       "arch" => arch,
@@ -17,6 +18,7 @@ defmodule Newbee.Collaboration.CrossHost.Scheduler do
       "isolation_ready" => isolation_backend() != "none"
     }
   end
+
   @spec default_quota() :: map()
   def default_quota, do: %{"max_concurrent" => 2, "host_max_total" => 8}
   @spec eligible?(map(), map(), map(), map()) :: term()
@@ -30,6 +32,7 @@ defmodule Newbee.Collaboration.CrossHost.Scheduler do
       _ -> false
     end
   end
+
   def eligible?(_, _, _, _), do: false
   @spec select([map()], map(), map()) :: [map()]
   def select(devices, caps_by_id, task) when is_list(devices) and is_map(caps_by_id) and is_map(task) do
@@ -39,21 +42,29 @@ defmodule Newbee.Collaboration.CrossHost.Scheduler do
       eligible?(d, caps, task, usage)
     end)
   end
+
   @spec aggregate([map()]) :: map()
   def aggregate(results) when is_list(results) do
-    counts = Enum.reduce(results, %{"ok" => 0, "failed" => 0, "unexecuted" => 0, "na" => 0, "total" => 0}, fn r, acc ->
-      s = Map.get(r, "status", "na")
-      key = cond do
-        s == "ok" or s == :ok -> "ok"
-        s == "failed" or s == :failed -> "failed"
-        s == "unexecuted" or s == :unexecuted -> "unexecuted"
-        true -> "na"
-      end
-      acc |> Map.update(key, 1, fn v -> v + 1 end) |> Map.update("total", 1, fn v -> v + 1 end)
-    end)
+    counts =
+      Enum.reduce(results, %{"ok" => 0, "failed" => 0, "unexecuted" => 0, "na" => 0, "total" => 0}, fn r, acc ->
+        s = Map.get(r, "status", "na")
+
+        key =
+          cond do
+            s == "ok" or s == :ok -> "ok"
+            s == "failed" or s == :failed -> "failed"
+            s == "unexecuted" or s == :unexecuted -> "unexecuted"
+            true -> "na"
+          end
+
+        acc |> Map.update(key, 1, fn v -> v + 1 end) |> Map.update("total", 1, fn v -> v + 1 end)
+      end)
+
     Map.put(counts, "all_ok", counts["failed"] == 0 and counts["unexecuted"] == 0 and counts["total"] > 0)
   end
+
   defp caps_ok?(_caps, requires) when map_size(requires) == 0, do: true
+
   defp caps_ok?(caps, requires) when is_map(requires) do
     Enum.all?(requires, fn
       {"elixir", _} -> Map.get(caps, "elixir_ok", false) == true
@@ -64,21 +75,26 @@ defmodule Newbee.Collaboration.CrossHost.Scheduler do
       _ -> true
     end)
   end
+
   defp quota_ok?(usage) do
     running = Map.get(usage, "running", 0)
     host = Map.get(usage, "host_running", 0)
     q = default_quota()
     is_integer(running) and is_integer(host) and running < q["max_concurrent"] and host < q["host_max_total"]
   end
+
   defp tool_present(bin) do
     case System.find_executable(bin) do
       nil -> false
       _ -> true
     end
   end
+
   defp tool_ver(bin, arg) do
     case System.find_executable(bin) do
-      nil -> ""
+      nil ->
+        ""
+
       path ->
         case System.cmd(path, [arg], stderr_to_stdout: true) do
           {out, 0} -> String.trim(out) |> String.slice(0, 64)
@@ -86,6 +102,7 @@ defmodule Newbee.Collaboration.CrossHost.Scheduler do
         end
     end
   end
+
   defp isolation_backend do
     cond do
       tool_present("docker") -> "docker"

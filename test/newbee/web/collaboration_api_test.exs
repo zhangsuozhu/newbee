@@ -3,18 +3,19 @@ defmodule Newbee.Web.CollaborationApiTest do
 
   @opts Newbee.Web.Router.init([])
 
+  alias Newbee.TestSupport.Lifecycle
+
   setup do
-    case Process.whereis(Newbee.Collaboration.Coordinator) do
-      nil -> :ok
-      pid -> GenServer.stop(pid)
-    end
+    # 全局命名进程：同分区别的测试文件可能已经起停过它。best-effort 关停，
+    # 避免 Process.alive? 与 GenServer.stop 之间的 TOCTOU 把用例变成假红。
+    Lifecycle.stop_if_registered(Newbee.Collaboration.Coordinator)
 
     root = Path.join(System.tmp_dir!(), "newbee-collab-api-#{System.unique_integer([:positive])}")
     path = Path.join(root, "events.jsonl")
     {:ok, pid} = Newbee.Collaboration.Coordinator.start_link(path: path, durability: :event)
 
     on_exit(fn ->
-      if Process.alive?(pid), do: GenServer.stop(pid)
+      Lifecycle.stop_if_alive(pid)
       File.rm_rf!(root)
     end)
 

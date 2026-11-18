@@ -7,7 +7,8 @@ defmodule Newbee.Colony.TaskTest do
     Bee.new(Map.merge(%{"colony_id" => "col_l_x", "kind" => "ai", "display" => "bot"}, attrs))
   end
 
-  defp task(attrs \\ %{}) do
+  # 形参默认值从未被 0 参调用用到 → 编译警告（--warnings-as-errors 下会让门禁判红），去掉默认值。
+  defp task(attrs) do
     Task.new(Map.merge(%{"colony_id" => "col_l_x", "title" => "做点事"}, attrs))
   end
 

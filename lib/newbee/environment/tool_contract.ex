@@ -305,7 +305,9 @@ defmodule Newbee.Environment.ToolContract do
 
   defp example_section(doc) do
     case String.split(doc, "## Runnable example", parts: 2) do
-      [_, tail] -> String.split(tail, "## ", parts: 2) |> hd()
+      [_, tail] ->
+        String.split(tail, "## ", parts: 2) |> hd()
+
       _ ->
         case String.split(doc, "## 可跑示例", parts: 2) do
           [_, tail] -> String.split(tail, "## ", parts: 2) |> hd()

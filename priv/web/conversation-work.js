@@ -123,6 +123,13 @@
     if (text != null) node.textContent = String(text);
     return node;
   }
+  // 菜单项结构：图标 + 标题 + 副标题，全部用 DOM 节点构建（契约：不用 HTML 字符串拼内容）。
+  function menuItem(icon, title, subtitle) {
+    const txt = el("span", "cw-team-menu-txt", "");
+    txt.append(el("b", "", title), el("i", "", subtitle));
+    return [el("span", "cw-team-menu-ico", icon), txt];
+  }
+
 
   function clip(value, limit) {
     const text = String(value == null ? "" : value);
@@ -1781,7 +1788,12 @@
       caret.title = "选择团队模板 · 按阶段闭环交付";
       caret.setAttribute("aria-label", "选择团队模板");
       caret.setAttribute("aria-haspopup", "menu");
-      caret.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
+      const caretSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      for (const [key, value] of Object.entries({viewBox: "0 0 24 24", width: "11", height: "11", fill: "none", stroke: "currentColor", "stroke-width": "2.6", "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true"})) caretSvg.setAttribute(key, String(value));
+      const caretPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      caretPath.setAttribute("d", "m6 9 6 6 6-6");
+      caretSvg.appendChild(caretPath);
+      caret.appendChild(caretSvg);
       caret.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); toggleTeamMenu(wrap); });
       wrap.append(start, caret);
       const send = document.getElementById("send");
@@ -1802,7 +1814,7 @@
     menu.append(el("div", "cw-team-menu-head", "交给哪种团队？"));
     const quick = el("button", "cw-team-menu-item cw-team-quick", "");
     quick.type = "button";
-    quick.innerHTML = '<span class="cw-team-menu-ico">⚡</span><span class="cw-team-menu-txt"><b>快速分工</b><i>自动拆分分派，后台做完汇总</i></span>';
+    quick.append(...menuItem("⚡", "快速分工", "自动拆分分派，后台做完汇总"));
     // 与主按钮同一互斥规则：无会话/正在安排/已有活跃工作时不可再发起。
     const mainOff = state.composerStart && state.composerStart.disabled;
     if (mainOff) {
@@ -1817,7 +1829,7 @@
     menu.append(list);
     const studio = el("button", "cw-team-menu-item cw-team-studio", "");
     studio.type = "button";
-    studio.innerHTML = '<span class="cw-team-menu-ico">🐝</span><span class="cw-team-menu-txt"><b>团队工作室</b><i>管理项目 · 验收交付 · 组建团队</i></span>';
+    studio.append(...menuItem("🐝", "团队工作室", "管理项目 · 验收交付 · 组建团队"));
     studio.addEventListener("click", () => { menu.remove(); if (window.NewbeeTeamPanel) window.NewbeeTeamPanel.open(); });
     menu.append(studio);
     wrap.append(menu);
@@ -1832,19 +1844,19 @@
     try {
       const r = await state.host.rpc("colony.team.templates", {});
       const templates = (r && r.templates) || [];
-      list.innerHTML = "";
+      list.replaceChildren();
       if (!templates.length) { list.append(el("div", "cw-team-menu-loading", "暂无模板，去工作室组建")); return; }
       templates.forEach(t => {
         const item = el("button", "cw-team-menu-item", "");
         item.type = "button";
         const stages = (t.stages || []).length;
-        item.innerHTML = '<span class="cw-team-menu-ico">🧩</span><span class="cw-team-menu-txt"><b></b><i></i></span>';
+        item.append(...menuItem("🧩", "", ""));
         item.querySelector("b").textContent = t.name;
         item.querySelector("i").textContent = stages + " 阶段闭环 · " + ((t.roles || []).length) + " 角色";
         item.addEventListener("click", () => { closeTeamMenus(); startTeamProject(t); });
         list.append(item);
       });
-    } catch (e) { list.innerHTML = ""; list.append(el("div", "cw-team-menu-loading", "模板加载失败")); }
+    } catch (e) { list.replaceChildren(); list.append(el("div", "cw-team-menu-loading", "模板加载失败")); }
   }
   function startTeamProject(t) {
     const sid = sessionId();

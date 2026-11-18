@@ -207,14 +207,14 @@ defmodule Newbee.Colony.TeamTest do
     {run, _} = accept_stage(run, "技术方案 v1")
     assert current_task(run)["team_stage"] == "develop"
 
-    # develop 是 auto 闸门：提交成果后 stage_complete 自动验收并推进
+    # develop 是 auto 闸门：走 Runtime 的真实提交路径（project_remote → Work.submit
+    # → Team.stage_complete），提交成功即自动验收并推进。
+    # 注意：这里不再断言"旧快照 → :ignored"（R2P-01 把缺陷写成了预期）；
+    # 旧快照那条契约的守护移到 team_auto_gate_test.exs 的第三条用例。
     dev_task = current_task(run)
-    _honey = submit(dev_task, "实现完成，测试通过")
-    {:ok, :ignored} = Team.stage_complete(dev_task)
-    {:ok, run} = Team.get_run(run["id"])
-    # stage_complete 用旧 task 快照会 ignored；用最新快照驱动（与 Runtime 相同路径）
-    {:ok, fresh} = Store.get_task(dev_task["id"])
-    {:ok, _} = Team.stage_complete(fresh)
+
+    Newbee.Colony.Runtime.project_remote(dev_task, :done, %{summary: "实现完成，测试通过"})
+
     {:ok, run} = Team.get_run(run["id"])
     assert run["stage_index"] == 4
     assert current_task(run)["team_stage"] == "test"

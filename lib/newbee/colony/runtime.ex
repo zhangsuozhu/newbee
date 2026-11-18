@@ -518,7 +518,7 @@ defmodule Newbee.Colony.Runtime do
           {:ok, honey} ->
             unless task["integration_required"], do: trace(task, "honey", summary, %{"honey_id" => honey["id"]})
             Newbee.Colony.Workflow.advance()
-            if task["source"] == "team_run", do: Newbee.Colony.Team.stage_complete(task)
+            if task["source"] == "team_run", do: Newbee.Colony.Team.stage_complete(stage_task(task["id"], task))
 
           _ ->
             :ok
@@ -628,4 +628,13 @@ defmodule Newbee.Colony.Runtime do
   defp value(p, key), do: Map.get(p, key) || Map.get(p, Atom.to_string(key))
   defp safe_payload(p), do: p |> Jason.encode!() |> Jason.decode!()
   defp now, do: System.system_time(:millisecond)
+  # team_run 的 auto 闸门判定读的是任务快照（team.ex:494 status/result）。
+  # 用 Work.submit/4 之前的快照会恒 :ignored（R2P-01：项目不闭环的根因），
+  # 因此提交成功后再读一次最新任务；读不到才退回旧快照（行为与改动前一致）。
+  defp stage_task(task_id, fallback) do
+    case Store.get_task(task_id) do
+      {:ok, fresh} -> fresh
+      _ -> fallback
+    end
+  end
 end

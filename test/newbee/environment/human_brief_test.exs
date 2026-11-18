@@ -89,8 +89,15 @@ defmodule Newbee.Environment.HumanBriefTest do
     brief =
       Newbee.Environment.HumanBrief.template_brief(%{
         reason: "deopt projection.repomap@e13ad8a9d6f5 → l2_rule: success_rate 5.0% < 50.0% (n=20)",
-        evidence: [%{deopt: "projection.repomap@e13ad8a9d6f5", target_form: "l2_rule", reason: "success_rate 5.0% < 50.0% (n=20)"}]
+        evidence: [
+          %{
+            deopt: "projection.repomap@e13ad8a9d6f5",
+            target_form: "l2_rule",
+            reason: "success_rate 5.0% < 50.0% (n=20)"
+          }
+        ]
       })
+
     assert brief["title"] =~ "降回稳定形态"
     assert brief["title"] =~ "projection.repomap"
     assert brief["found"] =~ "质量巡检"
@@ -104,14 +111,16 @@ defmodule Newbee.Environment.HumanBriefTest do
         reason: "adapter: distill-stream-chat-hotpath",
         evidence: [%{proposal: "distill-stream-chat-hotpath", type: "prompt"}]
       })
+
     refute brief["change_to"] =~ "distill"
+
     brief2 =
       Newbee.Environment.HumanBrief.template_brief(%{
         reason: "连续3次任务都卡在等用户确认，先记住这个等待模式",
         evidence: []
       })
+
     assert brief2["change_to"] =~ "等用户确认"
     assert brief2["title"] =~ "等用户确认"
   end
-
 end

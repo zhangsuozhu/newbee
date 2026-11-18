@@ -417,7 +417,8 @@
       const run = state.runs.find(r => r.id === runId);
       const d = await rpc("colony.team.run.view", { colonyId: run?.colony_id, runId });
       state.detailData = d;
-      if (state.detail === runId) render();
+      // 与 load/2 同一守卫：正在编辑时不重绘，只更新数据（R2P-04）。
+      if (state.detail === runId && !isEditing()) render();
     } catch (e) { /* 详情失败保留占位 */ }
   }
 
@@ -706,15 +707,27 @@
   }
 
   // ── 加载 / 轮询 / 开关 ──
+  // 轮询（8s）只做"数据更新"，不得把用户正在编辑的输入冲掉：
+  // 面板里所有内联表单（组建目标、验收/打回意见、追加轮次、项目目标）都在
+  // .tp-body 内，而 render() 会整体清空 .tp-body 重建 → 草稿与焦点丢失（R2P-04）。
+  // 因此后台轮询命中"正在编辑"时跳过重绘，只刷新数据与徽标。
+  function isEditing() {
+    if (state.action) return true;
+    const body = els.body;
+    const active = document.activeElement;
+    return !!(body && active && body.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));
+  }
+
   async function load(showLoading) {
     if (showLoading) { state.loading = true; render(); }
     try { await fetchAll(); }
     catch (e) { if (showLoading) toast(e.message || "加载失败", "err"); }
     state.loading = false;
-    render();
+    if (showLoading || !isEditing()) render();
     refreshBadge();
     if (state.detail) loadDetail(state.detail);
   }
+
 
   function startPoll() {
     stopPoll();
@@ -742,8 +755,27 @@
   // ── 侧栏团队会话分组 ──
   // 把散落在「其他会话」里的团队执行会话按项目聚合，方便管理与查看。
   let sessionMap = [];
-  const collapsedRuns = new Set(JSON.parse(localStorage.getItem("newbee.teamCollapsed") || "[]"));
+
+  // 顶层持久化读取必须容错（R2P-05）：该键被写成非 JSON（旧版本格式／手改／
+  // 隐私模式／其它脚本写入）时，旧实现在模块顶层直接 JSON.parse，抛错后整个
+  // IIFE 中止 → window.NewbeeTeamPanel 未导出 → 顶栏团队按钮永久点不开且无提示。
+  // 这里坏值一律退回默认值并清掉坏键（与 saveCollapsed 的 try 对称）。
+  function readCollapsedRuns() {
+    let raw = null;
+    try { raw = localStorage.getItem("newbee.teamCollapsed"); } catch (e) { return new Set(); }
+    if (!raw) return new Set();
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error("not an array");
+      return new Set(parsed.filter(x => typeof x === "string"));
+    } catch (e) {
+      try { localStorage.removeItem("newbee.teamCollapsed"); } catch (_) {}
+      return new Set();
+    }
+  }
+  const collapsedRuns = readCollapsedRuns();
   function saveCollapsed() { try { localStorage.setItem("newbee.teamCollapsed", JSON.stringify([...collapsedRuns])); } catch (e) {} }
+
 
   async function loadSessionMap() {
     if (!rpc) return;

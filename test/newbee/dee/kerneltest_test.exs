@@ -387,13 +387,18 @@ defmodule Newbee.Agent.LoopTest do
   end
 
   test "中断标志：新一轮提交自动清除（上一轮残留不影响下一轮）" do
-    Newbee.LLM.Client.interrupt()
-    assert Newbee.LLM.Client.interrupted?()
+    # R2P-02：中断位按会话 scope 隔离，不再有 VM 级全局位；
+    # 这里用显式 scope 复刻"上一轮残留的 Esc 位"，断言新回合开始时被清掉。
+    scope = Newbee.LLM.Client.register_interrupt_scope()
+    client = %Newbee.LLM.Client{interrupt_scope: scope}
+    Newbee.LLM.Client.interrupt(client)
+    assert Newbee.LLM.Client.interrupted?(client)
 
     {:ok, ev} = Evaluator.start(mode: :local)
     script = [fn _messages, _on_text -> {:ok, %{"role" => "assistant", "content" => "ok", "tool_calls" => []}, %{}} end]
-    {:ok, kernel} = Loop.start_link(client: %{}, evaluator: ev, session: false, client_fun: scripted(script))
+    {:ok, kernel} = Loop.start_link(client: client, evaluator: ev, session: false, client_fun: scripted(script))
     assert {:text, "ok"} = Loop.submit(kernel, "hi")
+    refute Newbee.LLM.Client.interrupted?(client)
     refute Newbee.LLM.Client.interrupted?()
   end
 

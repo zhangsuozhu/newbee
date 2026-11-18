@@ -10,23 +10,25 @@ defmodule Newbee.Tools.HttpJsonBodyTest do
       case conn.request_path do
         "/json-map" ->
           {:ok, body, conn} = Plug.Conn.read_body(conn)
+
           conn
           |> put_resp_content_type("application/json")
           |> send_resp(200, Jason.encode!(%{"ok" => true, "saw_body" => body}))
 
-      "/json-list" ->
+        "/json-list" ->
           conn
           |> put_resp_content_type("application/json")
           |> send_resp(200, Jason.encode!([1, 2, 3]))
 
-      "/echo" ->
+        "/echo" ->
           {:ok, body, conn} = Plug.Conn.read_body(conn)
           ct = List.first(Plug.Conn.get_req_header(conn, "content-type"), "none")
+
           conn
           |> put_resp_content_type("application/json")
           |> send_resp(200, Jason.encode!(%{"ct" => ct, "body" => body}))
 
-      _ ->
+        _ ->
           send_resp(conn, 204, "")
       end
     end

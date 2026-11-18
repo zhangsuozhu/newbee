@@ -9,7 +9,6 @@ defmodule Newbee.Web.StaticAssetAllowlistTest do
   use ExUnit.Case, async: false
 
   import Plug.Test
-  import Plug.Conn
 
   alias Newbee.Web.Router
 

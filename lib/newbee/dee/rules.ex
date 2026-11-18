@@ -32,19 +32,22 @@ defmodule Newbee.DEE.Rules do
       id: "ssh-quote-nesting",
       scope: :code,
       pattern: "ssh.*curl.*python.*f\"",
-      injection: "[Rule] Fragile nested ssh quoting: wrap the ssh command in single quotes, inner curl|python in double quotes; no backslashes inside f-strings — use format or concatenation."
+      injection:
+        "[Rule] Fragile nested ssh quoting: wrap the ssh command in single quotes, inner curl|python in double quotes; no backslashes inside f-strings — use format or concatenation."
     },
     %{
       id: "py-runtime-drift",
       scope: :code,
       pattern: "ModuleNotFoundError|No module named",
-      injection: "[Rule] Interpreter drift: with multiple Pythons around, invoke an explicit version; 3.12+ dropped stdlib modules, so detect the runtime before falling back or shimming."
+      injection:
+        "[Rule] Interpreter drift: with multiple Pythons around, invoke an explicit version; 3.12+ dropped stdlib modules, so detect the runtime before falling back or shimming."
     },
     %{
       id: "api-type-dual-track",
       scope: :all,
       pattern: "boolean.*string|string.*boolean",
-      injection: "[Rule] Dual-track API types: one field may ride bool on one endpoint and text on another; take a union client-side, unify to bool at the source."
+      injection:
+        "[Rule] Dual-track API types: one field may ride bool on one endpoint and text on another; take a union client-side, unify to bool at the source."
     }
   ]
 
@@ -53,31 +56,36 @@ defmodule Newbee.DEE.Rules do
       id: "jspace-outer",
       scope: :content,
       pattern: "(⇒|⇔|∃|∀|∈|∉|⊆|⊇|⊢|⊨|⟦|⟧|↦|✓\\d{2}|\\[CP\\s\\d+\\])",
-      injection: "[J-Space] Dense symbols leaked into outer output — expand inner shorthand into plain words, or move it to thinking/ledger. Only expandable compression counts as capacity."
+      injection:
+        "[J-Space] Dense symbols leaked into outer output — expand inner shorthand into plain words, or move it to thinking/ledger. Only expandable compression counts as capacity."
     },
     %{
       id: "jspace-marker",
       scope: :content,
       pattern: "(GRRR|GAAAH|PHEW|I'M DROWNING|DATA DATA|blocked\\?! WRONG|AAAAAAAA|STOP\\. FOCUS)",
-      injection: "[J-Space] Markers are inner state signals, not output theater. Each marker needs a move (concrete action) plus a settle (closing line); otherwise it is marker idling."
+      injection:
+        "[J-Space] Markers are inner state signals, not output theater. Each marker needs a move (concrete action) plus a settle (closing line); otherwise it is marker idling."
     },
     %{
       id: "jspace-hedge",
       scope: :content,
       pattern: "(可能.*也可能|it could be [^.\\n]{1,80} or [^.\\n]{1,80}|一方面.*另一方面|both .* and .* are possible|或许.*或许)",
-      injection: "[J-Space] Listing options instead of deciding (hedge) — the workspace holds no mixtures. Keep a candidate set only when you can name a separating test; otherwise pick one belief and mark it ?."
+      injection:
+        "[J-Space] Listing options instead of deciding (hedge) — the workspace holds no mixtures. Keep a candidate set only when you can name a separating test; otherwise pick one belief and mark it ?."
     },
     %{
       id: "jspace-checkpoint",
       scope: :content,
       pattern: "(检查点|checkpoint)",
-      injection: "[J-Space] Checkpoints must hit the ledger: record via Newbee.Tools.JSpace.note(checkpoint: \"...\") with conclusion plus what verification covered. An unrecorded checkpoint is not a checkpoint."
+      injection:
+        "[J-Space] Checkpoints must hit the ledger: record via Newbee.Tools.JSpace.note(checkpoint: \"...\") with conclusion plus what verification covered. An unrecorded checkpoint is not a checkpoint."
     },
     %{
       id: "jspace-verified",
       scope: :content,
       pattern: "(verified|已验证)",
-      injection: "[J-Space] When claiming verified, state the coverage (which build / which test set), not just the conclusion."
+      injection:
+        "[J-Space] When claiming verified, state the coverage (which build / which test set), not just the conclusion."
     }
   ]
 
@@ -179,12 +187,14 @@ defmodule Newbee.DEE.Rules do
   # 用于「按实际状态触发」的场景（如 cwd 是否与目标目录一致）：状态一致时
   # 即使代码文本出现相关词也不注入，消除文本正则自激循环。
   defp condition_ok?(%{condition: nil}), do: true
+
   defp condition_ok?(%{condition: cond}) when is_binary(cond) do
     {result, _} = Code.eval_string(cond)
     result == true
   rescue
     _ -> false
   end
+
   defp condition_ok?(_), do: true
 
   @impl true

@@ -9,7 +9,18 @@ defmodule Newbee.Collaboration.CrossHost.Group do
   @gen_len 16
   @gen_chars "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
 
-  @weak ["12345678", "password", "qwerty123", "11111111", "00000000", "abcdefgh", "abcd1234", "1234abcd", "admin123", "letmein1"]
+  @weak [
+    "12345678",
+    "password",
+    "qwerty123",
+    "11111111",
+    "00000000",
+    "abcdefgh",
+    "abcd1234",
+    "1234abcd",
+    "admin123",
+    "letmein1"
+  ]
 
   @type t :: map()
 
@@ -20,10 +31,12 @@ defmodule Newbee.Collaboration.CrossHost.Group do
          :ok <- check_project(project_id) do
       pw_opt = Keyword.get(opts, :password, :auto)
       pw = if pw_opt == :auto, do: generate_password(), else: pw_opt
+
       case check_password(pw) do
         :ok ->
           salt = :crypto.strong_rand_bytes(@salt_bytes)
           hash = pbkdf(pw, salt, @iterations)
+
           group = %{
             "id" => gen_id(),
             "name" => String.trim(name),
@@ -40,8 +53,11 @@ defmodule Newbee.Collaboration.CrossHost.Group do
             "default_role" => "developer",
             "created_at" => System.system_time(:millisecond)
           }
+
           {:ok, group, pw}
-        {:error, _, _} = err -> err
+
+        {:error, _, _} = err ->
+          err
       end
     end
   end
@@ -57,6 +73,7 @@ defmodule Newbee.Collaboration.CrossHost.Group do
       _ -> false
     end
   end
+
   def verify_password(_, _), do: false
 
   @doc "改口令：阻止旧口令继续加入，已登记设备凭据不受影响，需单独撤销。"
@@ -68,11 +85,22 @@ defmodule Newbee.Collaboration.CrossHost.Group do
         hash = pbkdf(new_pw, salt, @iterations)
         old = Map.get(group, "password", %{})
         ver = Map.get(old, "version", 1)
-        npw = %{"algo" => "pbkdf2-sha256", "iterations" => @iterations, "salt" => Base.encode64(salt), "hash" => Base.encode64(hash), "version" => ver + 1}
+
+        npw = %{
+          "algo" => "pbkdf2-sha256",
+          "iterations" => @iterations,
+          "salt" => Base.encode64(salt),
+          "hash" => Base.encode64(hash),
+          "version" => ver + 1
+        }
+
         {:ok, Map.put(group, "password", npw)}
-      {:error, _, _} = err -> err
+
+      {:error, _, _} = err ->
+        err
     end
   end
+
   def change_password(_, _), do: {:error, "invalid_password", "新口令无效"}
 
   @doc "生成16位随机口令。"
@@ -86,15 +114,18 @@ defmodule Newbee.Collaboration.CrossHost.Group do
   defp check_name(name) when is_binary(name) do
     if String.trim(name) == "", do: {:error, "invalid_name", "群名称不能为空"}, else: :ok
   end
+
   defp check_name(_), do: {:error, "invalid_name", "群名称不能为空"}
 
   defp check_project(pid) when is_binary(pid) do
     if String.trim(pid) == "", do: {:error, "invalid_project", "必须绑定一个项目"}, else: :ok
   end
+
   defp check_project(_), do: {:error, "invalid_project", "必须绑定一个项目"}
 
   defp check_password(pw) when is_binary(pw) do
     t = String.trim(pw)
+
     cond do
       String.length(t) < @min_len -> {:error, "weak_password", "口令至少8位"}
       String.downcase(t) in @weak -> {:error, "weak_password", "口令过于常见"}
@@ -102,6 +133,7 @@ defmodule Newbee.Collaboration.CrossHost.Group do
       true -> :ok
     end
   end
+
   defp check_password(_), do: {:error, "weak_password", "口令至少8位"}
 
   defp same_char?(s) do

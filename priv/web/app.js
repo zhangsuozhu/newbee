@@ -265,9 +265,9 @@
     t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     t = t.replace(/\*([^*\s][^*]*)\*/g, "<em>$1</em>");
     t = t.replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
-    // 图片：![alt](url) —— 渲染为可点击放大的缩略图
-    t = t.replace(/!\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<img class="md-img" src="$2" alt="$1" loading="lazy" />');
-    t = t.replace(/\[([^\]\n]*)\]\(([^)\n]*)\)/g, '<a class="md-link" href="$2" target="_blank" rel="noopener">$1</a>');
+    // 图片/链接：属性位转义引号 + scheme 白名单（R2P-03）
+    t = t.replace(/!\[([^\]\n]*)\]\(([^)\n]*)\)/g, (m, alt, url) => imgTag(m, alt, url));
+    t = t.replace(/\[([^\]\n]*)\]\(([^)\n]*)\)/g, (m, label, url) => linkTag(m, label, url));
     // 先整体消费已生成的链接、图片和行内代码，避免在标签属性或受保护内容中
     // 再插入 file-ref span。第二个捕获组仅在匹配普通文本文件路径时存在。
     t = t.replace(/<(a|code)\b[^>]*>.*?<\/\1>|<img\b[^>]*\/>|\b((?:lib|test|config|docs|priv|bench)\/[\w\.\/-]+\.(?:ex|exs|js|css|html|md|json|toml|yml|yaml))\b/g, (match, _tag, path) => {
@@ -2159,11 +2159,22 @@ case "goal_round":
   }
 
 
-  // ── 协作未读：按组记忆已读事件水位（localStorage 持久），MC 未展开或页签不在协作时计未读 ──
-  function loadCollabSeen() {
-    try { return JSON.parse(localStorage.getItem("newbee.collab.seen") || "{}") || {}; }
-    catch (e) { return {}; }
+  // localStorage 里的 JSON 读取统一出口（R2P-05 同类排查）：坏值不致命。
+  // 三种坏情形都必须退回 fallback，不能把异常/错误类型漏给调用方：
+  //   ① getItem/setItem 抛错（隐私模式、配额满）；② JSON 语法错；③ 语法对但类型不对
+  //   （历史版本写过数字/字符串，直接当对象用会在 .devices 之类的地方抛 TypeError）。
+  function readStoredJson(key, fallback, expect) {
+    let raw = null;
+    try { raw = localStorage.getItem(key); } catch (e) { return fallback; }
+    if (raw == null || raw === "") return fallback;
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch (e) { return fallback; }
+    const ok = expect === "array" ? Array.isArray(parsed) : parsed && typeof parsed === "object" && !Array.isArray(parsed);
+    if (!ok) { try { localStorage.removeItem(key); } catch (e) {} return fallback; }
+    return parsed;
   }
+  // ── 协作未读：按组记忆已读事件水位（localStorage 持久），MC 未展开或页签不在协作时计未读 ──
+  function loadCollabSeen() { return readStoredJson("newbee.collab.seen", {}); }
   function saveCollabSeen() {
     try { localStorage.setItem("newbee.collab.seen", JSON.stringify(state.collabSeen || {})); } catch (e) {}
   }
@@ -2225,14 +2236,8 @@ case "goal_round":
   // ── 会话未读数（仿微信红点）：按 messages 计数差量计算 ──
   // seen: sid -> 已读时的 messages 条数；unread: sid -> 未读增量。均持久化到 localStorage。
   // 首次见到某会话时以当前条数初始化 seen，不算未读，避免刷新后满屏红点。
-  function loadSessionUnread() {
-    try { return JSON.parse(localStorage.getItem("newbee.session.unread") || "{}") || {}; }
-    catch (e) { return {}; }
-  }
-  function loadSessionSeen() {
-    try { return JSON.parse(localStorage.getItem("newbee.session.seen") || "{}") || {}; }
-    catch (e) { return {}; }
-  }
+  function loadSessionUnread() { return readStoredJson("newbee.session.unread", {}); }
+  function loadSessionSeen() { return readStoredJson("newbee.session.seen", {}); }
   function saveSessionUnread() {
     try { localStorage.setItem("newbee.session.unread", JSON.stringify(state.sessionUnread || {})); } catch (e) {}
   }
@@ -2448,7 +2453,7 @@ case "goal_round":
 
     recipient.innerHTML = '<option value="">发给所有协作会话</option>' +
       (group.members || []).filter((m) => m.session_id !== state.sid).map((m) =>
-        `<option value="${escapeHtml(m.session_id)}">发给：${escapeHtml(sessionDisplayName(m.session_id))}</option>`
+        `<option value="${escapeAttr(m.session_id)}">发给：${escapeHtml(sessionDisplayName(m.session_id))}</option>`
       ).join("");
     if (keepRecipient && recipient.querySelector(`option[value="${CSS.escape(keepRecipient)}"]`)) recipient.value = keepRecipient;
 
@@ -2551,8 +2556,8 @@ case "goal_round":
     }
     host.innerHTML = rows.length ? rows.map(({ event, summary }) => {
       const at = event.at ? new Date(event.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-      const session = summary.sessionId ? ` data-activity-session="${escapeHtml(summary.sessionId)}"` : "";
-      const tab = summary.tab ? ` data-activity-tab="${escapeHtml(summary.tab)}"` : "";
+      const session = summary.sessionId ? ` data-activity-session="${escapeAttr(summary.sessionId)}"` : "";
+      const tab = summary.tab ? ` data-activity-tab="${escapeAttr(summary.tab)}"` : "";
       return `<button class="collab-activity"${session}${tab}><span>${escapeHtml(summary.kind)}</span><b>${escapeHtml(summary.text)}</b><time>${escapeHtml(at)}</time></button>`;
     }).join("") : "";
     host.querySelectorAll("[data-activity-session]").forEach((button) => { button.onclick = () => resume(button.dataset.activitySession); });
@@ -2597,15 +2602,15 @@ case "goal_round":
 
     let primary = "";
     if (coordinator && status === "submitted") primary = `<button class="btn-primary" data-verify-task="${id}">验收</button>`;
-    else if (canDecide) primary = `<button class="btn-primary" data-apply-task="${id}" data-sha="${escapeHtml((review && review.patch_sha256) || "")}">${review.dirty ? "应用变更" : "确认无变更"}</button>`;
+    else if (canDecide) primary = `<button class="btn-primary" data-apply-task="${id}" data-sha="${escapeAttr((review && review.patch_sha256) || "")}">${review.dirty ? "应用变更" : "确认无变更"}</button>`;
     else if (!assigned && status === "pending") primary = `<button class="btn-ghost" data-claim="${id}">领取</button>`;
     else if (canRetry) primary = `<button class="btn-ghost" data-retry-task="${id}">重试</button>`;
 
     const secondary = canReview ? `<button class="btn-ghost" data-review-task="${id}">${review ? "刷新变更" : "查看变更"}</button>` : "";
 
     const menu = [];
-    if (assigned) menu.push(`<button data-open-session="${escapeHtml(task.assigned_session_id)}">查看会话</button>`);
-    if (assigned) menu.push(`<button data-message-session="${escapeHtml(task.assigned_session_id)}">发消息</button>`);
+    if (assigned) menu.push(`<button data-open-session="${escapeAttr(task.assigned_session_id)}">查看会话</button>`);
+    if (assigned) menu.push(`<button data-message-session="${escapeAttr(task.assigned_session_id)}">发消息</button>`);
     if (canRetry && !primary.includes("data-retry-task")) menu.push(`<button data-retry-task="${id}">重试</button>`);
     if (canDecide) menu.push(`<button class="danger" data-reject-task="${id}">拒绝变更</button>`);
     if (canCleanup) menu.push(`<button data-cleanup-task="${id}">释放隔离目录</button>`);
@@ -2620,7 +2625,7 @@ case "goal_round":
     if (!workspace) return "";
     const status = workspace.review_status || "waiting";
     const review = state.taskReviews[task.task_id];
-    const badge = `<span class="collab-workspace-badge ${escapeHtml(status)}">${escapeHtml(workspaceStatusLabel(status))}</span>`;
+    const badge = `<span class="collab-workspace-badge ${escapeAttr(status)}">${escapeHtml(workspaceStatusLabel(status))}</span>`;
     return `<div class="collab-workspace"><div class="collab-workspace-head"><span>独立工作区</span>${badge}</div>${review ? renderWorkspaceReview(review) : ""}</div>`;
   }
 
@@ -2675,12 +2680,12 @@ case "goal_round":
       const result = task.result != null && status !== "pending" && status !== "assigned" ? `<div class="collab-task-result"><strong>${resultLabel}</strong><div>${escapeHtml(formatTaskResult(task.result))}</div></div>` : "";
       const verification = renderVerification(task);
       const proto = task.protocol_version === 2 ? '<span class="collab-proto-badge" title="结构化验收 · 机器可验证">v2</span>' : "";
-      const updated = task.updated_at ? `<span class="collab-task-updated" title="${escapeHtml(task.updated_at)}">更新 ${escapeHtml(task.updated_at.slice(0, 16).replace("T", " "))}</span>` : "";
+      const updated = task.updated_at ? `<span class="collab-task-updated" title="${escapeAttr(task.updated_at)}">更新 ${escapeHtml(task.updated_at.slice(0, 16).replace("T", " "))}</span>` : "";
       const scopes = task.write_scope || task.writeScope || [];
       const scope = Array.isArray(scopes) && scopes.length ? `<div class="collab-task-scope">写入：${escapeHtml(scopes.join(", "))}</div>` : "";
       const attempt = Number.isInteger(task.attempt) ? `<span class="collab-task-attempt">第 ${task.attempt + 1} 次执行</span>` : "";
       const taskActions = renderTaskActions(task, group);
-      return `<article class="collab-task ${escapeHtml(status)}${attention ? " attention-" + attention : ""}" data-task-anchor="${escapeHtml(task.task_id)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}${proto}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))} · ${attempt} · ${updated}</div>${progress}${result}${renderAcceptance(task)}${renderDepends(task)}${scope}${renderSubmission(task)}${verification}${taskActions}${workspaceControls(task, group)}</article>`;
+      return `<article class="collab-task ${escapeAttr(status)}${attention ? " attention-" + attention : ""}" data-task-anchor="${escapeAttr(task.task_id)}"><div class="collab-task-title">${escapeHtml(task.title || "未命名工作项")}${proto}</div><div class="collab-task-meta">${escapeHtml(owner)} · ${escapeHtml(taskStatusLabel(status))} · ${attempt} · ${updated}</div>${progress}${result}${renderAcceptance(task)}${renderDepends(task)}${scope}${renderSubmission(task)}${verification}${taskActions}${workspaceControls(task, group)}</article>`;
 
     }).join("") + (hiddenCount ? `<div class="collab-empty">已按筛选隐藏 ${hiddenCount} 项（点“全部”查看）</div>` : "")) : '<div class="collab-empty">暂无工作项</div>';
     bindTaskActions(group, list);
@@ -3118,7 +3123,7 @@ case "goal_round":
     $("task-description").value = "";
     $("task-depends").value = "";
     $("task-write-scope").value = "";
-    $("task-owner").innerHTML = '<option value="">暂不分配</option>' + (state.activeGroup.members || []).map((member) => `<option value="${escapeHtml(member.session_id)}">${escapeHtml(sessionDisplayName(member.session_id))}</option>`).join("");
+    $("task-owner").innerHTML = '<option value="">暂不分配</option>' + (state.activeGroup.members || []).map((member) => `<option value="${escapeAttr(member.session_id)}">${escapeHtml(sessionDisplayName(member.session_id))}</option>`).join("");
     $("task-acceptance-list").innerHTML = "";
     addAcceptanceRow("command", "", "", "task-acceptance-list");
     $("task-modal").classList.remove("hidden");
@@ -3515,12 +3520,7 @@ bind("delegate-session", openDelegateModal);
     return new Set(Object.keys(state.groupBySession || {}));
   }
   // ── 会话组折叠状态（localStorage 持久化）──
-  function loadGroupCollapsed() {
-    try {
-      const raw = localStorage.getItem("newbee.groupCollapsed");
-      return raw ? JSON.parse(raw) : {};
-    } catch (e) { return {}; }
-  }
+  function loadGroupCollapsed() { return readStoredJson("newbee.groupCollapsed", {}); }
   function saveGroupCollapsed() {
     try { localStorage.setItem("newbee.groupCollapsed", JSON.stringify(state.groupCollapsed || {})); } catch (e) {}
   }
@@ -3825,7 +3825,8 @@ bind("delegate-session", openDelegateModal);
   let xgroupLoadSeq = 0;
   function xCollapsed(gid) { try { return localStorage.getItem("xgroup.collapsed." + gid) === "1"; } catch (e) { return false; } }
   function xToggle(gid) { try { localStorage.setItem("xgroup.collapsed." + gid, xCollapsed(gid) ? "0" : "1"); } catch (e) {} renderSessionList(); }
-  function xMy(gid) { try { return JSON.parse(localStorage.getItem("xgroup.me." + gid) || "null"); } catch (e) { return null; } }
+  // 坏值（含"语法对但类型不对"）一律退回 null：调用方会 m.devices / m.member_id 直接用。
+  function xMy(gid) { return readStoredJson("xgroup.me." + gid, null); }
   function xRemember(gid, mid, did) {
     try {
       const cur = xMy(gid) || { member_id: null, devices: [] };
@@ -4674,7 +4675,7 @@ box.appendChild(label);
       const unreadN = sessionUnreadCount(s.id);
       const unreadHtml = unreadN > 0 ? `<span class="session-unread" title="${unreadN} 条未读消息">${unreadN > 99 ? "99+" : unreadN}</span>` : "";
       const currentHtml = s.id === state.sid ? `<span class="session-current-mark" title="当前会话" aria-label="当前会话"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4V3z"/></svg></span>` : "";
-      item.innerHTML = `<label class="session-select"><input type="checkbox" data-select-session="${escapeHtml(s.id)}"${selected}><span class="session-select-mark"></span></label><span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}${unreadHtml}${child ? `<span class="session-role">${escapeHtml(role)}</span>` : ""}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>${currentHtml}`;
+      item.innerHTML = `<label class="session-select"><input type="checkbox" data-select-session="${escapeAttr(s.id)}"${selected}><span class="session-select-mark"></span></label><span class="t"><span class="sess-dot ${stCls}"></span>${escapeHtml(title)}${unreadHtml}${child ? `<span class="session-role">${escapeHtml(role)}</span>` : ""}</span><span class="meta">${escapeHtml(s.when_str || "")} · ${s.messages || 0} 条${cwdShort ? " · " + ICO_FOLDER + " " + escapeHtml(cwdShort) : ""}</span>${currentHtml}`;
       item.onclick = (e) => {
         if (wrap.dataset.swipeOpen === "1") { closeSwipeCell(wrap); return; }
         if (item.dataset.dragged === "1") { delete item.dataset.dragged; return; }
@@ -4726,7 +4727,7 @@ box.appendChild(label);
       const unread = collabUnreadCount(group.group_id);
       const unreadHint = unread ? `<span class="session-group-unread" title="${unread} 条未读协作动态">${unread > 99 ? "99+" : unread} 未读</span>` : "";
       const groupName = group.title || group.goal || "会话组";
-      header.innerHTML = `<button class="session-group-toggle" title="${collapsed ? "展开" : "收起"}">${toggleIcon}</button><span class="session-group-title" title="${escapeHtml(groupName)}">${escapeHtml(groupName)}</span><span class="session-group-count">${members.length} 成员</span>${busyHint}${unreadHint}${group.current_session_member ? '<span class="group-current-badge">当前</span>' : ""}<span class="session-group-spacer"></span><button class="session-group-rename ${canEdit ? "" : "hidden"}" title="重命名工作组">✏️</button><button class="session-group-delete ${canEdit ? "" : "hidden"}" title="${busyCount ? "组内有运行中会话，无法删除整组" : "删除整组及组内全部会话（不可恢复）"}">🗑 删除</button>`;
+      header.innerHTML = `<button class="session-group-toggle" title="${collapsed ? "展开" : "收起"}">${toggleIcon}</button><span class="session-group-title" title="${escapeAttr(groupName)}">${escapeHtml(groupName)}</span><span class="session-group-count">${members.length} 成员</span>${busyHint}${unreadHint}${group.current_session_member ? '<span class="group-current-badge">当前</span>' : ""}<span class="session-group-spacer"></span><button class="session-group-rename ${canEdit ? "" : "hidden"}" title="重命名工作组">✏️</button><button class="session-group-delete ${canEdit ? "" : "hidden"}" title="${busyCount ? "组内有运行中会话，无法删除整组" : "删除整组及组内全部会话（不可恢复）"}">🗑 删除</button>`;
 
       header.onclick = (e) => {
         if (e.target.closest(".session-group-delete") || e.target.closest(".session-group-rename")) return;
@@ -6809,6 +6810,49 @@ try {
   function escapeHtml(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
+  // 属性位专用转义：escapeHtml 只转 & < >，用在 value="…"/title="…" 时
+  // 一个引号就能闭合属性并注入事件处理器（R2P-03 的 XSS）。
+  // 文本位继续用 escapeHtml（否则纯文本里会出现可见的 &quot;）。
+  function escapeAttr(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+  // 链接/图片地址的 scheme 白名单：只允许 http(s)、mailto 与相对路径。
+  // 其余（javascript:/data:/vbscript:/file: …）一律降到不可点击的纯文本。
+  const SAFE_LINK_SCHEME = /^(?:https?:|mailto:)/i;
+  function safeUrl(raw) {
+    const s = String(raw == null ? "" : raw).trim();
+    if (s === "") return "";
+    // 浏览器解析 scheme 时会忽略控制字符与空白，判断前先压紧
+    const compact = s.replace(/[\u0000-\u0020]+/g, "");
+    const m = compact.match(/^([a-zA-Z][a-zA-Z0-9+.\-]*):/);
+    if (m && !SAFE_LINK_SCHEME.test(compact)) return null;
+    return s;
+  }
+
+  // 文本已经过 escapeHtml（& < > 已转义），放进属性位只差引号：
+  // 再跑一次 escapeAttr 会把 &amp; 二次转义成 &amp;amp;（显示错乱）。
+  function escapeQuote(s) {
+    return String(s == null ? "" : s).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function imgTag(raw, alt, url) {
+    const src = safeUrl(url);
+    if (src == null) return `<span class="md-blocked" title="已拦截不安全的图片地址">${raw}</span>`;
+    return `<img class="md-img" src="${escapeQuote(src)}" alt="${escapeQuote(alt)}" loading="lazy" />`;
+  }
+
+  function linkTag(_raw, label, url) {
+    const href = safeUrl(url);
+    // 不安全的 scheme 降级为纯文本（保留标签文字，不产生可点击的 a）
+    if (href == null) return `<span class="md-blocked" title="已拦截不安全的链接">${label}</span>`;
+    return `<a class="md-link" href="${escapeQuote(href)}" target="_blank" rel="noopener">${label}</a>`;
+  }
+
 
   // ── 图片点击放大（lightbox）──
   let lightboxEl = null;
@@ -7384,7 +7428,7 @@ if (MC.evoChangesSignature !== changeSignature) {
 
   function evoCardShell(change, inner) {
     const status = change.derived_status || change.status || "requested";
-    return `<article class="evo-change ${escapeHtml(status)}">${inner}</article>`;
+    return `<article class="evo-change ${escapeAttr(status)}">${inner}</article>`;
   }
 
 function renderEvoApprovalGroup(group, members) {
@@ -7460,7 +7504,7 @@ function renderEvoApprovalGroup(group, members) {
     else if (layer.replayed != null && layer.replayed !== "") detail = `${layer.replayed} 次回放`;
     else detail = layer.label || layer.key || "验证";
     const tip = `${evoLayerExplain(layer.key)}${layer.reason ? "：" + layer.reason : ""}${(layer.samples != null && layer.samples !== "") ? "（" + layer.samples + " 次真实使用）" : ""}${(layer.replayed != null && layer.replayed !== "") ? "（回放 " + layer.replayed + " 条）" : ""}`;
-    return `<div class="evo-layer ${escapeHtml(status)}" title="${escapeHtml(tip)}"><b>${marksShort[status] || "WAIT"}</b><span>${escapeHtml(detail)}</span><em class="evo-layer-cn">${escapeHtml(marks[status] || "待运行")}</em></div>`;
+    return `<div class="evo-layer ${escapeAttr(status)}" title="${escapeAttr(tip)}"><b>${marksShort[status] || "WAIT"}</b><span>${escapeHtml(detail)}</span><em class="evo-layer-cn">${escapeHtml(marks[status] || "待运行")}</em></div>`;
   }
 
   function renderPendingLayers() {
@@ -7496,7 +7540,7 @@ function renderEvoApprovalGroup(group, members) {
       const rateClass = release.success_rate == null ? "" : release.success_rate >= 0.8 ? " good" : " warn";
       const cost = release.avg_tokens == null ? "-" : fmtTok(release.avg_tokens) + " tok";
       return `<div class="evo-release">
-        <span class="evo-release-name" title="${escapeHtml(release.release || "")}">${escapeHtml(release.plugin || "?")}</span>
+        <span class="evo-release-name" title="${escapeAttr(release.release || "")}">${escapeHtml(release.plugin || "?")}</span>
         <span class="evo-release-stats">${uses} 次 · <span class="evo-rate${rateClass}">${rate}</span> · ${cost}</span>
         <span class="evo-release-kind">${escapeHtml(release.kind || "release")}</span>
       </div>`;
@@ -7663,7 +7707,7 @@ function renderEvoApprovals(records) {
     const title = evoEventTitle(kind, payload);
     const summary = evoEventSummary(kind, payload);
     const identity = evoEventIdentity(payload);
-    row.innerHTML = `<summary><span class="evo-event-dot"></span><div class="evo-event-main"><span class="evo-kind" title="${escapeHtml(kind)}">${escapeHtml(title)}</span><div class="evo-body">${escapeHtml(summary)}</div></div><span class="evo-time">${escapeHtml(time)}</span></summary><pre class="evo-event-raw">${escapeHtml(JSON.stringify({ topic: kind, id: event.id, identity, payload }, null, 2))}</pre>`;
+    row.innerHTML = `<summary><span class="evo-event-dot"></span><div class="evo-event-main"><span class="evo-kind" title="${escapeAttr(kind)}">${escapeHtml(title)}</span><div class="evo-body">${escapeHtml(summary)}</div></div><span class="evo-time">${escapeHtml(time)}</span></summary><pre class="evo-event-raw">${escapeHtml(JSON.stringify({ topic: kind, id: event.id, identity, payload }, null, 2))}</pre>`;
     return row;
   }
 
@@ -8201,7 +8245,7 @@ function renderEvoApprovals(records) {
         : `<span class="mc-file-added">+${f.added}</span> <span class="mc-file-deleted">-${f.deleted}</span>`;
       const attribution = state.fileAttribution && state.fileAttribution[f.path];
       const owner = attribution ? `<span class="mc-file-owner">${escapeHtml(attribution.name)}</span>` : "";
-      return `<div class="${cls}" data-path="${escapeHtml(f.path)}" title="点击查看 diff">
+      return `<div class="${cls}" data-path="${escapeAttr(f.path)}" title="点击查看 diff">
         <div class="mc-file-path">${escapeHtml(f.path)}${owner}</div>
         <div class="mc-file-stats">${stats}</div>
       </div>`;
