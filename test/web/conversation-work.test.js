@@ -732,6 +732,115 @@ test("自动分工卡展示阶段、完成数、依赖标题，并隐藏内部�
   instance.destroy();
 });
 
+// ── 进度条：必须能真正走到“结束” ─────────────────────────────────────────
+// 现场：三个分项全部 cancelled，接口却返回 completed=0 → 卡片长期显示 0/2，
+// 用户看到的进度条永远没有结束。分项被取消/失败也算收尾。
+
+test("全部取消的分项也走完进度条，并显示为已结束而不是进行中", async () => {
+  const root = work({
+    status: "cancelled",
+    stage: "ended",
+    coordination: {
+      phase: "ended", total: 2, completed: 0, settled: 2, failed: 0, cancelled: 2,
+      children: [
+        {id: "a", title: "重设计输出窗口", status: "cancelled"},
+        {id: "b", title: "修复状态闭环", status: "cancelled"}
+      ]
+    }
+  });
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [root]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+
+  const bar = card().allElements().find((node) => node.className === "cw-progress");
+  assert.ok(bar, "要真的画出进度条，而不是只有一行文字");
+  assert.equal(bar.dataset.tone, "stop", "已结束且没走完，不能用「进行中」的颜色");
+  assert.equal(bar.getAttribute("role"), "progressbar");
+  assert.equal(bar.getAttribute("aria-valuemax"), "2");
+  assert.equal(bar.getAttribute("aria-valuenow"), "2", "两个分项都已收尾，进度必须是满的");
+  const text = textOfCard();
+  assert.match(text, /2\/2 项/);
+  assert.doesNotMatch(text, /0\/2/, "不能停在 0/2");
+  assert.match(text, /已结束/);
+  instance.destroy();
+});
+
+test("老后端没有 settled 字段时，前端按子项状态自己算收尾数", async () => {
+  const root = work({
+    status: "cancelled",
+    stage: "ended",
+    coordination: {
+      phase: "ended", total: 3, completed: 0,
+      children: [
+        {id: "a", title: "甲", status: "cancelled"},
+        {id: "b", title: "乙", status: "failed"},
+        {id: "c", title: "丙", status: "running"}
+      ]
+    }
+  });
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [root]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const bar = card().allElements().find((node) => node.className === "cw-progress");
+  assert.equal(bar.getAttribute("aria-valuenow"), "2", "取消 + 失败都算收尾");
+  assert.match(textOfCard(), /2\/3 项/);
+  assert.match(textOfCard(), /取消 1/);
+  assert.match(textOfCard(), /未完成 1/);
+  instance.destroy();
+});
+
+test("全部交付时进度条满格并用成功色，失败时用错误色", async () => {
+  const delivered = work({status: "done", stage: "completed", coordination: {
+    phase: "completed", total: 2, completed: 2, settled: 2,
+    children: [{id: "a", title: "甲", status: "done"}, {id: "b", title: "乙", status: "done"}]
+  }});
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [delivered]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  let bar = card().allElements().find((node) => node.className === "cw-progress");
+  assert.equal(bar.dataset.tone, "done");
+  assert.equal(bar.getAttribute("aria-valuenow"), "2");
+
+  const failed = work({status: "blocked", stage: "blocked", coordination: {
+    phase: "executing", total: 2, completed: 1, settled: 1, failed: 1,
+    children: [{id: "a", title: "甲", status: "done"}, {id: "b", title: "乙", status: "failed"}]
+  }});
+  const fake2 = fakeRpc({"conversation.work.list": () => ({works: [failed]})});
+  instance.init(hostFor({sessionId: "s1", rpc: fake2.rpc}));
+  await instance.refresh();
+  bar = card().allElements().find((node) => node.className === "cw-progress");
+  assert.equal(bar.dataset.tone, "err", "有失败分项要点出来，不能装作一切正常");
+  instance.destroy();
+});
+
+test("进度条宽度跟着收尾比例走，且不会超过满格", async () => {
+  const root = work({coordination: {
+    phase: "executing", total: 4, completed: 1, settled: 2,
+    children: [
+      {id: "a", title: "甲", status: "done"},
+      {id: "b", title: "乙", status: "cancelled"},
+      {id: "c", title: "丙", status: "running"},
+      {id: "d", title: "丁", status: "pending"}
+    ]
+  }});
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [root]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const fill = card().allElements().find((node) => node.className === "cw-progress-fill");
+  assert.equal(fill.style.getPropertyValue("width"), "50%");
+
+  const over = work({coordination: {
+    phase: "completed", total: 2, completed: 5, settled: 9,
+    children: [{id: "a", title: "甲", status: "done"}, {id: "b", title: "乙", status: "done"}]
+  }});
+  const fake2 = fakeRpc({"conversation.work.list": () => ({works: [over]})});
+  instance.init(hostFor({sessionId: "s1", rpc: fake2.rpc}));
+  await instance.refresh();
+  const fill2 = card().allElements().find((node) => node.className === "cw-progress-fill");
+  assert.equal(fill2.style.getPropertyValue("width"), "100%", "超额计数要夹到 100%，不能溢出");
+  instance.destroy();
+});
+
 test("子任务问题显示来源标题，但回答仍走根工作问题", async () => {
   const question = {id: "q1", question: "选择方案", task_title: "接口实现", options: []};
   const fake = fakeRpc({
@@ -868,3 +977,162 @@ test("团队菜单项用 DOM 构建：图标/标题/副标题都在，模板名�
   instance.destroy();
 });
 
+// ── 窗口：放大 / 缩放 / 最小化 ────────────────────────────────────────────
+// 用户的原始诉求是「输出窗口太难用，要能放大缩中和最小化」：
+//   ① 控件必须在标题栏，内容再长也点得到；
+//   ② 最小化后只留标题栏，内容不再占高度；
+//   ③ 放大铺满，再点还原；
+//   ④ 拖动/键盘能改高度，双击回到自适应；
+//   ⑤ 窗口状态跨刷新、跨重建保留。
+
+function byKey(root, key) {
+  return root.allElements().find((node) => node.dataset && node.dataset.cwKey === key) || null;
+}
+
+function scrollOf(root) {
+  return root.allElements().find((node) => node.className === "cw-scroll") || null;
+}
+
+test("窗口控件在标题栏内，内容区单独滚动（控件不会被长内容顶走）", async () => {
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [work({
+    activity: ["读取 lib/export_date.ex"],
+    coordination: {phase: "executing", total: 3, completed: 1, children: [
+      {id: "api", title: "接口实现", status: "done"},
+      {id: "test", title: "补充测试", status: "running"},
+      {id: "docs", title: "更新文档", status: "running"}
+    ]}
+  })]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const head = card().allElements().find((node) => node.className === "cw-head");
+  const minimize = byKey(card(), "window:minimize");
+  const maximize = byKey(card(), "window:maximize");
+  assert.ok(head && minimize && maximize, "标题栏里要有最小化和放大");
+  assert.ok(head.contains(minimize) && head.contains(maximize), "窗口控件必须在标题栏内");
+  const scroll = scrollOf(card());
+  assert.ok(scroll, "内容区要有独立滚动容器");
+  assert.equal(scroll.contains(minimize), false, "控件不能放进滚动区");
+  assert.equal(card().dataset.mode, "normal");
+  instance.destroy();
+});
+
+test("最小化只留标题栏，还原后回到原来的内容；按钮状态与读屏文案同步", async () => {
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [work()]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const minimize = byKey(card(), "window:minimize");
+  assert.equal(minimize.getAttribute("aria-pressed"), "false");
+  assert.match(minimize.title, /最小化/);
+  minimize.click();
+  assert.equal(card().dataset.mode, "minimized");
+  assert.equal(byKey(card(), "window:minimize").getAttribute("aria-pressed"), "true");
+  assert.match(byKey(card(), "window:minimize").title, /还原/);
+  assert.equal(scrollOf(card()).hidden || false, false, "内容节点仍在（CSS 负责隐藏），状态可逆");
+  byKey(card(), "window:minimize").click();
+  assert.equal(card().dataset.mode, "normal");
+  assert.equal(byKey(card(), "window:minimize").getAttribute("aria-pressed"), "false");
+  instance.destroy();
+});
+
+test("放大铺满再还原，两个按钮互斥且不互相踩", async () => {
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [work()]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  byKey(card(), "window:maximize").click();
+  assert.equal(card().dataset.mode, "maximized");
+  assert.equal(byKey(card(), "window:maximize").getAttribute("aria-pressed"), "true");
+  assert.match(byKey(card(), "window:maximize").title, /还原/);
+  // 放大期间再点最小化：模式切到 minimized，放大按钮必须回到未按下。
+  byKey(card(), "window:minimize").click();
+  assert.equal(card().dataset.mode, "minimized");
+  assert.equal(byKey(card(), "window:maximize").getAttribute("aria-pressed"), "false");
+  byKey(card(), "window:minimize").click();
+  assert.equal(card().dataset.mode, "normal");
+  instance.destroy();
+});
+
+test("拖动上边缘改高度用 CSS 变量，双击回到自适应", async () => {
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [work()]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const resize = card().allElements().find((node) => node.className === "cw-resize");
+  assert.ok(resize, "上边缘要能拖");
+  assert.equal(resize.hidden, false);
+  resize.dispatch("pointerdown", {clientY: 400});
+  globalThis.document.dispatch("pointermove", {clientY: 340});
+  assert.equal(card().dataset.sized, "1");
+  assert.match(card().style.getPropertyValue("--cw-h"), /^\d+px$/);
+  const raised = parseInt(card().style.getPropertyValue("--cw-h"), 10);
+  assert.ok(raised > 0);
+  globalThis.document.dispatch("pointerup", {});
+  resize.dispatch("dblclick", {});
+  assert.equal(card().dataset.sized, "0");
+  assert.equal(card().style.getPropertyValue("--cw-h"), "");
+  instance.destroy();
+});
+
+test("键盘可调高度：↑↓ 改像素，End 到上限，Home 到下限", async () => {
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [work()]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const resize = card().allElements().find((node) => node.className === "cw-resize");
+  resize.dispatch("keydown", {key: "End"});
+  const top = parseInt(card().style.getPropertyValue("--cw-h"), 10);
+  assert.ok(top > 0);
+  resize.dispatch("keydown", {key: "Home"});
+  const bottom = parseInt(card().style.getPropertyValue("--cw-h"), 10);
+  assert.ok(bottom > 0 && bottom < top, "Home 的高度要小于 End");
+  resize.dispatch("keydown", {key: "ArrowUp"});
+  assert.ok(parseInt(card().style.getPropertyValue("--cw-h"), 10) > bottom);
+  instance.destroy();
+});
+
+test("窗口大小跨刷新与重建保留；放大态刷新不回到默认窗口", async () => {
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [work()]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  byKey(card(), "window:maximize").click();
+  await instance.refresh();
+  assert.equal(card().dataset.mode, "maximized", "刷新不能把放大的窗口收回");
+  assert.equal(byKey(card(), "window:maximize").getAttribute("aria-pressed"), "true");
+  instance.init(hostFor({sessionId: "s1", rpc: fake.rpc}));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(card().dataset.mode, "maximized", "重新初始化后仍是同一个窗口状态");
+  byKey(card(), "window:maximize").click();
+  assert.equal(card().dataset.mode, "normal");
+  instance.destroy();
+});
+
+test("已结束/仍在推进的独立工作不再给「比较改动」，避免点了必然报错", async () => {
+  const ended = work({status: "cancelled", stage: "ended", isolated: true, apply_state: ""});
+  const fake = fakeRpc({"conversation.work.list": () => ({works: [ended]})});
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  assert.equal(buttons(card()).some((b) => b.textContent === "比较改动"), false);
+  assert.match(textOfCard(), /服务端不再接受比较或应用/);
+
+  // 仍在推进：给出原因而不是死按钮。
+  const running = work({status: "running", stage: "working", isolated: true, apply_state: ""});
+  const fake2 = fakeRpc({"conversation.work.list": () => ({works: [running]})});
+  instance.init(hostFor({sessionId: "s1", rpc: fake2.rpc}));
+  await instance.refresh();
+  assert.equal(buttons(card()).some((b) => b.textContent === "比较改动"), false);
+  assert.match(textOfCard(), /等结果准备好/);
+  instance.destroy();
+});
+
+test("等待查看的独立成果仍能比较与应用（门禁没有误伤正常路径）", async () => {
+  const ready = work({status: "pending_review", stage: "needs_review", isolated: true, apply_state: ""});
+  const fake = fakeRpc({
+    "conversation.work.list": () => ({works: [ready]}),
+    "conversation.work.review": () => ({review: {patch_sha256: "0011223344556677", target_root: "/projects/demo", files: [{path: "a.ex", kind: "modify"}], conflicts: []}})
+  });
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const compare = buttons(card()).find((b) => b.textContent === "比较改动");
+  assert.ok(compare, "等待查看时必须能比较");
+  compare.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(buttons(card()).some((b) => b.textContent === "应用并完成"));
+  instance.destroy();
+});

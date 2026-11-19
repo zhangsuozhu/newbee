@@ -107,3 +107,95 @@ start 失败保留草稿、apply 版本变化即停止、destroy 停止轮询、
 - 组件不订阅事件流；`init` 后按上表间隔轮询，属于设计内的临时方案。
 - 卡片插入位置依赖 `#main` / `#composer` 两个既有 id；缺 `#main` 时退到 `document.body`，不会让页面报错。
 - `getDirectory()` 只作展示回退，`root` 始终由服务端会话决定。
+
+## 进度条：为什么原来永远“不结束”（v0.6）
+
+现场证据：`conversation.work.list` 对某条工作返回 `coordination: {total: 2, completed: 0, phase: "ended"}`，
+两个子项的 `status` 都是 `cancelled`。卡片按 `completed` 渲染，于是长期停在 `0/2`——
+用户看到的进度条永远没有结束。
+
+根因在后端 `Decomposition.view/1`：`completed` 只数 `pending_review | done`（还要成果版本匹配），
+被取消、失败的分项永远不计入，而 `phase` 已经是 `ended`。
+
+修法：**不改变 `completed` 语义**（依赖调度仍只用它），新增三个只读字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `settled` | 不再推进的分项数：交付、失败、取消都算 |
+| `failed` | `failed` 的分项数 |
+| `cancelled` | `cancelled` 的分项数 |
+
+前端据此渲染真正的进度条（`role="progressbar"` + `aria-valuenow/max/valuetext`），
+进度按 `settled/total` 走，并区分三种收尾语义：
+
+- 全部**交付** → `data-tone="done"`，实心绿，文案「N/N 项 · 已完成」。
+- 已结束但没全交付 → `data-tone="stop"`，条纹灰，文案带「取消 N / 未完成 N · 已结束」。
+- 有失败 → `data-tone="err"`，红色。
+
+“收尾”不等于“成功”：取消也会让进度走满 100%，但绝不用成功色，避免谎报。
+老后端没有 `settled` 字段时，前端按子项状态自算，不会退回 0/N。
+
+## 视觉对齐（v0.6）
+
+用户反馈「样子和其它窗口不一致」。实测对比后改了三处：
+
+| 位置 | 之前 | 现在 | 依据 |
+| --- | --- | --- | --- |
+| 卡片圆角 | 6px | 14px | 同列 `.msg-assistant` / `.msg-boxed` / `.msg-tool` 都是 14px |
+| 窗口/动作按钮圆角 | 6px / 999px 胶囊 | 8px | 站内 `.btn-*`、`.icon-btn` 统一 `--ui-r-sm` |
+| 按钮高度 | 28px 自定 | `--ui-h-sm`(26) | 站内按钮四档 |
+| 阴影 | 硬编码黑色投影 | 主题变量 | 拟物主题用 `--nb-neu-*`，其它主题无投影 |
+
+另外补齐拟物主题材质：卡片凸起、按钮凸起/按下内嵌、进度条与分项卡内嵌，
+与 `.collab-task`、`.terminal-panel` 等既有面板同一套 `--nb-neu-*` 变量。
+## 输出窗口：放大 / 缩放 / 最小化（v0.5）
+
+工作卡按窗口使用，解决三件原本做不到的事：
+
+| 能力 | 操作 | 落点 |
+| --- | --- | --- |
+| 放大 | 标题栏 ⛶ | `data-mode="maximized"`，铺满可视区；再点还原 |
+| 最小化 | 标题栏 − | `data-mode="minimized"`，只留标题栏（手机约占 7% 屏高） |
+| 缩放 | 拖上边缘、`↑↓`（Shift 加大步长）、`Home/End`、双击复位 | `--cw-h` + `data-sized="1"` |
+
+结构约束（回归测试覆盖，不要退回）：
+
+- 标题栏 `.cw-head` 与窗口控件**不属于**滚动容器；正文在 `.cw-scroll` 里独立滚动。
+  控件被放进滚动区时，长内容一滚就点不到，“功能不可用”正是这样来的。
+- `.cw-card` 自身 `overflow: hidden` 且不滚动，`scrollTop` 必须恒为 0。
+- `[data-sized="1"]` 必须**同时**解除 `max-height`，否则拖动超过默认上限会被 clamp 回去，
+  表现为“怎么拖都不变高”。
+- 默认高度紧凑：桌面 `min(42vh, 380px)`、手机 `min(46dvh, 360px)`；会话流必须仍然读得到。
+- 窗口状态（模式 + 高度）存 `localStorage["newbee.workcard.window"]`，刷新与重新 init 后保持。
+
+## 比较/应用的可用性门禁
+
+服务端 `WorkspaceReview.reviewable/1` 只在 `pending_review` 时接受比较与应用。前端此前对
+`isolated && apply_state != applied` 一律渲染「比较改动」，于是**已结束或仍在推进**的工作上
+必然点出 4xx——“有的功能不可用”的直接来源。
+
+现在 `reviewable(work)` 与后端条件对齐（`isolated && apply_state != applied &&
+status == pending_review && stage == needs_review`）；不满足时不出按钮，改为说明原因：
+
+- 已结束：结果保留在独立工作区、尚未写入项目，服务端不再接受比较或应用。
+- 仍在推进：等结果准备好（状态变成「等待查看」）才开放。
+
+## 测试覆盖（40 项）
+
+在上述 22 项之外新增 8 项窗口/门禁用例：
+
+窗口控件在标题栏内且内容区独立滚动、最小化只留标题栏并可还原、放大与最小化互斥不互相踩、
+拖动上边缘改高度用 CSS 变量、双击复位、键盘 `↑↓/Home/End` 调高度、
+窗口大小跨刷新与重建保留、已结束/推进中不出「比较改动」且给出原因、等待查看仍能比较与应用。
+
+测试替身 `test/web/conversation_work_dom.js` 相应补齐 `classList.toggle`、`style.setProperty/removeProperty`、
+`Document.dispatch(type, event)` 事件载荷与 `localStorage/sessionStorage` 替身——缺这些就测不出窗口行为。
+
+真实浏览器实测（Chromium，1280×720 与 390×844）：
+
+- 长内容滚动 2245px 后 `elementFromPoint` 仍命中放大按钮，卡片 `scrollTop` 为 0，无横向溢出。
+- 拖动 200px → 高度恰好 +200px（修复 clamp 前只 +120px 就被夹住）。
+- 手机默认 360px、最小化 58px（7% 屏高），放大精确等于视口且无横向溢出。
+- 线上那条已结束的工作：不再渲染「比较改动」。
+
+仍未覆盖：Safari/Firefox、真机触摸拖拽、屏幕阅读器朗读窗口状态。

@@ -166,6 +166,40 @@ defmodule Newbee.Colony.DecompositionTest do
     assert Decomposition.view(task)["completed"] == 2
   end
 
+  # 现场回归：三个分项全部 cancelled，但 view 只按“已交付”计数，
+  # 于是卡片长期显示 0/N，进度条永远没有结束。
+  test "cancelled and failed children count as settled, not as delivered", ctx do
+    task = plan(ctx, [item("a"), item("b"), item("c")])
+    [first, second, third] = children(task)
+
+    {:ok, _} = Store.update("tasks", first["id"], nil, &{:ok, Map.put(&1, "status", "cancelled")})
+    {:ok, _} = Store.update("tasks", second["id"], nil, &{:ok, Map.put(&1, "status", "failed")})
+    finish(third)
+
+    {:ok, task} = Store.get_task(task["id"])
+    view = Decomposition.view(task)
+
+    assert view["total"] == 3
+    # completed 的既有语义不变：只有真正交付了成果的才算。
+    assert view["completed"] == 1
+    # settled 才能回答“是不是结束了”。
+    assert view["settled"] == 3
+    assert view["cancelled"] == 1
+    assert view["failed"] == 1
+  end
+
+  test "a fully delivered plan reports settled == completed == total", ctx do
+    task = plan(ctx, [item("a"), item("b")])
+    Enum.each(children(task), &finish/1)
+    {:ok, task} = Store.get_task(task["id"])
+    view = Decomposition.view(task)
+    assert view["total"] == 2
+    assert view["completed"] == 2
+    assert view["settled"] == 2
+    assert view["failed"] == 0
+    assert view["cancelled"] == 0
+  end
+
   test "pause of this root holds ready work while unrelated pause does not", ctx do
     task = plan(ctx, [item("a"), item("b", ["a"])])
     [first, second] = children(task)

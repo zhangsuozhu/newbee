@@ -104,9 +104,20 @@ defmodule Newbee.Colony.Decomposition do
       "summary" => get_in(root, ["workflow", "summary"]) || "",
       "concurrency" => @max_concurrency,
       "total" => length(get_in(root, ["workflow", "children"]) || []),
+      # completed 只数“交付了可验收成果”的分项（既有语义，依赖调度也看它）。
       "completed" => Enum.count(children, &submitted?(snapshot, &1)),
+      # settled 数“不再推进”的分项：交付、失败、取消都算，用来回答
+      # “这条工作是不是已经收尾了”。只看 completed 会让被取消/失败的分项
+      # 永远停在 0/N，进度看起来永不结束。
+      "settled" => Enum.count(children, &settled?(snapshot, &1)),
+      "failed" => Enum.count(children, &(&1["status"] == "failed")),
+      "cancelled" => Enum.count(children, &(&1["status"] == "cancelled")),
       "children" => rows
     }
+  end
+
+  defp settled?(data, child) do
+    child["status"] in @terminal or submitted?(data, child)
   end
 
   defp parse_plan(text) when is_binary(text) and byte_size(text) <= 100_000 do
