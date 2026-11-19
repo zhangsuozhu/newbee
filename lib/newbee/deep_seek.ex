@@ -5,7 +5,7 @@ defmodule Newbee.DeepSeek do
 
   def status do
     case config() do
-      {:ok, _} -> {:ok, %{configured: true, tools: @tools}}
+      {:ok, cfg} -> {:ok, %{configured: true, tools: @tools, credential_source: cfg.source}}
       {:error, %{reason: :not_configured}} -> {:ok, %{configured: false, tools: []}}
       error -> error
     end
@@ -48,14 +48,7 @@ defmodule Newbee.DeepSeek do
   end
 
   defp resolve_config(spec) do
-    key = Map.get(spec, "apiKey", "${DEEPSEEK_API_KEY}")
-
-    key =
-      case key do
-        "${" <> rest -> System.get_env(String.trim_trailing(rest, "}"))
-        value -> value
-      end
-
+    {key, source} = credentials(spec)
     base = Map.get(spec, "baseUrl", @default_url)
     timeout = Map.get(spec, "timeoutMs", 180_000)
 
@@ -66,8 +59,34 @@ defmodule Newbee.DeepSeek do
          :ok <- check(not String.contains?(key, ["\r", "\n"]), :invalid_config, :apiKey) do
       # Accept both origin and OpenAI-compatible /v1 base URLs, without /v1/v1.
       base = base |> String.trim_trailing("/") |> String.trim_trailing("/v1")
-      {:ok, %{key: key, base: base, timeout: timeout}}
+      {:ok, %{key: key, base: base, timeout: timeout, source: source}}
     end
+  end
+
+  # Explicit tool credentials must never silently switch accounts. Only an absent
+  # apiKey and an absent/blank environment key permit the model-provider fallback.
+  defp credentials(%{"apiKey" => key}) do
+    key =
+      case key do
+        "${" <> rest -> System.get_env(String.trim_trailing(rest, "}"))
+        value -> value
+      end
+
+    {key, :tools_config}
+  end
+
+  defp credentials(_spec) do
+    case System.get_env("DEEPSEEK_API_KEY") do
+      key when is_binary(key) and key != "" ->
+        if String.trim(key) == "", do: model_credentials(), else: {key, :environment}
+
+      _ ->
+        model_credentials()
+    end
+  end
+
+  defp model_credentials do
+    {Newbee.LLM.Config.provider_api_key("deepseek"), :model_provider}
   end
 
   defp endpoint?(url) do

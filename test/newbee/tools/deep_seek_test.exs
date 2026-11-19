@@ -5,13 +5,15 @@ defmodule Newbee.Tools.DeepSeekTest do
   setup do
     root = Path.join(System.tmp_dir!(), "newbee-deepseek-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
-    vars = ["NEWBEE_DEEPSEEK_CONFIG", "DEEPSEEK_API_KEY", "NEWBEE_DEEPSEEK_TEST_KEY"]
+    vars = ["NEWBEE_DEEPSEEK_CONFIG", "DEEPSEEK_API_KEY", "NEWBEE_DEEPSEEK_TEST_KEY", "NEWBEE_MODEL_JSON"]
     previous = Map.new(vars, &{&1, System.get_env(&1)})
     original_req_options = Application.fetch_env(:req, :default_options)
     Req.default_options(plug: {Req.Test, __MODULE__})
     System.put_env("NEWBEE_DEEPSEEK_CONFIG", Path.join(root, "config.json"))
     System.put_env("DEEPSEEK_API_KEY", "test-secret-not-for-output")
     System.delete_env("NEWBEE_DEEPSEEK_TEST_KEY")
+    System.put_env("NEWBEE_MODEL_JSON", Path.join(root, "model.json"))
+    configure_model(%{})
 
     on_exit(fn ->
       case original_req_options do
@@ -24,6 +26,70 @@ defmodule Newbee.Tools.DeepSeekTest do
     end)
 
     %{root: root}
+  end
+
+  defp configure_model(providers, extra \\ %{}) do
+    config = Map.put(extra, "providers", providers)
+    File.write!(System.fetch_env!("NEWBEE_MODEL_JSON"), Jason.encode!(config))
+  end
+
+  test "resolves the DeepSeek default model group without inheriting the chat gateway" do
+    System.delete_env("DEEPSEEK_API_KEY")
+    System.put_env("NEWBEE_DEEPSEEK_TEST_KEY", "provider-fixture")
+
+    configure_model(
+      %{
+        "deepseek" => %{
+          "baseUrl" => "https://chat-gateway.example/v1",
+          "groups" => %{
+            "default" => %{"apiKey" => "${NEWBEE_DEEPSEEK_TEST_KEY}", "models" => []},
+            "secondary" => %{"apiKey" => "other-account", "models" => []}
+          }
+        }
+      },
+      %{"schemaVersion" => 2, "roles" => %{"default" => %{"provider" => "deepseek", "group" => "secondary"}}}
+    )
+
+    assert {:ok, %{configured: true, credential_source: :model_provider} = status} = DeepSeek.status()
+    refute inspect(status) =~ "provider-fixture"
+    assert Newbee.Plugins.prompt_section() =~ "Newbee.Tools.DeepSeek"
+
+    Req.Test.expect(__MODULE__, fn conn ->
+      assert conn.host == "api.deepseek.com"
+      assert conn.request_path == "/v1/tools/search"
+      assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer provider-fixture"]
+      reply(conn, %{"results" => []})
+    end)
+
+    assert {:ok, %{"results" => []}} = DeepSeek.search("Elixir", count: 1)
+  end
+
+  test "tool key and environment key take precedence over a legacy provider key" do
+    configure_model(%{"deepseek" => %{"apiKey" => "legacy-fixture"}})
+    assert {:ok, %{credential_source: :environment}} = DeepSeek.status()
+    configure(%{"apiKey" => "tool-fixture"})
+    assert {:ok, %{credential_source: :tools_config}} = DeepSeek.status()
+
+    configure(%{})
+    System.put_env("DEEPSEEK_API_KEY", "  ")
+    assert {:ok, %{credential_source: :model_provider}} = DeepSeek.status()
+  end
+
+  test "disable or missing explicit key does not fall back to a different account" do
+    configure_model(%{"deepseek" => %{"apiKey" => "legacy-fixture"}})
+
+    for spec <- [%{"enabled" => false}, %{"apiKey" => "${NEWBEE_DEEPSEEK_TEST_KEY}"}, %{"apiKey" => ""}] do
+      configure(spec)
+      assert {:ok, %{configured: false}} = DeepSeek.status()
+      assert {:error, %{reason: :not_configured}} = DeepSeek.search("Elixir")
+    end
+  end
+
+  test "only consults model.json when fallback credentials are needed" do
+    File.write!(System.fetch_env!("NEWBEE_MODEL_JSON"), "invalid json")
+    assert {:ok, %{credential_source: :environment}} = DeepSeek.status()
+    System.delete_env("DEEPSEEK_API_KEY")
+    assert {:error, %{reason: :invalid_config}} = DeepSeek.status()
   end
 
   defp configure(spec), do: File.write!(System.fetch_env!("NEWBEE_DEEPSEEK_CONFIG"), Jason.encode!(spec))
