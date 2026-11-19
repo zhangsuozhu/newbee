@@ -23,4 +23,56 @@ defmodule Newbee.LLM.CompleteErrorTest do
       assert {:error, {:http_error, ^status, _}} = Client.complete(client, [%{role: "user", content: "test"}])
     end
   end
+
+  test "clients created before the tls field keep the default transport" do
+    for api <- ["openai-completions", "openai-responses", "anthropic"] do
+      client =
+        Client.new(
+          api: api,
+          api_key: "fixture-only",
+          base_url: "http://fixture.invalid",
+          req_options: [plug: fn conn -> Plug.Conn.send_resp(conn, 401, "unauthorized") end]
+        )
+        |> legacy_client()
+
+      assert Client.req_transport(client) == Client.req_transport(Client.new())
+      assert Client.tls_finch_opt(client) == []
+      assert {:error, {:http_error, 401, _}} = Client.complete(client, [%{role: "user", content: "test"}])
+      assert {:error, reason} = Client.stream_chat(client, [%{role: "user", content: "test"}])
+      refute match?({:stream_error, _, _}, reason)
+    end
+  end
+
+  test "worker function clause errors never print argument values from old Client maps" do
+    key = "fixture-secret-for-legacy-client"
+    client = Client.new(api_key: key, base_url: "http://fixture.invalid") |> legacy_client()
+    plug = fn _conn -> raise FunctionClauseError, module: __MODULE__, function: :fixture, arity: 1, args: [client] end
+    client = Map.put(client, :req_options, plug: plug)
+
+    assert {:error, {:stream_error, text, ""}} = Client.stream_chat(client, [%{role: "user", content: "test"}])
+    assert text =~ "FunctionClauseError"
+    refute text =~ key
+    refute text =~ "api_key:"
+  end
+
+  test "worker exception messages redact the active API key" do
+    key = "fixture-secret-for-error-message"
+
+    client =
+      Client.new(
+        api_key: key,
+        base_url: "http://fixture.invalid",
+        req_options: [plug: fn _ -> raise "provider failure: " <> key end]
+      )
+
+    assert {:error, {:stream_error, text, ""}} = Client.stream_chat(client, [%{role: "user", content: "test"}])
+    assert text =~ "[REDACTED]"
+    assert text =~ "RuntimeError"
+    refute text =~ key
+  end
+
+  # Simulate a Client retained in memory or restored from an older serialized term.
+  defp legacy_client(client) do
+    client |> Map.delete(:tls) |> :erlang.term_to_binary() |> :erlang.binary_to_term()
+  end
 end

@@ -199,8 +199,13 @@ defmodule Newbee.LLM.Client do
   ]
 
   @doc false
-  def req_transport(%__MODULE__{tls: nil}), do: @default_finch_opts
-  def req_transport(%__MODULE__{tls: tls}), do: tls_finch(tls)
+  # Old live sessions may predate the tls field; treat an absent field as default TLS.
+  def req_transport(%__MODULE__{} = client) do
+    case Map.get(client, :tls) do
+      nil -> @default_finch_opts
+      tls -> tls_finch(tls)
+    end
+  end
 
   # 统一组装一次请求的 Req 选项：同一厂家的所有请求共用一个 Finch 池配置，
   # 未配置 TLS 时不额外占位（沿用默认池），配置了就用该厂家自己的 pool_tag。
@@ -213,7 +218,7 @@ defmodule Newbee.LLM.Client do
 
   # 没有 client 上下文时（context window 探测、模型导入）只补 TLS 选项；未配置返回 []。
   @doc false
-  def tls_finch_opt(%__MODULE__{tls: tls}), do: tls_finch_opt(tls)
+  def tls_finch_opt(%__MODULE__{} = client), do: tls_finch_opt(Map.get(client, :tls))
   def tls_finch_opt(nil), do: []
   def tls_finch_opt(tls), do: [finch: tls_finch(tls)]
 
@@ -479,10 +484,10 @@ defmodule Newbee.LLM.Client do
             try do
               stream_chat_request(client, messages, on_text, on_reasoning, opts)
             rescue
-              e -> {:error, {:stream_error, Exception.format(:error, e, __STACKTRACE__), ""}}
+              e -> {:error, {:stream_error, format_stream_exception(client, :error, e, __STACKTRACE__), ""}}
             catch
               kind, value ->
-                {:error, {:stream_error, Exception.format(kind, value, __STACKTRACE__), ""}}
+                {:error, {:stream_error, format_stream_exception(client, kind, value, __STACKTRACE__), ""}}
             end
 
           send(parent, {:stream_chat_result, ref, result})
@@ -492,6 +497,32 @@ defmodule Newbee.LLM.Client do
       result = await_stream_chat(worker, monitor, ref, client)
       observe_provider(result, client, started_at, "stream_chat", messages)
       result
+    end
+  end
+
+  # Exception stack frames may contain old Client maps, whose Inspect implementation
+  # cannot hide api_key. Never render argument values from a worker stack trace.
+  defp format_stream_exception(client, kind, value, stacktrace) do
+    safe_stack =
+      Enum.map(stacktrace, fn
+        {mod, fun, args, location} when is_list(args) -> {mod, fun, length(args), location}
+        frame -> frame
+      end)
+
+    banner =
+      case value do
+        %FunctionClauseError{} -> "** (FunctionClauseError) no function clause matching"
+        _ -> Exception.format_banner(kind, value)
+      end
+
+    text = banner <> "\n" <> Exception.format_stacktrace(safe_stack)
+
+    case Map.get(client, :api_key) do
+      key when is_binary(key) and key != "" ->
+        String.replace(text, [key, inspect(key)], "[REDACTED]")
+
+      _ ->
+        text
     end
   end
 

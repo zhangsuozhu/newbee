@@ -26,11 +26,11 @@ class Element {
     this.rows = 0;
     this.disabled = false;
     this.hidden = false;
-    this.selectionStart = 0;
     this.selectionEnd = 0;
     this.parentNode = null;
     this.ownerDocument = null;
     this._text = "";
+    // 真实 DOM 的 style 代理：setProperty/removeProperty 读写同一份自定义属性。
     this._props = new Map();
     this.style = {
       getPropertyValue: (name) => this._props.get(name) || "",
@@ -176,14 +176,30 @@ class Document {
     const list = this.listeners.get(type) || [];
     this.listeners.set(type, list.filter((f) => f !== fn));
   }
-  dispatch(type) {
-    (this.listeners.get(type) || []).slice().forEach((fn) => fn({type: type}));
+  dispatch(type, event) {
+    const payload = Object.assign({type: type, target: this, preventDefault() { this.defaultPrevented = true; }}, event || {});
+    (this.listeners.get(type) || []).slice().forEach((fn) => fn(payload));
+    return payload;
   }
+}
+
+function storageStub() {
+  const map = new Map();
+  return {
+    getItem: (key) => (map.has(String(key)) ? map.get(String(key)) : null),
+    setItem: (key, value) => { map.set(String(key), String(value)); },
+    removeItem: (key) => { map.delete(String(key)); },
+    clear: () => map.clear()
+  };
 }
 
 function install() {
   const document = new Document();
   document.createElementNS = (namespace, tag) => document.createElement(tag);
+  // 真实浏览器一定有 localStorage/sessionStorage；组件会把窗口大小写进去，
+  // 没有这份替身就测不出「刷新后仍是同一窗口」。
+  globalThis.localStorage = storageStub();
+  globalThis.sessionStorage = storageStub();
   const main = document.createElement("main");
   main.id = "main";
   // 与 priv/web/index.html 一致：#composer 位于 #main 内部，卡片插在它之前。
