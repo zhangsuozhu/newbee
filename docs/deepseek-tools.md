@@ -12,7 +12,8 @@
 
 ## 配置与启用
 
-最简单的方式是在**启动 newbee 的宿主进程环境**中设置：
+如果 `model.json` 已配置 `deepseek` 厂家的默认分组密钥，工具可直接复用，无需再配置一份。
+如需单独指定密钥，可在**启动 newbee 的宿主进程环境**中设置：
 
 ```sh
 export DEEPSEEK_API_KEY='你的 DeepSeek API Key'
@@ -29,19 +30,15 @@ export DEEPSEEK_API_KEY='你的 DeepSeek API Key'
 }
 ```
 
-- `enabled`：默认 `true`；显式 `false` 禁用，即使环境变量中存在密钥。
-- `apiKey`：默认 `${DEEPSEEK_API_KEY}`，支持字面密钥或整个 `${ENV_VAR}` 引用。
-  不读取模型目录的密钥，不依赖聊天模型配置。建议使用环境变量，勿将真实密钥提交到仓库。
-- `baseUrl`：默认官方地址，仅允许 HTTPS，不允许用户名、密码、查询参数或 fragment。
-  兼容末尾 `/v1` 与 `/v1/`，不会产生 `/v1/v1/tools/...`；可配置受信任的 HTTPS 代理前缀。
-  配置其他域名意味着明确授权向该网关发送密钥及请求内容。
+- `enabled`：默认 `true`；显式 `false` 禁用，不读取任何备用密钥，也不会发请求。
+- 密钥优先级：`deepseek.json` 显式 `apiKey` → 非空 `DEEPSEEK_API_KEY` → `model.json` 中 `deepseek` 厂家的默认分组。显式 `apiKey` 支持字面值或整个 `${ENV_VAR}` 引用；若显式值为空或引用未解析，不回退到其他账号。模型目录中的密钥沿用其现有解析规则。
+- `baseUrl`：默认 `https://api.deepseek.com`，不自动继承聊天网关。仅允许 HTTPS，不允许用户名、密码、查询参数或 fragment。兼容末尾 `/v1` 与 `/v1/`；显式配置其他域名会向该网关发送选中的密钥及请求，请只配置受信任的网关。
 - `timeoutMs`：响应读取超时，默认 180 秒，范围 1～1,800,000 毫秒；连接超时为 10 秒。
-- 配置逐次读取，无配置文件时仍可通过环境变量启用；配置文件无效时返回错误，不静默回退。
-- 配置不写入 `model.json`，也不提供 WebUI 配置表单。
+- 配置逐次读取；需要读取的配置无效时返回错误。工具不会写入 `model.json`，也不提供单独的 WebUI 配置表单。
 
 插件 ID 为 `tool.deepseek`，能力声明为 `[:net, :fs]`。插件始终注册，可按需读取
 `Newbee.read("tool://Newbee.Tools.DeepSeek")`；只有配置有效且密钥非空时，才进入模型的常驻能力索引。
-这里的“已配置”仅指本地配置齐全，不代表密钥已在线验证或账户有余额。
+`status/0` 在已配置时返回密钥来源 `credential_source`，不返回密钥。这里的“已配置”不代表密钥已在线验证或账户有余额。
 未配置或禁用时，工具返回 `:not_configured`，不会发出 HTTP 请求。
 
 ## 调用

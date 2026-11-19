@@ -2,8 +2,9 @@ defmodule Newbee.Tools.DeepSeek do
   @moduledoc """
   DeepSeek tools.
 
-  Enabled by `DEEPSEEK_API_KEY` or `~/.newbee/deepseek.json` (override:
-  `NEWBEE_DEEPSEEK_CONFIG`). Config: `apiKey` (literal or `${ENV_VAR}`),
+  Credentials: `deepseek.json` apiKey, then `DEEPSEEK_API_KEY`, then the
+  `deepseek` default group in `model.json`. Tools config: `~/.newbee/deepseek.json`
+  (override: `NEWBEE_DEEPSEEK_CONFIG`); `apiKey` is a literal or `${ENV_VAR}`.
   `baseUrl` (default `https://api.deepseek.com`), `timeoutMs` (default 180000),
   `enabled` (default true). See `docs/deepseek-tools.md`.
   Credentials and requests stay on the Host. Uploading OCR/ASR files sends their
@@ -23,7 +24,7 @@ defmodule Newbee.Tools.DeepSeek do
       {:ok, text} = Newbee.Tools.DeepSeek.asr("speech.wav")
   """
 
-  @doc "Secret-free availability: `{:ok, %{configured: boolean, tools: [atom]}}`."
+  @doc "Secret-free availability; configured results include `credential_source` (`:tools_config`, `:environment`, or `:model_provider`)."
   def status, do: host(:status, [])
 
   @doc "Search; opts: count (1..50), ori_question (1..128 Unicode characters or nil), localization, need_content."
