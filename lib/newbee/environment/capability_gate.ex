@@ -27,6 +27,7 @@ defmodule Newbee.Environment.CapabilityGate do
     "Newbee.Tools.Git" => [:shell, :fs],
     "Newbee.Tools.Scaffold" => [:shell, :fs],
     "Newbee.Tools.Http" => [:net],
+    "Newbee.Tools.DeepSeek" => [:net, :fs],
     "Newbee.Tools.Browser" => [:browser, :net, :fs, :shell],
     "Newbee.Tools.Search" => [:fs],
     "Newbee.Tools.Json" => [],

@@ -24,6 +24,7 @@ defmodule Newbee.Plugins do
     {:tool, "tool.search", Newbee.Tools.Search, [:fs]},
     {:tool, "tool.json", Newbee.Tools.Json, []},
     {:tool, "tool.http", Newbee.Tools.Http, [:net]},
+    {:tool, "tool.deepseek", Newbee.Tools.DeepSeek, [:net, :fs]},
     {:tool, "tool.browser", Newbee.Tools.Browser, [:browser, :net, :fs, :shell]},
     {:tool, "tool.browser.jev", Newbee.Tools.BrowserJev, [:browser, :net]},
     {:tool, "tool.scaffold", Newbee.Tools.Scaffold, [:shell, :fs]},
@@ -111,6 +112,10 @@ defmodule Newbee.Plugins do
   @doc "prompt 注入用的一行能力索引（tool/workflow/projection/provider；价签由 Fitness 补充）。"
   def prompt_section(tags \\ %{}) do
     list()
+    |> Enum.reject(fn item ->
+      item.plugin_id == "tool.deepseek" and
+        not match?({:ok, %{configured: true}}, Newbee.Tools.DeepSeek.status())
+    end)
     |> Enum.map_join("\n", fn t ->
       tag = Map.get(tags, t.plugin_id)
       price = if tag, do: " " <> tag, else: ""
