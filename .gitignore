@@ -25,3 +25,10 @@ _build-codex-calls/
 
 # Local compaction-recall transcripts. Do not commit session content.
 evals/compaction_recall/private/
+
+# Python bytecode cache (priv/browser Playwright runner)
+__pycache__/
+*.pyc
+
+# DEE runtime scratch dir (recreated on demand)
+/.newbee-tmp/
