@@ -93,7 +93,7 @@ defmodule Newbee.Codec do
           is_binary(raw_args) ->
             case Jason.decode(raw_args) do
               {:ok, m} when is_map(m) -> m
-              _ -> %{"code" => raw_args}
+              _ -> %{"__invalid_arguments__" => raw_args}
             end
 
           is_map(raw_args) ->
@@ -103,7 +103,7 @@ defmodule Newbee.Codec do
             %{}
 
           true ->
-            %{"code" => inspect(raw_args)}
+            %{"__invalid_arguments__" => inspect(raw_args)}
         end
 
       %{id: c["id"] || c[:id], name: name, args: args}

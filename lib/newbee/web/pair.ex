@@ -83,27 +83,25 @@ defmodule Newbee.Web.Pair do
   `approved` 态才回一次性 token（且读到即清，防二次取走）。
   """
   def status(pairing_id) do
-    case get_pair(pairing_id) do
-      nil ->
+    key = {:pair, pairing_id}
+
+    case :ets.take(@table, key) do
+      [] ->
         {:error, "not_found", "配对不存在或已过期，请刷新二维码"}
 
-      p ->
+      [{^key, p}] ->
         cond do
           expired?(p) ->
-            delete({:pair, pairing_id})
             {:ok, %{status: "expired"}}
 
           p.status == "approved" ->
-            # token 一次性：读出即焚
-            token = p.token
-            delete({:pair, pairing_id})
-            {:ok, %{status: "approved", token: token}}
+            {:ok, %{status: "approved", token: p.token}}
 
           p.status == "denied" ->
-            delete({:pair, pairing_id})
             {:ok, %{status: "denied"}}
 
           true ->
+            put(key, p)
             {:ok, %{status: p.status}}
         end
     end
@@ -173,23 +171,39 @@ defmodule Newbee.Web.Pair do
   `Auth.issue_token/0` 生成，写入配对后状态置 `approved`，等电脑轮询取走。
   """
   def confirm(pairing_id, phone_meta \\ %{}) do
-    case get_pair(pairing_id) do
-      nil ->
+    confirm(pairing_id, phone_meta, Map.get(phone_meta, :token))
+  end
+
+  def confirm(pairing_id, phone_meta, phone_token) when is_map(phone_meta) do
+    if is_binary(phone_token) and Newbee.Web.Auth.check_token(phone_token) == :ok do
+      do_confirm(pairing_id, phone_meta)
+    else
+      {:error, "unauthorized", "请先登录再授权"}
+    end
+  end
+
+  def confirm(_, _, _), do: {:error, "bad_request", "配对参数无效"}
+
+  defp do_confirm(pairing_id, phone_meta) do
+    key = {:pair, pairing_id}
+
+    case :ets.take(@table, key) do
+      [] ->
         {:error, "not_found", "配对不存在或已过期，请重新扫码"}
 
-      p ->
+      [{^key, p}] ->
         cond do
           expired?(p) ->
-            delete({:pair, pairing_id})
             {:error, "expired", "二维码已过期，请重新扫码"}
 
           p.status != "scanned" ->
+            put(key, p)
             {:error, "bad_state", "配对状态异常，请重新扫码"}
 
           true ->
             {:ok, token} = Newbee.Web.Auth.issue_token()
 
-            put({:pair, pairing_id}, %{
+            put(key, %{
               p
               | status: "approved",
                 token: token,

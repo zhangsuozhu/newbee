@@ -51,19 +51,25 @@ defmodule Newbee.LLM.ResponsesCapabilities do
   @doc "合并持久化某 route 的一项能力（原子 tmp+rename 写；失败静默，不影响请求）。"
   def put(scope, capability, value)
       when capability in [:stream, :encrypted_reasoning, :continuation] and is_boolean(value) do
-    p = path()
-    all = read_all()
-    key = scope_key(scope)
-    current = Map.get(all, key, %{})
+    :global.trans({{__MODULE__, :write}, self()}, fn ->
+      p = path()
+      all = read_all()
+      key = scope_key(scope)
+      current = Map.get(all, key, %{})
+      updated = Map.put(all, key, Map.put(current, Atom.to_string(capability), value))
 
-    updated =
-      Map.put(all, key, Map.put(current, Atom.to_string(capability), value))
+      File.mkdir_p!(Path.dirname(p))
+      tmp = p <> ".tmp-" <> Integer.to_string(System.unique_integer([:positive]))
 
-    File.mkdir_p!(Path.dirname(p))
-    tmp = p <> ".tmp"
-    File.write!(tmp, Jason.encode_to_iodata!(updated))
-    File.rename!(tmp, p)
-    :ok
+      try do
+        File.write!(tmp, Jason.encode_to_iodata!(updated))
+        File.rename!(tmp, p)
+      after
+        File.rm(tmp)
+      end
+
+      :ok
+    end)
   rescue
     _ -> :ok
   end

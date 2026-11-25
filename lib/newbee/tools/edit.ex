@@ -385,7 +385,12 @@ defmodule Newbee.Tools.Edit do
   end
 
   def show(path, range) when is_binary(path) do
-    show_range(path, normalize_show_range(range))
+    with :ok <- Newbee.Tools.Fs.guard_path(path) do
+      show_range(path, normalize_show_range(range))
+    else
+      {:error, reason} ->
+        raise RejectError, message: "path outside workspace: #{inspect(reason)}", category: :out_of_bounds
+    end
   end
 
   def show(path, range) when is_atom(path) do
@@ -556,9 +561,18 @@ defmodule Newbee.Tools.Edit do
   # ── 预检与候选 ──
 
   defp plan_section(%{path: path, tag: tag, ops: ops}) do
+    with :ok <- Newbee.Tools.Fs.guard_path(path) do
+      do_plan_section(path, tag, ops)
+    else
+      {:error, reason} ->
+        raise RejectError, message: "path outside workspace: #{inspect(reason)}", category: :out_of_bounds
+    end
+  end
+
+  defp do_plan_section(path, tag, ops) do
     snap =
       SnapshotStore.fetch(path, tag) ||
-        raise RejectError, message: "unknown snapshot tag #{tag} (show first)", category: :unknown_snapshot
+        raise(RejectError, message: "unknown snapshot tag #{tag}", category: :unknown_snapshot)
 
     current = File.read!(path)
 

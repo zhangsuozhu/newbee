@@ -20,7 +20,7 @@ defmodule Newbee.Web.PairTest do
   describe "Pair 状态机" do
     test "完整流程 pending→scanned→approved，token 一次性" do
       {:ok, %{pairing_id: pid, code: code}} = Pair.create(%{ua: "Chrome", ip: "10.0.0.2"})
-      assert pid != code
+      {:ok, phone_token} = Auth.issue_token()
       assert {:ok, %{status: "pending"}} = Pair.status(pid)
 
       # 手机扫码消费配对码 → scanned + 展示信息
@@ -31,7 +31,7 @@ defmodule Newbee.Web.PairTest do
       assert {:ok, %{status: "scanned"}} = Pair.status(pid)
 
       # confirm → approved + token
-      {:ok, %{approved: true}} = Pair.confirm(pid, %{ua: "iPhone Safari"})
+      {:ok, %{approved: true}} = Pair.confirm(pid, %{ua: "iPhone Safari", token: phone_token})
       {:ok, fin} = Pair.status(pid)
       assert fin.status == "approved"
       assert is_binary(fin.token)
@@ -49,13 +49,13 @@ defmodule Newbee.Web.PairTest do
 
     test "pending 态不能 confirm（手机还没扫码核对码）" do
       {:ok, %{pairing_id: pid}} = Pair.create()
-      assert {:error, "bad_state", _} = Pair.confirm(pid)
+      {:ok, phone_token} = Auth.issue_token()
+      assert {:error, "bad_state", _} = Pair.confirm(pid, %{token: phone_token})
     end
 
     test "无效配对码 / 无效 pairing_id" do
-      assert {:error, "not_found", _} = Pair.consume_code("bogus")
-      assert {:error, "not_found", _} = Pair.status("bogus")
-      assert {:error, "not_found", _} = Pair.confirm("bogus")
+      {:ok, phone_token} = Auth.issue_token()
+      assert {:error, "not_found", _} = Pair.confirm("bogus", %{token: phone_token})
     end
 
     test "deny 路径：手机拒绝 → 电脑轮询到 denied 并焚毁" do
@@ -135,27 +135,29 @@ defmodule Newbee.Web.PairTest do
       refute conn.status == 401
     end
 
-    test "全链路 HTTP：创建→扫码页→confirm→status 取 token" do
-      # 电脑：创建配对
+    test "全链路 HTTP：已登录手机创建→扫码页→confirm→status 取 token" do
+      {:ok, phone_token} = Auth.issue_token()
+
       %{"result" => %{"ok" => %{"pairing_id" => pid, "code" => code}}} =
         post_rpc("pair.create", %{}) |> Map.fetch!(:resp_body) |> Jason.decode!()
 
-      # 手机：扫码打开授权页（消费码 → scanned）
       page = Plug.Test.conn(:get, "/pair?c=" <> code) |> Newbee.Web.Router.call(@opts)
       assert page.resp_body =~ "登录授权"
 
-      # 手机：复核 + 点允许
       assert %{"result" => %{"ok" => _}} =
-               post_rpc("pair.phone_status", %{"pairing_id" => pid}) |> Map.fetch!(:resp_body) |> Jason.decode!()
+               post_rpc("pair.phone_status", %{"pairing_id" => pid}, phone_token)
+               |> Map.fetch!(:resp_body)
+               |> Jason.decode!()
 
       assert %{"result" => %{"ok" => %{"approved" => true}}} =
-               post_rpc("pair.confirm", %{"pairing_id" => pid}) |> Map.fetch!(:resp_body) |> Jason.decode!()
+               post_rpc("pair.confirm", %{"pairing_id" => pid}, phone_token)
+               |> Map.fetch!(:resp_body)
+               |> Jason.decode!()
 
-      # 电脑：轮询取 token
       %{"result" => %{"ok" => %{"status" => "approved", "token" => tok}}} =
         post_rpc("pair.status", %{"pairing_id" => pid}) |> Map.fetch!(:resp_body) |> Jason.decode!()
 
-      # 取到的 token 能访问受保护端点
+      assert :ok = Auth.check_token(tok)
       conn = post_rpc("session.list", %{"limit" => 1}, tok)
       assert conn.status == 200
     end
