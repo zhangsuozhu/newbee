@@ -1760,141 +1760,13 @@ defmodule Newbee.Agent.Loop do
         )
 
         result =
-          case call.name do
-            "run_elixir" ->
-              code = call.args["code"] || ""
-              title = call.args["title"] || ""
-
-              case check_rules(code, :code) do
-                [] ->
-                  # tools/pre-execute 门（§3.2/§4.6 live 拦截点）：
-                  # 能力声明校验（物理拒绝）→ Capability Policy（行为策略）
-                  case Newbee.Environment.CapabilityGate.check(code) do
-                    {:deny, reason} ->
-                      rendered =
-                        "✗ error\n⛔ Capability gate denied: #{inspect(reason)} (plugin not in the active graph or capability undeclared)"
-
-                      emit(state, {:tool_error, rendered})
-                      Newbee.Bus.emit(:audit, {:audit, :capability_denied, reason})
-
-                      tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => rendered}
-                      {:cont, {:cont, push_msg(state, tool_msg)}}
-
-                    :ok ->
-                      check_permissions_and_run(state, call, code, title)
-                  end
-
-                hits ->
-                  emit(state, {:rule_hit, hits})
-                  # 规则命中热度（§8.5 profiling 输入）
-                  Newbee.Environment.UsageTracker.observe_rules(hits)
-                  injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
-
-                  tool_msg = %{
-                    "role" => "tool",
-                    "tool_call_id" => call.id,
-                    "content" =>
-                      "⛔ Not run — environment rules tripped; fix per the reminders below, then retry:\n" <> injections
-                  }
-
-                  reminder = %{
-                    "role" => "system",
-                    "content" => "[Sleeping-rule hit] Your code tripped these environment rules:\n" <> injections
-                  }
-
-                  state =
-                    state
-                    |> push_msg(tool_msg)
-                    |> inject_prompt(reminder, %{
-                      source: "sleeping_rule",
-                      reason: "run_elixir 代码命中执行前规则",
-                      timing: "current_turn_retry",
-                      trigger: String.slice(code, 0, 1_000),
-                      rules: rule_audit_details(hits)
-                    })
-
-                  {:cont, {:cont, state}}
-              end
-
-            "done" ->
-              summary = call.args["summary"] || ""
-              next_steps = normalize_next_steps(call.args)
-              tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => "✓ done"}
-
-              case final_check(state) do
-                {:done, state} ->
-                  # emit(:done) 不发——由 WSession broadcast_turn_end 统一发送
-                  # 避免前端收到两个 done 事件导致渲染两个空圆点
-                  # 持久化 done 总结到 transcript（不入 LLM 历史，仅 UI 历史），
-                  # 否则刷新后 session.history 读不到最后一条总结。
-                  # 走 push_msg 带上本轮 _usage（拆成 usage 行 + done 行），
-                  # 回放时 usage 与 done 卡相邻，否则 usage 悬空错位（done 卡无统计）。
-                  done_msg =
-                    %{"role" => "assistant", "content" => summary, "done" => true, "_usage" => state.usage}
-                    |> then(fn m -> if next_steps, do: Map.put(m, "next_steps", next_steps), else: m end)
-
-                  # 严格校验：tool 响应必须紧跟 tool_calls，UI 的 usage/done 必须排在 tool 之后；
-                  # 否则 repair 会把 done 当悬空占位并丢弃真实 ✓ done（2026-09-08 stall 调查）。
-                  # push_msg(done) 会拆成 usage 行 + done 行（见 push_msg/2），所以必须后推。
-                  state = push_msg(state, tool_msg)
-                  state = push_msg(state, done_msg)
-
-                  # done 如带下一步选项，随 halt 一并透传给 after_turn / broadcast
-                  halt_payload =
-                    if next_steps do
-                      {:done, summary, next_steps}
-                    else
-                      {:done, summary}
-                    end
-
-                  {:halt, {:halt, halt_payload, state}}
-
-                {:retry, state, reminder} ->
-                  emit(state, {:final_check_low, state.progress.final_score})
-                  # 低分：注入提醒 + 让循环继续，模型重新评估后再 done
-                  state =
-                    state
-                    |> push_msg(tool_msg)
-                    |> inject_prompt(%{"role" => "user", "content" => reminder}, %{
-                      source: "final_verifier",
-                      reason: "终局验证分数低于完成阈值",
-                      timing: "current_turn_retry",
-                      score: state.progress.final_score
-                    })
-
-                  {:cont, {:cont, state}}
-              end
-
-            "ask" ->
-              question = call.args["question"] || ""
-              options = call.args["options"]
-              kind = call.args["kind"] || "text"
-              emit(state, {:ask, question, options, kind})
-              tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => "（等待用户回答）"}
-              # ask 问题必须落盘：刷新/新设备后前端凭 role=ask 记录恢复提问卡片（§5.3）
-              if state.session do
-                Newbee.Session.append(state.session, %{
-                  "role" => "ask",
-                  "content" => %{
-                    "question" => question,
-                    "options" => options || [],
-                    "kind" => kind,
-                    "tool_call_id" => call.id,
-                    "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
-                  }
-                })
-              end
-
-              {:halt, {:halt, {:ask, question}, push_msg(state, tool_msg)}}
-
-            other ->
-              tool_msg = %{
-                "role" => "tool",
-                "tool_call_id" => call.id,
-                "content" => "✗ unknown tool: #{other}"
-              }
-
+          case validate_call_args(call) do
+            {:error, rendered} ->
+              tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => rendered}
               {:cont, {:cont, push_msg(state, tool_msg)}}
+
+            :ok ->
+              execute_valid_call(call, state)
           end
 
         Newbee.DebugLog.log(
@@ -1908,6 +1780,121 @@ defmodule Newbee.Agent.Loop do
     |> case do
       {:cont, state} -> {:cont, state}
       {:halt, reply, state} -> {:halt, reply, state}
+    end
+  end
+
+  defp validate_call_args(call) do
+    if Map.has_key?(call.args, "__invalid_arguments__") do
+      {:error, "✗ error\ninvalid #{call.name} arguments: expected a JSON object"}
+    else
+      :ok
+    end
+  end
+
+  defp execute_valid_call(call, state) do
+    case call.name do
+      "run_elixir" ->
+        code = call.args["code"] || call.args[:code] || ""
+        title = call.args["title"] || call.args[:title] || ""
+
+        case check_rules(code, :code) do
+          [] ->
+            case Newbee.Environment.CapabilityGate.check(code) do
+              {:deny, reason} ->
+                rendered =
+                  "✗ error\n⛔ Capability gate denied: #{inspect(reason)} (plugin not in the active graph or capability undeclared)"
+
+                emit(state, {:tool_error, rendered})
+                Newbee.Bus.emit(:audit, {:audit, :capability_denied, reason})
+                tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => rendered}
+                {:cont, {:cont, push_msg(state, tool_msg)}}
+
+              :ok ->
+                check_permissions_and_run(state, call, code, title)
+            end
+
+          hits ->
+            emit(state, {:rule_hit, hits})
+            Newbee.Environment.UsageTracker.observe_rules(hits)
+            injections = Enum.map_join(hits, "\n", &("- [" <> &1.id <> "] " <> &1.injection))
+
+            tool_msg = %{
+              "role" => "tool",
+              "tool_call_id" => call.id,
+              "content" => "⛔ Not run — environment rules tripped:\n" <> injections
+            }
+
+            reminder = %{"role" => "system", "content" => "[Sleeping-rule hit]\n" <> injections}
+
+            state =
+              state
+              |> push_msg(tool_msg)
+              |> inject_prompt(reminder, %{
+                source: "sleeping_rule",
+                reason: "run_elixir rule hit",
+                timing: "current_turn_retry"
+              })
+
+            {:cont, {:cont, state}}
+        end
+
+      "done" ->
+        summary = call.args["summary"] || call.args[:summary] || ""
+        next_steps = normalize_next_steps(call.args)
+        tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => "✓ done"}
+
+        case final_check(state) do
+          {:done, state} ->
+            done_msg =
+              %{"role" => "assistant", "content" => summary, "done" => true, "_usage" => state.usage}
+              |> then(fn m -> if next_steps, do: Map.put(m, "next_steps", next_steps), else: m end)
+
+            state = push_msg(state, tool_msg)
+            state = push_msg(state, done_msg)
+            payload = if next_steps, do: {:done, summary, next_steps}, else: {:done, summary}
+            {:halt, {:halt, payload, state}}
+
+          {:retry, state, reminder} ->
+            emit(state, {:final_check_low, state.progress.final_score})
+
+            state =
+              state
+              |> push_msg(tool_msg)
+              |> inject_prompt(%{"role" => "user", "content" => reminder}, %{
+                source: "final_verifier",
+                reason: "终局验证分数低于完成阈值",
+                timing: "current_turn_retry",
+                score: state.progress.final_score
+              })
+
+            {:cont, {:cont, state}}
+        end
+
+      "ask" ->
+        question = call.args["question"] || call.args[:question] || ""
+        options = call.args["options"] || call.args[:options]
+        kind = call.args["kind"] || call.args[:kind] || "text"
+        emit(state, {:ask, question, options, kind})
+        tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => "（等待用户回答）"}
+
+        if state.session do
+          Newbee.Session.append(state.session, %{
+            "role" => "ask",
+            "content" => %{
+              "question" => question,
+              "options" => options || [],
+              "kind" => kind,
+              "tool_call_id" => call.id,
+              "created_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+            }
+          })
+        end
+
+        {:halt, {:halt, {:ask, question}, push_msg(state, tool_msg)}}
+
+      other ->
+        tool_msg = %{"role" => "tool", "tool_call_id" => call.id, "content" => "✗ unknown tool: #{other}"}
+        {:cont, {:cont, push_msg(state, tool_msg)}}
     end
   end
 

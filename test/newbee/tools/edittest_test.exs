@@ -7,10 +7,12 @@ defmodule Newbee.Tools.EditTest do
   setup do
     SnapshotStore.clear()
 
-    path =
-      Path.join(System.tmp_dir!(), "edit_v2_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.txt")
+    dir = Path.join([File.cwd!(), ".newbee-tmp", "edit-v2-" <> Integer.to_string(System.unique_integer([:positive]))])
+    File.mkdir_p!(dir)
+    path = Path.join(dir, "edit.txt")
 
-    on_exit(fn -> File.rm(path) end)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    on_exit(fn -> File.rm_rf!(dir) end)
 
     %{path: path}
   end

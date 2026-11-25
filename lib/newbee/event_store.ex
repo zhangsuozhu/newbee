@@ -182,7 +182,23 @@ defmodule Newbee.EventStore do
   end
 
   defp to_event(frame) do
-    %{id: frame["id"], topic: String.to_atom(frame["topic"]), data: frame["data"], at: frame["at"]}
+    topic =
+      case frame["topic"] do
+        value when is_binary(value) ->
+          try do
+            String.to_existing_atom(value)
+          rescue
+            ArgumentError -> :unknown_event_topic
+          end
+
+        value when is_atom(value) ->
+          value
+
+        _ ->
+          :unknown_event_topic
+      end
+
+    %{id: frame["id"], topic: topic, data: frame["data"], at: frame["at"]}
   end
 
   @doc "读取全部帧（含校验）：存档段（旧 → 新）+ 活动文件；每段内首个坏帧之后丢弃。"

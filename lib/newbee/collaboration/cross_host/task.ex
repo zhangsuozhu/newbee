@@ -1,6 +1,7 @@
 defmodule Newbee.Collaboration.CrossHost.Task do
   @moduledoc "任务票据：绑定人+设备+项目+预算，幂等、防重、交接不转移生产凭据。"
-  @states ["queued", "running", "waiting_input", "failed", "done", "unknown"]
+  @states ["queued", "accepted", "running", "waiting_input", "failed", "done", "unknown", "cancelled"]
+
   @spec new(map()) :: {:ok, map()} | {:error, term(), term()}
   def new(attrs) when is_map(attrs) do
     with {:ok, gid} <- need(attrs, "group_id"),
@@ -60,7 +61,9 @@ defmodule Newbee.Collaboration.CrossHost.Task do
 
     nxt =
       case {cur, event} do
+        {"queued", "accept"} -> "accepted"
         {"queued", "start"} -> "running"
+        {"accepted", "start"} -> "running"
         {"running", "need_input"} -> "waiting_input"
         {"running", "fail"} -> "failed"
         {"waiting_input", "ok"} -> "done"
@@ -68,6 +71,7 @@ defmodule Newbee.Collaboration.CrossHost.Task do
         {"running", "lost"} -> "unknown"
         {"waiting_input", "cancel"} -> "failed"
         {"queued", "cancel"} -> "failed"
+        {"accepted", "cancel"} -> "failed"
         _ -> nil
       end
 

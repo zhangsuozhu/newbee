@@ -1,6 +1,4 @@
 defmodule Newbee.LLM.Config do
-  require Logger
-
   @moduledoc """
   模型配置加载、角色路由和持久化。规范文件采用 schemaVersion: 2：
   providers.<provider>.groups.<group> 保存 API Key 与模型对象，厂家保存 baseUrl。
@@ -12,6 +10,7 @@ defmodule Newbee.LLM.Config do
   apiKey 支持 ${ENV_VAR} 和 ${prime:NAME}。
   解析顺序：$NEWBEE_MODEL_JSON → ./model.json → ./model.local.json → ~/.newbee/model.json。
   """
+  require Logger
 
   @roles ["default", "worker", "adapter", "explorer", "plan", "advisor", "verifier"]
 
@@ -28,8 +27,17 @@ defmodule Newbee.LLM.Config do
   @doc "加载配置；找不到文件时回退到内置默认（OpenRouter + env key）。"
   def load do
     case resolve_path() do
-      nil -> default()
-      path -> path |> parse() |> Newbee.LLM.Catalog.runtime()
+      nil ->
+        default()
+
+      path ->
+        try do
+          path |> parse() |> Newbee.LLM.Catalog.runtime()
+        rescue
+          error ->
+            Logger.warning("model config load failed; using defaults: #{Exception.message(error)}")
+            default()
+        end
     end
   end
 

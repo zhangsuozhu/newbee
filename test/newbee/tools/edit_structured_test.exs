@@ -7,13 +7,17 @@ defmodule Newbee.Tools.EditStructuredTest do
   setup do
     SnapshotStore.clear()
 
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "edit_structured_#{System.system_time(:native)}_#{:erlang.unique_integer([:positive])}.txt"
-      )
+    dir =
+      Path.join([
+        File.cwd!(),
+        ".newbee-tmp",
+        "edit-structured-" <> Integer.to_string(System.unique_integer([:positive]))
+      ])
 
-    on_exit(fn -> File.rm(path) end)
+    File.mkdir_p!(dir)
+    path = Path.join(dir, "edit.txt")
+
+    on_exit(fn -> File.rm_rf!(dir) end)
     %{path: path}
   end
 
@@ -258,13 +262,12 @@ defmodule Newbee.Tools.EditStructuredTest do
   end
 
   test "快照内容哈希：不同内容不同 tag，相同内容 tag 一致" do
-    p1 = Path.join(System.tmp_dir!(), "nb_hash_#{System.unique_integer([:positive])}_1.txt")
-    p2 = Path.join(System.tmp_dir!(), "nb_hash_#{System.unique_integer([:positive])}_2.txt")
+    dir = Path.join([File.cwd!(), ".newbee-tmp", "edit-hash-" <> Integer.to_string(System.unique_integer([:positive]))])
+    File.mkdir_p!(dir)
+    p1 = Path.join(dir, "one.txt")
+    p2 = Path.join(dir, "two.txt")
 
-    on_exit(fn ->
-      File.rm(p1)
-      File.rm(p2)
-    end)
+    on_exit(fn -> File.rm_rf!(dir) end)
 
     w!(p1, "same\n")
     w!(p2, "same\n")

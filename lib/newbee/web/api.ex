@@ -73,7 +73,10 @@ defmodule Newbee.Web.Api do
   # 杀死连接进程（那样 Bandit 只会回空 500），而是记日志并回 JSON 错误信封，
   # 前端能看到真实原因而不是“服务返回空响应 (HTTP 500)”。
   defp safe_dispatch(method, payload) do
-    with :ok <- Newbee.Colony.Membership.authorize_rpc(method, payload), do: dispatch_rpc(method, payload)
+    with :ok <- validate_session_payload(method, payload),
+         :ok <- Newbee.Colony.Membership.authorize_rpc(method, payload) do
+      dispatch_rpc(method, payload)
+    end
   rescue
     e ->
       Logger.error("rpc #{method} crashed:\n" <> Exception.format(:error, e, __STACKTRACE__))
@@ -83,6 +86,23 @@ defmodule Newbee.Web.Api do
       Logger.error("rpc #{method} exit: #{Exception.format_exit(reason)}")
 
       {:error, "internal_exit", "内部调用超时或进程退出（服务繁忙/会话进程卡死）: #{Exception.format_exit(reason)}"}
+  end
+
+  defp validate_session_payload(method, payload) do
+    if String.starts_with?(method, "session.") or String.starts_with?(method, "conversation.work.") do
+      case Map.get(payload, "sessionId") do
+        nil ->
+          :ok
+
+        sid when is_binary(sid) ->
+          if Newbee.Session.valid_id?(sid), do: :ok, else: {:error, "bad_request", "invalid sessionId"}
+
+        _ ->
+          {:error, "bad_request", "invalid sessionId"}
+      end
+    else
+      :ok
+    end
   end
 
   # 便捷 GET：会话列表 / 健康检查（不进 RPC 信封，等价 dsh downloads 的 GET 面）
@@ -100,6 +120,17 @@ defmodule Newbee.Web.Api do
   end
 
   # ── method 分派 ──
+
+  defp require_host_token(p) do
+    token = Map.get(p, "__token__")
+
+    if Newbee.Web.Auth.auth_required?(Newbee.Web.Router.bind_ip()) and
+         not (is_binary(token) and Newbee.Web.Auth.check_token(token) == :ok) do
+      {:error, "unauthorized", "请先登录"}
+    else
+      :ok
+    end
+  end
 
   # ── 认证域（远程暴露时强制；本地回环免认证）──
 
@@ -146,13 +177,20 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("auth.setup", p), do: dispatch_rpc("auth.setup", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
 
   defp dispatch_rpc("auth.login", %{"__remote_ip__" => ip} = p) do
-    case Newbee.Web.Auth.login(p, ip) do
-      {:ok, token} -> {:ok, %{token: token}}
-      {:error, code, msg} -> {:error, code, msg}
+    case Newbee.Web.Auth.check_rate(ip) do
+      :allowed ->
+        case Newbee.Web.Auth.login(p, ip) do
+          {:ok, token} -> {:ok, %{token: token}}
+          {:error, code, msg} -> {:error, code, msg}
+        end
+
+      {:error, ms} ->
+        {:error, "locked", "失败次数过多，已锁定 " <> Integer.to_string(div(ms, 1000)) <> " 秒"}
     end
   end
 
-  defp dispatch_rpc("auth.login", p), do: dispatch_rpc("auth.login", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
+  defp dispatch_rpc("auth.login", p),
+    do: dispatch_rpc("auth.login", Map.put(p, "__remote_ip__", {127, 0, 0, 1}))
 
   defp dispatch_rpc("auth.logout", %{"__token__" => tok}) do
     Newbee.Web.Auth.revoke_token(tok)
@@ -172,16 +210,19 @@ defmodule Newbee.Web.Api do
   end
 
   defp dispatch_rpc("webauthn.register_challenge", p) do
-    name = Map.get(p, "name", "未命名设备")
+    with :ok <- require_host_token(p) do
+      name = Map.get(p, "name", "未命名设备")
 
-    case Newbee.Web.WebAuthn.registration_challenge(name) do
-      {:ok, opts} -> {:ok, opts}
-      {:error, code, msg} -> {:error, code, msg}
+      case Newbee.Web.WebAuthn.registration_challenge(name) do
+        {:ok, opts} -> {:ok, opts}
+        {:error, code, msg} -> {:error, code, msg}
+      end
     end
   end
 
   defp dispatch_rpc("webauthn.register", p) do
-    with {:ok, challenge_id} <- fetch_param(p, "challenge_id"),
+    with :ok <- require_host_token(p),
+         {:ok, challenge_id} <- fetch_param(p, "challenge_id"),
          {:ok, attestation_object} <- fetch_param(p, "attestation_object"),
          {:ok, client_data_json} <- fetch_param(p, "client_data_json"),
          {:ok, cred_id} <- fetch_param(p, "credential_id") do
@@ -195,15 +236,17 @@ defmodule Newbee.Web.Api do
   end
 
   defp dispatch_rpc("webauthn.delete", p) do
-    case fetch_param(p, "credential_id") do
-      {:ok, cred_id} ->
-        case Newbee.Web.WebAuthn.delete_credential(cred_id) do
-          :ok -> {:ok, %{deleted: true}}
-          {:error, code, msg} -> {:error, code, msg}
-        end
+    with :ok <- require_host_token(p) do
+      case fetch_param(p, "credential_id") do
+        {:ok, cred_id} ->
+          case Newbee.Web.WebAuthn.delete_credential(cred_id) do
+            :ok -> {:ok, %{deleted: true}}
+            {:error, code, msg} -> {:error, code, msg}
+          end
 
-      {:error, :missing_param} ->
-        {:error, "bad_request", "缺少 credential_id"}
+        {:error, :missing_param} ->
+          {:error, "bad_request", "缺少 credential_id"}
+      end
     end
   end
 
@@ -303,7 +346,9 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("pair.confirm", %{"__remote_ip__" => ip} = p) do
     case Newbee.Web.Auth.check_rate(ip) do
       :allowed ->
-        case Newbee.Web.Pair.confirm(Map.get(p, "pairing_id", ""), %{ua: Map.get(p, "__ua__", "")}) do
+        phone_meta = %{ua: Map.get(p, "__ua__", ""), token: Map.get(p, "__token__")}
+
+        case Newbee.Web.Pair.confirm(Map.get(p, "pairing_id", ""), phone_meta) do
           {:ok, data} ->
             Newbee.Web.Auth.record_success(ip)
             {:ok, data}
@@ -933,7 +978,7 @@ defmodule Newbee.Web.Api do
     end
   end
 
-  defp dispatch_rpc("session.delete", %{"sessionId" => sid}) do
+  defp dispatch_rpc("session.delete", %{"sessionId" => sid}) when is_binary(sid) do
     if Newbee.Web.Session.peek_busy(sid) or Newbee.Colony.ConversationWork.active?(sid) do
       {:error, "busy", "对话有正在执行或待处理的工作，请先在原工作卡暂停、处理成果或结束工作后删除。"}
     else
@@ -2621,6 +2666,8 @@ defmodule Newbee.Web.Api do
   defp dispatch_rpc("conversation.work." <> _ = method, p), do: Newbee.Web.ConversationApi.dispatch(method, p)
 
   defp dispatch_rpc("colony." <> _ = method, p), do: Newbee.Web.ColonyApi.dispatch(method, p)
+
+  defp dispatch_rpc("session.delete", _p), do: {:error, "bad_request", "invalid sessionId"}
 
   defp dispatch_rpc(method, _p), do: {:error, "unknown_method", "未知 RPC 方法: #{method}"}
 

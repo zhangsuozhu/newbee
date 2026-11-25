@@ -7,8 +7,19 @@ defmodule Newbee.Session do
   defstruct id: nil, dir: nil, transcript: nil
 
   defp root, do: Path.join(Newbee.GlobalStore.root(), "sessions")
+  @session_id_re ~r/\A[A-Za-z0-9][A-Za-z0-9._-]{0,127}\z/
   defp artifacts, do: Path.join(Newbee.GlobalStore.root(), "session-artifacts")
 
+  @doc "Validate a caller-supplied session id before it is used as a path segment."
+  def valid_id?(id) when is_binary(id), do: Regex.match?(@session_id_re, id)
+  def valid_id?(_), do: false
+
+  defp validate_id!(id) do
+    if valid_id?(id), do: :ok, else: raise(ArgumentError, "invalid session id: #{inspect(id)}")
+  end
+
+  defp validate_id(id), do: if(valid_id?(id), do: :ok, else: {:error, :invalid_session_id})
+  defp id_path(base, id), do: Path.join(base, id)
   defp index, do: Path.join(root(), ".index.json")
 
   require Logger
@@ -163,33 +174,38 @@ defmodule Newbee.Session do
   @doc "当前活动会话 id（kernel 启动时登记；无会话返回 nil）。"
   def current_id, do: :persistent_term.get({__MODULE__, :current}, nil)
 
-  @doc "登记当前活动会话（kernel init 调用；nil 清除）。"
+  @doc "登记当前活动会话 id（kernel 启动时调用；nil 清除）。"
   def set_current(nil), do: :persistent_term.erase({__MODULE__, :current})
-  def set_current(id) when is_binary(id), do: :persistent_term.put({__MODULE__, :current}, id)
+
+  def set_current(id) when is_binary(id) do
+    validate_id!(id)
+    :persistent_term.put({__MODULE__, :current}, id)
+  end
+
   @doc "该会话的媒体上屏制品目录（不存在时自动创建）。"
   def media_dir(id) when is_binary(id) do
+    validate_id!(id)
     dir = Path.join(artifacts(), id <> "/media")
     File.mkdir_p!(dir)
     dir
   end
 
-  def media_dir(_) do
-    dir = Path.join(artifacts(), "unknown/media")
-    File.mkdir_p!(dir)
-    dir
-  end
+  def media_dir(_), do: raise(ArgumentError, "invalid session id")
 
   @doc "该会话的 WebUI 上传文件目录（不存在时自动创建）。"
   def uploads_dir(id) when is_binary(id) do
+    validate_id!(id)
     dir = Path.join(artifacts(), id <> "/uploads")
     File.mkdir_p!(dir)
     dir
   end
 
-  @doc "新会话或恢复已有会话。"
+  def uploads_dir(_), do: raise(ArgumentError, "invalid session id")
+
   def open(id \\ nil) do
     id = id || gen_id()
-    dir = Path.join(artifacts(), id)
+    validate_id!(id)
+    dir = id_path(artifacts(), id)
     File.mkdir_p!(dir)
 
     %__MODULE__{id: id, dir: dir, transcript: Path.join(root(), "#{id}.jsonl")}
@@ -517,9 +533,17 @@ defmodule Newbee.Session do
 
   @doc "删除会话：transcript + artifacts 目录 + 索引。返回 :ok | {:error, reason}。"
   def delete(id) when is_binary(id) do
-    transcript = Path.join(root(), "#{id}.jsonl")
-    artifacts = Path.join(artifacts(), id)
+    with :ok <- validate_id(id) do
+      transcript = Path.join(root(), "#{id}.jsonl")
+      artifacts = id_path(artifacts(), id)
 
+      do_delete(id, transcript, artifacts)
+    end
+  end
+
+  def delete(_), do: {:error, :invalid_session_id}
+
+  defp do_delete(id, transcript, artifacts) do
     with :ok <- remove_file(transcript),
          :ok <- remove_dir(artifacts),
          :ok <- remove_from_index(id) do

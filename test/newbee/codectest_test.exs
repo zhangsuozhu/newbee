@@ -51,4 +51,14 @@ defmodule Newbee.CodecTest do
     assert call.name == "done"
     assert call.args == %{}
   end
+
+  test "无效 JSON 参数不会被包装成可执行代码" do
+    msg = %{"tool_calls" => [%{"id" => "bad", "function" => %{"name" => "done", "arguments" => "not json"}}]}
+    assert [%{args: %{"__invalid_arguments__" => "not json"}}] = Codec.extract_tool_calls(msg)
+  end
+
+  test "非对象 JSON 参数保留错误标记" do
+    msg = %{"tool_calls" => [%{"id" => "bad", "function" => %{"name" => "ask", "arguments" => "[]"}}]}
+    assert [%{args: %{"__invalid_arguments__" => "[]"}}] = Codec.extract_tool_calls(msg)
+  end
 end
