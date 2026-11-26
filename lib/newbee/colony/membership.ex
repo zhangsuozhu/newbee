@@ -2,7 +2,7 @@ defmodule Newbee.Colony.Membership do
   @moduledoc "One-use invitations and revocable, colony-scoped human/device identities."
   alias Newbee.Colony.{Store, Control, Bee, Id}
 
-  def invite(cid, actor, attrs) do
+  def invite(cid, actor, attrs, opts \\ []) do
     with {:ok, colony} <- Store.get_colony(cid), :ok <- Control.authorize(colony, actor) do
       code = secret()
       id = digest(code)
@@ -11,6 +11,7 @@ defmodule Newbee.Colony.Membership do
         "id" => id,
         "colony_id" => cid,
         "kind" => attrs["kind"] || "human",
+        "project_runner_allowed" => Keyword.get(opts, :project_runner, false) == true,
         "expires_at" => now() + 3_600_000,
         "used" => false
       }
@@ -53,7 +54,8 @@ defmodule Newbee.Colony.Membership do
                 Map.merge(bee, %{
                   "remote_member_id" => bee["id"],
                   "garden_id" => Id.new(:garden),
-                  "status" => "offline"
+                  "status" => "offline",
+                  "project_runner_allowed" => invite["project_runner_allowed"] == true
                 }),
               else: bee
 
@@ -62,6 +64,7 @@ defmodule Newbee.Colony.Membership do
             "bee_id" => bee["id"],
             "colony_id" => invite["colony_id"],
             "kind" => invite["kind"],
+            "project_runner_only" => invite["project_runner_allowed"] == true,
             "revoked" => false
           }
 
@@ -76,13 +79,18 @@ defmodule Newbee.Colony.Membership do
             %{
               "token" => token,
               "bee" => bee,
-              "colony" => get_in(data, ["colonies", invite["colony_id"]])
+              "colony" => enrollment_colony(data["colonies"][identity["colony_id"]], identity)
             }}, next}
       end
     end)
   end
 
   def redeem(_, _), do: {:error, "bad_request", "需要邀请码与显示名"}
+
+  defp enrollment_colony(colony, %{"project_runner_only" => true}),
+    do: Map.take(colony, ~w(id name status conversation_only))
+
+  defp enrollment_colony(colony, _), do: colony
 
   def authenticate(token) when is_binary(token) and byte_size(token) > 10 do
     with {:ok, identity} <- Store.get("identities", digest(token)),
@@ -146,6 +154,9 @@ defmodule Newbee.Colony.Membership do
 
   def session_access(token, sid, mode \\ :read) do
     case authenticate(token) do
+      {:ok, %{"project_runner_only" => true}, _} ->
+        {:error, "forbidden", "项目执行凭据不能访问普通会话"}
+
       {:ok, identity, _} ->
         case Store.get("conversations", sid) do
           {:ok, conversation} ->
@@ -171,6 +182,9 @@ defmodule Newbee.Colony.Membership do
 
   def authorize_rpc(method, payload) do
     case authenticate(payload["__token__"]) do
+      {:ok, %{"project_runner_only" => true}, _} ->
+        {:error, "forbidden", "项目执行凭据只能使用项目设备通道"}
+
       {:ok, _, _} ->
         cond do
           method == "auth.status" ->

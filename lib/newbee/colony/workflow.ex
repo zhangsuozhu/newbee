@@ -8,7 +8,13 @@ defmodule Newbee.Colony.Workflow do
       Map.merge(task, %{
         "mode" => if(attrs["decompose"], do: "decomposition", else: "triage"),
         "workflow" => %{
-          "strategy" => if(attrs["decompose"], do: "decompose", else: "proposals"),
+          "strategy" =>
+            cond do
+              attrs["project"] == true -> "project"
+              attrs["decompose"] -> "decompose"
+              true -> "proposals"
+            end,
+          "project_pool" => attrs["project_pool"] || "local",
           "phase" => if(attrs["decompose"], do: "planning", else: "triage"),
           "coordinator" => task["assigned_bee_id"],
           "force_discussion" => attrs["mode"] == "proposal",
@@ -75,6 +81,9 @@ defmodule Newbee.Colony.Workflow do
       _ -> "共同任务已不可用，停止并报告。"
     end
   end
+
+  defp integration_material(%{"workflow" => %{"strategy" => "project", "phase" => "integrating"}}),
+    do: "项目分项补丁已在隔离目录；直接核对和运行组合测试，不重新复制分项改动。"
 
   defp integration_material(%{"workflow" => %{"phase" => "integrating", "children" => ids}}) do
     children =

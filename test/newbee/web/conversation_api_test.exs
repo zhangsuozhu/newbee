@@ -44,6 +44,39 @@ defmodule Newbee.Web.ConversationApiTest do
     stored["id"]
   end
 
+  test "project mode is explicit, returns its own coordination budget, and is part of the receipt", ctx do
+    input = %{text: "逐模块迁移导出", requestId: "project-start"}
+
+    assert %{"error" => %{"code" => "bad_request"}} =
+             rpc(ctx, "conversation.work.start", Map.put(input, :mode, "other"))
+
+    assert [] == ConversationWork.list(ctx.sid)
+
+    request = Map.put(input, :mode, "project")
+
+    assert %{"ok" => %{"work" => %{"id" => id, "coordination" => coordination}}} =
+             rpc(ctx, "conversation.work.start", request)
+
+    assert %{"strategy" => "project", "phase" => "planning", "concurrency" => 6} = coordination
+    assert %{"ok" => %{"work" => %{"id" => ^id}}} = rpc(ctx, "conversation.work.start", request)
+    assert %{"error" => %{"code" => "request_conflict"}} = rpc(ctx, "conversation.work.start", input)
+  end
+
+  test "cross-device mode has separate idempotency and does not issue invites over HTTP", ctx do
+    input = %{text: "分机器验证项目", requestId: "start-remote"}
+
+    assert %{"ok" => %{"work" => %{"id" => id, "coordination" => %{"pool" => "remote"}}}} =
+             rpc(ctx, "conversation.work.start", Map.put(input, :mode, "project_remote"))
+
+    assert %{"error" => %{"code" => "request_conflict"}} =
+             rpc(ctx, "conversation.work.start", Map.put(input, :mode, "project"))
+
+    assert %{"error" => %{"code" => "https_required"}} = rpc(ctx, "conversation.work.projectInvite", %{workId: id})
+
+    assert %{"error" => %{"code" => "forbidden"}} =
+             rpc(ctx, "conversation.work.projectRevoke", %{workId: id, beeId: "other"})
+  end
+
   test "HTTP start → persist → review → apply → finalize → retry uses the same work and files", ctx do
     File.write!(Path.join(ctx.root, "export.txt"), "old\n")
     id = ready!(ctx, true)

@@ -410,7 +410,7 @@ defmodule Newbee.Colony.Work do
 
   defp abandon_note(_note), do: @abandon_next_step
 
-  def submit(cid, tid, attrs, actor) do
+  def submit(cid, tid, attrs, actor, lease \\ nil) do
     with {:ok, _} <- member(cid, actor) do
       Store.transaction(fn data ->
         task = get_in(data, ["tasks", tid])
@@ -432,6 +432,15 @@ defmodule Newbee.Colony.Work do
 
           Task.terminal?(task) ->
             {:error, "terminal", "工作已结束"}
+
+          Newbee.Colony.ProjectLease.remote?(task) and
+              not Newbee.Colony.ProjectLease.permitted?(data, task, cid, actor, lease, System.system_time(:millisecond)) ->
+            {:error, "lease_lost", "执行端租约已经失效"}
+
+          Newbee.Colony.Decomposition.project_step?(task) and
+              (task["status"] not in ["claimed", "running"] or
+                 Map.get(attrs, "work_revision", task["context_revision"]) != task["context_revision"]) ->
+            {:error, "stale_result", "项目分项不在当前执行轮次，请刷新工作状态"}
 
           not is_binary(attrs["content"]) or String.trim(attrs["content"]) == "" ->
             {:error, "evidence_required", "请提交成果与验证说明"}
@@ -507,6 +516,9 @@ defmodule Newbee.Colony.Work do
             # Retrying the same decision is safe: do not bump task revision or append another trace.
             {:ok, {:ok, honey}, data}
 
+          Newbee.Colony.Decomposition.project_step?(task) ->
+            {:error, "project_check_required", "项目分项须通过独立文件验收，不能手动跳过"}
+
           honey["work_revision"] != (task["context_revision"] || 0) ->
             {:error, "stale_result", "要求已变化，需要重新核对成果"}
 
@@ -514,6 +526,11 @@ defmodule Newbee.Colony.Work do
               (get_in(task, ["application", "state"]) not in ["applied", "text_accepted"] or
                  get_in(task, ["application", "context_revision"]) != task["context_revision"]) ->
             {:error, "apply_required", "请在原会话核对成果并采用，收到应用回执后才能完成"}
+
+          verdict == "accept" and
+            Newbee.Colony.Decomposition.project?(task) and
+              Enum.any?(children, &(not Newbee.Colony.Decomposition.released?(data, &1))) ->
+            {:error, "children_pending", "必要项目分项尚未通过独立验收"}
 
           verdict == "accept" and
               Enum.any?(children, fn child ->

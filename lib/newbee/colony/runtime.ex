@@ -15,7 +15,11 @@ defmodule Newbee.Colony.Runtime do
 
   @impl true
   def handle_info(:tick, state) do
-    if Application.get_env(:newbee, :colony_background, true), do: sweep()
+    if Application.get_env(:newbee, :colony_background, true) do
+      sweep()
+      Newbee.Colony.ProjectReview.schedule()
+    end
+
     Process.send_after(self(), :tick, 1_000)
     {:noreply, state}
   end
@@ -419,8 +423,12 @@ defmodule Newbee.Colony.Runtime do
         case Store.get_task(tid) do
           {:ok, task} ->
             if Newbee.Colony.ConversationWork.current_event?(task, kind, payload) do
-              Newbee.Colony.Remote.report(task, kind, payload)
-              project_work(binding, task, kind, payload)
+              if Newbee.Colony.ProjectRunner.local?(task) do
+                Newbee.Colony.ProjectRunner.event(task, kind, payload)
+              else
+                Newbee.Colony.Remote.report(task, kind, payload)
+                project_work(binding, task, kind, payload)
+              end
             end
 
           _ ->

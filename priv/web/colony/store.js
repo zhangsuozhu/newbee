@@ -140,7 +140,7 @@ export async function loadColonies() {
     }
     return state.colonies;
   }
-  state.colonies = res.colonies || [];
+  state.colonies = (res.colonies || []).filter(({colony}) => !(colony?.authority === 'remote' && colony.conversation_only === true));
   if (!state.colonies.some(item => item.colony.id === state.colonyId)) {
     let remembered = null;
     try { remembered = localStorage.getItem('newbee.colony.active'); } catch (_) {}

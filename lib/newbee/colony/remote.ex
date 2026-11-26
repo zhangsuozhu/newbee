@@ -1,7 +1,7 @@
 defmodule Newbee.Colony.Remote do
   @moduledoc "Pinned, authenticated pull transport. The originating host remains the work authority."
   use GenServer
-  alias Newbee.Colony.{Store, Membership, Control, Id}
+  alias Newbee.Colony.{Store, Membership, Control, Id, ProjectRemote, ProjectRunner, ProjectLease}
   alias Newbee.Collaboration.CrossHost.Transport
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -86,7 +86,7 @@ defmodule Newbee.Colony.Remote do
     with {:ok, identity, bee} <- Membership.authenticate(payload["__device_token__"]),
          true <- bee["kind"] == "ai" do
       cid = identity["colony_id"]
-      reports = payload["reports"] || []
+      reports = if(identity["project_runner_only"], do: [], else: payload["reports"] || [])
       processed = Enum.take(reports, 100) |> Enum.map(&accept_report(cid, bee["id"], &1))
 
       Store.update(
@@ -101,13 +101,22 @@ defmodule Newbee.Colony.Remote do
          })}
       )
 
-      tasks = Store.tasks_for_colony(cid) |> Enum.filter(&(&1["assigned_bee_id"] == bee["id"]))
+      projects = ProjectRemote.poll(cid, bee["id"], payload)
+
+      tasks =
+        Store.tasks_for_colony(cid)
+        |> Enum.filter(
+          &(identity["project_runner_only"] != true and &1["assigned_bee_id"] == bee["id"] and
+              not ProjectLease.remote?(&1))
+        )
+
       ids = Enum.map(tasks, & &1["id"])
 
       deliveries =
         Store.all("deliveries")
         |> Enum.filter(
           &(&1["colony_id"] == cid and &1["bee_id"] == bee["id"] and
+              &1["task_id"] in ids and
               &1["status"] in ["pending", "remote_pending", "accepted"])
         )
 
@@ -121,6 +130,7 @@ defmodule Newbee.Colony.Remote do
       {:ok,
        %{
          "tasks" => tasks,
+         "projects" => projects,
          "deliveries" => deliveries,
          "controls" => controls,
          "processed" => processed,
@@ -142,6 +152,7 @@ defmodule Newbee.Colony.Remote do
 
       _ ->
         with {:ok, task} <- Store.get_task(report["task_id"]),
+             false <- ProjectLease.remote?(task),
              true <- is_binary(id) and task["colony_id"] == cid and task["assigned_bee_id"] == bid do
           if report["kind"] == "receipt" do
             case Store.get("deliveries", report["delivery_id"]) do
@@ -187,8 +198,11 @@ defmodule Newbee.Colony.Remote do
     end
   end
 
+  def attachment(%{"op" => op} = payload) when op in ~w(baseline finish fail), do: ProjectRemote.request(payload)
+
   def attachment(payload) do
     with {:ok, identity, _} <- Membership.authenticate(payload["__device_token__"]),
+         true <- identity["project_runner_only"] != true,
          {:ok, delivery} <- Store.get("deliveries", payload["deliveryId"]),
          true <-
            delivery["colony_id"] == identity["colony_id"] and
@@ -281,7 +295,11 @@ defmodule Newbee.Colony.Remote do
          }}
       end)
 
-    case rpc(connection, "colony.remote.poll", %{"reports" => reports, "controls" => controls}) do
+    project_rpc = &rpc(connection, "colony.remote.attachment", &1)
+    ProjectRunner.flush(connection, project_rpc)
+    payload = Map.merge(%{"reports" => reports, "controls" => controls}, ProjectRunner.heartbeat(connection))
+
+    case rpc(connection, "colony.remote.poll", payload) do
       {:ok, snapshot} ->
         Enum.each(snapshot["controls"] || [], &import_control/1)
 
@@ -295,6 +313,8 @@ defmodule Newbee.Colony.Remote do
           task = Enum.find(snapshot["tasks"] || [], &(&1["id"] == delivery["task_id"]))
           if task, do: import_delivery(connection, task, delivery)
         end)
+
+        ProjectRunner.reconcile(connection, snapshot["projects"] || [], project_rpc)
 
         Enum.each(snapshot["processed"] || [], fn id ->
           if is_binary(id), do: Store.delete("remote_reports", id)
@@ -314,9 +334,13 @@ defmodule Newbee.Colony.Remote do
           nil,
           &{:ok, Map.put(&1, "error", inspect(error))}
         )
+
+        ProjectRunner.disconnected(connection)
     end
   rescue
     e ->
+      ProjectRunner.disconnected(connection)
+
       Store.update(
         "identities",
         connection["id"],
