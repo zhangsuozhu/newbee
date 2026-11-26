@@ -3,7 +3,6 @@ defmodule Newbee.Colony.ConversationWork do
   alias Newbee.Colony.{Store, Work, Bee, Id, Control, Trace, Decomposition}
   @terminal ~w(done failed cancelled)
   @max_text 100_000
-
   @doc "Start isolated work from an authenticated conversation, without creating a second conversation UI."
   def start(sid, root, text, request_id, opts \\ []) do
     with :ok <- text(sid, 96),
@@ -71,16 +70,56 @@ defmodule Newbee.Colony.ConversationWork do
     end
   end
 
-  @doc "List only work originated in this conversation."
+  @doc "List only visible work originated in this conversation."
   def list(sid) do
     Store.list_tasks()
     |> Enum.filter(&(root?(&1) and &1["origin_session_id"] == sid))
+    |> Enum.reject(&hidden_task?/1)
     |> Enum.sort_by(& &1["created_at"], :desc)
     |> Enum.take(50)
     |> Enum.map(&view/1)
   end
 
+  @doc "Hide a terminal work card without deleting execution history or its conversation."
+  def delete(sid, id) do
+    Store.transaction(fn data ->
+      task = data["tasks"][id]
+
+      cond do
+        is_nil(task) or task["origin_session_id"] != sid or not root?(task) ->
+          {:error, "not_found", "本对话没有这项工作"}
+
+        task["status"] not in @terminal ->
+          {:error, "busy", "工作仍在推进；请先结束工作，再删除记录"}
+
+        true ->
+          next = put_in(data, ["tasks", id, "conversation_hidden"], true)
+
+          {next, _} =
+            Store.put_entry(
+              next,
+              "trace",
+              Trace.entry(%{
+                "colony_id" => task["colony_id"],
+                "bee_id" => task["created_by"],
+                "task_id" => id,
+                "type" => "lifecycle",
+                "channel" => "task",
+                "text" => "已删除会话中的工作记录；执行会话、成果与审计历史保留",
+                "data" => %{"action" => "conversation_work_delete", "session_id" => sid}
+              })
+            )
+
+          {:ok, {:ok, %{"workId" => id, "deleted" => true}}, next}
+      end
+    end)
+  end
+
+  defp hidden_task?(%{"conversation_hidden" => true}), do: true
+  defp hidden_task?(_), do: false
+
   @doc "Server-side fallback for older clients; a live origin never silently starts a second foreground executor."
+
   def route(sid, body, request_id) do
     task =
       Store.list_tasks()
@@ -104,6 +143,44 @@ defmodule Newbee.Colony.ConversationWork do
         Store.list_tasks(),
         &(root?(&1) and &1["origin_session_id"] == sid and &1["status"] not in @terminal)
       )
+
+  @doc "Return whether any terminal work card has been hidden for this conversation."
+  def hidden?(sid) do
+    Enum.any?(Store.list_tasks(), fn task ->
+      root?(task) and task["origin_session_id"] == sid and hidden_task?(task)
+    end)
+  end
+
+  @doc "Restore all hidden work cards for this conversation."
+  def restore(sid) do
+    Store.transaction(fn data ->
+      Enum.reduce(Map.values(data["tasks"]), data, fn task, acc ->
+        if root?(task) and task["origin_session_id"] == sid and hidden_task?(task) do
+          next = put_in(acc, ["tasks", task["id"], "conversation_hidden"], false)
+
+          {next, _} =
+            Store.put_entry(
+              next,
+              "trace",
+              Trace.entry(%{
+                "colony_id" => task["colony_id"],
+                "bee_id" => task["created_by"],
+                "task_id" => task["id"],
+                "type" => "lifecycle",
+                "channel" => "task",
+                "text" => "已恢复会话中的工作记录",
+                "data" => %{"action" => "conversation_work_restore", "session_id" => sid}
+              })
+            )
+
+          next
+        else
+          acc
+        end
+      end)
+      |> then(&{:ok, :ok, &1})
+    end)
+  end
 
   @doc "Overlay background facts on the existing session index; the Colony snapshot remains authoritative."
   def project_index(entries) do

@@ -24,8 +24,9 @@ defmodule Newbee.DeepSeek do
 
     with {:ok, spec} <- read_config(path),
          :ok <- check(is_map(spec), :invalid_config, :config),
-         :ok <- check(is_boolean(Map.get(spec, "enabled", true)), :invalid_config, :enabled) do
-      if spec["enabled"] == false, do: error(:not_configured), else: resolve_config(spec)
+         :ok <- check(is_boolean(Map.get(spec, "enabled", true)), :invalid_config, :enabled),
+         {:ok, credentials} <- credentials(spec) do
+      if spec["enabled"] == false, do: error(:not_configured), else: resolve_config(spec, credentials)
     end
   rescue
     _ -> error(:invalid_config)
@@ -47,8 +48,8 @@ defmodule Newbee.DeepSeek do
     end
   end
 
-  defp resolve_config(spec) do
-    {key, source} = credentials(spec)
+  defp resolve_config(spec, credentials) do
+    {key, source} = credentials
     base = Map.get(spec, "baseUrl", @default_url)
     timeout = Map.get(spec, "timeoutMs", 180_000)
 
@@ -57,7 +58,6 @@ defmodule Newbee.DeepSeek do
          :ok <- check(is_integer(timeout) and timeout in 1..1_800_000, :invalid_config, :timeoutMs),
          :ok <- check(is_binary(key) and String.trim(key) != "", :not_configured, :apiKey),
          :ok <- check(not String.contains?(key, ["\r", "\n"]), :invalid_config, :apiKey) do
-      # Accept both origin and OpenAI-compatible /v1 base URLs, without /v1/v1.
       base = base |> String.trim_trailing("/") |> String.trim_trailing("/v1")
       {:ok, %{key: key, base: base, timeout: timeout, source: source}}
     end
@@ -72,13 +72,13 @@ defmodule Newbee.DeepSeek do
         value -> value
       end
 
-    {key, :tools_config}
+    {:ok, {key, :tools_config}}
   end
 
   defp credentials(_spec) do
     case System.get_env("DEEPSEEK_API_KEY") do
       key when is_binary(key) and key != "" ->
-        if String.trim(key) == "", do: model_credentials(), else: {key, :environment}
+        if String.trim(key) == "", do: model_credentials(), else: {:ok, {key, :environment}}
 
       _ ->
         model_credentials()
@@ -86,7 +86,10 @@ defmodule Newbee.DeepSeek do
   end
 
   defp model_credentials do
-    {Newbee.LLM.Config.provider_api_key("deepseek"), :model_provider}
+    case Newbee.LLM.Config.provider_api_key_strict("deepseek") do
+      {:ok, key} -> {:ok, {key, :model_provider}}
+      {:error, _reason} -> error(:invalid_config)
+    end
   end
 
   defp endpoint?(url) do

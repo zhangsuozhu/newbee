@@ -18,9 +18,19 @@ defmodule Newbee.LLM.Config do
 
   @doc "Return the expanded API key for a named provider, or nil. Host-side only."
   def provider_api_key(name) when is_binary(name) do
-    case load()["providers"][name] do
-      %{"apiKey" => key} -> expand_env(key)
-      _ -> nil
+    case provider_api_key_strict(name) do
+      {:ok, key} -> key
+      {:error, _reason} -> nil
+    end
+  end
+
+  @doc "Strict host-side credential lookup; invalid model configuration is not hidden by defaults."
+  def provider_api_key_strict(name) when is_binary(name) do
+    with {:ok, config} <- load_strict() do
+      case config["providers"][name] do
+        %{"apiKey" => key} -> {:ok, expand_env(key)}
+        _ -> {:ok, nil}
+      end
     end
   end
 
@@ -37,6 +47,21 @@ defmodule Newbee.LLM.Config do
           error ->
             Logger.warning("model config load failed; using defaults: #{Exception.message(error)}")
             default()
+        end
+    end
+  end
+
+  @doc "Strict model loading for credential fallbacks; returns errors instead of silently using defaults."
+  def load_strict do
+    case resolve_path() do
+      nil ->
+        {:ok, default()}
+
+      path ->
+        try do
+          {:ok, path |> parse() |> Newbee.LLM.Catalog.runtime()}
+        rescue
+          error -> {:error, Exception.message(error)}
         end
     end
   end
