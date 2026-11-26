@@ -16,9 +16,11 @@ defmodule Newbee.LLM.Config do
 
   def roles, do: @roles
 
-  @doc "Return the expanded API key for a named provider, or nil. Host-side only."
-  def provider_api_key(name) when is_binary(name) do
-    case load()["providers"][name] do
+  @doc "Return the expanded provider key or nil (host-side only). With strict: true, malformed model configuration raises."
+  def provider_api_key(name, opts \\ []) when is_binary(name) do
+    cfg = if Keyword.get(opts, :strict, false), do: load_config(), else: load()
+
+    case cfg["providers"][name] do
       %{"apiKey" => key} -> expand_env(key)
       _ -> nil
     end
@@ -26,18 +28,17 @@ defmodule Newbee.LLM.Config do
 
   @doc "加载配置；找不到文件时回退到内置默认（OpenRouter + env key）。"
   def load do
-    case resolve_path() do
-      nil ->
-        default()
+    load_config()
+  rescue
+    error ->
+      Logger.warning("model config load failed; using defaults: #{Exception.message(error)}")
+      default()
+  end
 
-      path ->
-        try do
-          path |> parse() |> Newbee.LLM.Catalog.runtime()
-        rescue
-          error ->
-            Logger.warning("model config load failed; using defaults: #{Exception.message(error)}")
-            default()
-        end
+  defp load_config do
+    case resolve_path() do
+      nil -> default()
+      path -> path |> parse() |> Newbee.LLM.Catalog.runtime()
     end
   end
 

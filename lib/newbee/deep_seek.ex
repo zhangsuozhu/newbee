@@ -86,7 +86,7 @@ defmodule Newbee.DeepSeek do
   end
 
   defp model_credentials do
-    {Newbee.LLM.Config.provider_api_key("deepseek"), :model_provider}
+    {Newbee.LLM.Config.provider_api_key("deepseek", strict: true), :model_provider}
   end
 
   defp endpoint?(url) do
