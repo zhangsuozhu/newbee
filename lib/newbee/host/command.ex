@@ -17,7 +17,7 @@ defmodule Newbee.Host.Command do
   @output_tail_bytes 16_000
 
   @term_grace_ms 200
-  @pidfile_attempts 20
+  @pgid_prefix "__NEWBEE_PGID__:"
 
   @doc false
   def run(owner, cmd, timeout, cwd)
@@ -25,10 +25,12 @@ defmodule Newbee.Host.Command do
     waiter = self()
     ref = make_ref()
 
-    {_job, monitor} =
-      spawn_monitor(fn ->
+    job =
+      spawn(fn ->
         execute(waiter, owner, ref, cmd, timeout, cwd)
       end)
+
+    monitor = Process.monitor(job)
 
     receive do
       {^ref, result} ->
@@ -49,10 +51,15 @@ defmodule Newbee.Host.Command do
 
     case open_shell(cmd, cwd) do
       {:ok, job} ->
+        watchdog = spawn(fn -> watch_job(job, owner, waiter) end)
+        Process.unlink(watchdog)
+        buffer = new_buffer()
+        buffer = if job.initial_data == <<>>, do: buffer, else: push_output(buffer, job.initial_data)
+
         try do
-          collect(job, waiter, ref, cancel_refs, deadline(timeout), new_buffer())
+          collect(job, waiter, ref, cancel_refs, deadline(timeout), buffer)
         after
-          if job.pidfile, do: File.rm(job.pidfile)
+          Process.exit(watchdog, :kill)
         end
 
       {:error, reason} ->
@@ -65,18 +72,12 @@ defmodule Newbee.Host.Command do
 
     case System.find_executable("setsid") do
       nil ->
-        open_port(shell, ["-c", cmd], cwd, nil, false)
+        open_port(shell, ["-c", cmd], cwd)
 
       setsid ->
-        pidfile =
-          Path.join(
-            System.tmp_dir!(),
-            "newbee-shell-#{System.unique_integer([:positive, :monotonic])}.pid"
-          )
-
-        wrapper = ~S|printf '%s\n' "$$" > "$1"; exec "$2" -c "$3"|
-        args = ["--wait", shell, "-c", wrapper, "newbee-shell", pidfile, shell, cmd]
-        open_port(setsid, args, cwd, pidfile, true)
+        wrapper = ~S|echo "__NEWBEE_PGID__:$$"; exec "$1" -c "$2"|
+        args = ["--fork", "--wait", shell, "-c", wrapper, "newbee-shell", shell, cmd]
+        open_isolated_port(setsid, args, cwd)
     end
   rescue
     e -> {:error, Exception.message(e)}
@@ -84,28 +85,95 @@ defmodule Newbee.Host.Command do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp open_port(executable, args, cwd, pidfile, isolated?) do
-    port =
-      Port.open(
-        {:spawn_executable, executable},
-        [
-          :binary,
-          :exit_status,
-          :stderr_to_stdout,
-          args: args,
-          cd: String.to_charlist(cwd),
-          env: sensitive_env_unsets()
-        ]
-      )
+  defp open_port(executable, args, cwd) do
+    port = open_raw_port(executable, args, cwd)
 
-    case Port.info(port, :os_pid) do
-      {:os_pid, os_pid} ->
-        {:ok, %{port: port, os_pid: os_pid, pidfile: pidfile, isolated?: isolated?}}
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} -> pid
+        nil -> nil
+      end
 
-      nil ->
-        {:ok, %{port: port, os_pid: nil, pidfile: pidfile, isolated?: isolated?}}
+    {:ok, %{port: port, os_pid: os_pid, pgid: nil, isolated?: false, initial_data: <<>>}}
+  end
+
+  defp open_isolated_port(executable, args, cwd) do
+    port = open_raw_port(executable, args, cwd)
+
+    case await_pgid(port, System.monotonic_time(:millisecond) + 5_000, <<>>) do
+      {:ok, pgid, initial_data} ->
+        os_pid =
+          case Port.info(port, :os_pid) do
+            {:os_pid, pid} -> pid
+            nil -> nil
+          end
+
+        {:ok, %{port: port, os_pid: os_pid, pgid: pgid, isolated?: true, initial_data: initial_data}}
+
+      {:error, reason} ->
+        close_port(port)
+        {:error, reason}
     end
   end
+
+  defp watch_job(job, owner, waiter) do
+    owner_ref = Process.monitor(owner)
+    waiter_ref = Process.monitor(waiter)
+
+    receive do
+      {:DOWN, ^owner_ref, :process, _pid, _reason} -> terminate(job)
+      {:DOWN, ^waiter_ref, :process, _pid, _reason} -> terminate(job)
+    end
+  end
+
+  defp open_raw_port(executable, args, cwd) do
+    Port.open(
+      {:spawn_executable, executable},
+      [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        args: args,
+        cd: String.to_charlist(cwd),
+        env: sensitive_env_unsets()
+      ]
+    )
+  end
+
+  defp await_pgid(port, deadline, acc) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^port, {:data, data}} ->
+        acc = acc <> data
+
+        case String.split(acc, "\n", parts: 2) do
+          [line, rest] ->
+            case parse_pgid_line(line) do
+              {:ok, pgid} -> {:ok, pgid, rest}
+              :error -> {:error, :invalid_pgid_handshake}
+            end
+
+          _ ->
+            await_pgid(port, deadline, acc)
+        end
+
+      {^port, {:exit_status, _status}} ->
+        {:error, :shell_exited_before_pgid}
+    after
+      remaining ->
+        {:error, :pgid_timeout}
+    end
+  end
+
+  defp parse_pgid_line(@pgid_prefix <> rest) do
+    case Integer.parse(String.trim(rest)) do
+      {pid, ""} when pid > 1 -> {:ok, pid}
+      _ -> :error
+    end
+  end
+
+  defp parse_pgid_line(_line), do: :error
 
   defp sensitive_env_unsets do
     System.get_env()
@@ -243,9 +311,12 @@ defmodule Newbee.Host.Command do
   defp error_result(message), do: %{exit: 127, exit_code: 127, output: message}
 
   defp terminate(%{isolated?: true} = job) do
-    case wait_for_pidfile(job.pidfile, @pidfile_attempts) do
-      nil -> terminate_process_tree(job.os_pid)
-      pgid -> terminate_process_group(pgid, job.os_pid)
+    if job[:pgid] do
+      signal_group(job.pgid, "TERM")
+      Process.sleep(@term_grace_ms)
+      signal_group(job.pgid, "KILL")
+    else
+      terminate_process_tree(job.os_pid)
     end
 
     close_port(job.port)
@@ -256,55 +327,13 @@ defmodule Newbee.Host.Command do
     close_port(job.port)
   end
 
-  defp wait_for_pidfile(_path, 0), do: nil
-
-  defp wait_for_pidfile(path, attempts) do
-    case File.read(path) do
-      {:ok, body} ->
-        case Integer.parse(String.trim(body)) do
-          {pid, ""} when pid > 1 -> pid
-          _ -> nil
-        end
-
-      _ ->
-        Process.sleep(5)
-        wait_for_pidfile(path, attempts - 1)
-    end
-  end
-
-  defp terminate_process_group(pgid, fallback_pid) do
-    if isolated_group?(pgid) do
-      signal_group(pgid, "TERM")
-      Process.sleep(@term_grace_ms)
-      if group_alive?(pgid), do: signal_group(pgid, "KILL")
-    else
-      terminate_process_tree(fallback_pid)
-    end
-  end
-
-  defp isolated_group?(pid) do
-    case System.cmd("ps", ["-o", "pgid=,sid=", "-p", Integer.to_string(pid)], stderr_to_stdout: true) do
-      {output, 0} -> String.split(output) == [Integer.to_string(pid), Integer.to_string(pid)]
-      _ -> false
-    end
-  rescue
-    _ -> false
-  end
-
-  defp group_alive?(pgid) do
-    case System.cmd("kill", ["-0", "--", "-#{pgid}"], stderr_to_stdout: true) do
-      {_output, 0} -> true
-      _ -> false
-    end
-  rescue
-    _ -> false
-  end
-
   defp signal_group(pgid, signal) do
-    System.cmd("kill", ["-#{signal}", "--", "-#{pgid}"], stderr_to_stdout: true)
-    :ok
+    case System.cmd("kill", ["-" <> signal, "--", "-" <> Integer.to_string(pgid)], stderr_to_stdout: true) do
+      {_, 0} -> :ok
+      _ -> :error
+    end
   rescue
-    _ -> :ok
+    _ -> :error
   end
 
   defp terminate_process_tree(nil), do: :ok

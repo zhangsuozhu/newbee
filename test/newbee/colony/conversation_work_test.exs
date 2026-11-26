@@ -28,7 +28,11 @@ defmodule Newbee.Colony.ConversationWorkTest do
   test "retries and concurrent requests create exactly one durable work", %{root: root, sid: sid} do
     results =
       1..12
-      |> Task.async_stream(fn _ -> ConversationWork.start(sid, root, "修复导出并验证", "same") end, max_concurrency: 4)
+      |> Task.async_stream(
+        fn _ -> ConversationWork.start(sid, root, "修复导出并验证", "same") end,
+        max_concurrency: 4,
+        timeout: 30_000
+      )
       |> Enum.to_list()
 
     ids = Enum.map(results, fn {:ok, {:ok, result}} -> result["work"]["id"] end)

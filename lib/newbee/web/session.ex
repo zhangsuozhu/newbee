@@ -30,14 +30,14 @@ defmodule Newbee.Web.Session do
             boot_client: nil,
             # 异步 boot worker 必须受 Session 生命周期约束，销毁时不可继续创建 evaluator。
             boot_worker: nil,
-            boot_ref: nil,
+            boot_timer: nil,
             shared_prompt_pending: false,
+            boot_ref: nil,
             model_config_pending: false,
             runtime_id: nil,
             completed_deliveries: MapSet.new(),
             queue: :queue.new(),
             queue_ids: MapSet.new(),
-            # 等待队列 ID 化（方案A）：内存队列 + 自增 seq + 最近事件环，供刷新重建与单条取消。
             queue_seq: 0,
             queue_events: [],
             # 正在执行的输入（ busy=true 时的当前项，供刷新展示“执行中”）。
@@ -1286,7 +1286,8 @@ defmodule Newbee.Web.Session do
 
   defp acknowledge_kernel_boot(%{boot_worker: worker, boot_ref: ref} = state) do
     if is_pid(worker) and Process.alive?(worker), do: send(worker, {:kernel_boot_ack, ref})
-    %{state | boot_worker: nil, boot_ref: nil}
+    cancel_boot_timer(state)
+    %{state | boot_worker: nil, boot_ref: nil, boot_timer: nil}
   end
 
   defp cleanup_unattached_kernel({:ok, kernel}) when is_pid(kernel) do
@@ -1300,6 +1301,13 @@ defmodule Newbee.Web.Session do
   end
 
   defp cleanup_unattached_kernel(_result), do: :ok
+
+  defp cancel_boot_timer(%{boot_timer: timer}) when is_reference(timer) do
+    Process.cancel_timer(timer)
+    :ok
+  end
+
+  defp cancel_boot_timer(_), do: :ok
 
   defp task_progress?(task) do
     payload_value(task, "status") in ["accepted", "running", :accepted, :running]
@@ -1975,10 +1983,23 @@ defmodule Newbee.Web.Session do
       when not is_nil(client) do
     # Worker 等待 Session 确认挂接；Session 终止时 terminate/2 会杀掉它及其 link 树。
     {worker, ref} = spawn_kernel_boot(:kernel_booted, sid, client, self())
-    {:noreply, %{st | boot_client: client, boot_worker: worker, boot_ref: ref}}
+    timer = Process.send_after(self(), {:boot_timeout, ref}, 120_000)
+    {:noreply, %{st | boot_client: client, boot_worker: worker, boot_ref: ref, boot_timer: timer}}
   end
 
-  # Backward-compatible internal message shape used by hot-upgrade/tests.
+  def handle_info({:boot_timeout, ref}, %{booting: true, boot_ref: ref} = st) do
+    cancel_boot_timer(st)
+    if is_pid(st.boot_worker), do: Process.exit(st.boot_worker, :kill)
+
+    broadcast(st.sid, :error, %{
+      message: "⚠ 会话内核启动超时：请检查项目目录与运行环境后重试。"
+    })
+
+    {:noreply, st |> acknowledge_kernel_boot() |> Map.put(:booting, false) |> fail_pending()}
+  end
+
+  def handle_info({:boot_timeout, _ref}, st), do: {:noreply, st}
+
   def handle_info({:kernel_booted, result}, st),
     do: handle_info({:kernel_booted, st.boot_ref, result}, st)
 
@@ -1987,6 +2008,7 @@ defmodule Newbee.Web.Session do
 
   def handle_info({:kernel_booted, ref, {:ok, kernel}}, %{booting: true, boot_ref: ref} = st) do
     # boot 期间 cwd 可能已被用户切换；挂回前必须按 Session 最新值再次对齐。
+
     case Newbee.Agent.Loop.set_root(kernel, Newbee.Session.cwd(st.sid)) do
       {:ok, _root} ->
         # start_kernel 在临时 spawn 进程内 start_link；spawn 正常退出后 kernel 仍存活，

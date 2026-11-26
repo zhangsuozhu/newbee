@@ -66,19 +66,6 @@ defmodule Newbee.Session do
   # 目录 mtime 不变时复用合并结果。往已有 transcript 追加不会改目录 mtime，
   # 所以热路径不再 wildcard + stat 全部会话。新建/删除会改目录 mtime，缓存失效后重扫。
   # persist 在本目录写临时文件，落盘后按新 mtime 回填。
-  defp merged_index do
-    mtime = sessions_dir_mtime()
-
-    case :ets.lookup(index_table(), :merged) do
-      [{:merged, ^mtime, entries}] when is_list(entries) ->
-        entries
-
-      _ ->
-        entries = compute_merged_index()
-        cache_index(entries, mtime)
-        entries
-    end
-  end
 
   defp compute_merged_index do
     idx = read_index()
@@ -100,39 +87,71 @@ defmodule Newbee.Session do
 
     merged_map
     |> Map.values()
-    |> Enum.filter(fn e -> File.regular?(Path.join(root(), e["id"] <> ".jsonl")) end)
+    |> Enum.filter(fn e -> Map.has_key?(fs_map, e["id"]) end)
     |> Enum.sort_by(fn e -> e["mtime"] || e["created"] end, :desc)
   end
 
-  defp sessions_dir_mtime do
-    case File.stat(root()) do
-      {:ok, stat} -> posix_mtime(stat.mtime)
-      _ -> 0
+  defp session_files do
+    case File.ls(root()) do
+      {:ok, files} -> files |> Enum.filter(&String.ends_with?(&1, ".jsonl")) |> Enum.sort()
+      _ -> []
     end
   end
 
-  defp index_table do
-    name = :newbee_session_index
+  defp index_table, do: :newbee_session_index
 
-    case :ets.whereis(name) do
-      :undefined ->
-        try do
-          :ets.new(name, [:named_table, :public, :set, {:read_concurrency, true}])
-        catch
-          :error, :badarg -> name
-        end
-
-      tid ->
-        tid
+  defp ensure_index_table do
+    if Process.whereis(Newbee.SessionIndex) == nil do
+      Newbee.SessionIndex.start_link()
     end
+
+    index_table()
   end
 
-  defp cache_index(entries, mtime \\ nil) do
-    :ets.insert(index_table(), {:merged, mtime || sessions_dir_mtime(), entries})
+  defp cache_index(entries, files \\ nil) do
+    files = files || session_files()
+    Newbee.SessionIndex.put({root(), :merged}, {files, entries})
     :ok
   end
 
-  defp persist_index(entries) do
+  defp merged_index do
+    files = session_files()
+
+    case Newbee.SessionIndex.fetch({root(), :merged}) do
+      {:ok, {^files, entries}} when is_list(entries) ->
+        entries
+
+      _ ->
+        entries = compute_merged_index()
+        cache_index(entries, files)
+        entries
+    end
+  end
+
+  @index_lock {__MODULE__, :persist_index}
+
+  defp persist_index(updates) do
+    :global.trans(@index_lock, fn ->
+      fresh = compute_merged_index()
+
+      merged =
+        case updates do
+          %{"delete" => id} ->
+            Enum.reject(fresh, &(&1["id"] == id))
+
+          entries when is_list(entries) ->
+            by_id = Map.new(entries, &{&1["id"], &1})
+            Enum.map(fresh, fn e -> Map.get(by_id, e["id"], e) end)
+
+          _ ->
+            fresh
+        end
+
+      do_persist_index(merged)
+    end)
+  end
+
+  defp do_persist_index(entries) do
     File.mkdir_p!(root())
 
     tmp =
@@ -575,9 +594,7 @@ defmodule Newbee.Session do
   end
 
   defp remove_from_index(id) do
-    merged = merged_index()
-    kept = Enum.reject(merged, fn e -> e["id"] == id end)
-    persist_index(kept)
+    persist_index(%{"delete" => id})
     :ok
   rescue
     e ->
@@ -802,16 +819,16 @@ defmodule Newbee.Session do
     end
   end
 
-  @doc false
   def transcript_scan_count do
-    case :ets.lookup(index_table(), :transcript_scans) do
-      [{:transcript_scans, n}] when is_integer(n) -> n
+    case Newbee.SessionIndex.fetch({root(), :transcript_scans}) do
+      {:ok, n} when is_integer(n) -> n
       _ -> 0
     end
   end
 
   defp note_transcript_scan do
-    :ets.update_counter(index_table(), :transcript_scans, {2, 1}, {:transcript_scans, 0})
+    ensure_index_table()
+    :ets.update_counter(index_table(), {root(), :transcript_scans}, {2, 1}, {{root(), :transcript_scans}, 0})
   end
 
   # 冷路径才读 transcript。按字节数行，只解码可能是用户消息的行，避免 split 出全部行再逐条 JSON。

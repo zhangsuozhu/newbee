@@ -1,7 +1,7 @@
 defmodule Newbee.Web.ConversationApi do
   @moduledoc "Authenticated original-conversation work RPC. Session identity determines the project root."
   alias Newbee.Colony.{ConversationWork, Membership, Store, Work, WorkspaceReview}
-  @methods ~w(list start input answer control review apply complete)
+  @methods ~w(list start input answer control review apply complete delete restore)
 
   def dispatch("conversation.work." <> action, p) when action in @methods do
     sid = p["sessionId"]
@@ -18,7 +18,15 @@ defmodule Newbee.Web.ConversationApi do
 
   def dispatch(_, _), do: {:error, "unknown_method", "未知会话工作操作"}
 
-  defp run("list", sid, _p, _), do: {:ok, %{"works" => ConversationWork.list(sid)}}
+  defp run("list", sid, _p, _),
+    do: {:ok, %{"works" => ConversationWork.list(sid), "has_hidden" => ConversationWork.hidden?(sid)}}
+
+  defp run("delete", sid, p, _), do: ConversationWork.delete(sid, p["workId"])
+
+  defp run("restore", sid, _p, _) do
+    :ok = ConversationWork.restore(sid)
+    {:ok, %{"works" => ConversationWork.list(sid)}}
+  end
 
   defp run("start", sid, p, uploads) do
     principal =
