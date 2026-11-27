@@ -3382,6 +3382,12 @@ bind("delegate-session", openDelegateModal);
 
   async function loadWorkInbox() {
     if (document.hidden || workspaceSurface) return;
+    if (window.NewbeeTeamPanel?.hasWorkbench?.()) {
+      workInbox = {items: [], review: null};
+      renderWorkInbox();
+      renderWorkReview();
+      return;
+    }
     try {
       const policy = await loadWorkAttentionPolicy();
       const listed = await rpc("colony.list", {});
@@ -4343,6 +4349,13 @@ box.appendChild(label);
       const sharedSession = Object.values(shared).map((item) => item && item.sessionId).find(Boolean) || xSharedSession(sess);
       xManageState = { gid, group: d.group || {}, tasks: d.tasks || [], bound: sess, code, shared, sharedSessionId: sharedSession, room, tab };
       renderXManage(tab);
+      if (opts?.taskId) {
+        const row = Array.from(body.querySelectorAll("[data-x-task]")).find(node => node.dataset.xTask === opts.taskId);
+        if (row) {
+          row.scrollIntoView({block: "center"});
+          row.focus({preventScroll: true});
+        }
+      }
     } catch (e) { if (body) body.innerHTML = '<div class="modal-body">打不开：' + escapeHtml(e.message || "未知错误") + "</div>"; }
   }
   function xArm(btn, label, fn) {
@@ -4483,7 +4496,7 @@ box.appendChild(label);
       h += '<div class="xm-sec">' + secTitle("任务", tasks.length);
       if (!tasks.length) h += '<div class="xm-empty">还没有任务。任务由协作模型按需创建，也可以让聊天室把决议交给任务执行。</div>';
       tasks.forEach((t) => {
-        h += '<div class="xm-row"><span class="xg-task-dot ' + (t.status === "done" ? "done" : (t.status === "failed" ? "failed" : (t.status === "queued" ? "queued" : "running"))) + '"></span>' +
+        h += '<div class="xm-row" tabindex="-1" data-x-task="' + escapeHtml(t.id) + '"><span class="xg-task-dot ' + (t.status === "done" ? "done" : (t.status === "failed" ? "failed" : (t.status === "queued" ? "queued" : "running"))) + '"></span>' +
           '<span class="xm-name">' + escapeHtml(String(t.title || t.id)) + '</span><span class="xm-tag">' + escapeHtml(xmStatusCn(t.status)) + "</span>" +
           (t.status === "queued" ? '<button class="xg-btn accent" data-x="task-start:' + escapeHtml(t.id) + '">开始</button>' : "") +
           ((t.status === "running" || t.status === "waiting_input") ? '<button class="xg-btn accent" data-x="task-done:' + escapeHtml(t.id) + '">完成</button>' : "") +
@@ -9349,7 +9362,7 @@ if (!inspectionMode && window.NewbeeConversationWork) window.NewbeeConversationW
   getDirectory: () => state.cwd,
   readDraft: () => input.value,
   writeDraft: text => { input.value = text; autoGrow(); saveDraft(text); },
-  appendUser: text => { renderUserLine(text, state.attachments.slice(), new Date().toISOString()); scrollBottom(true); },
+  appendUser: (text, useAttachments = true) => { renderUserLine(text, useAttachments ? state.attachments.slice() : [], new Date().toISOString()); scrollBottom(true); },
   getUploadIds: () => state.attachments.map(a => a.id),
   isUploading: () => state.uploading > 0,
   clearAttachments,
@@ -9362,6 +9375,57 @@ if (!inspectionMode && window.NewbeeTeamPanel) {
     rpc,
     notify: (message, kind) => line(kind === 'err' ? 'error' : 'notice', message),
     openSession: (sid) => { if (sid) { try { resume(sid); } catch (e) {} } },
+    workbench: {
+      session: () => ({id: state.sid, cwd: state.cwd}),
+      create: async ({goal, mode, template, context}) => {
+        if (mode === "template") {
+          const out = await rpc("colony.team.run.start", {templateId: template, goal, cwd: context.cwd});
+          if (!out?.run?.id) throw new Error("项目未受理");
+          return;
+        }
+        await window.NewbeeConversationWork.startFromWorkbench(goal, context.id, mode);
+      },
+      navigate: async item => {
+        const panel = window.NewbeeTeamPanel;
+        const {session_id: sid, colony_id: cid, group_id: gid} = item.target || {};
+        if (item.kind === "team") { panel.openRun(item.id); return; }
+        if (item.kind === "proposal") { panel.openProposal(item.id); return; }
+        if (item.kind === "remote_task") {
+          panel.close();
+          await openXManage(gid, {tab: "work", taskId: item.id});
+          return;
+        }
+        if (item.kind === "remote") { panel.close(); await openXManage(item.id); return; }
+        if (item.kind === "colony" && cid) {
+          const params = new URLSearchParams({colony: cid, view: "work"});
+          if (item.id) params.set("task", item.id);
+          location.assign("/colony.html?" + params);
+          return;
+        }
+        if (!sid) throw new Error("找不到这项工作的会话");
+        if (sid !== state.sid) await resume(sid);
+        if (state.sid !== sid) throw new Error("未能打开原会话");
+        if (item.kind === "hive") {
+          await loadGroups();
+          if (state.activeGroupId !== gid) throw new Error("找不到该会话的协作看板");
+          setMCOpen(true);
+          switchMCTab("tasks");
+          if (item.target.task_id) {
+            state.taskFilter = "all";
+            renderCollaborationTasks();
+            const tile = [...document.querySelectorAll("[data-task-anchor]")].find(node => node.dataset.taskAnchor === item.target.task_id);
+            tile?.scrollIntoView({block: "center"});
+          }
+        } else if (!await window.NewbeeConversationWork.openWork(item.id)) {
+          throw new Error("该工作已隐藏、删除或移出会话列表");
+        }
+        panel.close();
+      },
+      joinProject: () => location.assign("/colony.html?join=1"),
+      join: () => { window.NewbeeTeamPanel.close(); openXJoin(); },
+      createGroup: () => { window.NewbeeTeamPanel.close(); openXCreate(); }
+    },
+
     onMapUpdate: () => { try { renderSessionList(); } catch (e) {} }
   });
   const teamBtn = $("team-panel-toggle");

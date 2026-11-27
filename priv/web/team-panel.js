@@ -14,9 +14,11 @@
   "use strict";
 
   let rpc = null, notify = null, openSession = null;
+  let workbench = null;
+
   let els = {};
   let state = {
-    tab: "runs",
+    tab: "workbench",
     templates: [], proposals: [], runs: [],
     detail: null,          // 展开的项目 run_id
     detailData: null,      // run_view 结果
@@ -59,7 +61,8 @@
   function badgeCount() { return attentionRuns().length + attentionProposals().length; }
 
   async function refreshBadge() {
-    if (!rpc) return;
+    if (!rpc || document.hidden) return;
+    if (workbench) await workbench.refresh();
     try {
       const [p, r] = await Promise.all([
         rpc("colony.team.proposals", {}),
@@ -67,7 +70,7 @@
       ]);
       state.proposals = p.proposals || [];
       state.runs = r.runs || [];
-      const n = badgeCount();
+      const n = workbench?.attention() ?? badgeCount();
       state.badge = n;
       const b = els.badge;
       if (b) {
@@ -85,13 +88,13 @@
 
     const panel = h("aside", "tp-panel");
     panel.setAttribute("role", "dialog");
-    panel.setAttribute("aria-label", "团队工作室");
+    panel.setAttribute("aria-label", "团队工作台");
 
     const head = h("div", "tp-head");
     const mark = h("div", "tp-head-mark", "🐝");
     const titleWrap = h("div");
-    titleWrap.append(h("div", "tp-head-title", "团队工作室"));
-    titleWrap.append(h("div", "tp-head-sub", "组建团队 · 引用模板 · 闭环交付"));
+    titleWrap.append(h("div", "tp-head-title", "团队工作台"));
+    titleWrap.append(h("div", "tp-head-sub", "开工、跟进与验收"));
     const refreshBtn = h("button", "tp-iconbtn", "⟳");
     refreshBtn.title = "刷新";
     refreshBtn.addEventListener("click", () => load(true));
@@ -102,7 +105,7 @@
 
     const tabs = h("div", "tp-tabs");
     els.tabs = {};
-    [["runs", "项目"], ["templates", "模板"], ["proposals", "组建"]].forEach(([id, label]) => {
+    [["workbench", "工作"], ["connections", "协作"], ["runs", "阶段项目"], ["templates", "模板"], ["proposals", "组建"]].forEach(([id, label]) => {
       const t = h("button", "tp-tab");
       t.append(h("span", null, label));
       const n = h("span", "tp-tab-n", "0");
@@ -143,7 +146,8 @@
   function render() {
     // tabs 计数与选中
     const counts = { runs: state.runs.length, templates: state.templates.length, proposals: attentionProposals().length };
-    for (const id of ["runs", "templates", "proposals"]) {
+    for (const id of Object.keys(els.tabs)) {
+      counts[id] ??= id === "workbench" ? (workbench?.attention() || 0) : 0;
       const { btn, n } = els.tabs[id];
       btn.classList.toggle("tp-on", state.tab === id);
       n.textContent = String(counts[id]);
@@ -157,6 +161,9 @@
       body.append(h("div", "tp-empty", "加载中…"));
       return;
     }
+    if (state.tab === "workbench") { workbench?.drawQueue(body); return; }
+    if (state.tab === "connections") { workbench?.drawConnections(body); return; }
+
     if (state.tab === "runs") renderRuns(body);
     else if (state.tab === "templates") renderTemplates(body);
     else renderProposals(body);
@@ -558,6 +565,15 @@
   }
   // ── 组建页 ──
   function renderProposals(body) {
+    if (state.proposalId) {
+      const back = h("button", "tp-btn tp-btn-ghost", "全部组建提案");
+      back.onclick = () => { state.proposalId = null; render(); };
+      body.append(back);
+      const proposal = state.proposals.find(p => p.id === state.proposalId);
+      body.append(proposal ? proposalCard(proposal) : h("div", "tp-empty", "找不到这项提案"));
+      return;
+    }
+
     const head = h("div", "tp-section-head");
     head.append(h("span", "tp-section-title", "让 main 组建团队"));
     head.append(h("div", "tp-spacer"));
@@ -712,6 +728,8 @@
   // .tp-body 内，而 render() 会整体清空 .tp-body 重建 → 草稿与焦点丢失（R2P-04）。
   // 因此后台轮询命中"正在编辑"时跳过重绘，只刷新数据与徽标。
   function isEditing() {
+    if (workbench?.isPending()) return true;
+
     if (state.action) return true;
     const body = els.body;
     const active = document.activeElement;
@@ -720,7 +738,7 @@
 
   async function load(showLoading) {
     if (showLoading) { state.loading = true; render(); }
-    try { await fetchAll(); }
+    try { await Promise.all([fetchAll(), workbench?.refresh()]); }
     catch (e) { if (showLoading) toast(e.message || "加载失败", "err"); }
     state.loading = false;
     if (showLoading || !isEditing()) render();
@@ -836,6 +854,12 @@
   window.NewbeeTeamPanel = {
     init(opts) {
       rpc = opts.rpc; notify = opts.notify; openSession = opts.openSession;
+      if (opts.workbench && window.NewbeeTeamWorkbench) {
+        workbench = window.NewbeeTeamWorkbench.build({
+          ...opts.workbench, rpc, report: toast, renderAgain: render, templates: () => state.templates
+        });
+      } else { state.tab = "runs"; }
+
       els.badge = document.getElementById("team-panel-badge");
       build();
       refreshBadge();
@@ -843,8 +867,12 @@
       loadSessionMap().then(() => { if (opts.onMapUpdate) opts.onMapUpdate(); });
       setInterval(() => loadSessionMap().then(() => { if (opts.onMapUpdate) opts.onMapUpdate(); }), 12000);
     },
+    openRun(id) { state.detail = id; state.detailData = null; open("runs"); },
+    openProposal(id) { state.proposalId = id; open("proposals"); },
+
     open, close, refreshBadge,
     renderSidebarGroups, teamSessionIds, loadSessionMap, startWithGoal,
+    hasWorkbench: () => workbench?.attention() != null,
     isOpen: () => state.opened
   };
 })();

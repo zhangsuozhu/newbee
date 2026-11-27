@@ -108,6 +108,8 @@ defmodule Newbee.Web.ConversationApiTest do
   test "HTTP start → persist → review → apply → finalize → retry uses the same work and files", ctx do
     File.write!(Path.join(ctx.root, "export.txt"), "old\n")
     id = ready!(ctx, true)
+    start_supervised!({Newbee.Collaboration.Coordinator, path: Path.join(ctx.root, "workbench-events.jsonl")})
+    assert [%{"id" => ^id, "state" => "review"}] = rpc(ctx, "team.workbench", %{})["ok"]["queues"]["attention"]
     review = rpc(ctx, "conversation.work.review", %{workId: id})["ok"]["review"]
     assert review["file_count"] == 1
     assert review["files"] |> hd() |> Map.get("path") == "export.txt"
@@ -121,6 +123,9 @@ defmodule Newbee.Web.ConversationApiTest do
     assert result["ok"]["work"]["apply_state"] == "applied"
     assert File.read!(Path.join(ctx.root, "export.txt")) == "fixed\n"
     assert :ok = Store.restore()
+    snapshot = rpc(ctx, "team.workbench", %{})["ok"]["queues"]
+    assert snapshot["attention"] == []
+    assert [%{"id" => ^id, "state" => "delivered"}] = snapshot["history"]
 
     again =
       rpc(ctx, "conversation.work.apply", %{workId: id, patchSha256: review["patch_sha256"], requestId: "apply-1"})

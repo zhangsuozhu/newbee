@@ -40,6 +40,8 @@ defmodule Newbee.Colony.Store do
   def transaction(fun) when is_function(fun, 1), do: call({:transaction, fun})
   def get(table, id) when table in @tables and is_binary(id), do: call({:get, table, id})
   def get(_, _), do: {:error, :not_found}
+  def workbench_snapshot, do: call(:workbench_snapshot)
+
   def all(table) when table in @tables, do: call({:all, table})
 
   def put(table, %{"id" => id} = value) when table in @tables and is_binary(id) do
@@ -202,6 +204,10 @@ defmodule Newbee.Colony.Store do
   end
 
   def handle_call({:all, table}, _, state), do: {:reply, Map.values(state.data[table]), state}
+
+  def handle_call(:workbench_snapshot, _, state),
+    do: {:reply, Map.take(state.data, ~w(tasks colonies team_runs team_proposals)), state}
+
   def handle_call(:dump, _, state), do: {:reply, snapshot(state.data), state}
   def handle_call(:persist, _, state), do: {:reply, write(state.path, state.data), state}
   def handle_call(:clear, _, state), do: commit(empty(), :ok, state)

@@ -7,6 +7,7 @@ File.write!(Path.join(project, "export.txt"), "original\n")
 Application.put_env(:newbee, :global_root_override, Path.join(root, "global"))
 Application.put_env(:newbee, :colony_background, false)
 {:ok, _} = Application.ensure_all_started(:newbee)
+{:ok, _} = Newbee.Collaboration.Coordinator.start_link(path: Path.join(root, "hive-events.jsonl"))
 :ok = Newbee.Colony.Store.clear_all()
 Application.put_env(:newbee, :conversation_browser_project, project)
 sid = "browser-origin"

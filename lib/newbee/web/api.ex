@@ -2661,6 +2661,8 @@ defmodule Newbee.Web.Api do
   # this boundary an unknown method raises FunctionClauseError and Plug returns
   # an HTML 500 page, which makes client retries and diagnostics unreliable.
   # ── 蜂群协作（colony.*）：转发到独立模块，避免本文件继续膨胀 ──
+  defp dispatch_rpc("team.workbench", p), do: Newbee.Web.TeamWorkbench.dispatch(p)
+
   defp dispatch_rpc("conversation.source." <> _ = method, p), do: Newbee.Web.SourceApi.dispatch(method, p)
 
   defp dispatch_rpc("conversation.work." <> _ = method, p), do: Newbee.Web.ConversationApi.dispatch(method, p)
