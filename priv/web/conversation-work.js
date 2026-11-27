@@ -37,7 +37,9 @@
     control: "conversation.work.control",
     review: "conversation.work.review",
     apply: "conversation.work.apply",
-    complete: "conversation.work.complete"
+    complete: "conversation.work.complete",
+    delete: "conversation.work.delete",
+    restore: "conversation.work.restore"
   });
 
   const STATUS = {
@@ -428,7 +430,8 @@
   }
 
   function worksFrom(result) {
-    if (!result) return [];
+    if (!result) { state.hasHidden = false; return []; }
+    state.hasHidden = result.has_hidden === true || result.hasHidden === true;
     const raw = Array.isArray(result) ? result : result.works;
     return asList(raw).map(normalizeWork).filter((work) => work.id !== "");
   }
@@ -727,6 +730,18 @@
     resizeListeners = null;
   }
 
+  async function restoreHiddenWorks() {
+    try {
+      await call(RPC.restore, {}, mark());
+      state.hasHidden = false;
+      say("已恢复本会话删除的工作记录。", "ok");
+      await refresh();
+    } catch (err) {
+      say("恢复工作记录失败：" + messageOf(err), "err");
+    }
+  }
+
+
   function render(force) {
     if (!state.card) return;
     if (state.composing && !force) {
@@ -755,10 +770,19 @@
       state.noticeBox.hidden = true;
       state.noticeBox.setAttribute("aria-live", "polite");
       host.appendChild(state.noticeBox);
+      if (state.hasHidden) {
+        const restoreBox = el("div", "cw-restore");
+        restoreBox.appendChild(el("p", "cw-muted", "本会话的工作记录已删除；执行会话、成果与审计历史仍保留。"));
+        const restore = button("恢复已删除的工作记录", restoreHiddenWorks, "cw-ghost");
+        restore.dataset.cwKey = "restore-works";
+        restoreBox.appendChild(restore);
+        host.appendChild(restoreBox);
+      }
       renderNotice();
       restoreFocus(focus);
       return;
     }
+
 
     const head = el("div", "cw-head");
     const heading = el("div", "cw-heading");
@@ -778,9 +802,10 @@
       pill.setAttribute("role", "status");
       pill.setAttribute("aria-live", "polite");
       right.appendChild(pill);
-      // 阶段与状态说的是同一件事时只显示一次，避免“已结束 · 已结束”。
       const stageLabel = stageInfo(primary).label;
       if (stageLabel !== status.label) right.appendChild(el("span", "cw-stage", stageLabel));
+      const remove = deleteRecordButton(primary);
+      if (remove) right.appendChild(remove);
     }
 
     // 窗口控件固定在标题栏：内容再长也不会把「放大/最小化」滚出视野。
@@ -1299,10 +1324,47 @@
     return box;
   }
 
+  function deleteKey(work) {
+    return "delete:" + work.id;
+  }
+
+  function deleteRecordButton(work) {
+    if (isActive(work) || work.status === "cancelled" && work.stage !== "ended") return null;
+    const busy = state.busy.has(deleteKey(work));
+    const node = button(busy ? "正在删除…" : "删除工作记录", () => removeWork(work), "cw-danger", "只移除工作卡；执行会话、成果与审计历史保留");
+    node.disabled = busy;
+    node.dataset.cwKey = deleteKey(work);
+    return node;
+  }
+
   function stopKey(work) {
     return "stop:" + work.id;
   }
 
+  async function removeWork(work) {
+
+    if (!window.confirm("删除这条工作记录？只移除工作卡，执行会话、成果与审计历史会保留。")) return false;
+    const key = deleteKey(work);
+    if (state.busy.has(key)) return false;
+    state.busy.add(key);
+    render(true);
+    try {
+      await call(RPC.delete, {workId: work.id}, mark());
+      state.busy.delete(key);
+      state.works = state.works.filter(item => item.id !== work.id);
+      if (state.selectedWorkId === work.id) state.selectedWorkId = "";
+      say("已删除工作记录；执行会话与历史仍保留。", "ok");
+      render(true);
+      await refresh();
+      return true;
+    } catch (err) {
+      state.busy.delete(key);
+      render(true);
+      if (isStale(err)) return false;
+      say("删除工作记录失败：" + messageOf(err), "err");
+      throw err;
+    }
+  }
   function actionRow(work) {
     const row = el("div", "cw-actions");
     const stage = work.stage;
@@ -1383,6 +1445,10 @@
         render(true);
         if (work.isolated && !state.reviewCache.has(work.id)) review(work);
       }, "cw-other-btn");
+      node.dataset.cwKey = "other:" + work.id;
+      item.appendChild(node);
+      const remove = deleteRecordButton(work);
+      if (remove) item.appendChild(remove);
       node.dataset.cwKey = "other:" + work.id;
       item.appendChild(node);
       item.appendChild(el("span", "cw-other-status", statusOf(work).label));

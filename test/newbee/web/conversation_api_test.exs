@@ -77,6 +77,34 @@ defmodule Newbee.Web.ConversationApiTest do
              rpc(ctx, "conversation.work.projectRevoke", %{workId: id, beeId: "other"})
   end
 
+  test "terminal work can be deleted and restored through the authenticated HTTP API", ctx do
+    id = ready!(ctx, true)
+
+    assert %{"ok" => %{"work" => %{"status" => "done"}}} =
+             rpc(ctx, "conversation.work.apply", %{
+               workId: id,
+               patchSha256: rpc(ctx, "conversation.work.review", %{workId: id})["ok"]["review"]["patch_sha256"],
+               requestId: "delete-apply"
+             })
+
+    {:ok, task} = ConversationWork.fetch(ctx.sid, id)
+    honey = Store.list_honey() |> Enum.find(&(&1["task_id"] == id))
+    trace_count = Store.all("trace") |> length()
+    assert %{"ok" => %{"deleted" => true}} = rpc(ctx, "conversation.work.delete", %{workId: id})
+    assert %{"ok" => %{"works" => [], "has_hidden" => true}} = rpc(ctx, "conversation.work.list", %{})
+    assert {:ok, %{"conversation_hidden" => true}} = ConversationWork.fetch(ctx.sid, id)
+    assert Enum.any?(Store.all("trace"), &(&1["data"]["action"] == "conversation_work_delete"))
+    assert length(Store.all("trace")) > trace_count
+    assert Store.get_task(id) == {:ok, Map.put(task, "conversation_hidden", true)}
+    assert Store.get("honey", honey["id"]) == {:ok, honey}
+
+    assert :ok = Store.restore()
+    assert %{"ok" => %{"works" => [], "has_hidden" => true}} = rpc(ctx, "conversation.work.list", %{})
+    assert %{"ok" => %{"works" => [%{"id" => ^id}]}} = rpc(ctx, "conversation.work.restore", %{})
+    assert [%{"id" => ^id}] = rpc(ctx, "conversation.work.list", %{})["ok"]["works"]
+    assert Enum.any?(Store.all("trace"), &(&1["data"]["action"] == "conversation_work_restore"))
+  end
+
   test "HTTP start → persist → review → apply → finalize → retry uses the same work and files", ctx do
     File.write!(Path.join(ctx.root, "export.txt"), "old\n")
     id = ready!(ctx, true)

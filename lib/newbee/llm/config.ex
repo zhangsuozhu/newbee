@@ -16,29 +16,53 @@ defmodule Newbee.LLM.Config do
 
   def roles, do: @roles
 
-  @doc "Return the expanded provider key or nil (host-side only). With strict: true, malformed model configuration raises."
-  def provider_api_key(name, opts \\ []) when is_binary(name) do
-    cfg = if Keyword.get(opts, :strict, false), do: load_config(), else: load()
+  @doc "Return the expanded API key for a named provider, or nil. Host-side only."
+  def provider_api_key(name) when is_binary(name) do
+    case provider_api_key_strict(name) do
+      {:ok, key} -> key
+      {:error, _reason} -> nil
+    end
+  end
 
-    case cfg["providers"][name] do
-      %{"apiKey" => key} -> expand_env(key)
-      _ -> nil
+  @doc "Strict host-side credential lookup; invalid model configuration is not hidden by defaults."
+  def provider_api_key_strict(name) when is_binary(name) do
+    with {:ok, config} <- load_strict() do
+      case config["providers"][name] do
+        %{"apiKey" => key} -> {:ok, expand_env(key)}
+        _ -> {:ok, nil}
+      end
     end
   end
 
   @doc "加载配置；找不到文件时回退到内置默认（OpenRouter + env key）。"
   def load do
-    load_config()
-  rescue
-    error ->
-      Logger.warning("model config load failed; using defaults: #{Exception.message(error)}")
-      default()
+    case resolve_path() do
+      nil ->
+        default()
+
+      path ->
+        try do
+          path |> parse() |> Newbee.LLM.Catalog.runtime()
+        rescue
+          error ->
+            Logger.warning("model config load failed; using defaults: #{Exception.message(error)}")
+            default()
+        end
+    end
   end
 
-  defp load_config do
+  @doc "Strict model loading for credential fallbacks; returns errors instead of silently using defaults."
+  def load_strict do
     case resolve_path() do
-      nil -> default()
-      path -> path |> parse() |> Newbee.LLM.Catalog.runtime()
+      nil ->
+        {:ok, default()}
+
+      path ->
+        try do
+          {:ok, path |> parse() |> Newbee.LLM.Catalog.runtime()}
+        rescue
+          error -> {:error, Exception.message(error)}
+        end
     end
   end
 

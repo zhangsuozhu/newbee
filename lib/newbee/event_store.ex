@@ -49,7 +49,7 @@ defmodule Newbee.EventStore do
 
   @doc "追加事件。落盘（按 durability 档位）成功后返回 {:ok, event}。"
   def append(store, topic, data) when is_atom(topic) and is_map(data) do
-    GenServer.call(store, {:append, topic, data})
+    GenServer.call(store, {:append, topic, data}, 30_000)
   end
 
   @doc "Append a control event and fsync before acknowledging, regardless of batch policy."

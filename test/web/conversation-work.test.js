@@ -102,8 +102,8 @@ test.afterEach(() => {
     try { instance.destroy(); } catch (err) { /* 已销毁 */ }
   }
   if (globalThis.document) globalThis.document.hidden = false;
-});
 
+});
 test("源码契约：导出名、RPC 名、无 innerHTML、只追加 CSS 变量", () => {
   assert.match(SOURCE, /window\.NewbeeConversationWork\s*=\s*api/);
   for (const method of ["list", "start", "input", "answer", "control", "review", "apply", "complete"]) {
@@ -1196,4 +1196,40 @@ test("等待查看的独立成果仍能比较与应用（门禁没有误伤正�
   await new Promise((resolve) => setImmediate(resolve));
   assert.ok(buttons(card()).some((b) => b.textContent === "应用并完成"));
   instance.destroy();
+});
+
+
+test("终态工作记录可删除并从列表消失，执行会话与历史保留", async () => {
+  let hidden = false;
+  const fake = fakeRpc({
+    "conversation.work.list": () => ({works: hidden ? [] : [work({status: "done", stage: "completed"})], has_hidden: hidden}),
+    "conversation.work.delete": () => { hidden = true; return {deleted: true, workId: "w1"}; }
+  });
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const remove = findByText(card(), "删除工作记录");
+  assert.ok(remove, "终态工作卡应有删除入口");
+  globalThis.confirm = () => true;
+  remove.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.ok(fake.calls.some(call => call.method === "conversation.work.delete" && call.payload.workId === "w1"));
+  assert.equal(findByText(card(), "删除工作记录"), null);
+  delete globalThis.confirm;
+});
+
+
+test("删除全部工作记录后可恢复", async () => {
+  let hidden = true;
+  const fake = fakeRpc({
+    "conversation.work.list": () => ({works: hidden ? [] : [work({status: "done", stage: "completed"})], has_hidden: hidden}),
+    "conversation.work.restore": () => { hidden = false; return {works: [work({status: "done", stage: "completed"})]}; }
+  });
+  const {instance} = setup({sessionId: "s1", rpc: fake.rpc});
+  await instance.refresh();
+  const restore = findByText(card(), "恢复已删除的工作记录");
+  assert.ok(restore);
+  restore.click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.ok(fake.calls.some(call => call.method === "conversation.work.restore"));
+  assert.ok(findByText(card(), "修复 CSV 导出空日期"));
 });

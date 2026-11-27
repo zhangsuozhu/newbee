@@ -10,6 +10,7 @@ defmodule Newbee.Application do
     # 测试按需 start_link 并在 tmp 目录运行）
     children =
       [
+        Newbee.SessionIndex,
         Newbee.Bus,
         Newbee.Colony.Store,
         Newbee.EventLog,
