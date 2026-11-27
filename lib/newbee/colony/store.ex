@@ -215,6 +215,7 @@ defmodule Newbee.Colony.Store do
 
   def handle_call({:transaction, fun}, _, state) do
     case invoke(fun, state.data) do
+      {:ok, result, next} when next === state.data -> {:reply, result, state}
       {:ok, result, next} when is_map(next) -> commit(next, result, state)
       error -> {:reply, error, state}
     end

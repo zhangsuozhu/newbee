@@ -417,6 +417,67 @@ test("start：draft + uploadIds 交给后台，成功后清空草稿并回显；
   instance.destroy();
 });
 
+test("项目分工启动带 mode，工作卡区分提交与验收", async () => {
+  const env = {sessionId: "s1", draft: "迁移多个模块"};
+  const project = work({title: "迁移多个模块", coordination: {
+    strategy: "project", phase: "executing", concurrency: 6, total: 3, completed: 1, settled: 1,
+    children: [
+      {id: "a", title: "接口", status: "done"},
+      {id: "b", title: "适配层", status: "pending_review"},
+      {id: "c", title: "调用方", status: "blocked", waiting_for: "dependencies", depends_on: ["b"]}
+    ]
+  }});
+  let started = false;
+  const fake = fakeRpc({
+    "conversation.work.list": () => ({works: started ? [project] : []}),
+    "conversation.work.start": () => { started = true; return {work: project}; }
+  });
+  env.rpc = fake.rpc;
+  const {instance} = setup(env);
+  await instance.refresh();
+  assert.equal(await instance.start("project"), true);
+  const request = fake.calls.find((call) => call.method === "conversation.work.start").payload;
+  assert.equal(request.mode, "project");
+  assert.equal(request.text, "迁移多个模块");
+  assert.match(textOfCard(), /项目分工/);
+  assert.match(textOfCard(), /1\/3 已验收/);
+  assert.match(textOfCard(), /待文件验收/);
+  assert.match(textOfCard(), /依赖：适配层/);
+});
+
+
+test("跨机模式使用独立启动回执，设备变更随轮询更新，邀请只在工作卡显示", async () => {
+  const env = {sessionId: "s1", draft: "拆分并行"};
+  let started = false;
+  let online = false;
+  const fake = fakeRpc({
+    "conversation.work.start": () => {started = true; return {work: work()};},
+    "conversation.work.list": () => ({works: started ? [work({coordination: {
+      strategy: "project", pool: "remote", phase: "executing", devices: [{id: "device-1", display: "测试机", state: online ? "online" : "offline"}]
+    }})] : []}),
+    "conversation.work.projectInvite": () => ({code: "once", fingerprint: "sha256:example", url: "https://host.test"}),
+    "conversation.work.projectRevoke": () => ({revoked: true})
+  });
+  env.rpc = fake.rpc;
+  const {instance} = setup(env);
+  await instance.refresh();
+  assert.equal(await instance.start("project_remote"), true);
+  assert.equal(fake.calls.find((c) => c.method === "conversation.work.start").payload.mode, "project_remote");
+  assert.match(textOfCard(), /0 台在线/);
+  online = true;
+  await instance.refresh();
+  assert.match(textOfCard(), /1 台在线/);
+  findByText(card(), "邀请执行设备").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  const input = card().allElements().find((node) => node.className === "cw-project-invite");
+  assert.match(input.value, /^newbee-colony:/);
+  assert.equal(env.appended.join(" "), "拆分并行");
+  findByText(card(), "撤销").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fake.calls.find((c) => c.method === "conversation.work.projectRevoke").payload.beeId, "device-1");
+});
+
+
 test("apply：比较后工作版本变了就停止，不写入旧哈希", async () => {
   const env = {sessionId: "s1"};
   let revision = 3;

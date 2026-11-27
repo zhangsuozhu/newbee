@@ -12,6 +12,8 @@ defmodule Newbee.Colony.ConversationWork do
          true <- is_binary(root) and File.dir?(root) do
       root = Path.expand(root)
       principal = Keyword.get(opts, :principal, :owner)
+      project = Keyword.get(opts, :project, false) == true
+      remote = project and Keyword.get(opts, :remote, false) == true
 
       config = %{
         "provider" => Newbee.Session.provider(sid),
@@ -28,7 +30,10 @@ defmodule Newbee.Colony.ConversationWork do
           root: root,
           uploads: Keyword.get(opts, :upload_ids, []),
           decompose: Keyword.get(opts, :decompose, true)
-        },
+        }
+        |> then(fn fingerprint ->
+          if project, do: Map.merge(fingerprint, %{project: true, remote: remote}), else: fingerprint
+        end),
         fn data ->
           with {:ok, data, colony, actor, bee} <- context(data, sid, root, principal),
                nil <- active_work(data, sid) do
@@ -38,7 +43,9 @@ defmodule Newbee.Colony.ConversationWork do
               "actor_bee_id" => actor["id"],
               "cwd" => root,
               "workflow" => true,
-              "decompose" => Keyword.get(opts, :decompose, true),
+              "decompose" => project or Keyword.get(opts, :decompose, true),
+              "project" => project,
+              "project_pool" => if(remote, do: "remote", else: "local"),
               "autonomous" => true,
               "conversation" => true,
               "origin_session_id" => sid,
@@ -753,11 +760,17 @@ defmodule Newbee.Colony.ConversationWork do
         Map.merge(task, %{
           "status" => "blocked",
           "waiting_for" => "children",
-          "next_step" => "补充要求已保存，并转交各项分工；完成后统一集成验证。"
+          "next_step" =>
+            if(Decomposition.project?(task),
+              do: "补充要求已保存，将在项目集成时复核；本轮声明的分工范围保持不变。",
+              else: "补充要求已保存，并转交各项分工；完成后统一集成验证。"
+            )
         })
 
+      children = if Decomposition.project?(task), do: [], else: get_in(task, ["workflow", "children"]) || []
+
       data =
-        Enum.reduce(get_in(task, ["workflow", "children"]) || [], data, fn id, acc ->
+        Enum.reduce(children, data, fn id, acc ->
           child = acc["tasks"][id]
 
           if child && child["status"] not in ["cancelled", "pending_review", "done"] do
@@ -1018,6 +1031,9 @@ defmodule Newbee.Colony.ConversationWork do
           not is_map(child) ->
             acc
 
+          Decomposition.project_step?(child) and is_binary(child["project_review_error"]) ->
+            restart_child(acc, child, config)
+
           submitted?(acc, child) or child["status"] == "cancelled" ->
             acc
 
@@ -1043,6 +1059,44 @@ defmodule Newbee.Colony.ConversationWork do
       })
 
     {data, next}
+  end
+
+  defp restart_child(data, %{"project_lease" => %{}, "status" => status} = child, _config)
+       when status != "pending_review" do
+    Newbee.Colony.ProjectLease.reset(data, Map.put(child, "project_attempt", 0), false, "重新进入远端项目执行队列。")
+  end
+
+  defp restart_child(data, %{"conversation_child" => true, "project_writes" => _} = child, config) do
+    if child["status"] == "pending_review" do
+      # Reconcile the same candidate and application after a review error; do not rerun code.
+      next =
+        child
+        |> Map.update!("revision", &(&1 + 1))
+        |> Map.put("updated_at", now())
+        |> Map.put("project_review_error", nil)
+        |> Map.put("waiting_for", nil)
+
+      put_in(data, ["tasks", child["id"]], next)
+    else
+      # A failed executor or rejected, unapplied candidate re-enters the bounded ready queue.
+      next =
+        child
+        |> bump()
+        |> Map.merge(%{
+          "status" => "blocked",
+          "waiting_for" => "capacity",
+          "question" => nil,
+          "resume_needed" => false,
+          "execution_config" => config,
+          "result" => nil,
+          "project_attempt" => if(child["waiting_for"] == "lease_failed", do: 0, else: child["project_attempt"]),
+          "project_retry_note" => child["project_review_error"] || child["next_step"],
+          "project_review_error" => nil,
+          "execution_generation" => (child["execution_generation"] || 0) + 1
+        })
+
+      data |> settle(child["id"], "superseded") |> put_in(["tasks", child["id"]], next)
+    end
   end
 
   defp restart_child(data, child, config) do
@@ -1079,8 +1133,9 @@ defmodule Newbee.Colony.ConversationWork do
       family(root)
       |> tl()
       |> Enum.filter(fn child ->
-        child["status"] in ["blocked", "failed"] and child["waiting_for"] not in ["dependencies", "capacity"] and
-          not is_map(child["question"])
+        (Decomposition.project_step?(child) and is_binary(child["project_review_error"])) or
+          (child["status"] in ["blocked", "failed"] and child["waiting_for"] not in ["dependencies", "capacity"] and
+             not is_map(child["question"]))
       end)
 
     config = %{

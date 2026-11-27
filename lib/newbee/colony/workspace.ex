@@ -34,7 +34,15 @@ defmodule Newbee.Colony.Workspace do
         if Path.expand(source) == "/" do
           {:ok, "/"}
         else
-          create(task, source)
+          if Newbee.Colony.Decomposition.project_step?(task) do
+            Newbee.Colony.WorkspaceReview.with_target_lock(source, fn ->
+              if Newbee.Colony.ProjectReview.can_materialize?(task),
+                do: create(task, source),
+                else: {:error, "project_staging_unavailable", "项目集成目录有未确认的应用，请先核对再重试"}
+            end)
+          else
+            create(task, source)
+          end
         end
     end
   end
@@ -50,6 +58,7 @@ defmodule Newbee.Colony.Workspace do
 
   defp create(task, source) do
     name = "colony-" <> String.replace(task["id"], ~r/[^a-zA-Z0-9._-]/, "_")
+    name = if task["project_lease"], do: name <> "-" <> task["project_lease"]["id"], else: name
 
     case do_create(task, source, name) do
       {:ok, _path} = ok ->
@@ -65,9 +74,17 @@ defmodule Newbee.Colony.Workspace do
     with {:ok, snapshot} <- Isolated.prepare(source, name, true),
          {:ok, workspace} <- attach_git(snapshot, source),
          {:ok, workspace} <- relink_build_artifacts(workspace, source),
-         {:ok, _} <- Store.update("tasks", task["id"], nil, &{:ok, Map.put(&1, "workspace", workspace)}) do
+         {:ok, _} <- save_workspace(task, workspace) do
       {:ok, workspace["path"]}
     end
+  end
+
+  defp save_workspace(task, workspace) do
+    Store.update("tasks", task["id"], nil, fn current ->
+      if get_in(current, ["project_lease", "id"]) == get_in(task, ["project_lease", "id"]),
+        do: {:ok, Map.put(current, "workspace", workspace)},
+        else: {:error, "lease_lost", "执行端租约已经失效"}
+    end)
   end
 
   # 创建失败的补偿：删掉本次可能建出的工作区，源项目本身不受影响。

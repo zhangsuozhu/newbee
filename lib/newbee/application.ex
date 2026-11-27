@@ -31,6 +31,7 @@ defmodule Newbee.Application do
         {Task.Supervisor, name: Newbee.Compaction.Tasks},
         Newbee.Collaboration.Chat.Runner,
         Newbee.Collaboration.CrossHost.Connections,
+        {Task.Supervisor, name: Newbee.Colony.ProjectReview.Tasks, max_children: 1},
         Newbee.Colony.Runtime,
         Newbee.Colony.SourceRuntime,
         Newbee.Colony.Remote,

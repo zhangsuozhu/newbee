@@ -1,7 +1,7 @@
 defmodule Newbee.Web.ConversationApi do
   @moduledoc "Authenticated original-conversation work RPC. Session identity determines the project root."
   alias Newbee.Colony.{ConversationWork, Membership, Store, Work, WorkspaceReview}
-  @methods ~w(list start input answer control review apply complete delete restore)
+  @methods ~w(list start input answer control review apply complete delete restore projectInvite projectRevoke)
 
   def dispatch("conversation.work." <> action, p) when action in @methods do
     sid = p["sessionId"]
@@ -28,6 +28,9 @@ defmodule Newbee.Web.ConversationApi do
     {:ok, %{"works" => ConversationWork.list(sid)}}
   end
 
+  defp run("start", _sid, %{"mode" => mode}, _uploads) when mode not in [nil, "project", "project_remote"],
+    do: {:error, "bad_request", "未知工作模式"}
+
   defp run("start", sid, p, uploads) do
     principal =
       case Membership.authenticate(p["__token__"]) do
@@ -35,10 +38,39 @@ defmodule Newbee.Web.ConversationApi do
         _ -> :owner
       end
 
-    ConversationWork.start(sid, Newbee.Session.cwd(sid), p["text"], p["requestId"],
-      principal: principal,
-      upload_ids: uploads
-    )
+    if p["mode"] == "project_remote" and principal != :owner do
+      {:error, "forbidden", "只有原会话的拥有者可以启用跨机项目执行"}
+    else
+      ConversationWork.start(sid, Newbee.Session.cwd(sid), p["text"], p["requestId"],
+        principal: principal,
+        upload_ids: uploads,
+        project: p["mode"] in ["project", "project_remote"],
+        remote: p["mode"] == "project_remote"
+      )
+    end
+  end
+
+  defp run("projectInvite", sid, p, _) do
+    with {:ok, task, colony} <- owned_project(sid, p),
+         true <- String.starts_with?(p["__origin__"] || "", "https://"),
+         {:ok, fingerprint} <- Newbee.Web.Cert.fingerprint(),
+         {:ok, invite} <- Membership.invite(colony["id"], task["created_by"], %{"kind" => "ai"}, project_runner: true) do
+      {:ok, Map.merge(invite, %{"url" => p["__origin__"], "fingerprint" => fingerprint})}
+    else
+      false -> {:error, "https_required", "请使用 HTTPS 地址打开主机，再邀请执行设备"}
+      error -> error
+    end
+  end
+
+  defp run("projectRevoke", sid, p, _) do
+    with {:ok, task, colony} <- owned_project(sid, p),
+         {:ok, %{"project_runner_allowed" => true} = device} <- Store.get_bee(p["beeId"]),
+         true <- device["colony_id"] == colony["id"],
+         :ok <- Membership.revoke(colony["id"], device["id"], task["created_by"]) do
+      {:ok, %{"revoked" => true}}
+    else
+      _ -> {:error, "forbidden", "不能撤销不属于此项目的设备"}
+    end
   end
 
   defp run("input", sid, p, uploads),
@@ -90,6 +122,17 @@ defmodule Newbee.Web.ConversationApi do
           error -> error
         end
       end
+    end
+  end
+
+  defp owned_project(sid, p) do
+    with {:error, _, _} <- Membership.authenticate(p["__token__"]),
+         {:ok, task} <- ConversationWork.fetch(sid, p["workId"]),
+         true <- Newbee.Colony.ProjectLease.pool?(task),
+         {:ok, %{"conversation_owner_session" => ^sid} = colony} <- Store.get_colony(task["colony_id"]) do
+      {:ok, task, colony}
+    else
+      _ -> {:error, "forbidden", "只有原会话的拥有者可以管理跨机设备"}
     end
   end
 

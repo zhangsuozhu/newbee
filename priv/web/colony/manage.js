@@ -109,6 +109,11 @@ export async function joinEnvironment() {
   if (!value) return;
   try {
     const result = await rpc('colony.remote.join', {...invitation, display:value.display, cwd:value.cwd});
+    if (result.colony?.authority === 'remote' && result.colony?.conversation_only === true) {
+      toast('已登记为项目执行设备，请回到主机的项目工作卡确认在线状态');
+      return;
+    }
+
     await loadColonies(); await selectColony(result.colony.id);
   } catch (error) {toast(error.message || '邀请码无效',true);}
 }

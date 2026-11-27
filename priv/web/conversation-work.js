@@ -104,6 +104,7 @@
     reviewCache: new Map(),
     expanded: new Set(),
     coordinationOpen: new Map(),
+    projectInvite: null,
     confirm: new Set(),
     answerDraft: "",
     composing: false,
@@ -371,6 +372,7 @@
         status: asText(child.status) || "queued",
         waitingFor: asText(child.waiting_for),
         scope: asText(child.scope),
+        device: asText(child.device),
         dependsOn: asList(child.depends_on).map((id) => asText(id)).filter(Boolean),
         activity: textOf(child.activity, 400),
         nextStep: asText(child.next_step),
@@ -384,6 +386,10 @@
     const failedLocal = children.filter((child) => child.status === "failed").length;
     const cancelledLocal = children.filter((child) => child.status === "cancelled").length;
     return {
+      project: value.strategy === "project",
+      remote: value.pool === "remote",
+      devices: asList(value.devices).filter((d) => d && typeof d.id === "string").map((d) => ({id: d.id, display: asText(d.display), state: asText(d.state)})),
+
       phase: asText(value.phase) || "planning",
       summary: textOf(value.summary, 800),
       concurrency: Number(value.concurrency) || 3,
@@ -487,6 +493,7 @@
             primary.revision, primary.contextRevision, primary.executionGeneration,
             primary.question ? [primary.question.id, primary.question.question, primary.question.options.map((o) => o.value)] : null,
             primary.activity.length, primary.result.content.length,
+            primary.coordination,
             primary.inputs.map((input) => (input.adopted ? "A" : input.received ? "R" : "-")).join("")
           ]
         : null,
@@ -887,8 +894,11 @@
     }
   }
 
-  function coordinationStatus(child) {
+  function coordinationStatus(child, project) {
+    if (project && child.status === "pending_review") return "待文件验收";
+    if (project && child.status === "done") return "已验收";
     if (child.waitingFor === "dependencies") return "等待上游";
+    if (child.waitingFor === "lease_failed") return "远端中断 · 待重试";
     if (child.waitingFor === "capacity") return "等待执行";
     const labels = {pending: "等待执行", claimed: "已安排", queued: "排队中", running: "进行中", blocked: "需要处理", pending_review: "已交付", done: "已交付", failed: "未完成", cancelled: "已结束"};
     return labels[child.status] || "状态未知";
@@ -905,7 +915,7 @@
     if (!total) return "正在规划分工";
     const ended = coordination.phase === "ended" || coordination.phase === "completed";
     const settled = Math.min(total, Math.max(coordination.settled, coordination.completed));
-    const parts = [settled + "/" + total + " 项"];
+    const parts = [coordination.project ? (coordination.completed + "/" + total + " 已验收") : (settled + "/" + total + " 项")];
     if (coordination.cancelled) parts.push("取消 " + coordination.cancelled);
     if (coordination.failed) parts.push("未完成 " + coordination.failed);
     if (coordination.completed && coordination.completed !== settled) parts.push("已交付 " + coordination.completed);
@@ -939,6 +949,64 @@
     return bar;
   }
 
+  function projectDevices(work, coordination) {
+    const box = el("div", "cw-project-devices");
+    const online = coordination.devices.filter((device) => device.state === "online").length;
+    box.appendChild(el("p", "cw-coordination-meta", "跨机执行 · " + online + " 台在线 / " + coordination.devices.length + " 台已授权"));
+    if (!online) box.appendChild(el("p", "cw-coordination-meta", "在另一台 Newbee 的蜂群页面选择「加入蜂群」，粘贴设备邀请码。分项会等待在线设备，不会自动转为本地执行。"));
+    const sid = sessionId();
+    const invite = el("button", "cw-btn", "邀请执行设备");
+    invite.type = "button";
+    invite.addEventListener("click", async () => {
+      invite.disabled = true;
+      try {
+        const result = await call("conversation.work.projectInvite", {workId: work.id}, mark());
+        if (sessionId() !== sid || !result.code || !result.fingerprint || !result.url) return;
+        const value = "newbee-colony:" + btoa(JSON.stringify({code: result.code, fingerprint: result.fingerprint, url: result.url}));
+        state.projectInvite = {sid: sid, id: work.id, value: value};
+        render(true);
+      } catch (err) { say(err.message || "没有生成设备邀请码", "warn"); }
+      finally { invite.disabled = false; }
+    });
+    box.appendChild(invite);
+    const issued = state.projectInvite;
+    if (issued && issued.sid === sid && issued.id === work.id) {
+      const code = el("input", "cw-project-invite");
+      code.type = "text";
+      code.readOnly = true;
+      code.value = issued.value;
+      code.setAttribute("aria-label", "一次性设备邀请码，有效期一小时");
+      box.appendChild(code);
+      const copy = el("button", "cw-btn", "复制邀请码");
+      copy.type = "button";
+      copy.addEventListener("click", async () => {
+        if (typeof navigator !== "undefined" && navigator.clipboard) {
+          try { await navigator.clipboard.writeText(code.value); say("已复制一次性设备邀请码", "ok"); return; } catch (_) { /* select below */ }
+        }
+        code.focus();
+        if (typeof code.select === "function") code.select();
+      });
+      box.appendChild(copy);
+    }
+    coordination.devices.forEach((device) => {
+      const row = el("p", "cw-coordination-meta", device.display + " · " + ({online: "在线", offline: "离线", not_ready: "待首次连接"}[device.state] || "未知"));
+      const revoke = el("button", "cw-btn", "撤销");
+      revoke.type = "button";
+      revoke.setAttribute("aria-label", "撤销 " + device.display);
+      revoke.addEventListener("click", async () => {
+        if (typeof window.confirm === "function" && !window.confirm("撤销设备「" + device.display + "」？它将不能再领取或交付分项。")) return;
+        revoke.disabled = true;
+        try { await call("conversation.work.projectRevoke", {workId: work.id, beeId: device.id}, mark()); await refresh(); }
+        catch (err) { say(err.message || "没有撤销设备", "warn"); }
+        finally { revoke.disabled = false; }
+      });
+      row.appendChild(revoke);
+      box.appendChild(row);
+    });
+    return box;
+  }
+
+
   function coordinationBlock(work) {
     const coordination = work.coordination;
     if (!coordination) return null;
@@ -947,25 +1015,28 @@
     box.addEventListener("toggle", () => state.coordinationOpen.set(work.id, box.open));
     const heading = el("summary", "cw-coordination-summary");
     heading.appendChild(el("span", "cw-coordination-caret"));
-    heading.appendChild(el("strong", "cw-coordination-name", "任务分工"));
+    heading.appendChild(el("strong", "cw-coordination-name", coordination.project ? "项目分工" : "任务分工"));
     const bar = progressBar(coordination, work);
     if (bar) heading.appendChild(bar);
     else heading.appendChild(el("span", "cw-coordination-count", "正在规划分工"));
     box.appendChild(heading);
+    if (coordination.project) box.appendChild(el("p", "cw-coordination-meta", "最多同时执行 " + coordination.concurrency + " 项 · 验收通过后解锁下游"));
+    if (coordination.remote) box.appendChild(projectDevices(work, coordination));
     if (coordination.summary) box.appendChild(el("p", "cw-coordination-summary-text", coordination.summary));
     if (!coordination.children.length) box.appendChild(el("p", "cw-coordination-meta", "正在核对项目和任务边界，随后在这里显示分工。"));
     const list = el("ul", "cw-coordination-list");
     const byId = new Map(coordination.children.map((child) => [child.id, child]));
     coordination.children.forEach((child) => {
       const item = el("li", "cw-coordination-item");
-      item.dataset.status = childSettled(child) ? "settled" : "active";
+      item.dataset.status = childSettled(child) && !(coordination.project && child.status === "pending_review") ? "settled" : "active";
       if (child.status === "failed") item.dataset.tone = "err";
       if (child.status === "cancelled") item.dataset.tone = "stop";
       const line = el("div", "cw-coordination-item-head");
       const title = el("span", "cw-coordination-title", child.title);
       title.title = child.scope || child.title;
       line.appendChild(title);
-      line.appendChild(el("span", "cw-coordination-status", coordinationStatus(child)));
+      line.appendChild(el("span", "cw-coordination-status", coordinationStatus(child, coordination.project)));
+      if (child.device) line.appendChild(el("span", "cw-coordination-meta", child.device));
       item.appendChild(line);
       const dependencies = child.dependsOn.map((id) => byId.get(id)).filter(Boolean).map((dep) => dep.title);
       if (dependencies.length) item.appendChild(el("p", "cw-coordination-meta", "依赖：" + dependencies.join("、")));
@@ -1508,7 +1579,8 @@
     state.sent.set(workId, list.slice(-20));
   }
 
-  async function start() {
+  async function start(mode) {
+    const project = mode === "project" || mode === "project_remote";
     const sid = sessionId();
     if (!sid) {
       say("先选择一个会话，才能把这件事交给后台。", "warn");
@@ -1525,10 +1597,11 @@
     state.busy.add("start");
     render(true);
     const ids = hostUploadIds();
-    const key = "start|" + text + "|" + ids.join(',');
+    const key = (project ? mode + "|" : "start|") + text + "|" + ids.join(',');
     const requestId = requestIdFor(key);
     try {
       const payload = {text: text, requestId: requestId};
+      if (project) payload.mode = mode;
       if (ids.length) payload.uploadIds = ids;
       const result = await call(RPC.start, payload, mark());
       releaseRequestId(key);
@@ -1890,6 +1963,31 @@
     }
     quick.addEventListener("click", () => { if (quick.disabled) return; menu.remove(); api.start(); });
     menu.append(quick);
+    const project = el("button", "cw-team-menu-item cw-team-project", "");
+    project.type = "button";
+    project.append(...menuItem("▦", "项目分工", "最多 30 项，按依赖滚动执行、逐项验收"));
+    if (mainOff) {
+      project.disabled = true;
+      project.classList.add("cw-team-item-off");
+    }
+    project.addEventListener("click", () => {
+      if (project.disabled) return;
+      menu.remove();
+      api.start("project").catch(() => {}); // start() already shows the error and preserves the draft
+    });
+    menu.append(project);
+    const remote = el("button", "cw-team-menu-item", "");
+    remote.type = "button";
+    remote.append(...menuItem("⇄", "跨机项目分工", "用受邀设备执行；项目副本会通过 HTTPS 发送给这些设备"));
+    remote.disabled = mainOff;
+    if (mainOff) remote.classList.add("cw-team-item-off");
+    remote.addEventListener("click", () => {
+      if (remote.disabled) return;
+      menu.remove();
+      api.start("project_remote").catch(() => {});
+    });
+    menu.append(remote);
+
     const list = el("div", "cw-team-menu-list");
     list.append(el("div", "cw-team-menu-loading", "加载团队模板…"));
     menu.append(list);

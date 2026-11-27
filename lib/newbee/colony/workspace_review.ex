@@ -79,7 +79,8 @@ defmodule Newbee.Colony.WorkspaceReview do
 
   def apply(_, _, _), do: {:error, "bad_request", "需要任务、审阅 hash 与请求 ID"}
 
-  defp with_target_lock(root, fun) do
+  @doc false
+  def with_target_lock(root, fun) do
     case :global.trans({{__MODULE__, Path.expand(root)}, self()}, fun, [node()]) do
       :aborted -> {:error, "apply_busy", "该目标目录上已有应用操作在进行，请稍后重试"}
       result -> result
@@ -494,7 +495,9 @@ defmodule Newbee.Colony.WorkspaceReview do
         case get_in(data, ["tasks", task["id"]]) do
           %{"status" => "pending_review"} = current ->
             if current["context_revision"] == task["context_revision"] and current["result"] == honey["id"] and
-                 current["workspace"] == task["workspace"] do
+                 current["workspace"] == task["workspace"] and
+                 (not Newbee.Colony.Decomposition.project_step?(current) or
+                    Newbee.Colony.ProjectReview.authorize_apply?(data, current, diff["changes"])) do
               updated =
                 current |> Map.put("application", Map.drop(intent, ["changes"])) |> Map.update("revision", 1, &(&1 + 1))
 

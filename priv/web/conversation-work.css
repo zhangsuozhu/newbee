@@ -219,6 +219,11 @@
   transition: background var(--nb-dur), color var(--nb-dur), border-color var(--nb-dur);
 }
 
+.cw-project-devices { display: grid; gap: 6px; justify-items: start; }
+.cw-project-devices p { margin: 0; }
+.cw-project-devices p .cw-btn { margin-inline-start: 8px; }
+.cw-project-invite { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; color: var(--nb-label-1); background: var(--nb-bg-elev); border: 1px solid var(--nb-border); }
+
 .cw-btn:hover:not(:disabled) { background: var(--nb-bg-elev); color: var(--nb-label-1); }
 .cw-btn:focus-visible { outline: 2px solid var(--nb-accent); outline-offset: 2px; }
 .cw-card .cw-btn:disabled { opacity: 1; color: var(--nb-label-3); background: transparent; border-color: var(--nb-border); cursor: not-allowed; }
