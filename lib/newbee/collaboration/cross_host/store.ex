@@ -77,6 +77,17 @@ defmodule Newbee.Collaboration.CrossHost.Store do
     :ets.tab2list(@tt) |> Enum.map(fn {_, t} -> t end) |> Enum.filter(fn t -> Map.get(t, "group_id") == gid end)
   end
 
+  @doc false
+  def workbench_tasks do
+    ensure()
+
+    for {_, task} <- :ets.tab2list(@tt),
+        is_binary(task["group_id"]),
+        :ets.member(@gt, task["group_id"]),
+        not Map.has_key?(task, "command"),
+        do: Map.take(task, ~w(id group_id title status created_at updated_at))
+  end
+
   @spec list_knowledge(binary()) :: [map()]
   def list_knowledge(gid) when is_binary(gid) do
     ensure()

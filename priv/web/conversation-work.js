@@ -1562,11 +1562,11 @@
     }
   }
 
-  function appendUser(text) {
+  function appendUser(text, useAttachments = true) {
     if (!state.host || typeof state.host.appendUser !== "function") return;
     try {
-      state.host.appendUser(text);
-      if (state.host && typeof state.host.clearAttachments === 'function') state.host.clearAttachments();
+      state.host.appendUser(text, useAttachments);
+      if (useAttachments && typeof state.host.clearAttachments === 'function') state.host.clearAttachments();
     } catch (err) {
       /* 会话回显失败不影响后台工作 */
     }
@@ -1579,24 +1579,25 @@
     state.sent.set(workId, list.slice(-20));
   }
 
-  async function start(mode) {
+  async function start(mode, options = {}) {
     const project = mode === "project" || mode === "project_remote";
     const sid = sessionId();
     if (!sid) {
       say("先选择一个会话，才能把这件事交给后台。", "warn");
       return false;
     }
-    const draft = readDraft();
+    if (options.sessionId && options.sessionId !== sid) throw new Error("会话已切换，请核对目标后重试");
+    const draft = options.goal ?? readDraft();
     const text = String(draft || "").trim();
     if (!text) {
       say("输入框是空的：先写下要后台做什么。", "warn");
       return false;
     }
-    if (state.host && typeof state.host.isUploading === 'function' && state.host.isUploading()) { say('请等待附件上传完成，草稿已保留。', 'warn'); return false; }
+    if (options.goal == null && state.host && typeof state.host.isUploading === 'function' && state.host.isUploading()) { say('请等待附件上传完成，草稿已保留。', 'warn'); return false; }
     if (state.busy.has("start")) return false;
     state.busy.add("start");
     render(true);
-    const ids = hostUploadIds();
+    const ids = options.goal == null ? hostUploadIds() : [];
     const key = (project ? mode + "|" : "start|") + text + "|" + ids.join(',');
     const requestId = requestIdFor(key);
     try {
@@ -1606,8 +1607,8 @@
       const result = await call(RPC.start, payload, mark());
       releaseRequestId(key);
       state.busy.delete("start");
-      if (String(readDraft()).trim() === text) writeDraft("");
-      appendUser(text);
+      if (options.goal == null && String(readDraft()).trim() === text) writeDraft("");
+      appendUser(text, options.goal == null);
       const work = result.work && typeof result.work === "object" ? normalizeWork(result.work) : null;
       if (work && work.id) {
         recordSent(work.id, text);
@@ -2083,10 +2084,25 @@
     state.windowButtons = {};
     state.resizer = null;
   }
+  async function openWork(id) {
+    const works = await refresh();
+    if (!Array.isArray(works) || !works.some(work => work.id === id)) return false;
+    state.selectedWorkId = id;
+    setWindowMode("normal");
+    render(true);
+    return true;
+  }
+
   const api = {
     init: init,
     refresh: refresh,
     submit: submit,
+    openWork,
+    async startFromWorkbench(goal, sessionId, mode) {
+      if (!await start(mode === "single" ? undefined : mode, {goal, sessionId})) {
+        throw new Error("工作未受理，目标已保留");
+      }
+    },
     start: start,
     destroy: destroy,
     // 只读诊断：给集成与定向测试用，不参与渲染。

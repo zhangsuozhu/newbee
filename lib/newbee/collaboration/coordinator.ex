@@ -52,6 +52,7 @@ defmodule Newbee.Collaboration.Coordinator do
     do: GenServer.call(server, {:list, session_id})
 
   def get(group_id, server \\ __MODULE__), do: GenServer.call(server, {:get, group_id})
+  def workbench, do: GenServer.call(__MODULE__, :workbench)
 
   def permission_request(session_id, preview, server \\ __MODULE__),
     do: GenServer.call(server, {:permission_request, session_id, preview})
@@ -279,6 +280,22 @@ defmodule Newbee.Collaboration.Coordinator do
     else
       {:error, code, message} -> {:reply, {:error, code, message}, state}
     end
+  end
+
+  def handle_call(:workbench, _from, state) do
+    groups = Map.values(state.groups)
+
+    tasks =
+      Enum.flat_map(groups, fn group ->
+        Enum.map(group["tasks"] || [], fn task ->
+          task
+          |> Map.take(~w(task_id title status created_at updated_at))
+          |> Map.put("group_id", group["group_id"])
+          |> Map.put("session_id", group["coordinator_session_id"])
+        end)
+      end)
+
+    {:reply, {Enum.map(groups, &summary/1), tasks}, state}
   end
 
   def handle_call({:list, session_id}, _from, state) do

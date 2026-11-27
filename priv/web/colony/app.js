@@ -5,7 +5,7 @@ import { initWorkbench, renderInspector, renderAttention, rememberReadingPositio
 import { esc } from "./util.js";
 import { form } from './forms.js';
 import { initShell, ensureAuthenticated, updateWorkspaceContext, collapseSidebar, selectedWorkspaceCwd, sendIntoConversation, openWorkspace } from './shell.js?v=workbench-6';
-import { redeemInvitation } from './manage.js';
+import { redeemInvitation, joinEnvironment } from './manage.js';
 import { rpc, toast } from "./api.js";
 import {
   state, subscribe, loadColonies, selectColony, refresh, startPolling,
@@ -455,6 +455,12 @@ async function boot() {
     window.addEventListener('popstate', () => { void restoreLocation(); });
   } catch (e) {
     state.lastError = e.message || String(e);
+  }
+  const url = new URL(location.href);
+  if (!state.lastError && url.searchParams.get('join') === '1') {
+    url.searchParams.delete('join');
+    history.replaceState(history.state, '', url);
+    void joinEnvironment();
   }
   // Start updates independently of the first render; one card must not freeze the whole feed.
   startPolling(3000);

@@ -212,3 +212,45 @@ test("R2P-04 反向：没有编辑时轮询照常刷新（守卫不能把面板�
 
   assert.ok((body.innerHTMLWrites || 0) > writesBefore, "无编辑时轮询必须真的重绘（否则待办就不再及时）");
 });
+
+test("工作台保存开工目标、拒绝并发提交并定位待验收任务", async () => {
+  const env = boot();
+  El.prototype.replaceChildren = function(...nodes) {
+    this.children.slice().forEach(node => this.removeChild(node));
+    this.append(...nodes);
+  };
+  const source = fs.readFileSync(path.join(ROOT, "priv/web/team-workbench.js"), "utf8");
+  vm.runInContext(source, env.sandbox, {filename: "team-workbench.js"});
+  const routed = [];
+  const created = [];
+  let rejectCreate;
+  const rpc = async method => method === "team.workbench" ? {
+    queues: {attention: [{id: "parent", title: "可验收成果", kind: "conversation", state: "review", target: {session_id: "origin"}}]},
+    counts: {attention: 1}
+  } : fakeRpc().rpc(method);
+  env.sandbox.NewbeeTeamPanel.init({rpc, workbench: {
+    session: () => ({id: "origin"}), navigate: async item => routed.push(item),
+    create: value => { created.push(value); return new Promise((_, reject) => { rejectCreate = reject; }); },
+    join() {}, joinProject() {}, createGroup() {}
+  }});
+  env.sandbox.NewbeeTeamPanel.open();
+  await flush();
+  const workbench = findByClass(env.doc.body, "tp-body");
+  assert.equal(env.sandbox.NewbeeTeamPanel.hasWorkbench(), true);
+  const row = findByClass(workbench, "tw-row");
+  assert.match(row.textContent, /可验收成果.*待验收/);
+  await row.onclick();
+  assert.equal(routed[0].target.session_id, "origin");
+  const form = findByClass(workbench, "tw-start");
+  const goal = findByClass(form, "tp-textarea");
+  goal.value = "要交付的结果";
+  goal.oninput();
+  const first = form.onsubmit({preventDefault() {}});
+  await form.onsubmit({preventDefault() {}});
+  assert.equal(created.length, 1);
+  assert.equal(created[0].goal, goal.value);
+  rejectCreate(new Error("工作区暂时不可用"));
+  await first;
+  assert.equal(goal.value, "要交付的结果");
+  assert.equal(findByClass(form, "tw-feedback").textContent, "工作区暂时不可用");
+});
